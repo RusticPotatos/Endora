@@ -291,6 +291,35 @@ fn a_paused_member_s_items_go_one_rank_up() {
     assert_eq!(assignee(&hq, next), Some(f.rae));
 }
 
+/// A member paused while it holds an item lets it go one rank up, so the item does not wait
+/// for it (owner, 30 Oct: the Mac is the owner's laptop, needed for the evening).
+///
+/// Given an item Bo holds,
+/// when the owner pauses Bo,
+/// then once Bo's running turn on it ends, the item is Rae's, one rank up, and Rae is woken.
+#[test]
+fn a_paused_member_lets_its_items_go_one_rank_up() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let held = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, held), Some(f.bo));
+    hq.pause(f.bo, true).unwrap();
+    // While Bo's turn on it runs, it stays; once that turn ends, it goes up.
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, held), Some(f.bo), "not mid-turn");
+    for c in hq.runner().started() {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, held), Some(f.rae));
+    assert!(woken(&hq, f.rae, held, WakeReason::Assigned));
+    let now = hq.store().task(held).unwrap().unwrap();
+    assert_eq!(now.owner, None, "not left claimed by the paused member");
+}
+
 /// Before the members are models, the loops give nothing out: the team works as before.
 #[test]
 fn without_model_members_no_loop_gives_out_work() {

@@ -310,6 +310,68 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(false)
     }
 
+    /// The items a paused loop member holds go to the member one rank up (owner, 30 Oct: the
+    /// Mac's member is paused while the owner uses the laptop), as a climb does but counting
+    /// no failure. An item with nobody above stays where it is.
+    fn paused_let_go(&self, at_work: &[Member]) -> Done<()> {
+        let paused: Vec<Member> = self
+            .store
+            .members()?
+            .into_iter()
+            .filter(|m| m.paused && m.brain == m.work_brain && !m.furloughed())
+            .collect();
+        if paused.is_empty() {
+            return Ok(());
+        }
+        for task in self.store.tasks()? {
+            if task.project.is_none()
+                || !matches!(task.status, TaskStatus::Todo | TaskStatus::Doing)
+            {
+                continue;
+            }
+            let Some(holder) = task
+                .owner
+                .or(task.assignee)
+                .and_then(|id| paused.iter().find(|m| m.id == id))
+            else {
+                continue;
+            };
+            if self.in_a_scenario(task.id)? {
+                continue;
+            }
+            // A turn of the holder's still running on it ends first; the next tick hands it on.
+            let mid_turn = self.store.live_runs()?.iter().any(|r| {
+                r.member == holder.id
+                    && r.task == Some(task.id)
+                    && r.status == crate::domain::RunStatus::Running
+            });
+            if mid_turn {
+                continue;
+            }
+            let Some(up) = Self::one_rank_up(at_work, holder.brain.rank()).or_else(|| {
+                at_work
+                    .iter()
+                    .filter(|m| m.brain.rank() > holder.brain.rank())
+                    .min_by_key(|m| (m.brain.rank(), m.id.0))
+            }) else {
+                continue;
+            };
+            let up = up.clone();
+            self.store.release(task.id)?;
+            self.store.set_assignee(task.id, Some(up.id))?;
+            if task.status != TaskStatus::Todo {
+                self.store.set_task_status(task.id, TaskStatus::Todo)?;
+            }
+            self.post_held_lock(
+                super::Author::Endora,
+                task.id,
+                &format!("{} is paused: it goes to {}.", holder.name, up.name),
+            )?;
+            self.wake_held_lock(up.id, Some(task.id), WakeReason::Assigned)?;
+        }
+        Ok(())
+    }
+
     /// A retired member's task is let go: unclaimed, unassigned, and back to todo if begun.
     fn let_go(&self, task: &Task) -> Done<()> {
         self.store.release(task.id)?;
@@ -435,7 +497,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The loops' part of the tick: each loop with nothing in hand hands out its top item.
+    /// The loops' part of the tick: a paused member's items go one rank up, then each loop with
+    /// nothing in hand hands out its top item.
     pub(super) fn loops_tick(&self) -> Done<()> {
         let members: Vec<Member> = self
             .store
@@ -446,6 +509,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if members.is_empty() {
             return Ok(());
         }
+        self.paused_let_go(&members)?;
         let tasks = self.store.tasks()?;
         for project in self.store.projects()? {
             if project.status != ProjectStatus::Active || project.pause.is_some() {
