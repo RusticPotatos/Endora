@@ -2032,32 +2032,51 @@ function hqCreditChips() {
     chips.push(`<button class="hq-chip${d.low ? " low" : ""}" data-act="go:models" title="DeepSeek's balance as DeepSeek says it${d.low ? ": below your threshold, top it up on DeepSeek's platform" : ""}">DeepSeek ${hqDollars(d.left)}${cur} left</button>`);
   }
   if (c.claude) {
-    chips.push(`<button class="hq-chip${c.claude.low ? " low" : ""}" data-act="go:models" title="The balance you entered from Anthropic's Console, less ${hqDollars(c.claude.spent_since)} Endora has paid since${c.claude.low ? ": below your threshold, top it up" : ""}">Claude ≈ ${hqDollars(c.claude.left)} left</button>`);
+    const renews = c.claude_grant ? `. Your plan's ${hqDollars(c.claude_grant)} grant renews on the ${hqOrdinal(c.claude_renews_on)}` : "";
+    chips.push(`<button class="hq-chip${c.claude.low ? " low" : ""}" data-act="go:models" title="The balance you entered from Anthropic's Console, less ${hqDollars(c.claude.spent_since)} Endora has paid since${renews}${c.claude.low ? ": below your threshold, top it up" : ""}">Claude ≈ ${hqDollars(c.claude.left)} left</button>`);
   } else {
     chips.push(`<button class="hq-chip" data-act="go:models" title="Anthropic does not say a balance: enter the one its Console shows, in Settings → AI">Claude credit: set it</button>`);
   }
   return chips;
 }
 
-// The credits on the Settings screen: Claude's balance as the Console shows it, and the two
-// thresholds below which the owner is told.
+// 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st: the day a plan renews.
+function hqOrdinal(n) {
+  const tens = n % 100, ones = n % 10;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  return `${n}${ones === 1 ? "st" : ones === 2 ? "nd" : ones === 3 ? "rd" : "th"}`;
+}
+
+// The credits on the Settings screen: Claude's balance as the Console shows it, a plan's
+// monthly grant (Claude Max's $100) with its renewal day and the credit bought on top, and the
+// two thresholds below which the owner is told. The grant is spent first; on the renewal day
+// the estimate becomes the whole grant plus what is left of the bought credit.
 function hqCreditsSetup() {
   const c = HQ.credits;
   if (!c) return `<div class="card"><p class="sub">The node could not say what is left.</p></div>`;
   const d = c.deepseek, cl = c.claude;
   const deepseekNow = d ? `DeepSeek: ${hqDollars(d.left)}${d.currency === "USD" ? "" : " " + esc(d.currency)} left, as DeepSeek says it.`
     : c.has_deepseek ? "DeepSeek: its balance could not be read." : "DeepSeek: no DeepSeek provider with a key.";
-  const claudeNow = cl ? `Claude: about ${hqDollars(cl.left)} left (your ${hqDollars(cl.set)}, less ${hqDollars(cl.spent_since)} paid since).`
+  const pots = cl && c.claude_grant ? ` Of it, ${hqDollars(cl.grant_left)} is this month's grant and ${hqDollars(cl.purchased_left)} credit you bought.` : "";
+  const claudeNow = cl ? `Claude: about ${hqDollars(cl.left)} left (your ${hqDollars(cl.set)}, less ${hqDollars(cl.spent_since)} paid since).${pots}`
     : "Claude: Anthropic does not say its balance; enter the one its Console's billing page shows.";
+  const plan = c.claude_grant
+    ? `Your plan's ${hqDollars(c.claude_grant)} grant renews on the ${hqOrdinal(c.claude_renews_on)} (next ${esc(c.claude_next_renewal || "")}), by your clock.`
+    : "A plan such as Claude Max grants API credit each month: enter it and the day the plan renews.";
   return `<div class="card hq-credits">
       <div class="model-role">Credits left</div>
       <p class="sub">${deepseekNow}<br>${claudeNow}</p>
       <div class="row" style="flex-wrap:wrap;margin-top:8px;">
         <label>Claude's balance in the Console now $<input id="hq-credit-claude" type="number" min="0" step="0.01" placeholder="${cl ? (cl.left / 1e6).toFixed(2) : "e.g. 20.00"}" aria-label="Claude's balance in dollars" /></label>
         <label>tell me under $<input id="hq-credit-claude-low" type="number" min="0" step="0.5" value="${(c.claude_low / 1e6).toFixed(2)}" aria-label="Claude threshold in dollars" /></label>
-        <label>DeepSeek under $<input id="hq-credit-deepseek-low" type="number" min="0" step="0.5" value="${(c.deepseek_low / 1e6).toFixed(2)}" aria-label="DeepSeek threshold in dollars" /></label>
+        <label>DeepSeek under $<input id="hq-credit-deepseek-low" type="number" min="0" step="0.5" value="${(c.deepseek_low / 1e6).toFixed(2)}" aria-label="DeepSeek threshold in dollars" /></label></div>
+      <p class="sub" style="margin-top:8px;">${plan}</p>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+        <label>Monthly grant $<input id="hq-credit-claude-grant" type="number" min="0" step="1" placeholder="100.00"${c.claude_grant ? ` value="${(c.claude_grant / 1e6).toFixed(2)}"` : ""} aria-label="The plan's monthly grant in dollars, 0 for none" /></label>
+        <label>renews on day <input id="hq-credit-claude-renews" type="number" min="1" max="31" step="1" placeholder="1–31"${c.claude_renews_on ? ` value="${c.claude_renews_on}"` : ""} aria-label="The day of the month the plan renews" /></label>
+        <label>bought credit left $<input id="hq-credit-claude-purchased" type="number" min="0" step="0.01" placeholder="${cl && c.claude_grant ? (cl.purchased_left / 1e6).toFixed(2) : "0.00"}" aria-label="Credit you bought that is left, in dollars" /></label>
         <button class="primary" data-act="hq:credits:save:go">Save</button></div>
-      <p class="sub" style="margin-top:8px;">Enter Claude's balance again after each top-up. Below a threshold you are told once on the desk.</p></div>`;
+      <p class="sub" style="margin-top:8px;">The grant is spent before bought credit; on the renewal day the estimate becomes the whole grant plus the bought credit left, and the warning is armed again. Enter Claude's balance, or the credit you bought, again after each top-up. Below a threshold you are told once on the desk.</p></div>`;
 }
 
 async function hqCreditsAct() {
@@ -2067,6 +2086,10 @@ async function hqCreditsAct() {
   if (claude != null) body.claude_balance = claude;
   if (cl != null) body.claude_low = cl;
   if (dl != null) body.deepseek_low = dl;
+  const grant = num("hq-credit-claude-grant"), renews = num("hq-credit-claude-renews"), bought = num("hq-credit-claude-purchased");
+  if (grant != null) body.claude_grant = grant;
+  if (renews != null) body.claude_renews_on = renews;
+  if (bought != null) body.claude_purchased = bought;
   try { HQ.credits = await api("POST", "/v1/credits", body); flash("Saved.", "ok"); }
   catch (e) { flash("Couldn't save them: " + e.message, "err"); }
   render();

@@ -1647,8 +1647,21 @@ if (failures.length) {
     if (!shown().includes(">Claude ≈ $12.30 left</button>")) fail("credits: Claude's estimate is not shown");
     if (shown().includes("<b>CNY</b>")) fail("credits: a currency from DeepSeek is not escaped");
     const creditSetup = runInContext("hqCreditsSetup()", context);
-    for (const want of ['id="hq-credit-claude"', 'id="hq-credit-claude-low"', 'id="hq-credit-deepseek-low"', 'data-act="hq:credits:save:go"']) {
+    for (const want of ['id="hq-credit-claude"', 'id="hq-credit-claude-low"', 'id="hq-credit-deepseek-low"', 'data-act="hq:credits:save:go"',
+      'id="hq-credit-claude-grant"', 'id="hq-credit-claude-renews"', 'id="hq-credit-claude-purchased"']) {
       if (!creditSetup.includes(want)) fail(`credits: the Settings card lacks ${want}`);
+    }
+    if (!/hq-credit-claude-grant"[^>]*placeholder="100\.00"/.test(creditSetup)) fail("credits: the grant does not suggest Claude Max's $100");
+    // A monthly grant (Claude Max): its renewal day on the card and the chip, spent before what was bought.
+    runInContext('Object.assign(HQ.credits, { claude_grant: 100000000, claude_renews_on: 21, claude_next_renewal: "2026-11-21" }); Object.assign(HQ.credits.claude, { grant_left: 9300000, purchased_left: 3000000 });', context);
+    const granted = runInContext("hqCreditsSetup()", context);
+    if (!granted.includes("renews on the 21st")) fail("credits: the Settings card does not say when the grant renews");
+    if (!/hq-credit-claude-grant"[^>]*value="100\.00"/.test(granted)) fail("credits: the Settings card does not show the grant");
+    if (!/hq-credit-claude-renews"[^>]*value="21"/.test(granted)) fail("credits: the Settings card does not show the renewal day");
+    if (!granted.includes("spent before")) fail("credits: the Settings card does not say the grant is spent first");
+    if (!/title="[^"]*renews on the 21st[^"]*">Claude ≈ \$12\.30 left</.test(shown())) fail("credits: Claude's chip does not say when the grant renews");
+    for (const [n, want] of [[1, "1st"], [2, "2nd"], [3, "3rd"], [4, "4th"], [11, "11th"], [12, "12th"], [13, "13th"], [22, "22nd"], [31, "31st"]]) {
+      if (runInContext(`hqOrdinal(${n})`, context) !== want) fail(`credits: the ${want} reads wrong`);
     }
     runInContext("HQ.credits = null;", context);
     // Switching, remembered per viewer in localStorage, with a failing store harmless.
