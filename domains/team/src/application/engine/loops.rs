@@ -437,6 +437,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 ),
             )?;
             self.wake_held_lock(up.id, Some(task.id), WakeReason::Assigned)?;
+            // The holder's turns still queued on it (waiting for the Mac, or a retry) end: the
+            // item is the next member's now (review of 30 Oct).
+            for run in self.store.live_runs()? {
+                if run.member == holder.id
+                    && run.task == Some(task.id)
+                    && run.status != crate::domain::RunStatus::Running
+                {
+                    self.end(
+                        run,
+                        crate::domain::RunStatus::Stopped,
+                        "its item went one rank up",
+                    )?;
+                }
+            }
         }
         Ok(())
     }

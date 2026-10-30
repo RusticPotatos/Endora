@@ -444,16 +444,35 @@ fn while_the_mac_is_away_its_member_is_passed_over_and_its_items_go_up() {
     let held = item(&hq, &f, "Fix the lint", Priority::Normal);
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, held), Some(f.rae), "nothing said yet: Rae's");
-    hq.tell_mac(false, "busy");
     for c in hq.runner().started() {
         hq.runner().finish(c.run, true);
     }
+    // Rae is woken on it, and then the Mac goes away: the turn is queued, waiting for it.
+    hq.wake(f.rae, Some(held), WakeReason::OwnerReplied)
+        .unwrap();
+    hq.tell_mac(false, "busy");
     hq.tick().unwrap();
     assert_eq!(
         assignee(&hq, held),
         Some(f.ada),
         "the Mac is busy: one rank up"
     );
+    // Rae's queued turn on it ends with the hand-up, so it never starts later on an item that
+    // is now Ada's (review of 30 Oct).
+    let rae_waiting = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.member == f.rae && r.task == Some(held))
+        .filter(|r| {
+            matches!(
+                r.status,
+                crate::domain::RunStatus::Queued | crate::domain::RunStatus::RetryWaiting
+            )
+        })
+        .count();
+    assert_eq!(rae_waiting, 0, "Rae's queued turns on it ended");
     // A fresh loop item while the Mac is away starts above it.
     let clock2 = Hands(AtomicI64::new(NOON));
     let hq2 = hq_of(&clock2);
