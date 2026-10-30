@@ -39,6 +39,19 @@ profiles let act ([0108](0108-the-bridge.md)): the lead and the developers. It w
 but the CEO, so a reviewer or a researcher, read-only on the bridge, could restart a container
 here. A turn whose rounds run out now posts what its model said on the way (below).
 
+Amended 2026-10-30 (tools fitted to the task): one more read, `image_tags` (read, Internal,
+every role on any brain). HQ failed "Pin the homepage and stats roles off the latest image tag"
+twice because a sandbox is offline and nothing could show that the release it chose exists on
+the image's registry. The node now asks: given an image reference, it returns the newest 30
+tags (highest version first, optionally releases only or by a prefix) and whether a named tag
+exists, from Docker Hub's API, or from ghcr.io and quay.io by the OCI distribution API with an
+anonymous pull token (lscr.io is read on ghcr.io, which serves it). The reference is checked
+strictly and any other registry is refused before anything is asked; every URL is built by the
+node from the checked parts, nothing a registry answers is followed (no redirect, no `next`
+link), and no credential is sent. HTTPS only, ten seconds and 2 MB an answer, at most three
+pages of Docker Hub and ten of an OCI list. It is not one of the post-deploy check's lab reads.
+Code: `domains/capabilities/src/registry.rs`.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the

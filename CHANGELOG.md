@@ -178,6 +178,10 @@ tagged release.
 
 ### Added
 
+- **`image_tags`, a read contract for the team** ([ADR 0106](docs/adr/0106-team-contracts.md),
+  amended 2026-10-30): the node reads an image's newest tags, and whether a named tag exists,
+  from Docker Hub, ghcr.io, quay.io or lscr.io, anonymously, so an offline sandbox can pin an
+  image to a release that exists. Any other registry is refused.
 - **The check after a deploy** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md),
   amended). Once the node pushes a branch, the owner's desk asks whether it is deployed.
   Deployed hands the member of the routine that takes the home lab's alarms one turn to read the
