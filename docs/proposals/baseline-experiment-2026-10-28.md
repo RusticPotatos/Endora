@@ -234,3 +234,33 @@ The ladder, in order, each rung chosen from round 0's evidence:
 A round is kept when it raises acceptance without raising cost or interventions more than the
 gain is worth; otherwise it is reverted and the next rung is tried. Rounds 1 and 2 were made
 together on 30 Oct at the owner's request, so round 1's re-run measures both.
+
+## Rounds after the baseline
+
+The bar is round 0's arm A (Claude Code, 10 of 10). Each round re-runs the same ten tasks on HQ
+alone, with round 0's exact words, on the fork's `develop` at `ee878f7` (Claude Code's branches,
+`exp/a-NN`, were pushed on 30 Oct but are not merged until the rounds are over, so every round
+starts from the same code). Judged as round 0 was, each claim re-checked; the same five fields.
+
+### Round 1 (30 Oct): the design defects, and a stronger bottom seat
+
+Live from `c72c3abc` (see ADR 0142's amendment of 30 Oct): rank 1 runs, a top-rank failure lets
+its loop go on, only finished turns count, read-only tasks are refused the restart and gluetun is
+never restarted alone, a chess move gets three turns, owner's projects need no lead; the house
+model is qwen3.5:9b and DeepSeek Flash (Dex) holds rank 4. Rounds 1 and 2 of the ladder are
+therefore measured together. Round 0's open items were set aside first (moved to project 6,
+"Baseline round 0 (archived)", and dropped, history kept). Started 30 Oct 06:50 EDT as HQ tasks
+913 to 922.
+
+| # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
+|---|---|---|---|---|---|---|
+| 1 | 913 | | | | | |
+| 2 | 914 | | | | | |
+| 3 | 915 | | | | | |
+| 4 | 916 | | | | | |
+| 5 | 917 | | | | | |
+| 6 | 918 | | | | | |
+| 7 | 919 | | | | | |
+| 8 | 920 | | | | | |
+| 9 | 921 | | | | | |
+| 10 | 922 | | | | | |
