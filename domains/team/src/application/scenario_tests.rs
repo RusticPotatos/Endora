@@ -742,10 +742,8 @@ fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
     assert_eq!(league["games"][0]["end"], "black_won");
     hq.tick().unwrap();
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
-    assert_eq!(
-        league["games"][1]["white"], "local",
-        "the rematch swaps: {league}"
-    );
+    // One game a pair (the owner, 2026-10-30): the league is over, and no rematch starts.
+    assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
 }
 
 // The relay lets a role think only with its own Claudes (ADR 0111): Opus is the CEO's alone,
@@ -799,8 +797,8 @@ fn a_player_is_never_told_what_other_turns_in_its_league_said() {
 }
 
 // The owner resets the league (2026-10-27, after the rules changed): every brain is rated
-// afresh, the game being played stops, the next pair sits down, and the games before are kept,
-// set aside, never deleted.
+// afresh, any game being played stops, a new round starts, and the games before are kept, set
+// aside, never deleted.
 #[test]
 fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     let clock = Hands(AtomicI64::new(OCT_17));
@@ -830,14 +828,17 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
         play(&hq, side, san).unwrap();
     }
     hq.tick().unwrap();
-    let live = TaskId(
-        hq.snapshot().unwrap()["holodeck"]["league"]["games"][1]["task"]
-            .as_i64()
-            .expect("the rematch started"),
+    assert_eq!(
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "one game a pair: no rematch before a reset"
     );
 
     let reset = hq.reset_league().unwrap();
-    assert_eq!(reset["set_aside"], 2, "{reset}");
+    assert_eq!(reset["set_aside"], 1, "{reset}");
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
     assert_eq!(league["games"], json!([]), "{league}");
     assert!(
@@ -848,8 +849,7 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
             .all(|r| r["rating"] == 1200 && r["won"] == 0 && r["drawn"] == 0 && r["lost"] == 0),
         "{league}"
     );
-    // The game being played stops; the finished one and its moves stay in the record.
-    assert!(hq.store().task(live).unwrap().unwrap().status.finished());
+    // The finished game and its moves stay in the record.
     assert_eq!(
         hq.store().task(first).unwrap().unwrap().status,
         crate::domain::TaskStatus::Done
@@ -863,7 +863,7 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     );
     // The owner's list shows the games set aside as from before the reset, not as the new league's.
     let listed = hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    for game in [first, live] {
+    for game in [first] {
         let row = listed
             .as_array()
             .unwrap()
@@ -872,7 +872,7 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
             .unwrap_or_else(|| panic!("{listed}"));
         assert_eq!(row["round"], "before the league reset", "{row}");
     }
-    // And the league goes on: once the players' turns are over, the next pair sits down.
+    // And a new round starts: once the players' turns are over, the pair sits down again.
     for c in [&w, &b] {
         hq.runner().finish(c.run, true);
     }
@@ -880,7 +880,7 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     hq.tick().unwrap();
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
     assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
-    assert_ne!(league["games"][0]["task"], live.0);
+    assert_ne!(league["games"][0]["task"], first.0);
 }
 
 // The owner retired the Holodeck's other worlds (2026-10-30), the lighthouse and Silent Station,

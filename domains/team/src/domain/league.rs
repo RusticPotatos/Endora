@@ -38,9 +38,10 @@ pub struct Row {
     pub lost: u32,
 }
 
-/// The next game: the pair of different brains that has played least (finished or not), the
-/// earlier pair in `brains` on a tie; white is the one of the two that has had white less
-/// often against the other, the earlier brain on a tie. `None` with fewer than two brains.
+/// The next game: a pair of different brains that has not played yet (finished or not), the
+/// earlier pair in `brains` first; white is the earlier brain. `None` once every pair has
+/// played, or with fewer than two brains: one game a pair compares the models (the owner,
+/// 2026-10-30), and a reset, which sets the games aside, starts another round.
 #[must_use]
 pub fn next(brains: &[Brain], games: &[Played]) -> Option<(Brain, Brain)> {
     let mut best: Option<(usize, Brain, Brain)> = None;
@@ -55,7 +56,10 @@ pub fn next(brains: &[Brain], games: &[Played]) -> Option<(Brain, Brain)> {
             }
         }
     }
-    let (_, a, b) = best?;
+    let (least, a, b) = best?;
+    if least > 0 {
+        return None;
+    }
     let whites = |w: Brain, x: Brain| {
         games
             .iter()
@@ -170,12 +174,17 @@ mod tests {
     }
 
     #[test]
-    fn a_rematch_swaps_the_colours() {
+    fn once_every_pair_has_played_the_league_is_over() {
+        // The owner, 2026-10-30: one game a pair compares the models; more only costs. A reset
+        // (which sets the games aside) starts another round.
         let games = vec![game(Brain::Local, Brain::Mac, Some(100))];
-        assert_eq!(
-            next(&[Brain::Local, Brain::Mac], &games),
-            Some((Brain::Mac, Brain::Local))
-        );
+        assert_eq!(next(&[Brain::Local, Brain::Mac], &games), None);
+        let mut games = Vec::new();
+        while let Some((w, b)) = next(&ALL, &games) {
+            games.push(game(w, b, Some(50)));
+            assert!(games.len() <= 3, "{games:?}");
+        }
+        assert_eq!(games.len(), 3, "each of the three pairs once");
     }
 
     #[test]
