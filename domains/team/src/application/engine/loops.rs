@@ -1,8 +1,9 @@
 //! One team of loops (ADR 0142): every active project that is not a scenario world is a loop,
-//! working its plan (its tasks, by priority then age) one item at a time. A loop with nothing in
-//! hand gives its top item to the member at its starting rank, or the nearest one above it who is
-//! free to take work. Only members who are one model take part: until the owner sets the
-//! members' models, the team works as before.
+//! working its plan (its tasks, by priority then age), up to its items at once (two unless the
+//! owner says) in hand together. A loop with room gives its top item to the member at its
+//! starting rank, or the nearest one above it who is free to take work and holds none of its
+//! items. Only members who are one model take part: until the owner sets the members' models,
+//! the team works as before.
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
@@ -49,6 +50,22 @@ const START: u8 = Brain::BOTTOM;
 /// Where a loop's starting rank is kept.
 fn rank_key(project: ProjectId) -> String {
     format!("loop_rank:{}", project.0)
+}
+
+/// How many items a loop has in hand at once when the owner has not said (ADR 0142, amended
+/// 2026-10-30), and the most the owner may set.
+const ITEMS_AT_ONCE: u8 = 2;
+const ITEMS_AT_ONCE_MOST: u8 = 4;
+
+/// Where a loop's items at once are kept.
+fn items_key(project: ProjectId) -> String {
+    format!("loop_items:{}", project.0)
+}
+
+/// Whether an item is in hand: given to a member, and not yet in review or finished.
+fn in_hand(task: &Task) -> bool {
+    (task.assignee.is_some() || task.owner.is_some())
+        && matches!(task.status, TaskStatus::Todo | TaskStatus::Doing)
 }
 
 /// Whether a member takes part in the loops: it is one model, and free to take work.
@@ -156,6 +173,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .setting(&rank_key(project))?
             .and_then(|r| r.parse().ok())
             .unwrap_or(START))
+    }
+
+    /// The owner sets how many items a loop has in hand at once: 1 (one after another, as
+    /// before) to 4. Each goes to a different member.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a project that does not exist; [`Refusal::Scenario`] for a
+    /// number outside 1 to 4; a store failure.
+    pub fn set_loop_items(&self, project: ProjectId, items: u8) -> Done<()> {
+        let _held = self.held();
+        self.project(project)?;
+        if !(1..=ITEMS_AT_ONCE_MOST).contains(&items) {
+            return Err(EngineError::Refused(Refusal::Scenario(format!(
+                "a loop has from 1 to {ITEMS_AT_ONCE_MOST} items in hand at once"
+            ))));
+        }
+        self.store
+            .set_setting(&items_key(project), &items.to_string())?;
+        Ok(())
+    }
+
+    /// How many items a loop has in hand at once.
+    pub fn loop_items(&self, project: ProjectId) -> Done<u8> {
+        Ok(self
+            .store
+            .setting(&items_key(project))?
+            .and_then(|n| n.parse().ok())
+            .filter(|n| (1..=ITEMS_AT_ONCE_MOST).contains(n))
+            .unwrap_or(ITEMS_AT_ONCE))
     }
 
     /// The members who take part in the loops.
@@ -525,7 +571,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The loops' part of the tick: a paused member's items go one rank up, then each loop with
-    /// nothing in hand hands out its top item.
+    /// fewer items in hand than it has at once hands out its top items, each to a different
+    /// member at or nearest above its starting rank. A world's project is not a loop: its games
+    /// go one at a time, as the league sets them.
     pub(super) fn loops_tick(&self) -> Done<()> {
         let members: Vec<Member> = self
             .store
@@ -557,41 +605,48 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .iter()
                 .filter(|t| t.project == Some(project.id))
                 .collect();
-            let in_hand = plan.iter().any(|t| {
-                (t.assignee.is_some() || t.owner.is_some())
-                    && matches!(t.status, TaskStatus::Todo | TaskStatus::Doing)
-            });
-            if in_hand {
-                continue;
-            }
-            let Some(top) = plan
+            let at_once = usize::from(self.loop_items(project.id)?);
+            // Who holds the loop's items in hand now: the next goes to someone else.
+            let mut holding: Vec<MemberId> = plan
+                .iter()
+                .filter(|t| in_hand(t))
+                .filter_map(|t| t.owner.or(t.assignee))
+                .collect();
+            let mut held = plan.iter().filter(|t| in_hand(t)).count();
+            let mut waiting: Vec<&&Task> = plan
                 .iter()
                 .filter(|t| {
                     t.status == TaskStatus::Todo && t.assignee.is_none() && t.owner.is_none()
                 })
-                .min_by_key(|t| (t.priority, t.id.0))
-            else {
-                continue;
-            };
+                .collect();
+            waiting.sort_by_key(|t| (t.priority, t.id.0));
             let start = self.loop_rank(project.id)?;
-            // The member at the starting rank, or the nearest one above it.
-            let Some(member) = members
-                .iter()
-                .filter(|m| m.brain.rank() <= start)
-                .max_by_key(|m| (m.brain.rank(), std::cmp::Reverse(m.id.0)))
-            else {
-                continue;
-            };
-            self.store.set_assignee(top.id, Some(member.id))?;
-            self.post_held_lock(
-                super::Author::Endora,
-                top.id,
-                &format!(
-                    "{} takes this: the next item of the {} loop.",
-                    member.name, project.title
-                ),
-            )?;
-            self.wake_held_lock(member.id, Some(top.id), WakeReason::Assigned)?;
+            // The members at the starting rank or nearest above it, as many as the loop has
+            // items at once: an item never climbs further for want of a free member.
+            let mut near: Vec<&Member> =
+                members.iter().filter(|m| m.brain.rank() <= start).collect();
+            near.sort_by_key(|m| (std::cmp::Reverse(m.brain.rank()), m.id.0));
+            near.truncate(at_once);
+            for top in waiting {
+                if held >= at_once {
+                    break;
+                }
+                let Some(member) = near.iter().find(|m| !holding.contains(&m.id)) else {
+                    break;
+                };
+                self.store.set_assignee(top.id, Some(member.id))?;
+                self.post_held_lock(
+                    super::Author::Endora,
+                    top.id,
+                    &format!(
+                        "{} takes this: the next item of the {} loop.",
+                        member.name, project.title
+                    ),
+                )?;
+                self.wake_held_lock(member.id, Some(top.id), WakeReason::Assigned)?;
+                holding.push(member.id);
+                held += 1;
+            }
         }
         Ok(())
     }

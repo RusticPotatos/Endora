@@ -93,6 +93,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/projects/{id}/rank", post(loop_rank))
+        .route("/v1/projects/{id}/items", post(loop_items))
         .route("/v1/one-team", post(one_team))
         // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
@@ -916,6 +917,22 @@ async fn loop_rank(
     let hq = state.hq.clone();
     blocking(move || hq.set_loop_rank(ProjectId(id), req.rank)).await?;
     Ok(Json(json!({ "project": id, "rank": req.rank })))
+}
+
+#[derive(Deserialize)]
+struct LoopItems {
+    items: u8,
+}
+
+/// The owner sets how many items a loop has in hand at once, 1 to 4 (ADR 0142).
+async fn loop_items(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopItems>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_items(ProjectId(id), req.items)).await?;
+    Ok(Json(json!({ "project": id, "items": req.items })))
 }
 
 async fn project_tools(
