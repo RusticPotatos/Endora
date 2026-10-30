@@ -260,7 +260,7 @@ therefore measured together. Round 0's open items were set aside first (moved to
 | 4 | 916 | | | | | |
 | 5 | 917 | | | | | |
 | 6 | 918 | | | | | |
-| 7 | 919 | | | | | |
+| 7 | 919 | Yes (TheRARBG, The Pirate Bay, YTS from both apps; Prowlarr's own HTTP/2 and DNS-SSL failures, not a rate limit; DNS/IPv6 change; nothing changed. Dex sent Rae's first cause back) | $0.07 | 341 min | 1 | |
 | 8 | 920 | | | | | |
 | 9 | 921 | | | | | |
 | 10 | 922 | | | | | |
