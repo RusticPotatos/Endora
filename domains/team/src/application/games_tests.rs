@@ -204,6 +204,38 @@ fn every_role_is_offered_the_chess_tool() {
     }
 }
 
+/// Whether HQ marks `name` as one the turn is to be offered up front, before any search (ADR
+/// 0142, amended 2026-10-30): the house's worker starts with a small core and finds the rest.
+fn up_front_in(hq: &Hq<'_>, context: &RunContext, name: &str) -> bool {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name)
+        .is_some_and(|t| t["_meta"][super::protocol::UP_FRONT] == true)
+}
+
+/// A move is a downtime turn's whole point: behind a search, no move was ever made (25 Oct).
+/// Any other turn finds the game when it wants it.
+#[test]
+fn the_chess_tool_is_up_front_in_a_downtime_turn_and_found_in_any_other() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, true, false);
+    let t = team(&hq);
+    hq.tick().unwrap();
+    let ada = downtime_for(&hq, &clock, t.ada);
+    assert!(up_front_in(&hq, &ada, "chess"), "a downtime turn");
+    assert!(
+        !up_front_in(&hq, &ada, "post"),
+        "HQ marks the kind's tools alone"
+    );
+    let at_work = engine(&clock, false, false);
+    let t = team(&at_work);
+    let bo = mention_turn(&at_work, t.bo);
+    assert!(!up_front_in(&at_work, &bo, "chess"), "a turn of work");
+}
+
 #[test]
 fn a_member_challenges_another_in_a_downtime_turn_and_the_game_begins() {
     let clock = Hands(AtomicI64::new(START));

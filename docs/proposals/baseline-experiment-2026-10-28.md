@@ -262,6 +262,12 @@ A round is kept when it raises acceptance without raising cost or interventions 
 gain is worth; otherwise it is reverted and the next rung is tried. Rounds 1 and 2 were made
 together on 30 Oct at the owner's request, so round 1's re-run measures both.
 
+Since rungs 1 and 2 are measured together, rung 4, **context sized to the turn**, moved up to be
+round 2 (30 Oct; ADR 0142's amendment of that date): a house turn starts with HQ's core and what
+its kind needs and finds the rest by name, the tools say their rules in fewer words, and a log is
+40 lines and 6 KB on the house's models unless the turn asks for more. Measured offline, a chess
+move's three calls went from about 9,700 tokens to 6,200.
+
 ## Rounds after the baseline
 
 The bar is round 0's arm A (Claude Code, 10 of 10). Each round re-runs the same ten tasks on HQ

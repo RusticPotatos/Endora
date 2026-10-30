@@ -379,7 +379,7 @@ async fn called(
         HOMELAB_STATUS => Ok(homelab_status(&state2)),
         HOMELAB_MAP => homelab_map(&state2),
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
-        CONTAINER_LOGS => container_logs(&state2, &args),
+        CONTAINER_LOGS => container_logs(&state2, &turn, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
         REPO_CHECKOUT => repo_checkout(&state2, &turn, &args),
         REPO_SUBMIT => repo_submit(&state2, &turn, &args),
@@ -1280,14 +1280,30 @@ fn container_named(
     Ok((id.to_owned(), name))
 }
 
-/// `container_logs`: the newest lines of a container's log, scrubbed of secrets.
-fn container_logs(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+/// `container_logs`: the newest lines of a container's log, scrubbed of secrets. A turn on the
+/// house's own model (the NAS's or the Mac, `cloud` false) reads fewer unless it asks with
+/// `lines` (ADR 0142, amended 2026-10-30), and is told how to ask when some were left out.
+fn container_logs(
+    state: &AppState,
+    turn: &Turn,
+    args: &serde_json::Value,
+) -> Result<Done, Refused> {
     let (id, name) = container_named(state, args)?;
     let read = state.console.read("logs", &id).map_err(portainer)?;
     let scrubbed = endora_capabilities::scrub_secrets(read["summary"].as_str().unwrap_or(""));
-    let log = contracts::newest_of(&scrubbed);
+    let asked = args["lines"].as_u64();
+    let (lines, bytes) = contracts::log_size(!turn.cloud, asked);
+    let log = contracts::newest_within(&scrubbed, lines, bytes);
+    let shown = log.lines().count();
+    let left_out = scrubbed.lines().count() > shown;
     let text = if log.trim().is_empty() {
         format!("{name}'s log is empty.")
+    } else if left_out && asked.is_none() && !turn.cloud {
+        format!(
+            "The newest {shown} lines of {name}'s log, with secrets replaced by [redacted] (older \
+             lines left out: ask with `lines`, up to {}, for more):\n{log}",
+            contracts::LOG_LINES
+        )
     } else {
         format!("The newest lines of {name}'s log, with secrets replaced by [redacted]:\n{log}")
     };
@@ -1937,6 +1953,78 @@ mod tests {
                 .contains("direct the lead of the task's area"),
             "{said}"
         );
+    }
+
+    /// The node with HQ knowing one turn of a lead (token `good`), as HQ says it (`turn`'s
+    /// fields beside its run, member and role), and a lab whose sonarr log is 150 lines long.
+    fn with_a_long_log(turn: serde_json::Value) -> AppState {
+        use super::super::relay::tests::fake;
+        let (hq_url, _) = fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => {
+                let mut said = json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0 });
+                for (k, v) in turn.as_object().unwrap() {
+                    said[k] = v.clone();
+                }
+                (200, "application/json", said.to_string())
+            }
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        let long: Vec<String> = (0..150).map(|i| format!("10:00 line {i:03}")).collect();
+        state.console = Arc::new(Lab {
+            containers: lab().containers.clone(),
+            log: long.join("\n"),
+            acted: Mutex::new(Vec::new()),
+        });
+        state
+    }
+
+    /// A turn on the house's own model (the NAS's or the Mac) reads a log's newest 40 lines and
+    /// at most 6 KB, and is told how to ask for more: one 16 KB log was a quarter of what the
+    /// Mac reads in a turn before its relay times out (ADR 0142, amended 2026-10-30). Asked, it
+    /// reads up to 100, as a Claude turn always does. The size is never a way past HQ's
+    /// narrowing: a turn not given the log is refused it, however much it asks for.
+    #[tokio::test]
+    async fn a_house_turn_reads_a_shorter_log_unless_it_asks_and_a_claude_turn_reads_it_all() {
+        let read = |state: AppState, args: serde_json::Value| async move {
+            let (status, said) = use_contract(&state, "container_logs", args).await;
+            (status, said["text"].as_str().unwrap_or("").to_owned())
+        };
+        let sonarr = json!({ "container": "sonarr" });
+        for brain in ["local", "mac"] {
+            let house = || with_a_long_log(json!({ "cloud": false, "brain": brain }));
+            let (status, text) = read(house(), sonarr.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            assert!(
+                text.contains("line 149") && text.contains("line 110"),
+                "{brain}: {text}"
+            );
+            assert!(!text.contains("line 109"), "{brain}: 40 lines: {text}");
+            assert!(text.contains("`lines`"), "{brain}: told how to ask: {text}");
+            let (_, more) = read(house(), json!({ "container": "sonarr", "lines": 100 })).await;
+            assert!(
+                more.contains("line 050") && !more.contains("line 049"),
+                "{brain}: {more}"
+            );
+            let (_, fewer) = read(house(), json!({ "container": "sonarr", "lines": 5 })).await;
+            assert!(
+                fewer.contains("line 145") && !fewer.contains("line 144"),
+                "{brain}: {fewer}"
+            );
+        }
+        let claude = with_a_long_log(json!({ "cloud": true, "brain": "claude-sonnet-5-5" }));
+        let (_, text) = read(claude, sonarr.clone()).await;
+        assert!(
+            text.contains("line 050") && !text.contains("line 049"),
+            "today's 100 lines: {text}"
+        );
+        assert!(!text.contains("`lines`"), "{text}");
+        let narrowed = with_a_long_log(
+            json!({ "cloud": false, "brain": "local", "only": ["homelab_status"] }),
+        );
+        let (status, said) = read(narrowed, json!({ "container": "sonarr", "lines": 100 })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
     }
 
     #[tokio::test]

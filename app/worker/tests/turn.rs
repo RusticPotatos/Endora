@@ -135,6 +135,11 @@ fn hq(stopped: Option<&'static str>) -> (String, Seen) {
 
 /// The same, and with `moves`, `set_status` does what it is asked, as HQ says it.
 fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
+    hq_listing(tools(), stopped, moves)
+}
+
+/// The same, listing `listed` as the turn's tools.
+fn hq_listing(listed: Value, stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         let id = sent.body["id"].clone();
         let tool = sent.body["params"]["name"].as_str().unwrap_or("");
@@ -151,7 +156,7 @@ fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
                 "serverInfo": { "name": "endora-hq", "version": "0" },
             }),
             m if m.starts_with("notifications/") => return (202, String::new()),
-            "tools/list" => json!({ "tools": tools() }),
+            "tools/list" => json!({ "tools": listed }),
             "tools/call" => {
                 let (text, refused) = match tool {
                     "my_turn" => (BRIEFING, false),
@@ -2206,30 +2211,35 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
             .collect()
     };
     let first = names(0);
+    // HQ's core, and, on a turn with a task, the lab's container tools the instructions name
+    // (ADR 0142, amended 2026-10-30), and ask_owner, which this fake HQ does not list.
     for core in [
         "my_turn",
         "claim",
         "post",
         "set_status",
         "homelab_status",
-        // The game a turn is woken to move in is offered up front: behind a search, no move was
-        // ever made.
-        "chess",
+        "container_logs",
+        "restart_container",
         "find_tools",
     ] {
         assert!(first.iter().any(|n| n == core), "{core} missing: {first:?}");
     }
-    for later in ["sonarr_queue", "ha_lights", "web_search", "plex_sessions"] {
+    // The game is up front only where HQ marks it (a downtime turn); a turn of work finds it.
+    for later in [
+        "sonarr_queue",
+        "ha_lights",
+        "web_search",
+        "plex_sessions",
+        "chess",
+        "consult",
+    ] {
         assert!(
             !first.iter().any(|n| n == later),
             "{later} offered up front: {first:?}"
         );
     }
-    assert!(
-        first.len() <= 11,
-        "the first call offers {} tools",
-        first.len()
-    );
+    assert_eq!(first.len(), 8, "the first call offers {first:?}");
     let second = names(1);
     assert!(second.iter().any(|n| n == "sonarr_queue"), "{second:?}");
     assert!(!second.iter().any(|n| n == "ha_lights"), "{second:?}");
@@ -2237,6 +2247,125 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
     assert!(
         found.contains("sonarr_queue"),
         "the model is told what was added: {found}"
+    );
+}
+
+/// HQ's tools with `marked` carrying HQ's mark for a tool the turn is offered up front.
+fn tools_marking(marked: &str) -> Value {
+    let mut listed = tools();
+    for tool in listed.as_array_mut().unwrap() {
+        if tool["name"] == marked {
+            tool["_meta"] = json!({ "endora/up_front": true });
+        }
+    }
+    listed
+}
+
+/// What HQ marks for the turn's kind is offered up front (a downtime turn's game, a review
+/// turn's verdict, a match's tool), and the mark itself never reaches the model.
+#[test]
+fn a_house_turn_is_offered_up_front_what_hq_marks_for_its_kind() {
+    let (hq_url, _) = hq_listing(tools_marking("chess"), None, false);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![(200, says("Played."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let first = to_model.lock().unwrap()[0].body["tools"].clone();
+    assert!(
+        first
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["function"]["name"] == "chess"),
+        "{first}"
+    );
+    assert!(!first.to_string().contains("up_front"), "{first}");
+}
+
+/// The guard under on-demand tools: `find_tools` brings in only what HQ and the node listed for
+/// this turn, which is where every narrowing is applied (a project's list, a task that leaves the
+/// lab as it is, the Restricted tier, the NAS's keep from desk-ending tools). A name the turn was
+/// not offered is said to be none of its tools and is never added; calling it anyway reaches no
+/// tool of the node's, and HQ refuses what it does not have.
+#[test]
+fn find_tools_brings_in_only_the_tools_this_turn_was_listed() {
+    let (hq_url, to_hq) = hq(None);
+    // The node withholds the restart (a task that leaves the lab as it is).
+    let mut listed = many_contracts();
+    listed
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["name"] != "restart_container");
+    let (node_url, to_node) = node(listed, None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[(
+                "c1",
+                "find_tools",
+                r#"{"names":["sonarr_queue","restart_container","restricted_mail"]}"#,
+            )]),
+        ),
+        (
+            200,
+            calls(&[(
+                "c2",
+                "find_tools",
+                r#"{"query":"restart container restricted mail"}"#,
+            )]),
+        ),
+        (
+            200,
+            calls(&[(
+                "c3",
+                "restart_container",
+                r#"{"container":"sonarr","why":"it is stuck"}"#,
+            )]),
+        ),
+        (200, says("Read the queue.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_model = to_model.lock().unwrap().clone();
+    let names = |i: usize| -> Vec<String> {
+        to_model[i].body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    for i in 0..to_model.len() {
+        let offered = names(i);
+        assert!(
+            !offered
+                .iter()
+                .any(|n| n == "restart_container" || n == "restricted_mail"),
+            "call {i} offers {offered:?}"
+        );
+    }
+    assert!(
+        names(1).iter().any(|n| n == "sonarr_queue"),
+        "{:?}",
+        names(1)
+    );
+    let told = to_model[1].body["messages"].to_string();
+    assert!(
+        told.contains("Not among this turn's tools, and never added: restart_container"),
+        "{told}"
+    );
+    assert!(
+        !to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path.ends_with("/restart_container")),
+        "the node is never asked for a tool it did not list"
+    );
+    assert!(
+        methods(&to_hq).contains(&"tools/call restart_container".to_owned()),
+        "it goes to HQ, which refuses a tool it does not have"
     );
 }
 

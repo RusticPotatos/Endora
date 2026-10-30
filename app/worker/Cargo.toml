@@ -28,6 +28,9 @@ base64 = "0.22"
 # The briefing the worker reads its task from is written by the team engine: a test reads a
 # real one, so a change to its shape fails there instead of quietly losing a turn's last word.
 endora-team = { path = "../../domains/team" }
+# The node's real contracts, so a test measures a turn's first call as the model reads it
+# (ADR 0142, amended 2026-10-30: context sized to the turn).
+endora-capabilities = { path = "../../domains/capabilities" }
 
 [lints]
 workspace = true

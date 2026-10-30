@@ -664,3 +664,78 @@ fn measure_tool_descriptions() {
         );
     }
 }
+
+/// The tools a house turn starts with are read on every call by a slow model (ADR 0142, amended
+/// 2026-10-30): each says its rules, briefly. Every rule is still said; the words around them
+/// are fewer.
+#[test]
+fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
+    let all = tools();
+    let tool = |name: &str| {
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    for (name, most, rules) in [
+        ("my_turn", 300, &["first"][..]),
+        ("claim", 300, &["Refused if another member has it"][..]),
+        (
+            "post",
+            1050,
+            &[
+                "A mention hands no work on",
+                "cites its evidence",
+                "marked unsupported",
+                "restart is coming",
+                "1,200 characters",
+                "ends your turn",
+            ][..],
+        ),
+        (
+            "set_status",
+            1200,
+            &[
+                "in_review",
+                "a reading this turn",
+                "one rank up re-checks it",
+                "close as done yourself",
+                "met_criteria",
+                "superseded",
+                "not_needed",
+                "not evidence",
+            ][..],
+        ),
+        (
+            "ask_owner",
+            650,
+            &[
+                "only what the owner alone decides",
+                "money beyond the caps",
+                "ends your turn",
+                "a rank up on its own",
+            ][..],
+        ),
+        (
+            "chess",
+            700,
+            &[
+                "board",
+                "san",
+                "refused if illegal",
+                "challenge",
+                "One game each",
+                "never on Claude",
+            ][..],
+        ),
+    ] {
+        let said = tool(name);
+        let text = said.to_string();
+        assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
+        for rule in rules {
+            assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+        }
+    }
+}

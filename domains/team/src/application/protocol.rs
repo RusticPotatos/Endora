@@ -40,9 +40,8 @@ fn reason_arg(args: &Value, sending_back: bool) -> Result<Option<SendBackReason>
 }
 
 /// What counts as evidence, as every tool that takes it says (ADR 0114).
-const WHAT_COUNTS: &str = "Evidence is ids from HQ's record: receipts (r12) of your Endora \
-    tool calls, which each tool result names, task numbers (task 12) and event ids (event \
-    340). A model's word is not evidence; a reading is.";
+const WHAT_COUNTS: &str = "Ids from HQ's record: receipts (r12) your tool results name, tasks \
+    (task 12), events (event 340). A model's word is not evidence; a reading is.";
 
 /// An `evidence` parameter: one list of ids per criterion, in order (or one id each).
 fn per_criterion(what: &str) -> Value {
@@ -52,7 +51,7 @@ fn per_criterion(what: &str) -> Value {
             { "type": "string" },
             { "type": "array", "items": { "type": "string" } },
         ] },
-        "description": format!("{what} One list per criterion of the task, in order. {WHAT_COUNTS}"),
+        "description": format!("{what} One list per criterion, in order. {WHAT_COUNTS}"),
     })
 }
 
@@ -154,10 +153,18 @@ fn criteria_arg(args: &Value) -> Vec<Criterion> {
 fn drain_handover_schema() -> Value {
     let mut schema = super::protocol_world::handover_schema();
     schema["description"] = json!(
-        "Only when your turn says a restart is coming: your note for your next turn on this \
-         task, each part said, all of it at most 1,200 characters. Posting it ends your turn; \
-         the task stays yours."
+        "Only when your turn says a restart is coming: a note for your next turn here, each \
+         part said, at most 1,200 characters in all. Posting it ends your turn; the task stays \
+         yours."
     );
+    // Each part's name says what it holds: a turn reads this on every call, a drain is rare.
+    if let Some(parts) = schema["properties"].as_object_mut() {
+        for part in parts.values_mut() {
+            if let Some(part) = part.as_object_mut() {
+                part.remove("description");
+            }
+        }
+    }
     schema
 }
 
@@ -229,14 +236,14 @@ pub fn tools() -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. A mention hands no work to anyone. A finding cites its evidence; a post with none, in a turn with no receipts, is marked unsupported.",
-            json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything."), "handover": drain_handover_schema() }),
+            "Write in a task's thread (yours, one under or above it, or one naming you): what you did, found or need. A mention hands no work on. A finding cites its evidence; without any, in a turn with no receipts, it is marked unsupported.",
+            json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What it rests on."), "handover": drain_handover_schema() }),
             &["task", "text"]
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. in_review cites evidence for each criterion (a live one: a reading from this turn); the member one rank up re-checks it, which is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. For done, why: met_criteria, or superseded (name the successor) or not_needed.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done: why it is done" }, "successor": { "type": "integer", "description": "for superseded: the task that carries the work on, which superseded needs" } }),
+            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); the member one rank up re-checks it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done" }, "successor": { "type": "integer", "description": "for superseded: the task carrying the work on" } }),
             &["task", "status", "reason"]
         ),
         tool(
@@ -247,7 +254,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, or taste). Asking ends your turn; you are woken with the answer. Everything else you decide yourself; work that keeps failing goes a rank up on its own.",
+            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: work that keeps failing goes a rank up on its own.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -281,9 +288,20 @@ fn review_tool() -> Value {
     let task = json!({ "type": "integer", "description": "the task's number" });
     json!({
         "name": "review",
-        "description": "Your verdict on work in review, one rank up, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn; send_back returns it to its owner with exactly what does not hold. Sending back is a finished review too. Never your own work.",
+        "description": "Your verdict on work in review, one rank up, once your own readings confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of yours this turn; send_back returns it with exactly what does not hold, and is a finished review too. Never your own work.",
         "inputSchema": { "type": "object", "properties": { "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "reason": reason_schema(), "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }, "required": ["task", "verdict", "notes"] },
     })
+}
+
+/// The mark (MCP's `_meta`) on a tool a turn is to be offered up front: what the turn's kind
+/// is for (ADR 0142, amended 2026-10-30). A worker on a house model starts with HQ's core and
+/// these, and finds the rest by name or search. The mark grants nothing: every call is decided
+/// here, as before.
+pub const UP_FRONT: &str = "endora/up_front";
+
+/// Marks `tool` as one the turn is offered up front.
+fn up_front(tool: &mut Value) {
+    tool["_meta"] = json!({ UP_FRONT: true });
 }
 
 /// The tools one turn is offered (what `tools/list` answers): its member's role's, and, in the
@@ -301,13 +319,20 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(list) = all.as_array_mut() else {
         return all;
     };
-    // In the loops, the member one rank up reviews (ADR 0142): its review turn has the tool.
-    let reviewing = engine
+    let woken_for = engine
         .store()
         .wake(run.wake)
         .ok()
         .flatten()
-        .is_some_and(|w| w.reason == crate::domain::WakeReason::ReviewRequested);
+        .map(|w| w.reason);
+    // A downtime turn is for a move (ADR 0119): its game is up front.
+    if woken_for == Some(crate::domain::WakeReason::Downtime) {
+        if let Some(chess) = list.iter_mut().find(|t| t["name"] == "chess") {
+            up_front(chess);
+        }
+    }
+    // In the loops, the member one rank up reviews (ADR 0142): its review turn has the tool.
+    let reviewing = woken_for == Some(crate::domain::WakeReason::ReviewRequested);
     if reviewing {
         if let Some(task) = run.task.and_then(|t| engine.store().task(t).ok().flatten()) {
             if engine
@@ -316,13 +341,17 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .flatten()
                 .is_some_and(|r| r.id == member.id)
             {
-                list.push(review_tool());
+                let mut review = review_tool();
+                up_front(&mut review);
+                list.push(review);
             }
         }
     }
     // A match's turn plays it with its tool (ADR 0135).
     if let Ok(Some(_)) = engine.scenario_kind_of_run(run.id) {
-        list.push(super::scenario_tool::tool());
+        let mut play = super::scenario_tool::tool();
+        up_front(&mut play);
+        list.push(play);
     }
     // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
     // the work of a project that lists its tools, those four and the list (the Holodeck plan's
