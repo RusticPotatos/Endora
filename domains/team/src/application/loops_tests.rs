@@ -535,6 +535,62 @@ fn turns_that_show_nothing_are_one_of_the_items_failures() {
     assert_eq!(now.owner.or(now.assignee), Some(f.bo));
 }
 
+/// A turn the system ended (refused by the relay, timed out, failed) says nothing of the
+/// member's work, so it is not one of the item's failures. Baseline 28 Oct: 31 of Mara's
+/// refused turns were labelled empty and counted, so escalation climbed for the relay's sake.
+///
+/// Given Bo's item,
+/// when two of Bo's turns on it fail before showing anything, then one of its own shows nothing,
+/// then the item has no failure and is still Bo's.
+#[test]
+fn a_turn_the_system_ended_is_not_the_items_failure() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    for _ in 0..2 {
+        clock.0.fetch_add(10 * 60_000, Ordering::SeqCst);
+        hq.wake(f.bo, Some(fix), WakeReason::OwnerReplied).unwrap();
+        // Every try of the turn fails, until it has no retries left.
+        for _ in 0..6 {
+            hq.tick().unwrap();
+            for c in hq.runner().started() {
+                hq.runner().finish(c.run, c.member != f.bo);
+            }
+            clock.0.fetch_add(5 * 60_000, Ordering::SeqCst);
+        }
+        hq.tick().unwrap();
+    }
+    let failed = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.member == f.bo && r.status == crate::domain::RunStatus::Failed)
+        .count();
+    assert!(failed >= 2, "{failed} turns failed for good");
+    // Then one turn of Bo's own that shows nothing: it is the first, not the third.
+    clock.0.fetch_add(10 * 60_000, Ordering::SeqCst);
+    hq.wake(f.bo, Some(fix), WakeReason::OwnerReplied).unwrap();
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": fix.0, "text": "Looking." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    assert_eq!(hq.loop_failures(fix).unwrap(), 0);
+    let now = hq.store().task(fix).unwrap().unwrap();
+    assert_eq!(now.owner.or(now.assignee), Some(f.bo));
+}
+
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.
 ///
 /// Given Bo's item,
@@ -585,6 +641,26 @@ fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
             && d.text.contains("every rank")),
         "{desk:?}"
     );
+    // Baseline 28 Oct: the item stayed doing with Mara, so its loop handed out nothing else and
+    // the same notice came back every half hour. It is blocked and let go instead, once.
+    let found = hq.store().tasks().unwrap();
+    let found = found.iter().find(|t| t.id == hard).unwrap();
+    assert_eq!(found.status, TaskStatus::Blocked);
+    assert_eq!(found.assignee, None);
+    let next = item(&hq, &f, "Pin the homepage image", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, next), Some(f.bo), "the loop moves on");
+    for _ in 0..6 {
+        hq.loop_failed(hard).unwrap();
+    }
+    let notices = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.task == Some(hard))
+        .count();
+    assert_eq!(notices, 1, "told once");
 }
 
 /// Today's team of eight, with roles, routines and work, as production has it.

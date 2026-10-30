@@ -399,8 +399,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.set_setting(&failures_key(task), "0")?;
         let members = self.loop_members()?;
         let Some(up) = Self::one_rank_up(&members, holder.brain.rank()) else {
+            // Blocked and let go, so its loop hands out its next item and nobody is woken to
+            // fail it again (the baseline of 28 Oct: it stayed doing and stalled its loop).
+            self.store.release(task)?;
+            self.store.set_assignee(task, None)?;
+            self.store.set_task_status(task, TaskStatus::Blocked)?;
             let text = format!(
-                "{} failed at every rank, Mara's last: {}. Its thread says what was tried.",
+                "{} failed at every rank, Mara's last: {}. It is blocked and its loop has moved \
+                 on; its thread says what was tried.",
                 found.title, holder.name
             );
             self.store

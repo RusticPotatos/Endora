@@ -92,6 +92,17 @@ pub const fn most_a_turn(role: Role) -> Micros {
     }
 }
 
+/// The most one turn of a member in `role` thinking with `brain` may spend: since one team
+/// (ADR 0142) has no CEO, the member who thinks with Opus has the CEO's dollar, as the relay
+/// gives it.
+#[must_use]
+pub const fn most_a_turn_of(role: Role, brain: Brain) -> Micros {
+    if matches!(brain, Brain::Opus) {
+        return CEO_MOST_A_TURN;
+    }
+    most_a_turn(role)
+}
+
 /// The day a moment falls on, as days since the epoch, by the owner's clock.
 #[must_use]
 pub const fn day_of(at: Millis, offset_minutes: i64) -> i64 {
@@ -245,6 +256,10 @@ mod tests {
             reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo), LEAST_A_TURN),
             Some(DOLLAR)
         );
+        // One team (ADR 0142) has no CEO: the member who thinks with Opus has its dollar.
+        assert_eq!(most_a_turn_of(Role::Developer, Brain::Opus), DOLLAR);
+        assert_eq!(most_a_turn_of(Role::Developer, Brain::Sonnet), MOST_A_TURN);
+        assert_eq!(most_a_turn_of(Role::Ceo, Brain::Sonnet), DOLLAR);
     }
 
     #[test]

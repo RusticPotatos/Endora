@@ -19,8 +19,8 @@ use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
     Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
-    betas_passed, cost, counted, for_claude_code, may_use, most_a_turn, price_of, prompt_cost,
-    send, send_local, unmetered,
+    betas_passed, cost, counted, for_claude_code, may_use_as, most_a_turn_as, price_of,
+    prompt_cost, send, send_local, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -451,11 +451,11 @@ pub(super) async fn messages(
             &format!("{model} is not a model the team may use"),
         );
     };
-    if let Err(why) = may_use(&turn.role, &model) {
+    if let Err(why) = may_use_as(&turn.role, &turn.brain, &model) {
         return refuse(StatusCode::FORBIDDEN, "permission_error", &why);
     }
     // Never more than the role's turn may spend (ADR 0111), whatever HQ says is left.
-    let left = turn.left.min(most_a_turn(&turn.role));
+    let left = turn.left.min(most_a_turn_as(&turn.role, &turn.brain));
     let spent = || {
         refuse(
             StatusCode::PAYMENT_REQUIRED,

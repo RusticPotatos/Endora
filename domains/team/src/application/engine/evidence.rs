@@ -623,7 +623,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .runs_of(task)?
             .into_iter()
-            .filter(|r| r.member == member && r.label.is_some())
+            // A turn the system ended (refused, timed out, failed) says nothing of the
+            // member's work, so it is not counted for or against it.
+            .filter(|r| r.member == member && r.label.is_some() && r.status == RunStatus::Succeeded)
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();

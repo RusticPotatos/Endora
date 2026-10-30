@@ -584,6 +584,34 @@ pub fn may_use(role: &str, model: &str) -> Result<(), String> {
     Err(format!("a {role} may not use {model}"))
 }
 
+/// Whether a model is Opus, the CEO's under ADR 0111 and the top rank's under ADR 0142.
+fn is_opus(model: &str) -> bool {
+    model == "claude-opus-5-5" || model.starts_with("claude-opus-5-5-")
+}
+
+/// [`most_a_turn`] for a member whose brain is `brain`: since one team (ADR 0142) has no CEO,
+/// the member who thinks with Opus has the dollar a turn the CEO had.
+#[must_use]
+pub fn most_a_turn_as(role: &str, brain: &str) -> i64 {
+    if is_opus(brain) {
+        return most_a_turn("ceo");
+    }
+    most_a_turn(role)
+}
+
+/// [`may_use`] for a member whose brain is `brain`: since one team (ADR 0142) the member who
+/// thinks with Opus may use it, and what the CEO could; every other member stays as its role
+/// allows, Opus refused.
+///
+/// # Errors
+/// Why not, said to the worker.
+pub fn may_use_as(role: &str, brain: &str, model: &str) -> Result<(), String> {
+    if is_opus(brain) {
+        return may_use("ceo", model);
+    }
+    may_use(role, model)
+}
+
 /// What to ask Anthropic to count before a call: the call's prompt, without what only a
 /// message takes (`max_tokens`, `stream`, sampling and the rest).
 #[must_use]
@@ -1276,5 +1304,21 @@ mod tests {
             may_use("", "claude-sonnet-5-5").is_err(),
             "no role, no model"
         );
+    }
+
+    #[test]
+    fn since_one_team_the_member_whose_brain_is_opus_thinks_with_it_at_the_dollar_cap() {
+        // ADR 0142: members are models, ranked; Mara is Opus and a plain member.
+        let opus = "claude-opus-5-5";
+        assert!(may_use_as("developer", opus, opus).is_ok());
+        assert!(
+            may_use_as("developer", opus, "claude-sonnet-5-5").is_ok(),
+            "cheaper is fine"
+        );
+        assert_eq!(most_a_turn_as("developer", opus), 1_000_000);
+        let why = may_use_as("developer", "claude-sonnet-5-5", opus).unwrap_err();
+        assert!(why.contains("Opus"), "{why}");
+        assert_eq!(most_a_turn_as("developer", "claude-sonnet-5-5"), 400_000);
+        assert!(may_use_as("researcher", "claude-haiku-5-5", "claude-sonnet-5-5").is_err());
     }
 }

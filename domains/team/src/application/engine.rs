@@ -555,7 +555,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<Option<Micros>> {
         let day = self.today();
         let pool_left = self.pool_left_today()?;
-        let mut most = money::most_a_turn(member.role);
+        let mut most = most_a_turn_for(member);
         if let Some(left) = self.project_left(project)? {
             most = most.min(left);
         }
@@ -1890,7 +1890,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn report_usage(&self, run: RunId, amount: Micros) -> Done<bool> {
         let _held = self.held();
         let mut current = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
-        let most = money::most_a_turn(self.member(current.member)?.role);
+        let most = most_a_turn_for(&self.member(current.member)?);
         let amount = amount.clamp(0, most);
         if current.status != RunStatus::Running {
             self.charge_late(current, amount)?;
@@ -3877,4 +3877,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn wakes(&self) -> Done<Vec<Wake>> {
         Ok(self.store.wakes()?)
     }
+}
+
+/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus in either
+/// seat (ADR 0142), its role's cap otherwise.
+fn most_a_turn_for(member: &Member) -> Micros {
+    money::most_a_turn_of(member.role, member.brain)
+        .max(money::most_a_turn_of(member.role, member.work_brain))
 }
