@@ -291,14 +291,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         thread: &[crate::application::history_ports::PostInput],
     ) -> Done<String> {
         let mut said = String::new();
-        let since = self
-            .store
-            .runs_of(task.id)?
-            .iter()
-            .filter(|r| r.member == member.id && r.id != run.id)
-            .filter_map(|r| r.started_at)
-            .max()
-            .unwrap_or(Millis::MIN);
+        let since = self.last_turn_on(member.id, run, task.id)?;
         for came_back in self.store.check_backs()?.iter().filter(|c| {
             c.member == member.id
                 && c.task == task.id
@@ -348,8 +341,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 )
             })
         });
-        Ok(asked
+        let asked = asked
             .map(|asked| format!("{}\n", asked.trim_end()))
-            .unwrap_or_default())
+            .unwrap_or_default();
+        // HQ's mechanical checks: in full unless the thread's news above already shows them.
+        let since = self.last_turn_on(run.member, run, task)?;
+        let shown: Vec<&str> = thread
+            .iter()
+            .filter(|p| p.post.at > since)
+            .map(|p| p.post.text.as_str())
+            .collect();
+        Ok(format!("{asked}{}", self.mechanical_said(task, &shown)?))
+    }
+
+    /// When a member's last turn on a task before this one started: what is new to it is
+    /// what came after.
+    fn last_turn_on(
+        &self,
+        member: crate::domain::MemberId,
+        run: &Run,
+        task: crate::domain::TaskId,
+    ) -> Done<Millis> {
+        Ok(self
+            .store
+            .runs_of(task)?
+            .iter()
+            .filter(|r| r.member == member && r.id != run.id)
+            .filter_map(|r| r.started_at)
+            .max()
+            .unwrap_or(Millis::MIN))
     }
 }

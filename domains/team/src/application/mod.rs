@@ -110,3 +110,6 @@ mod turn_kinds_tests;
 
 #[cfg(test)]
 mod loops_tests;
+
+#[cfg(test)]
+mod mechanical_tests;

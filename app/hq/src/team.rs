@@ -459,6 +459,12 @@ pub(crate) struct BranchTold {
     diff: String,
     #[serde(default)]
     can_push: bool,
+    /// Every file the branch changes; absent from an older node.
+    #[serde(default)]
+    changed: Vec<String>,
+    /// `[path, text]` at its head for HQ's mechanical checks; absent from an older node.
+    #[serde(default)]
+    texts: Vec<(String, String)>,
 }
 
 /// For the node's `repo_submit` (ADR 0115): a branch it took from a turn, recorded with its
@@ -481,6 +487,8 @@ pub(crate) async fn branch(
                 stat: req.stat,
                 diff: req.diff,
                 can_push: req.can_push,
+                changed: req.changed,
+                texts: req.texts,
             },
         )
     })
