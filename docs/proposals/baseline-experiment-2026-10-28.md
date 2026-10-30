@@ -82,7 +82,7 @@ Five fields per task per arm. Nothing more.
 | 5 | Yes | 79k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 6 | Yes | 85k tok | 4.1 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 7 | Yes (rule slip: one group_vars diff line shown, not used) | 82k tok | 6.1 min | 0 |  | No (changed the lab: two restarts) | $0.24 | ~9 h (ended 17:0x) | 4 |  |
-| 8 | | | | | | | | | | |
+| 8 | Yes (remove; 72 h with 0 restarts; rule slip: saw group_vars lines in a commit, not used) | 128k tok | 7.2 min | 0 |  | No (restarted gluetun on a read-only task: downloads down ~30 min; no branch) | $0 | not finished (2.6 h at 22:53; Rae's Mac turn timed out) | 1 |  |
 | 9 | Yes (nothing to take) | 59k tok | 0.7 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 | 10 | Yes | 89k tok | 3.3 min | 0 |  | No (never started: the plan stalled) | $0 | — | 0 |  |
 
@@ -144,6 +144,17 @@ Five fields per task per arm. Nothing more.
   network); task 9, upstream `main` is `36e2338`, already in the fork; task 10, 12 tests pass,
   29 warnings and no new failure.
 
+- 29 Oct, task 8: both arms started at 20:16 (eight minutes late; see defects). Arm A finished at
+  20:23 recommending remove, with the change on `exp/a-08` (`4d795cf3`, local). Checked: gluetun,
+  deluge and nzbget had run from 26 Oct 20:29 with 0 restarts across the window. Arm B: Bo (local)
+  reached the same recommendation at 20:4x and asked to close without a branch (answered with the
+  open criteria: one intervention); at 20:49 Bo restarted gluetun over DNS warnings, which left
+  deluge, nzbget and prowlarr without a network until the coordinator restarted them at 21:20. The
+  task then went to Rae (Mac), whose turn timed out at 22:42. Recorded at 22:53 as not accepted:
+  criterion 4 cannot be met after the restart.
+
+- **Result: Claude Code 10 of 10 accepted, HQ 1 of 10.** Ready for the owner's judgement.
+
 ## Defects found during the runs
 
 | When | Defect | Tasks affected | Fixed? (blocker only) |
@@ -155,6 +166,8 @@ Five fields per task per arm. Nothing more.
 | 28 Oct | A task that fails at the top rank stays "doing" with that member instead of leaving the loop, and posts the same notice every ~30 min (4833, 4835, 4837, 4838) | Arm B, tasks 5, 6, 9, 10 | No (owner: freeze) |
 | 28 Oct | Kit (Sonnet) woke every ~30 min with no task: 42 empty turns cost $0.82 of the $1.57 Kit spent that day; Kit then ran out for the day (desk 4846, declined) | None of the ten directly; it is money spent on nothing | No (freeze) |
 | 28 Oct | Creating a project still requires a lead with a "lead" or "CEO" role, which no member has since ADR 0142 | None of the ten (blocked a workaround) | No |
+| 29 Oct 20:49 | The restart tool is offered on read-only tasks, and restarting gluetun alone leaves the containers that share its network (deluge, nzbget, prowlarr) with no network: Bo restarted gluetun over DNS warnings, and downloads were down ~30 min until the coordinator restarted the three at 21:2x | Arm B, task 8 (criterion 4 failed; as task 7's restarts) | The lab outage was restored by hand (an operation, not a platform change); the tool defect is not fixed (freeze) |
+| 29 Oct | Harness: the coordinator's notice-clearing job stopped at the first failed desk call, so it cleared nothing all day (91 repeated notices piled up) and task 8 started 8 min late (20:16) | Task 8, both arms (start time only) | Fixed in the coordinator's script (skips a failed card) |
 
 ## Question 2: what HQ does that a session cannot
 
