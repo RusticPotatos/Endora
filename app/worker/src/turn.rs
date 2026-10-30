@@ -209,6 +209,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let Opening {
         mut talk,
         mut deferred,
+        mut rules_later,
     } = opening(
         setup.api,
         offered,
@@ -243,7 +244,10 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             let mut replies = Vec::new();
             for call in &said.calls {
                 if call.name == FIND_TOOLS {
-                    let (found, reply) = find(&mut deferred, &talk.offered(), &call.arguments);
+                    let (found, mut reply) = find(&mut deferred, &talk.offered(), &call.arguments);
+                    if let Some(rules) = rules_for_found(&found, &mut rules_later) {
+                        reply.text = format!("{}\n\nThe rules for these tools:{rules}", reply.text);
+                    }
                     talk.offer(&found);
                     replies.push((call.id.clone(), reply));
                     continue;
@@ -364,6 +368,22 @@ const FOUND_AT_MOST: usize = 5;
 struct Opening {
     talk: Talk,
     deferred: Vec<Value>,
+    /// The lab's rules, when its tools are left to be found: said once, with the reply that
+    /// brings the first of them in.
+    rules_later: Option<String>,
+}
+
+/// The rules to add to a `find_tools` reply: the lab's, the first time it brings in a lab or
+/// repo tool on a turn that was not told them up front.
+fn rules_for_found(found: &[Value], rules_later: &mut Option<String>) -> Option<String> {
+    let brings_lab = found.iter().any(|t| {
+        let name = t["name"].as_str().unwrap_or("");
+        LAB_TOOLS.contains(&name) || is_repo_tool(name)
+    });
+    if !brings_lab {
+        return None;
+    }
+    rules_later.take().filter(|r| !r.trim().is_empty())
 }
 
 /// Whether a house turn is offered `tool` in its first call: HQ's core, what HQ marks for the
@@ -440,7 +460,12 @@ fn opening(
     if claude_searches {
         talk.search_for_all_but(&CLAUDE_LOADS);
     }
-    Opening { talk, deferred }
+    let rules_later = lab_found_later.then(|| lab_rules(on_the_node));
+    Opening {
+        talk,
+        deferred,
+        rules_later,
+    }
 }
 
 fn find_tools_tool() -> Value {
@@ -554,46 +579,15 @@ fn search(deferred: &mut Vec<Value>, query: &str) -> (Vec<Value>, String) {
     (found, text)
 }
 
-/// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
-/// whether its last word goes in the task's thread for it; `on_the_node`, the tools the node
-/// offers it (the home lab's container tools among them are named as the turn's own: live, a
-/// lead on Claude offered `homelab_status` said three times that its tools could not read the
-/// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
-/// whether it tells the team's lessons as stories (`tell_story`); `shell`, whether it is in the
-/// workbench, with a shell.
-pub(crate) fn instructions(
-    posted: bool,
-    on_the_node: &[String],
-    lessons: bool,
-    shell: bool,
-) -> String {
-    let mut told = String::from(
-        "You are one member of a small team at Endora HQ, taking one turn of work. The first \
-         message is what my_turn says: who you are, your task, why it exists, and what is new \
-         in its thread. Read the thread: the owner may have told you something there.\n\
-         \n\
-         Take your turn in these steps:\n",
-    );
-    if shell {
-        told.push_str("1. Look: use the tools to find out what you need, the shell among them.\n");
-    } else {
-        told.push_str(
-            "1. Look: use the tools to find out what you need. You have no other way to see or \
-             do anything. You cannot run commands, ping, open files or browse: never offer to.\n",
-        );
-    }
-    told.push_str(
-        "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
-         from there.\n\
-         3. End the turn with exactly one of these: move the task on with set_status and say \
-         why; create sub-tasks for members below you when the work needs them; or put a \
-         concrete plan or question with ask_owner, which goes to whoever your briefing says \
-         is above you (asking ends your turn, and you are woken when they answer).",
-    );
+/// The home lab's rules, for a turn whose node tools include the lab's: said in the opening
+/// where those tools are up front, and with `find_tools`' reply where they are found later
+/// (review of 30 Oct: an idle house turn could bring in `restart_container` without them).
+fn lab_rules(on_the_node: &[String]) -> String {
     let lab: Vec<&str> = LAB_TOOLS
         .into_iter()
         .filter(|t| on_the_node.iter().any(|n| n == t))
         .collect();
+    let mut told = String::new();
     if !on_the_node.is_empty() {
         if lab.is_empty() {
             told.push_str("\n\nThe home lab tools are Endora's contracts:\n");
@@ -635,6 +629,46 @@ pub(crate) fn instructions(
         told.push_str("\n\n");
         told.push_str(&endora_kernel::lab::lab_built_paragraph());
     }
+    told
+}
+
+/// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
+/// whether its last word goes in the task's thread for it; `on_the_node`, the tools the node
+/// offers it (the home lab's container tools among them are named as the turn's own: live, a
+/// lead on Claude offered `homelab_status` said three times that its tools could not read the
+/// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
+/// whether it tells the team's lessons as stories (`tell_story`); `shell`, whether it is in the
+/// workbench, with a shell.
+pub(crate) fn instructions(
+    posted: bool,
+    on_the_node: &[String],
+    lessons: bool,
+    shell: bool,
+) -> String {
+    let mut told = String::from(
+        "You are one member of a small team at Endora HQ, taking one turn of work. The first \
+         message is what my_turn says: who you are, your task, why it exists, and what is new \
+         in its thread. Read the thread: the owner may have told you something there.\n\
+         \n\
+         Take your turn in these steps:\n",
+    );
+    if shell {
+        told.push_str("1. Look: use the tools to find out what you need, the shell among them.\n");
+    } else {
+        told.push_str(
+            "1. Look: use the tools to find out what you need. You have no other way to see or \
+             do anything. You cannot run commands, ping, open files or browse: never offer to.\n",
+        );
+    }
+    told.push_str(
+        "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
+         from there.\n\
+         3. End the turn with exactly one of these: move the task on with set_status and say \
+         why; create sub-tasks for members below you when the work needs them; or put a \
+         concrete plan or question with ask_owner, which goes to whoever your briefing says \
+         is above you (asking ends your turn, and you are woken when they answer).",
+    );
+    told.push_str(&lab_rules(on_the_node));
     if shell {
         told.push_str(
             "\n\nYou have a real shell in a disposable sandbox: run commands, git and \
@@ -1950,6 +1984,31 @@ impl<'a> Model<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_lab_tool_found_later_comes_with_the_labs_rules_once() {
+        // Review of 30 Oct: an idle house turn could bring in restart_container without the
+        // rules said with it up front ("look and diagnose first", "never work around a refusal").
+        let on_the_node: Vec<String> = ["homelab_status", "container_logs", "restart_container"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let mut later = Some(lab_rules(&on_the_node));
+        let other = vec![json!({ "name": "read_doc" })];
+        assert_eq!(
+            rules_for_found(&other, &mut later),
+            None,
+            "not for other tools"
+        );
+        let lab = vec![json!({ "name": "restart_container" })];
+        let rules = rules_for_found(&lab, &mut later).expect("the lab's rules");
+        assert!(
+            rules.contains("never try to work around a refusal"),
+            "{rules}"
+        );
+        assert!(rules.contains("look and diagnose first"), "{rules}");
+        assert_eq!(rules_for_found(&lab, &mut later), None, "said once");
+    }
+
     use super::*;
 
     use endora_team::application::{Author, Clock, Engine, NewTask, Settings};
