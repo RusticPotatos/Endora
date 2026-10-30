@@ -254,7 +254,7 @@ therefore measured together. Round 0's open items were set aside first (moved to
 
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
-| 1 | 913 | | | | | |
+| 1 | 913 | Yes (all 46 defaults with values, ports; pushed as `hq/task-913-readmes`) | $0.03 | 82 min | 0 | |
 | 2 | 914 | | | | | |
 | 3 | 915 | | | | | |
 | 4 | 916 | | | | | |
