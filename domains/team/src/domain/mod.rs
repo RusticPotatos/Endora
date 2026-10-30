@@ -23,6 +23,7 @@ pub mod league;
 pub mod lessons;
 pub mod mac;
 pub mod map;
+pub mod mechanical;
 pub mod money;
 pub mod names;
 pub mod office;
