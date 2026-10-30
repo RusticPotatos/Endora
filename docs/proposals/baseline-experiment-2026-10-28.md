@@ -214,3 +214,23 @@ Written now, before the results:
 - **Arm B is close on acceptance and cheaper or needs fewer interventions:** HQ keeps development
   work in its loops.
 - **Mixed:** split by task kind, using the table.
+
+**Amended 30 Oct by the owner, after the results.** The rule above read the comparison as a
+choice between the two arms. The owner's aim is different: Claude Code is the bar HQ is brought
+up to, and this baseline is round 0. So the result (10 of 10 against 1 of 10) does not move
+development out of HQ; it sets the gap, and each later round makes **one** change and re-runs the
+same ten tasks with the same five fields, so any movement can be put down to that change.
+
+The ladder, in order, each rung chosen from round 0's evidence:
+
+| Round | One change | Round-0 evidence it answers |
+|---|---|---|
+| 1 | Fix the design defects in the table above | Four tasks never started (a top-rank failure stalled the loop); rank 1 could not run; two read-only tasks restarted the lab |
+| 2 | A stronger bottom seat (qwen3.5:9b on the A2000, or DeepSeek Flash) | Most failures began in the first, weakest turn and were not recovered by climbing |
+| 3 | Tools fitted to the task | Task 3 lacked a registry lookup; the restart tool was on offer where it should not be |
+| 4 | Context sized to the turn | The Mac spends minutes reading prompts before answering (see the section above) |
+| 5 | Fewer handoffs | Every climb restarts the work in a new member's turn |
+
+A round is kept when it raises acceptance without raising cost or interventions more than the
+gain is worth; otherwise it is reverted and the next rung is tried. Rounds 1 and 2 were made
+together on 30 Oct at the owner's request, so round 1's re-run measures both.
