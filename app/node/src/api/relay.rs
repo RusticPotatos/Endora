@@ -20,7 +20,7 @@ use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
     Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
     betas_passed, cost, counted, for_claude_code, may_use_as, most_a_turn_as, price_of,
-    prompt_cost, send, send_local, unmetered,
+    prompt_cost, send, send_local, send_metered, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -915,7 +915,12 @@ pub(super) async fn chat_completions(
             call.remove("reasoning_effort");
         }
         let sent = serde_json::Value::Object(call).to_string().into_bytes();
-        let (status, bytes) = send_local(&local.url, &local.key, &sent)?;
+        // DeepSeek is metered and leaves the house; everything else here is free and stays.
+        let (status, bytes) = if on_deepseek {
+            send_metered(&local.url, &local.key, &sent)?
+        } else {
+            send_local(&local.url, &local.key, &sent)?
+        };
         if status < 300 {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                 if on_deepseek {
@@ -945,7 +950,13 @@ pub(super) async fn chat_completions(
             "api_error",
             &format!(
                 "the {} did not answer: {why}",
-                if on_the_mac { "Mac" } else { "local model" }
+                if on_the_mac {
+                    "Mac"
+                } else if on_deepseek {
+                    "DeepSeek model"
+                } else {
+                    "local model"
+                }
             ),
         ),
         Err(_) => refuse_openai(StatusCode::BAD_GATEWAY, "api_error", "the relay failed"),

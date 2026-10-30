@@ -107,6 +107,24 @@ pub fn send_local(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), 
     if !crate::model_server::reaches_only_the_house(base) {
         return Err(format!("{base} is not on the house's network"));
     }
+    post_chat(base, key, body)
+}
+
+/// Sends a metered OpenAI-shaped call (a DeepSeek member's, charged to HQ by the caller) to
+/// `base`: out of the house only over HTTPS, or to an endpoint on the house's network.
+///
+/// # Errors
+/// `base` is neither, the endpoint could not be reached, or its reply was longer than
+/// [`LARGEST_LOCAL_REPLY`].
+pub fn send_metered(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    if !base.starts_with("https://") && !crate::model_server::reaches_only_the_house(base) {
+        return Err(format!("{base} is reached over https only"));
+    }
+    post_chat(base, key, body)
+}
+
+/// Posts `body` to `base`'s chat completions, with `key` if any, and reads the whole reply.
+fn post_chat(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(LONGEST_CALL))
         .http_status_as_error(false)
@@ -1334,6 +1352,20 @@ mod tests {
             may_use("", "claude-sonnet-5-5").is_err(),
             "no role, no model"
         );
+    }
+
+    #[test]
+    fn a_metered_call_leaves_the_house_only_over_https_and_a_free_one_never() {
+        // Live, 30 Oct: Dex's first DeepSeek turn was refused by the local relay's fence.
+        assert!(
+            send_local("https://api.deepseek.com/v1", "", b"{}")
+                .unwrap_err()
+                .contains("not on the house's network")
+        );
+        let refused = send_metered("http://api.deepseek.com/v1", "", b"{}").unwrap_err();
+        assert!(refused.contains("https"), "{refused}");
+        let refused = send_metered("ftp://example.com/v1", "", b"{}").unwrap_err();
+        assert!(refused.contains("https"), "{refused}");
     }
 
     #[test]
