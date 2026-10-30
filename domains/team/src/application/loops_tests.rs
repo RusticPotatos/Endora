@@ -233,10 +233,11 @@ fn assignee(hq: &Hq<'_>, task: TaskId) -> Option<MemberId> {
     hq.store().task(task).unwrap().unwrap().assignee
 }
 
-/// A loop works its plan one item at a time, from the top, and gives it to the member at its
-/// starting rank: Bo, on the house's model, unless the loop says otherwise (ADR 0142).
+/// A loop works its plan from the top, and gives it to the member at its starting rank: Bo,
+/// on the house's model, unless the loop says otherwise (ADR 0142). Set to one item at a time,
+/// it works as it did before items ran side by side.
 ///
-/// Given a loop with two items on its plan, the second more urgent,
+/// Given a loop of one item at a time with two items on its plan, the second more urgent,
 /// when HQ ticks,
 /// then Bo is given the urgent one and woken, and the other waits until it is done.
 #[test]
@@ -244,6 +245,7 @@ fn a_loop_gives_its_top_item_to_the_member_at_its_starting_rank_one_at_a_time() 
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let f = five(&hq);
+    hq.set_loop_items(f.loop_, 1).unwrap();
     let later = item(&hq, &f, "Tidy the README", Priority::Normal);
     let first = item(&hq, &f, "Fix the lint", Priority::High);
     hq.tick().unwrap();
@@ -277,6 +279,114 @@ fn a_loop_may_start_at_a_higher_rank() {
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, hard), Some(f.ada), "rank 3 is Ada, on Haiku");
     assert!(hq.set_loop_rank(f.loop_, 0).is_err() && hq.set_loop_rank(f.loop_, 7).is_err());
+}
+
+/// A loop has up to two items in hand at once unless the owner says otherwise (the baseline
+/// experiment of 28 Oct: eight tasks in one loop ran one after another while members sat
+/// idle). The second goes to a different member, the nearest free one above the first.
+///
+/// Given a loop with three items on its plan,
+/// when HQ ticks,
+/// then the top two start together, Bo's and Rae's, both woken, and the third waits until one
+/// of them is done.
+#[test]
+fn two_items_start_together_on_two_members_and_a_third_waits() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let third = item(&hq, &f, "Tidy the README", Priority::Low);
+    let second = item(&hq, &f, "Pin the images", Priority::Normal);
+    let first = item(&hq, &f, "Fix the lint", Priority::High);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, first), Some(f.bo), "the top item, to Bo");
+    assert_eq!(
+        assignee(&hq, second),
+        Some(f.rae),
+        "the next, beside it, to Rae"
+    );
+    assert_eq!(assignee(&hq, third), None, "two at once, no more");
+    assert!(woken(&hq, f.bo, first, WakeReason::Assigned));
+    assert!(woken(&hq, f.rae, second, WakeReason::Assigned));
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, third), None, "still two at once");
+    hq.store()
+        .set_task_status(first, crate::domain::TaskStatus::Done)
+        .unwrap();
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, third), Some(f.bo), "Bo is free again");
+}
+
+/// The second item never stacks on the member who holds the first: with nobody else free at
+/// or near the starting rank, it waits.
+#[test]
+fn with_no_other_member_free_the_second_item_waits() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let first = item(&hq, &f, "Find what stops gluetun", Priority::High);
+    let second = item(&hq, &f, "Pin the images", Priority::Normal);
+    hq.tick().unwrap();
+    assert!(assignee(&hq, first).is_some(), "Mara takes the top item");
+    assert_eq!(assignee(&hq, second), None, "nobody above Mara: it waits");
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, second), None);
+}
+
+/// A paused member, or the Mac's while the Mac is away, is not given the second item: the
+/// nearest free member above takes it.
+#[test]
+fn a_paused_or_away_member_is_not_given_the_second_item() {
+    for away in [false, true] {
+        let clock = Hands(AtomicI64::new(NOON));
+        let hq = hq(&clock);
+        let f = five(&hq);
+        if away {
+            hq.tell_mac(false, "busy");
+        } else {
+            hq.pause(f.rae, true).unwrap();
+        }
+        let first = item(&hq, &f, "Fix the lint", Priority::High);
+        let second = item(&hq, &f, "Pin the images", Priority::Normal);
+        hq.tick().unwrap();
+        assert_eq!(assignee(&hq, first), Some(f.bo));
+        assert_eq!(
+            assignee(&hq, second),
+            Some(f.ada),
+            "Rae passed over (away: {away})"
+        );
+    }
+}
+
+/// The owner sets how many items a loop has in hand at once, from 1 to 4, kept like its
+/// starting rank; two until the owner says.
+#[test]
+fn the_owner_sets_a_loop_s_items_at_once_from_one_to_four() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    assert_eq!(
+        hq.loop_items(f.loop_).unwrap(),
+        2,
+        "two until the owner says"
+    );
+    assert!(hq.set_loop_items(f.loop_, 0).is_err());
+    assert!(hq.set_loop_items(f.loop_, 5).is_err());
+    assert!(
+        hq.set_loop_items(crate::domain::ProjectId(9_999), 2)
+            .is_err(),
+        "no such loop"
+    );
+    hq.set_loop_items(f.loop_, 3).unwrap();
+    assert_eq!(hq.loop_items(f.loop_).unwrap(), 3, "kept");
+    assert_eq!(
+        hq.store()
+            .setting(&format!("loop_items:{}", f.loop_.0))
+            .unwrap()
+            .as_deref(),
+        Some("3"),
+        "in the store, so it survives a restart"
+    );
 }
 
 /// With the member at the starting rank paused, the next one up takes the item.

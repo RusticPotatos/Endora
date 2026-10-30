@@ -793,6 +793,31 @@ pub(super) async fn hq_loop_rank(
     Ok(answer)
 }
 
+#[derive(Deserialize)]
+pub(super) struct HqLoopItems {
+    items: u8,
+}
+
+/// The owner sets how many items a loop has in hand at once (ADR 0142): 1 to 4, each with a
+/// different member.
+pub(super) async fn hq_loop_items(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopItems>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/items"),
+        Some(json!({ "items": req.items })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id} to {} items at once", req.items),
+    );
+    Ok(answer)
+}
+
 pub(super) async fn hq_project_tools(
     State(state): State<AppState>,
     Path(id): Path<i64>,

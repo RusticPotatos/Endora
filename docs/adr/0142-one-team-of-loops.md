@@ -114,3 +114,22 @@ strengthened, as the experiment's first rounds.
   charged at DeepSeek's peak prices. A DeepSeek member is refused every Claude.
 - **The house's model is qwen3.5:9b** on the NAS's A2000, in place of qwen3:8b (a setting on the
   Everyday list, not code).
+
+## Amended 2026-10-30: a loop has items side by side
+
+In the baseline experiment eight of the ten tasks sat in one loop, and a loop handed out one
+item at a time, so they ran one after another for hours while other members sat idle.
+
+- **A loop has up to N items in hand at once**: two unless the owner says, from 1 (one after
+  another, as before) to 4, set per loop like its starting rank (`POST /v1/projects/{id}/items`
+  on HQ, `/v1/hq/projects/{id}/items` through the node) and kept in HQ's settings. An item is in
+  hand while it is given to a member and still todo or doing.
+- **Each goes to a different member.** The loop's items go to the members at its starting rank
+  or nearest above it, as many of them as the loop has items at once, and never two to one
+  member. A paused member, or the Mac's while the Mac is away, is passed over; when none of
+  those members is free, the item waits rather than stacking or climbing further.
+- **Per item, nothing else changes:** its failures, its climb by rank, its review one rank up,
+  and the hand-up of a paused or away member's items (which may land on a member who already
+  holds one of the loop's items, as a climb may).
+- **A world is not a loop.** A project holding scenarios (the Holodeck league) is skipped as
+  before: its games go one at a time.
