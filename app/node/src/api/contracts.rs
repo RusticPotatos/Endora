@@ -16,10 +16,11 @@ use axum::http::HeaderMap;
 use endora_capabilities::ansible_nas::{self, Docs};
 use endora_capabilities::application::HomelabObserver as _;
 use endora_capabilities::contracts::{
-    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS, REPO_CHECKOUT,
-    REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
+    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS, IMAGE_TAGS,
+    REPO_CHECKOUT, REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
 };
 use endora_capabilities::lab_map;
+use endora_capabilities::registry;
 use endora_capabilities::repo::{self, Mirror};
 use std::path::PathBuf;
 
@@ -379,6 +380,7 @@ async fn called(
         HOMELAB_STATUS => Ok(homelab_status(&state2)),
         HOMELAB_MAP => homelab_map(&state2),
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
+        IMAGE_TAGS => image_tags(&state2, &args),
         CONTAINER_LOGS => container_logs(&state2, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
         REPO_CHECKOUT => repo_checkout(&state2, &turn, &args),
@@ -594,6 +596,9 @@ pub(crate) struct LabKnowledge {
     push_remote: Option<String>,
     /// The deploy key (`ENDORA_GIT_PUSH_KEY_FILE`), if one is set up.
     push_key: Option<PathBuf>,
+    /// How the image registries are asked, for `image_tags`: the real ones, unless a test
+    /// fakes them.
+    registries: Box<dyn registry::Fetch>,
 }
 
 impl LabKnowledge {
@@ -619,7 +624,15 @@ impl LabKnowledge {
             repo: std::sync::Mutex::new(None),
             push_remote: None,
             push_key: None,
+            registries: Box::new(registry::Web),
         }
+    }
+
+    /// With the image registries asked through `fetch`: a test's fake.
+    #[cfg(test)]
+    pub(crate) fn with_registries(mut self, fetch: Box<dyn registry::Fetch>) -> Self {
+        self.registries = fetch;
+        self
     }
 
     /// No fork, nothing retired and no deploy key: what a node has until `main` reads its
@@ -1206,6 +1219,29 @@ fn ansible_nas_doc(state: &AppState, args: &serde_json::Value) -> Result<Done, R
     }
 }
 
+/// `image_tags`: an image's newest tags, and whether one exists, read by the node from the
+/// image's public registry (a sandbox is offline). Another registry is refused before anything
+/// is asked, and so is anything that is not an image reference.
+fn image_tags(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+    let asked = registry::asked_of(args).map_err(|why| {
+        let status = if why == registry::ONLY_THESE {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, why)
+    })?;
+    let shown = asked.image.shown();
+    match registry::look_up(state.lab.registries.as_ref(), &asked) {
+        Ok(answer) => Ok(Done {
+            text: answer.to_string(),
+            said: format!("read the tags of {shown}"),
+        }),
+        Err(registry::Failed::NotFound(why)) => Err((StatusCode::NOT_FOUND, why)),
+        Err(registry::Failed::Unreachable(why)) => Err((StatusCode::BAD_GATEWAY, why)),
+    }
+}
+
 /// Why Portainer could not be used, as the model reads it.
 fn portainer(code: &str) -> Refused {
     match code {
@@ -1778,6 +1814,7 @@ mod tests {
             "repo_submit",
             "ansible_nas_doc",
             "homelab_map",
+            "image_tags",
             "sonarr_queue",
             "read_file",
         ] {
@@ -1798,7 +1835,7 @@ mod tests {
             .filter(|(p, _, _)| p == "/v1/team/receipt")
             .map(|(_, _, b)| serde_json::from_str(b).unwrap())
             .collect();
-        assert_eq!(refusals.len(), 7, "each refusal is kept: {refusals:?}");
+        assert_eq!(refusals.len(), 8, "each refusal is kept: {refusals:?}");
         assert!(
             refusals
                 .iter()
@@ -2408,6 +2445,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ghcr.io, faked for `image_tags`: one public image, and every URL asked kept.
+    #[derive(Clone, Default)]
+    struct Ghcr {
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl registry::Fetch for Ghcr {
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<(u16, String), &'static str> {
+            self.asked.lock().unwrap().push(url.to_owned());
+            Ok(match (url, bearer) {
+                (
+                    "https://ghcr.io/token?service=ghcr.io&scope=repository:gethomepage/homepage:pull",
+                    None,
+                ) => (200, json!({ "token": "anon" }).to_string()),
+                ("https://ghcr.io/v2/gethomepage/homepage/tags/list?n=1000", Some("anon")) => (
+                    200,
+                    json!({ "tags": ["latest", "v1.4.5", "v1.10.0", "main"] }).to_string(),
+                ),
+                _ => (404, "{}".to_owned()),
+            })
+        }
+    }
+
+    /// Live (rounds 0 and 1 of "Pin the homepage and stats roles off the latest image tag"):
+    /// the sandbox is offline, so HQ could not show a release exists. The node asks the
+    /// registry, and nothing but the four registries is ever asked.
+    #[tokio::test]
+    async fn an_images_tags_are_read_from_its_registry_and_no_other_host_is_asked() {
+        let (mut state, _) = with(lab());
+        let ghcr = Ghcr::default();
+        state.lab = Arc::new(LabKnowledge::unconfigured().with_registries(Box::new(ghcr.clone())));
+        assert!(listed(&state).await.contains(&"image_tags".to_owned()));
+        let (status, said) = use_contract(
+            &state,
+            "image_tags",
+            json!({ "image": "ghcr.io/gethomepage/homepage", "tag": "v1.4.5", "semver_only": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let read: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        assert_eq!(read["newest"], json!(["v1.10.0", "v1.4.5"]));
+        assert_eq!(read["exists"], true);
+        assert!(
+            audit(&state)
+                .iter()
+                .any(|a| a.ends_with("Linus (run 7) read the tags of ghcr.io/gethomepage/homepage"))
+        );
+        let (status, said) = use_contract(
+            &state,
+            "image_tags",
+            json!({ "image": "ghcr.io/gethomepage/nothing" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
+        let asked_before = ghcr.asked.lock().unwrap().len();
+        for (image, status) in [
+            ("registry.example.com/team/app", StatusCode::FORBIDDEN),
+            ("192.168.1.10:5000/app", StatusCode::FORBIDDEN),
+            (
+                "https://ghcr.io/gethomepage/homepage",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "ghcr.io/gethomepage/homepage@sha256:00",
+                StatusCode::BAD_REQUEST,
+            ),
+            ("../../etc/passwd", StatusCode::FORBIDDEN),
+            ("grafana/../../etc", StatusCode::BAD_REQUEST),
+        ] {
+            let (got, said) = use_contract(&state, "image_tags", json!({ "image": image })).await;
+            assert_eq!(got, status, "{image}: {said}");
+        }
+        let (status, _) = use_contract(&state, "image_tags", json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            ghcr.asked.lock().unwrap().len(),
+            asked_before,
+            "a refused reference asks nothing"
+        );
+        assert!(
+            ghcr.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|url| registry::allowed(url))
+        );
     }
 
     /// One `git` in a test's repository.
@@ -3633,7 +3758,8 @@ mod tests {
                 "homelab_map",
                 "ansible_nas_doc",
                 "repo_checkout",
-                "repo_submit"
+                "repo_submit",
+                "image_tags"
             ]
         );
         let (status, said) = use_contract(
