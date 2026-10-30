@@ -320,6 +320,45 @@ fn a_paused_member_lets_its_items_go_one_rank_up() {
     assert_eq!(now.owner, None, "not left claimed by the paused member");
 }
 
+/// The owner's laptop is the Mac: when the node says it is not free (busy, in use, on battery,
+/// or not heard from), the Mac's member is passed over and its items go one rank up, so nothing
+/// waits on the laptop (owner, 30 Oct); when it is free again it takes items as before. Before
+/// the node has said anything (HQ just started), nothing moves.
+#[test]
+fn while_the_mac_is_away_its_member_is_passed_over_and_its_items_go_up() {
+    let hq_of = hq;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq_of(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, Brain::Mac.rank()).unwrap();
+    let held = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, held), Some(f.rae), "nothing said yet: Rae's");
+    hq.tell_mac(false, "busy");
+    for c in hq.runner().started() {
+        hq.runner().finish(c.run, true);
+    }
+    hq.tick().unwrap();
+    assert_eq!(
+        assignee(&hq, held),
+        Some(f.ada),
+        "the Mac is busy: one rank up"
+    );
+    // A fresh loop item while the Mac is away starts above it.
+    let clock2 = Hands(AtomicI64::new(NOON));
+    let hq2 = hq_of(&clock2);
+    let f2 = five(&hq2);
+    hq2.set_loop_rank(f2.loop_, Brain::Mac.rank()).unwrap();
+    hq2.tell_mac(false, "on battery");
+    let fresh = item(&hq2, &f2, "Fix the lint", Priority::Normal);
+    hq2.tick().unwrap();
+    assert_eq!(
+        assignee(&hq2, fresh),
+        Some(f2.ada),
+        "started above the away Mac"
+    );
+}
+
 /// Before the members are models, the loops give nothing out: the team works as before.
 #[test]
 fn without_model_members_no_loop_gives_out_work() {

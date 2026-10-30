@@ -310,6 +310,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(false)
     }
 
+    /// Whether `member` thinks with the Mac and the Mac is away now: the node said it is not
+    /// free, or has not said lately. Before the node has said anything, it is not away.
+    pub(super) fn mac_away_for(&self, member: &Member) -> bool {
+        if member.brain != crate::domain::Brain::Mac {
+            return false;
+        }
+        let Some(facts) = self.mac_facts() else {
+            return false;
+        };
+        crate::domain::mac::wait_for(Some(&facts), self.clock.now(), false).is_some()
+    }
+
     /// The items a paused loop member holds go to the member one rank up (owner, 30 Oct: the
     /// Mac's member is paused while the owner uses the laptop), as a climb does but counting
     /// no failure. An item with nobody above stays where it is.
@@ -318,7 +330,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.paused && m.brain == m.work_brain && !m.furloughed())
+            .filter(|m| {
+                m.brain == m.work_brain && !m.furloughed() && (m.paused || self.mac_away_for(m))
+            })
             .collect();
         if paused.is_empty() {
             return Ok(());
@@ -365,7 +379,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.post_held_lock(
                 super::Author::Endora,
                 task.id,
-                &format!("{} is paused: it goes to {}.", holder.name, up.name),
+                &format!(
+                    "{} is {}: it goes to {}.",
+                    holder.name,
+                    if holder.paused {
+                        "paused"
+                    } else {
+                        "away (the Mac is not free)"
+                    },
+                    up.name
+                ),
             )?;
             self.wake_held_lock(up.id, Some(task.id), WakeReason::Assigned)?;
         }
@@ -459,7 +482,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
         }
         self.store.set_setting(&failures_key(task), "0")?;
-        let members = self.loop_members()?;
+        let members: Vec<Member> = self
+            .loop_members()?
+            .into_iter()
+            .filter(|m| !self.mac_away_for(m))
+            .collect();
         let Some(up) = Self::one_rank_up(&members, holder.brain.rank()) else {
             // Blocked and let go, so its loop hands out its next item and nobody is woken to
             // fail it again (the baseline of 28 Oct: it stayed doing and stalled its loop).
@@ -505,6 +532,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .members()?
             .into_iter()
             .filter(in_the_loops)
+            .collect();
+        if members.is_empty() {
+            return Ok(());
+        }
+        // The Mac's member is passed over while the Mac is away (the owner's laptop, 30 Oct).
+        let members: Vec<Member> = members
+            .into_iter()
+            .filter(|m| !self.mac_away_for(m))
             .collect();
         if members.is_empty() {
             return Ok(());

@@ -382,7 +382,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What the node last said about the Mac, if it has.
-    fn mac_facts(&self) -> Option<MacFacts> {
+    pub(super) fn mac_facts(&self) -> Option<MacFacts> {
         self.mac
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
