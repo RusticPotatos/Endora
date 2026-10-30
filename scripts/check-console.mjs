@@ -1635,6 +1635,22 @@ if (failures.length) {
     if (!shown().includes(">Mac busy</span>")) fail("hq: the Mac chip does not say it is busy");
     if (!panelOf(shown(), "team").includes('data-act="hq:mac:busy:off"')) fail("hq: the Mac busy switch is not on the Team tab");
     runInContext("HQ.mac = null;", context);
+    // What is left with each paid provider (the owner, 2026-10-30): DeepSeek's balance, red
+    // below its threshold; Claude's asking to be set until the owner enters it; nothing when
+    // the node cannot say; and the provider's words escaped.
+    runInContext("HQ.credits = null;", context);
+    if (/DeepSeek \$|Claude credit/.test(shown())) fail("credits: a chip when the node cannot say");
+    runInContext('HQ.credits = { deepseek: { left: 840000, currency: "USD", low: true }, claude: null, claude_low: 5000000, deepseek_low: 1000000, has_deepseek: true };', context);
+    if (!/class="hq-chip low"[^>]*>DeepSeek \$0\.84 left</.test(shown())) fail("credits: DeepSeek's low balance is not shown in red");
+    if (!shown().includes(">Claude credit: set it</button>")) fail("credits: Claude's chip does not ask to be set");
+    runInContext('HQ.credits.claude = { left: 12300000, set: 20000000, spent_since: 7700000, low: false }; HQ.credits.deepseek.currency = "<b>CNY</b>";', context);
+    if (!shown().includes(">Claude ≈ $12.30 left</button>")) fail("credits: Claude's estimate is not shown");
+    if (shown().includes("<b>CNY</b>")) fail("credits: a currency from DeepSeek is not escaped");
+    const creditSetup = runInContext("hqCreditsSetup()", context);
+    for (const want of ['id="hq-credit-claude"', 'id="hq-credit-claude-low"', 'id="hq-credit-deepseek-low"', 'data-act="hq:credits:save:go"']) {
+      if (!creditSetup.includes(want)) fail(`credits: the Settings card lacks ${want}`);
+    }
+    runInContext("HQ.credits = null;", context);
     // Switching, remembered per viewer in localStorage, with a failing store harmless.
     const kept = {};
     const realStore = context.localStorage;

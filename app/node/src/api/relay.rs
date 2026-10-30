@@ -312,6 +312,8 @@ fn charge(
         return;
     };
     let micros = cost(price, used);
+    // What is left with the provider (the owner, 2026-10-30): counted, and told when low.
+    super::credits::after_charge(state, run, model, micros);
     let reported = json!({ "run": run, "micros": micros, "input": used.input,
                            "cache_read": used.cache_read, "cache_write": used.cache_write,
                            "output": used.output });

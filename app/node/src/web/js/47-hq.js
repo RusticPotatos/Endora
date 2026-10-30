@@ -131,6 +131,7 @@ async function loadHQ() {
     const first = !HQ.snap;
     HQ.snap = snap; HQ.error = "";
     await hqLoadMac();
+    await hqLoadCredits();
     if (first) {
       // The recent past, in words, without replaying it on screen.
       const from = Math.max(0, (snap.last_event || 0) - 60);
@@ -158,9 +159,11 @@ function hqStartPolling() {
     // twelve seconds, and redraw only when it moved.
     HQ.macTick += 1;
     if (HQ.macTick % 4 === 0) {
-      const before = JSON.stringify(HQ.mac);
+      const before = JSON.stringify([HQ.mac, HQ.credits]);
       await hqLoadMac();
-      if (JSON.stringify(HQ.mac) !== before && NAV.v === "hq" && !hqTyping()) render();
+      // The balances move with each paid call; DeepSeek's is read afresh every ten minutes.
+      if (HQ.macTick % 20 === 0) await hqLoadCredits();
+      if (JSON.stringify([HQ.mac, HQ.credits]) !== before && NAV.v === "hq" && !hqTyping()) render();
     }
     // A game being watched moves on its own, every six seconds.
     if (HQ.macTick % 2 === 0) {
@@ -1431,6 +1434,7 @@ function hqChips(s) {
   // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
   if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
   if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${hqMacWord(HQ.mac)}</span>`);
+  chips.push(...hqCreditChips());
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
@@ -2011,6 +2015,64 @@ async function hqLoadMac() {
   try { HQ.mac = await api("GET", "/v1/mac"); } catch (_) { HQ.mac = null; }
 }
 
+// What is left with each paid model provider (the owner, 2026-10-30): DeepSeek's balance as it
+// says it, Claude's as the owner's last figure less what Endora has paid since.
+async function hqLoadCredits() {
+  try { HQ.credits = await api("GET", "/v1/credits"); } catch (_) { HQ.credits = null; }
+}
+
+// The two credit chips under the title: a balance in red when it is below its threshold, and
+// Claude's asking to be set until the owner has entered it.
+function hqCreditChips() {
+  const c = HQ.credits;
+  if (!c) return [];
+  const chips = [];
+  if (c.deepseek) {
+    const d = c.deepseek, cur = d.currency === "USD" ? "" : ` ${esc(d.currency)}`;
+    chips.push(`<button class="hq-chip${d.low ? " low" : ""}" data-act="go:models" title="DeepSeek's balance as DeepSeek says it${d.low ? ": below your threshold, top it up on DeepSeek's platform" : ""}">DeepSeek ${hqDollars(d.left)}${cur} left</button>`);
+  }
+  if (c.claude) {
+    chips.push(`<button class="hq-chip${c.claude.low ? " low" : ""}" data-act="go:models" title="The balance you entered from Anthropic's Console, less ${hqDollars(c.claude.spent_since)} Endora has paid since${c.claude.low ? ": below your threshold, top it up" : ""}">Claude ≈ ${hqDollars(c.claude.left)} left</button>`);
+  } else {
+    chips.push(`<button class="hq-chip" data-act="go:models" title="Anthropic does not say a balance: enter the one its Console shows, in Settings → AI">Claude credit: set it</button>`);
+  }
+  return chips;
+}
+
+// The credits on the Settings screen: Claude's balance as the Console shows it, and the two
+// thresholds below which the owner is told.
+function hqCreditsSetup() {
+  const c = HQ.credits;
+  if (!c) return `<div class="card"><p class="sub">The node could not say what is left.</p></div>`;
+  const d = c.deepseek, cl = c.claude;
+  const deepseekNow = d ? `DeepSeek: ${hqDollars(d.left)}${d.currency === "USD" ? "" : " " + esc(d.currency)} left, as DeepSeek says it.`
+    : c.has_deepseek ? "DeepSeek: its balance could not be read." : "DeepSeek: no DeepSeek provider with a key.";
+  const claudeNow = cl ? `Claude: about ${hqDollars(cl.left)} left (your ${hqDollars(cl.set)}, less ${hqDollars(cl.spent_since)} paid since).`
+    : "Claude: Anthropic does not say its balance; enter the one its Console's billing page shows.";
+  return `<div class="card hq-credits">
+      <div class="model-role">Credits left</div>
+      <p class="sub">${deepseekNow}<br>${claudeNow}</p>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+        <label>Claude's balance in the Console now $<input id="hq-credit-claude" type="number" min="0" step="0.01" placeholder="${cl ? (cl.left / 1e6).toFixed(2) : "e.g. 20.00"}" aria-label="Claude's balance in dollars" /></label>
+        <label>tell me under $<input id="hq-credit-claude-low" type="number" min="0" step="0.5" value="${(c.claude_low / 1e6).toFixed(2)}" aria-label="Claude threshold in dollars" /></label>
+        <label>DeepSeek under $<input id="hq-credit-deepseek-low" type="number" min="0" step="0.5" value="${(c.deepseek_low / 1e6).toFixed(2)}" aria-label="DeepSeek threshold in dollars" /></label>
+        <button class="primary" data-act="hq:credits:save:go">Save</button></div>
+      <p class="sub" style="margin-top:8px;">Enter Claude's balance again after each top-up. Below a threshold you are told once on the desk.</p></div>`;
+}
+
+async function hqCreditsAct() {
+  const num = (id) => { const v = val(id); return v === "" ? null : Number(v); };
+  const body = {};
+  const claude = num("hq-credit-claude"), cl = num("hq-credit-claude-low"), dl = num("hq-credit-deepseek-low");
+  if (claude != null) body.claude_balance = claude;
+  if (cl != null) body.claude_low = cl;
+  if (dl != null) body.deepseek_low = dl;
+  try { HQ.credits = await api("POST", "/v1/credits", body); flash("Saved.", "ok"); }
+  catch (e) { flash("Couldn't save them: " + e.message, "err"); }
+  render();
+  return true;
+}
+
 // What the node's few words mean to the owner.
 function hqMacWhy(why) {
   return { ready: "Free: the team may use it", "owner active": "You are using it: the team waits until you have been idle a while", "on battery": "On battery: the model is unloaded",
@@ -2222,6 +2284,8 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
+  // What is left with each paid provider (the owner, 2026-10-30).
+  if (noun === "credits") return hqCreditsAct();
   // The Holodeck and the office's replays (ADR 0135, 0121).
   if (noun === "holo") return hqHoloAct(id, arg);
   if (noun === "roster") {

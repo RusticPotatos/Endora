@@ -304,6 +304,8 @@
   .hq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .hq .hq-chip { border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); color: var(--hq-muted); background: var(--hq-panel); }
   .hq .hq-chip-go { cursor: pointer; min-height: 32px; color: var(--hq-fg); }
+  .hq button.hq-chip { cursor: pointer; }
+  .hq .hq-chip.low { border-color: var(--hq-red); color: var(--hq-red); font-weight: 600; }
   .hq .hq-chip-go.has { border-color: var(--hq-violet); color: var(--hq-violet); font-weight: 600; }
   .hq-work { display: grid; gap: 6px; background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; padding: 12px 14px; }
   .hq-work label { font-weight: 600; font-size: 12.5px; }

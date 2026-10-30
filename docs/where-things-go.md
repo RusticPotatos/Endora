@@ -27,7 +27,7 @@ Settings.
 
 | Section | What belongs there |
 |---|---|
-| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees. A new model or model host goes here |
+| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees, and what is left with each paid provider (Claude's balance as the Console shows it, the thresholds; the balances themselves are chips on HQ). A new model or model host goes here |
 | Connections | Outside services and tool servers Endora talks to (Home Assistant, the lab's services) |
 | Tools | What the team's turns may use from the house, and which ask you first (each skill's stance, ADR 0108) |
 | Your sign-in | Your password, authenticator, script tokens |

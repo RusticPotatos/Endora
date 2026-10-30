@@ -425,6 +425,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sound/speakers/{id}/probe", post(sound_probe))
         // The owner's Mac as a brain for the team (ADR 0130). The heartbeat answers the
         // Mac's helper alone, by a token of its own (`crate::auth::Scope::Mac`).
+        .route("/v1/credits", get(credits::status).post(credits::change))
         .route("/v1/mac", get(mac::status))
         .route("/v1/mac/heartbeat", post(mac::heartbeat))
         .route("/v1/mac/settings", post(mac::change))
@@ -692,6 +693,8 @@ mod relay;
 mod bench;
 // The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
 mod contracts;
+// What is left with each paid model provider (the owner, 2026-10-30).
+mod credits;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).
 mod bridge;
 // What a Claude Code turn's sandbox reports its own tools did (ADR 0117).

@@ -17,6 +17,7 @@ pub mod ansible_nas;
 pub mod application;
 pub mod bridge;
 pub mod contracts;
+pub mod credits;
 pub mod domain;
 pub mod home_assistant;
 pub mod infrastructure;

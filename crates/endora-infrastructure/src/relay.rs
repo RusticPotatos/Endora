@@ -123,6 +123,37 @@ pub fn send_metered(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>)
     post_chat(base, key, body)
 }
 
+/// Asks a provider's balance (`GET <origin>/user/balance`, as DeepSeek answers it) with its
+/// key: `base` is the provider's OpenAI base, `.../v1`, whose `/v1` is left off. Over https
+/// only, or to an endpoint on the house's network.
+///
+/// # Errors
+/// `base` is neither, the endpoint could not be reached, or did not answer 200 with JSON.
+pub fn get_balance(base: &str, key: &str) -> Result<Value, String> {
+    if !base.starts_with("https://") && !crate::model_server::reaches_only_the_house(base) {
+        return Err(format!("{base} is reached over https only"));
+    }
+    let origin = base.trim_end_matches('/');
+    let origin = origin.strip_suffix("/v1").unwrap_or(origin);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into();
+    let response = agent
+        .get(format!("{origin}/user/balance"))
+        .header("authorization", format!("Bearer {key}"))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let body = read_at_most(response.into_body().into_reader(), 64 * 1024)?;
+    if status != 200 {
+        return Err(format!("the provider answered {status}"));
+    }
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
 /// Posts `body` to `base`'s chat completions, with `key` if any, and reads the whole reply.
 fn post_chat(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()

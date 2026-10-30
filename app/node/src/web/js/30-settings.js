@@ -293,7 +293,8 @@ function modelsSection() {
       ${modelListAdd("everyday")}
     </div>
 
-    ${providersCard()}`;
+    ${providersCard()}
+    ${hqCreditsSetup()}`;
 }
 
 // One home for app settings — so they aren't scattered across pages.

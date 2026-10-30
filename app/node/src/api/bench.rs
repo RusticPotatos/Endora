@@ -161,6 +161,10 @@ impl Bench {
             if let Err(e) = store.add_bench_spent(hold.day, micros) {
                 eprintln!("bench: could not keep {micros} micros spent: {e}");
             }
+            // It is paid from the same Anthropic balance the owner watches (2026-10-30).
+            if let Err(e) = store.add_provider_spent("anthropic", micros) {
+                eprintln!("bench: could not count {micros} micros paid to Anthropic: {e}");
+            }
         }
         let mut held = self
             .held

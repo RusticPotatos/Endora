@@ -152,6 +152,10 @@ CREATE TABLE IF NOT EXISTS bench_spend (
     day    INTEGER PRIMARY KEY,
     micros INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS provider_spend (
+    provider TEXT PRIMARY KEY,
+    micros   INTEGER NOT NULL
+) STRICT;
 ";
 
 /// Every column in the node's database that holds a credential, sealed at rest (ADR 0125).
@@ -820,6 +824,39 @@ impl SqliteStore {
         .map_err(backend)
     }
 
+    /// What Endora has paid `provider` (`anthropic`, `deepseek`) in all, in micros: what a
+    /// balance the owner read at one moment has lost since.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be read.
+    pub fn provider_spent(&self, provider: &str) -> Result<i64, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT micros FROM provider_spend WHERE provider=?1",
+            params![provider],
+            |r| r.get(0),
+        )
+        .optional()
+        .map(Option::unwrap_or_default)
+        .map_err(backend)
+    }
+
+    /// Adds `micros` to what Endora has paid `provider`, at once, so two calls charged together
+    /// both count.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be written.
+    pub fn add_provider_spent(&self, provider: &str, micros: i64) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO provider_spend (provider, micros) VALUES (?1, ?2)
+             ON CONFLICT(provider) DO UPDATE SET micros = micros + excluded.micros",
+            params![provider, micros],
+        )
+        .map(|_| ())
+        .map_err(backend)
+    }
+
     /// What `role`'s model calls have used since `since_ms`.
     ///
     /// # Errors
@@ -1165,6 +1202,21 @@ mod tests {
             "a new day starts again"
         );
         assert_eq!(store.bench_spent(19_999).unwrap(), 0);
+    }
+
+    #[test]
+    fn what_each_provider_was_paid_adds_up_for_its_balance() {
+        let store = store();
+        assert_eq!(
+            store.provider_spent("anthropic").unwrap(),
+            0,
+            "nothing paid yet"
+        );
+        store.add_provider_spent("anthropic", 1_500).unwrap();
+        store.add_provider_spent("anthropic", 2_500).unwrap();
+        store.add_provider_spent("deepseek", 7).unwrap();
+        assert_eq!(store.provider_spent("anthropic").unwrap(), 4_000);
+        assert_eq!(store.provider_spent("deepseek").unwrap(), 7);
     }
 
     #[test]

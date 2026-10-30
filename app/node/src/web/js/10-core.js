@@ -282,7 +282,7 @@ async function loadView(v, id) {
   }
   await loadLab(v, id);
   if (v === "hq") await loadHQ();
-  if (v === "models") await hqLoadMac();
+  if (v === "models") { await hqLoadMac(); await hqLoadCredits(); }
   if (v === "replay") await loadReplay(id);
   if (v === "speakers") await loadSound();
   if (v === "vault") { await loadVault(); await loadVaultPasskeys(); }
