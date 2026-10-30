@@ -994,3 +994,36 @@ fn a_member_s_model_survives_a_restart() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// A task whose words leave the lab as it is refuses its turns the lab's acts (baseline 28-29
+/// Oct: two read-only tasks restarted containers); any other task's turns keep them.
+#[test]
+fn a_read_only_items_turns_are_refused_the_restart() {
+    let hq_of = hq;
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq_of(&clock);
+    let f = five(&hq);
+    let look = item(
+        &hq,
+        &f,
+        "Is the gluetun restart still needed? Read only.",
+        Priority::Normal,
+    );
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": look.0 })).unwrap();
+    assert_eq!(hq.lab_tools_refused(bo.run).unwrap(), ["restart_container"]);
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    let other_clock = Hands(AtomicI64::new(NOON));
+    let hq2 = hq_of(&other_clock);
+    let f2 = five(&hq2);
+    let fix = item(
+        &hq2,
+        &f2,
+        "Restart sonarr when it is unhealthy",
+        Priority::Normal,
+    );
+    let bo2 = turn_of(&hq2, f2.bo);
+    use_tool(&hq2, &bo2, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    assert!(hq2.lab_tools_refused(bo2.run).unwrap().is_empty());
+}

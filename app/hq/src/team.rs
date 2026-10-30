@@ -170,11 +170,15 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         // The node's tools the turn may use, when HQ narrows them: the check after a deploy
         // reads the lab's health, logs and metrics alone (ADR 0115, amended).
         let only = hq.lab_tools_of(run.id)?;
-        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime, wing, only)))
+        // And what it may never use: the lab's acts, on a task that leaves the lab as it is.
+        let never = hq.lab_tools_refused(run.id)?;
+        Ok::<_, endora_team::application::EngineError>(Some((
+            run, member, runtime, wing, only, never,
+        )))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime, wing, only)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing, only, never)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -189,6 +193,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "task": run.task.map(|t| t.0),
             "wing": wing,
             "only": only,
+            "never": never,
         }))
         .into_response(),
         Ok(Ok(None)) => (

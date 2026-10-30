@@ -137,6 +137,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.project_tools_of_run(run)?.map(|(_, tools)| tools))
     }
 
+    /// The node's tools a turn is refused whatever else it may use: the lab's acts, when its
+    /// task's words say the lab is left as it is (two read-only tasks restarted containers in
+    /// the baseline, 28-29 Oct). Empty otherwise.
+    pub fn lab_tools_refused(&self, run: RunId) -> Done<Vec<String>> {
+        let Some(task) = self.store.run(run)?.and_then(|r| r.task) else {
+            return Ok(Vec::new());
+        };
+        let task = self.task(task)?;
+        let mut words = format!("{}\n{}", task.title, task.description);
+        for criterion in &task.criteria {
+            words.push('\n');
+            words.push_str(&criterion.text);
+        }
+        if !deploy::leaves_the_lab_alone(&words) {
+            return Ok(Vec::new());
+        }
+        Ok(deploy::LAB_ACTS.iter().map(|t| (*t).to_owned()).collect())
+    }
+
     /// Whether a turn may be given a shell where the runner has one: not a deploy check's,
     /// which reads the lab through the node and nothing else, nor an explicit assistance or
     /// verification turn, nor one on a project's work whose list does not name the shell.

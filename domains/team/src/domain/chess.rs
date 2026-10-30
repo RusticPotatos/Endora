@@ -432,6 +432,23 @@ impl Game {
         self.live() && now - self.last_move_at >= ADJOURN_AFTER_MS
     }
 
+    /// Ends a live game as lost by the side to move, which was given its turns and did not
+    /// move. Returns whether it did.
+    pub fn forfeit(&mut self) -> bool {
+        if !self.live() {
+            return false;
+        }
+        let white_stopped = self.to_move() == self.white;
+        self.status = if white_stopped {
+            Status::BlackWon
+        } else {
+            Status::WhiteWon
+        };
+        let side = if white_stopped { "white" } else { "black" };
+        self.reason = format!("{side} stopped moving, and forfeits");
+        true
+    }
+
     /// Adjourns the game as a draw, if it is stale. Returns whether it did.
     pub fn adjourn(&mut self, now: Millis) -> bool {
         if !self.stale(now) {

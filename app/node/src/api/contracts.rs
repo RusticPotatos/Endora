@@ -110,6 +110,7 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
     };
     let switches = switches_of(&state);
     let only = turn.only.clone();
+    let never = turn.never.clone();
     let mut tools: Vec<serde_json::Value> = offered(switches)
         .iter()
         .filter(|c| may_see(c, &turn))
@@ -144,6 +145,12 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
                 .is_some_and(|n| only.iter().any(|o| o == n))
         });
     }
+    // And never what HQ refuses it: the restart on a task that leaves the lab as it is.
+    tools.retain(|t| {
+        t["name"]
+            .as_str()
+            .is_none_or(|n| !never.iter().any(|o| o == n))
+    });
     Json(json!({ "tools": tools })).into_response()
 }
 
@@ -1334,6 +1341,19 @@ fn restart_container(
             format!("{name} was not restarted: {}.", contracts::RESTART_STOPPED),
         ));
     }
+    // Restarted alone, a container others run in the network of leaves them with none (gluetun
+    // and its downloaders, 29 Oct): the owner restarts them together.
+    let inside = runs_in_network_of(state, &name);
+    if !inside.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "{name} was not restarted: {} run in its network and would be left without one. \
+                 Put it on the owner's desk with ask_owner, to restart them together.",
+                inside.join(", ")
+            ),
+        ));
+    }
     let ledger = RestartLedger::new(state.store.db()).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1395,6 +1415,24 @@ fn restart_container(
             "the restart of {name} did not confirm ({failed}). Check homelab_status before anything else; the owner has been told."
         ),
     ))
+}
+
+/// The containers that run in `name`'s network, by the lab's map (kept a minute, or read
+/// afresh). None when the map cannot be read: the restart's other limits still hold.
+fn runs_in_network_of(state: &AppState, name: &str) -> Vec<String> {
+    let Ok(map) = homelab_map(state) else {
+        return Vec::new();
+    };
+    let Ok(map) = serde_json::from_str::<serde_json::Value>(&map.text) else {
+        return Vec::new();
+    };
+    map["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["in_network_of"] == name)
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// Puts a notice on the owner's desk in HQ. One that cannot be put there is said in the log:
@@ -1665,6 +1703,42 @@ mod tests {
             .filter(|(p, _, _)| p == "/v1/team/notice")
             .map(|(_, _, b)| serde_json::from_str(b).unwrap())
             .collect()
+    }
+
+    /// A task that leaves the lab as it is (baseline 28-29 Oct: two read-only tasks restarted
+    /// containers): HQ refuses its turns the restart, and the node neither offers nor runs it,
+    /// while the reads and the branch stay theirs.
+    #[tokio::test]
+    async fn a_turn_hq_refuses_the_restart_is_neither_offered_nor_runs_it() {
+        use super::super::relay::tests::fake;
+        let (hq_url, _) = fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Bo", "role": "developer", "left": 0, "cloud": false,
+                        "brain": "local", "task": 9, "wing": true,
+                        "never": ["restart_container"] })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let names = listed(&state).await;
+        assert!(
+            !names.contains(&"restart_container".to_owned()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"homelab_status".to_owned()), "{names:?}");
+        assert!(names.contains(&"repo_submit".to_owned()), "{names:?}");
+        let (status, said) = use_contract(
+            &state,
+            "restart_container",
+            json!({ "container": "sonarr", "why": "look" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
     }
 
     /// The check after a deploy (ADR 0115, amended): HQ names the lab's three reads as all the
@@ -2018,6 +2092,35 @@ mod tests {
                 .contains("Portainer is not set up"),
             "{said}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_container_others_run_in_the_network_of_is_not_restarted_alone() {
+        // Baseline 29 Oct: Bo restarted gluetun, and deluge, nzbget and prowlarr, which run in
+        // its network, were left with none until someone restarted them too.
+        let lab = lab();
+        let (state, _) = with(lab.clone());
+        let now = state.clock.now().unix_millis();
+        *state.lab.map.lock().unwrap() = Some((
+            now,
+            json!({ "containers": [
+                { "name": "sonarr", "needed_by": ["bazarr"] },
+                { "name": "bazarr", "in_network_of": "sonarr", "depends_on": ["sonarr"] },
+            ] }),
+        ));
+        let (status, said) = use_contract(
+            &state,
+            "restart_container",
+            json!({ "container": "sonarr", "why": "DNS warnings" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        let error = said["error"].as_str().unwrap();
+        assert!(
+            error.contains("bazarr") && error.contains("network"),
+            "{error}"
+        );
+        assert!(lab.acted.lock().unwrap().is_empty(), "nothing restarted");
     }
 
     #[tokio::test]

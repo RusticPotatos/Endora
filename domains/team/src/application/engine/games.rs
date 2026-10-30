@@ -19,6 +19,9 @@ const RECENT: usize = 5;
 
 /// The least time between two turns given a member to make its move in a game of chess.
 const CHESS_PACE_MS: Millis = 30 * 60 * 1000;
+/// The turns a member is given for one move before it forfeits: Kit was woken 115 times for one
+/// move it never made (baseline, 28 Oct).
+const CHESS_TRIES: u32 = 3;
 /// The most finished games of chess the snapshot keeps showing, beside those being played.
 const FINISHED_SHOWN: usize = 3;
 
@@ -112,6 +115,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if now.saturating_sub(last) < CHESS_PACE_MS {
                 continue;
             }
+            // The turns given for this move so far, by the moves made when they were given.
+            let tries_key = format!("chess_tries:{}", game.id);
+            let tries = self
+                .store
+                .setting(&tries_key)?
+                .and_then(|s| {
+                    let (at, n) = s.split_once(':')?;
+                    (at.parse::<usize>().ok()? == game.moves.len())
+                        .then(|| n.parse::<u32>().ok())?
+                })
+                .unwrap_or(0);
+            if tries >= CHESS_TRIES {
+                let mut ended = game.clone();
+                if ended.forfeit() {
+                    self.store.save_chess_game(&ended)?;
+                    let names = self.names()?;
+                    let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
+                    let result = chess::result_said(&ended, &name(ended.white), &name(ended.black));
+                    self.emit_chess_ended(&ended, &result)?;
+                }
+                continue;
+            }
+            self.store
+                .set_setting(&tries_key, &format!("{}:{}", game.moves.len(), tries + 1))?;
             self.store.set_setting(&key, &now.to_string())?;
             self.wake_held_lock(mover, None, WakeReason::Downtime)?;
         }

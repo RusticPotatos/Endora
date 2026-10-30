@@ -108,11 +108,17 @@ pub(super) struct Turn {
     /// after a deploy reads the lab's health, logs and metrics alone). `None`: what its role
     /// and brain give it, as before.
     pub(super) only: Option<Vec<String>>,
+    /// The node's tools HQ refuses the turn whatever else it may use: `restart_container` on
+    /// a task that says the lab is to be left as it is. Empty from an older HQ.
+    pub(super) never: Vec<String>,
 }
 
 impl Turn {
     /// Whether HQ lets this turn use the node's tool `name` at all.
     pub(super) fn may_use(&self, name: &str) -> bool {
+        if self.never.iter().any(|n| n == name) {
+            return false;
+        }
         self.only
             .as_ref()
             .is_none_or(|only| only.iter().any(|o| o == name))
@@ -273,6 +279,12 @@ pub(super) async fn turn_of(
                     .filter_map(|n| n.as_str().map(str::to_owned))
                     .collect()
             }),
+            never: v["never"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(str::to_owned))
+                .collect(),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

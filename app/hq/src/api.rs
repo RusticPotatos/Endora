@@ -2567,6 +2567,8 @@ mod tests {
             json!(["homelab_status", "container_logs", "nas_status"]),
             "{found}"
         );
+        // Its task does not say to leave the lab alone: nothing is refused beside the list.
+        assert_eq!(found["never"], json!([]), "{found}");
     }
 
     #[tokio::test]

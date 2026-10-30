@@ -135,7 +135,7 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: RESTART_CONTAINER,
-            description: "Restart one container, and read back its state. A safe fix: it runs at once, and the owner is told, with your reason. At most one restart of a container an hour, and three in all an hour across the team. Never Endora's own containers, and never one a restart will not fix: already restarting, out of memory, or crash-looping (ask the owner instead). Say why in a sentence.",
+            description: "Restart one container, and read back its state. A safe fix: it runs at once, and the owner is told, with your reason. At most one restart of a container an hour, and three in all an hour across the team. Never Endora's own containers, and never one a restart will not fix (already restarting, out of memory, or crash-looping) or one others run in the network of, like gluetun: ask the owner instead. Say why in a sentence.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
@@ -145,7 +145,7 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: HOMELAB_MAP,
-            description: "Read how the home lab is built, from Docker: for each container its image, state, restart policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what depends on it, e.g. \"gluetun → deluge, nzbget, prowlarr (run in its network)\": those stop when gluetun restarts and come back on their own. Names and wiring only. Read it before treating a stop as a fault. Free.",
+            description: "Read how the home lab is built, from Docker: for each container its image, state, restart policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what depends on it, e.g. \"gluetun → deluge, nzbget, prowlarr (run in its network)\": restarted alone, gluetun leaves them with no network, so it is the owner's to restart them together. Names and wiring only. Read it before treating a stop as a fault. Free.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {} }),

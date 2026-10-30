@@ -440,6 +440,40 @@ fn a_game_is_picked_up_over_time_by_the_member_whose_move_it_is() {
 }
 
 #[test]
+fn a_member_given_three_turns_for_a_move_without_moving_forfeits_and_is_woken_no_more() {
+    // Baseline 28 Oct: Kit, on Sonnet, was woken every half hour for a move it never made: 115
+    // turns and $2.50 in three days on one game. Three turns without a move, and it forfeits.
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    let t = team(&hq);
+    only(&hq, &t, [t.ada, t.bo]);
+    hq.store().add_chess_game(t.ada, t.bo, START).unwrap();
+    let mut game = hq.store().chess_games().unwrap().remove(0);
+    game.play(t.ada, "e4", START + 1).unwrap();
+    hq.store().save_chess_game(&game).unwrap();
+    end_all(&hq);
+    let chess_wakes = |hq: &Hq<'_>, before: i64| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| w.member == t.bo && w.reason == WakeReason::Downtime && w.at < before)
+            .count()
+    };
+    for _ in 0..6 {
+        clock.0.fetch_add(31 * MINUTE, Ordering::SeqCst);
+        end_all(&hq);
+    }
+    let games = hq.store().chess_games().unwrap();
+    let game = games[0].clone();
+    // The office may sit Bo down to a new game after; the first game's turns came before it.
+    let next_began = games.get(1).map_or(i64::MAX, |g| g.started_at);
+    assert_eq!(chess_wakes(&hq, next_began), 3, "three tries, then no more");
+    assert_eq!(game.status, Status::WhiteWon);
+    assert!(game.reason.contains("forfeits"), "{}", game.reason);
+}
+
+#[test]
 fn checkmate_ends_the_game_says_so_and_goes_on_the_leaderboard() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock, true, false);
