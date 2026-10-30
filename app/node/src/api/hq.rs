@@ -295,36 +295,6 @@ pub(super) async fn hq_reply(
 }
 
 #[derive(Deserialize)]
-pub(super) struct HqRerun {
-    round: String,
-    #[serde(default)]
-    restart: bool,
-}
-
-/// The owner runs the Holodeck's scenarios again, one at a time; the earlier round is kept.
-pub(super) async fn hq_rerun_holodeck(
-    State(state): State<AppState>,
-    Json(req): Json<HqRerun>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/scenarios/rerun".to_owned(),
-        Some(json!({ "round": req.round, "restart": req.restart })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!(
-            "you ran the Holodeck again{}: {} scenarios queued, the earlier round kept as \"{}\"",
-            if req.restart { ", starting over" } else { "" },
-            answer.0["queued"],
-            req.round
-        ),
-    );
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
 pub(super) struct HqLeague {
     project: i64,
     brains: Vec<String>,
@@ -731,55 +701,30 @@ pub(super) async fn hq_project_cap(
     Ok(answer)
 }
 
-/// The owner starts a scenario (the Holodeck plan's phase 5): `{project, member, seed}`, the
-/// seed optional.
+/// The owner starts a chess match (ADR 0135): `{project, kind: "chess", players: [white,
+/// black], seed}`, the seed optional.
 pub(super) async fn hq_start_scenario(
     State(state): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Answer {
     let answer = ask(&state, "/v1/scenarios".to_owned(), Some(req.clone())).await?;
-    let listed = |all: &Vec<serde_json::Value>| {
-        all.iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let whom = match (req["crew"].as_array(), req["players"].as_array()) {
-        (Some(crew), _) => format!("Silent Station for members {}", listed(crew)),
-        (None, Some(players)) => format!("a chess match between members {}", listed(players)),
-        (None, None) => format!("a scenario for member {}", req["member"]),
-    };
+    let players = req["players"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
     record(
         &state,
         &format!(
-            "you started {whom} in project {} (seed {}): task {}",
+            "you started a chess match between members {players} in project {} (seed {}): task {}",
             req["project"], answer.0["seed"], answer.0["task"]
         ),
     );
     Ok(answer)
-}
-
-/// The owner starts a trial (the Holodeck plan's phase 7): `{name, project, kind, conditions:
-/// [{label, members}], seeds}`.
-pub(super) async fn hq_start_trial(
-    State(state): State<AppState>,
-    Json(req): Json<serde_json::Value>,
-) -> Answer {
-    let answer = ask(&state, "/v1/trials".to_owned(), Some(req.clone())).await?;
-    let runs = answer.0["tasks"].as_array().map_or(0, Vec::len);
-    record(
-        &state,
-        &format!(
-            "you started trial {}: {runs} runs",
-            req["name"].as_str().unwrap_or_default()
-        ),
-    );
-    Ok(answer)
-}
-
-/// A trial compared: its conditions side by side, every run, and a report to keep.
-pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<String>) -> Answer {
-    ask(&state, format!("/v1/trials/{name}"), None).await
 }
 
 /// A scenario as the owner's screen shows it: where it stands and its log, step by step.
@@ -1389,77 +1334,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_starts_and_reads_a_trial_through_the_node() {
-        let (url, seen) = fake(Arc::new(|path, _| {
-            let body = if path == "/v1/trials" {
-                json!({ "name": "who-lights-it", "tasks": [41, 42] })
-            } else {
-                json!({ "name": "who-lights-it", "markdown": "# Trial who-lights-it" })
-            };
-            (200, "application/json", body.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let started = hq_start_trial(
-            State(state.clone()),
-            Json(
-                json!({ "name": "who-lights-it", "project": 3, "kind": "lighthouse",
-                         "conditions": [{ "label": "a", "members": [2] },
-                                        { "label": "b", "members": [7] }],
-                         "seeds": [7] }),
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(started.0["tasks"], json!([41, 42]));
-        let read = hq_trial(State(state.clone()), Path("who-lights-it".to_owned()))
-            .await
-            .unwrap();
-        assert!(read.0["markdown"].as_str().unwrap().starts_with("# Trial"));
-        let sent: Vec<String> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, _)| p.clone())
-            .collect();
-        assert_eq!(sent, ["/v1/trials", "/v1/trials/who-lights-it"]);
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        assert!(
-            audit
-                .iter()
-                .any(|a| a == "HQ: you started trial who-lights-it: 2 runs"),
-            "{audit:?}"
-        );
-    }
-
-    #[tokio::test]
     async fn the_owner_starts_and_reads_a_scenario_through_the_node() {
         let (url, seen) = fake(Arc::new(|path, _| {
             let body = if path == "/v1/scenarios" {
                 json!({ "task": 41, "seed": 7 })
             } else {
-                json!({ "task": 41, "end": "solved", "log": [] })
+                json!({ "task": 41, "end": "black_won", "log": [] })
             };
             (200, "application/json", body.to_string())
         }));
         let state = node(&url, "http://127.0.0.1:9");
-        let started = hq_start_scenario(
-            State(state.clone()),
-            Json(json!({ "project": 3, "member": 5, "seed": 7 })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(started.0["task"], 41);
-        let crewed = hq_start_scenario(
-            State(state.clone()),
-            Json(json!({ "project": 3, "kind": "silent_station", "crew": [2, 7, 8], "seed": 7 })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(crewed.0["task"], 41);
         let matched = hq_start_scenario(
             State(state.clone()),
             Json(json!({ "project": 3, "kind": "chess", "players": [2, 7], "seed": 7 })),
@@ -1468,76 +1352,22 @@ mod tests {
         .unwrap();
         assert_eq!(matched.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
-        assert_eq!(shown.0["end"], "solved");
+        assert_eq!(shown.0["end"], "black_won");
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
             .iter()
             .map(|(p, _, _)| p.clone())
             .collect();
-        assert_eq!(
-            sent,
-            [
-                "/v1/scenarios",
-                "/v1/scenarios",
-                "/v1/scenarios",
-                "/v1/scenarios/41",
-            ]
-        );
+        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios/41"]);
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
             .map(|r| r.summary().to_owned())
             .collect();
-        for line in [
-            "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41",
-            "HQ: you started Silent Station for members 2, 7, 8 in project 3 (seed 7): task 41",
-            "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_owners_holodeck_rerun_passes_through_and_is_recorded() {
-        let (url, seen) = fake(Arc::new(|_, _| {
-            let body = json!({ "queued": 9, "round": "round 1" });
-            (200, "application/json", body.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let answer = hq_rerun_holodeck(
-            State(state.clone()),
-            Json(HqRerun {
-                round: "round 1".to_owned(),
-                restart: false,
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(answer.0["queued"], 9);
-        let sent: Vec<(String, serde_json::Value)> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
-            .collect();
-        assert_eq!(
-            sent,
-            [(
-                "/v1/scenarios/rerun".to_owned(),
-                json!({ "round": "round 1", "restart": false })
-            )]
-        );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        assert!(
-            audit.iter().any(|a| a
-                == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
-            "{audit:?}"
-        );
+        let line =
+            "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41";
+        assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
     }
 
     #[tokio::test]

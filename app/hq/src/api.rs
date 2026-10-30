@@ -94,15 +94,11 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/projects/{id}/rank", post(loop_rank))
         .route("/v1/one-team", post(one_team))
-        // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
+        // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
-        .route("/v1/scenarios/rerun", post(rerun_holodeck))
         .route("/v1/league", post(start_league))
         .route("/v1/league/reset", post(reset_league))
         .route("/v1/scenarios/{task}", get(scenario_shown))
-        // Trials (phase 7): one scenario under two conditions or more, compared.
-        .route("/v1/trials", post(start_trial))
-        .route("/v1/trials/{name}", get(trial_report))
         // A match of ping-pong or pool played again, step by step.
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
@@ -537,33 +533,6 @@ async fn reply(
 }
 
 #[derive(Deserialize)]
-struct Rerun {
-    round: String,
-    /// Start over: drop the scenario in play and queue every setup again.
-    #[serde(default)]
-    restart: bool,
-}
-
-/// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
-async fn rerun_holodeck(
-    Extract(state): Extract<State>,
-    Json(req): Json<Rerun>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let round = req.round.clone();
-    let restart = req.restart;
-    let queued = blocking(move || {
-        if restart {
-            hq.restart_holodeck(&round)
-        } else {
-            hq.rerun_holodeck(&round)
-        }
-    })
-    .await?;
-    Ok(Json(json!({ "queued": queued, "round": req.round })))
-}
-
-#[derive(Deserialize)]
 struct League {
     project: i64,
     brains: Vec<String>,
@@ -858,26 +827,19 @@ async fn project_cap(
 #[derive(Deserialize)]
 struct StartScenario {
     project: i64,
-    /// `lighthouse` (the default), `silent_station` or `chess`.
+    /// `chess`, the one world left (ADR 0135, amended 2026-10-30).
     #[serde(default)]
     kind: Option<String>,
-    /// The lighthouse's member.
-    #[serde(default)]
-    member: Option<i64>,
-    /// Silent Station's crew: the captain, science and the engineer.
-    #[serde(default)]
-    crew: Option<[i64; 3]>,
     /// A chess match's players: white, then black.
     #[serde(default)]
     players: Option<[i64; 2]>,
-    /// The world's seed: the same seed is the same world. Today's clock when not given.
+    /// Which game it is. Today's clock when not given.
     #[serde(default)]
     seed: Option<u64>,
 }
 
-/// The owner starts a scenario, in a project that gives its work the scenario tool alone: the
-/// lighthouse for a member, or Silent Station for a crew of three. Starting it again with the
-/// same seed is its reset.
+/// The owner starts a chess match, in a project that gives its work the scenario tool alone.
+/// The lighthouse and Silent Station were retired (2026-10-30), and are refused.
 async fn start_scenario(
     Extract(state): Extract<State>,
     Json(req): Json<StartScenario>,
@@ -887,85 +849,17 @@ async fn start_scenario(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
     });
+    let (Some("chess"), Some(players)) = (req.kind.as_deref(), req.players) else {
+        return Err(Failed(EngineError::Refused(Refusal::Scenario(
+            "the Holodeck plays chess alone: kind \"chess\" names its players: [white, black] \
+             (the lighthouse and Silent Station were retired)"
+                .to_owned(),
+        ))));
+    };
     let hq = state.hq.clone();
     let project = ProjectId(req.project);
-    let task = match (req.kind.as_deref(), req.member, req.crew, req.players) {
-        (Some("silent_station"), _, Some(crew), _) => {
-            blocking(move || hq.start_station(project, crew.map(MemberId), seed)).await?
-        }
-        (Some("chess"), _, _, Some(players)) => {
-            blocking(move || hq.start_chess(project, players.map(MemberId), seed)).await?
-        }
-        (None | Some("lighthouse"), Some(member), _, _) => {
-            blocking(move || hq.start_scenario(project, MemberId(member), seed)).await?
-        }
-        _ => {
-            return Err(Failed(EngineError::Refused(Refusal::Scenario(
-                "a lighthouse names its member; silent_station names its crew: [captain, \
-                 science, engineer]; chess names its players: [white, black]"
-                    .to_owned(),
-            ))));
-        }
-    };
+    let task = blocking(move || hq.start_chess(project, players.map(MemberId), seed)).await?;
     Ok(Json(json!({ "task": task.0, "seed": seed })))
-}
-
-#[derive(Deserialize)]
-struct TrialArm {
-    label: String,
-    members: Vec<i64>,
-    /// How the players are briefed, when not as usual: `plan_first`.
-    #[serde(default)]
-    brief: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StartTrial {
-    name: String,
-    project: i64,
-    kind: String,
-    conditions: Vec<TrialArm>,
-    seeds: Vec<u64>,
-}
-
-/// The owner starts a trial: one scenario, every condition on every seed.
-async fn start_trial(
-    Extract(state): Extract<State>,
-    Json(req): Json<StartTrial>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let name = req.name.clone();
-    let arms: Vec<endora_team::domain::trials::Arm> = req
-        .conditions
-        .into_iter()
-        .map(|c| endora_team::domain::trials::Arm {
-            label: c.label,
-            members: c.members.into_iter().map(MemberId).collect(),
-            brief: c.brief,
-        })
-        .collect();
-    let tasks = blocking(move || {
-        hq.start_trial(
-            &req.name,
-            ProjectId(req.project),
-            &req.kind,
-            &arms,
-            &req.seeds,
-        )
-    })
-    .await?;
-    Ok(Json(
-        json!({ "name": name, "tasks": tasks.iter().map(|t| t.0).collect::<Vec<_>>() }),
-    ))
-}
-
-/// A trial compared.
-async fn trial_report(
-    Extract(state): Extract<State>,
-    Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    Ok(Json(blocking(move || hq.trial_report(&name)).await?))
 }
 
 /// A scenario, its state and its log step by step.
@@ -1337,6 +1231,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "health needs no token");
+    }
+
+    /// The owner retired the Holodeck's other worlds (ADR 0135, amended 2026-10-30): nothing
+    /// starts a lighthouse, Silent Station, a trial or a re-run any more.
+    #[tokio::test]
+    async fn only_chess_starts_on_the_holodeck() {
+        let app = app(state(true));
+        for (path, body) in [
+            ("/v1/scenarios", r#"{"project":1,"member":2,"seed":7}"#),
+            (
+                "/v1/scenarios",
+                r#"{"project":1,"kind":"silent_station","crew":[2,3,4]}"#,
+            ),
+            ("/v1/scenarios/rerun", r#"{"round":"round 1"}"#),
+            (
+                "/v1/trials",
+                r#"{"name":"t","project":1,"kind":"lighthouse"}"#,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(call("POST", path, Some(TOKEN), body))
+                .await
+                .unwrap();
+            assert!(
+                !res.status().is_success(),
+                "{path} {body}: {}",
+                res.status()
+            );
+        }
+        let refused = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/scenarios",
+                Some(TOKEN),
+                r#"{"project":1,"kind":"lighthouse","member":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            json_of(refused).await.to_string().contains("chess alone"),
+            "the refusal says why"
+        );
     }
 
     /// `/health` says how long ago the tick last finished (ADR 0124): none before the first,

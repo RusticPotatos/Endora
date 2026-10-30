@@ -2940,25 +2940,24 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   console.log("world editor: paste, preview, apply and the section editor behave");
 }
 
-// The Holodeck on the HQ screen (ADR 0135): the Work tab lists the scenarios and trials, and
-// opens one step by step (a lighthouse's log, a mission's state, a match's board and each
-// side's illegal moves, a trial's conditions side by side); the Office replays a match of pool
-// or ping-pong shot by shot or rally by rally (ADR 0121). Everything shown is the team's or
-// the world's words, so all of it is escaped.
+// The Holodeck on the HQ screen (ADR 0135): the Work tab lists the chess matches and the model
+// league, and opens a match move by move (its board and each side's illegal moves). The
+// lighthouse, Silent Station, trials and re-runs were retired (2026-10-30): nothing offers to
+// start, run again or compare them. Everything shown is the team's or the world's words, so
+// all of it is escaped.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   const html = (code) => String(runInContext(code, context));
   runInContext(`__keepHolo = [HQ.snap, HQ.holo, api, render, flash]; render = () => {}; flash = () => {};
     HQ.snap = Object.assign({}, HQ.snap, { holodeck: {
       scenarios: [{ task: 708, kind: "chess", title: "Chess (game 1)", status: "doing", end: null, elapsed: 4 },
-                  { task: 701, kind: "lighthouse", title: "The dark <b>lighthouse</b>", status: "done", end: "solved", elapsed: 45 }],
-      trials: [{ name: "bo-vs-dee", kind: "lighthouse", runs: 4 }] } });`, context);
+                  { task: 701, kind: "chess", title: "Chess <b>(game 0)</b>", status: "done", end: "draw", elapsed: 45 }] } });`, context);
   const card = html("hqHolodeck(HQ.snap)");
-  if (!card.includes("Holodeck") || !card.includes('data-act="hq:holo:open:708"') || !card.includes('data-act="hq:holo:trial:bo-vs-dee"')) fail("holodeck: the card does not list and open the scenarios and trials: " + card);
+  if (!card.includes("Holodeck") || !card.includes('data-act="hq:holo:open:708"') || !card.includes("45 half-moves")) fail("holodeck: the card does not list and open the matches: " + card);
   // One-line rows: the whole row opens it, no button beneath (the owner, 2026-10-25).
-  if (!card.includes('<button class="hq-line" data-act="hq:holo:open:708">') || card.includes(">Open</button>")) fail("holodeck: a scenario is not a one-line row: " + card);
-  if (!card.includes('data-act="hq:holo:rerun:all"')) fail("holodeck: the owner cannot run every scenario again");
-  if (card.includes("<b>lighthouse</b>")) fail("holodeck: a title is not escaped");
+  if (!card.includes('<button class="hq-line" data-act="hq:holo:open:708">') || card.includes(">Open</button>")) fail("holodeck: a match is not a one-line row: " + card);
+  if (/hq:holo:(rerun|restart|trial)/.test(card) || /Trials|Lighthouse|Silent Station/.test(card)) fail("holodeck: a retired world, trial or re-run is still offered: " + card);
+  if (card.includes("<b>(game 0)</b>")) fail("holodeck: a title is not escaped");
   // The model league (ADR 0135, amended 2026-10-25): the brains ranked, one line each, and its games open.
   runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { league: {
       table: [{ brain: "local", label: "Local", rating: 1216, won: 1, drawn: 0, lost: 0 }, { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, won: 0, drawn: 0, lost: 1 }],
@@ -2966,11 +2965,6 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const league = html("hqHolodeck(HQ.snap)");
   if (!league.includes("Model league") || !/1\. Local[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("holodeck: the league table is not shown: " + league);
   if (!league.includes('data-act="hq:holo:open:812"') || league.includes("<b>Haiku</b>")) fail("holodeck: a league game does not open, or a label is not escaped: " + league);
-  if (league.includes("first game starts")) fail("holodeck: a league with games says it has not started: " + league);
-  // A league with no games yet, behind queued scenarios, says why (owner, 2026-10-27).
-  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { queued: 3, league: Object.assign({}, HQ.snap.holodeck.league, { games: [] }) }) });`, context);
-  const waiting = html("hqHolodeck(HQ.snap)");
-  if (!waiting.includes("The first game starts once the queued scenarios are done.")) fail("holodeck: a league waiting on the queue does not say so: " + waiting);
   // Which side each brain played, and who won, in words rather than "black_won" (owner, 2026-10-26).
   const gameLine = league.replace(/<[^>]+>/g, "");
   if (!gameLine.includes("White: &lt;b&gt;Haiku&lt;/b&gt;") || !gameLine.includes("Black: Local") || !gameLine.includes("Local won") || gameLine.includes("black_won")) fail("holodeck: a league game does not say who played which colour and who won: " + league);
@@ -3029,24 +3023,18 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     LAST_VIEW = NAV.v; __keepHolo[3]();
     [setTimeout, setInterval, requestAnimationFrame] = __timers; document.querySelectorAll = __keepQs;`, context);
   if (!runInContext("__same.open", context) || runInContext("__other.open", context)) fail("render: a fold-out the owner opened closes on a live update, or another one opens");
-  const station = shown({ what: "scenario", data: { task: 709, kind: "silent_station", end: "success", score: 75, anomaly: "magnetic field",
-    state: { life_support: 5, ship_energy: 35, station_power: 20, hazard: 1, crew_safe: true, power_routed: false, probe_out: true, contact: true },
-    brief: "plan_first", plan: "Science scans; I call. <b>now</b>", log: [] } });
-  if (!station.includes("75") || !station.includes("magnetic field") || !station.includes("Life support")) fail("holodeck: a mission does not show its state and score: " + station);
-  if (!station.includes("Briefed plan first") || !station.includes("Science scans; I call.") || station.includes("<b>now</b>")) fail("holodeck: a mission does not show its briefing and plan, escaped: " + station);
-  const trial = shown({ what: "trial", data: { name: "bo-vs-dee", kind: "lighthouse", version: 1, seeds: [2, 3],
-    conditions: [{ label: "bo", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["local"] },
-                 { label: "<b>dee</b>", runs: 2, done: 2, not_done: 0, unfinished: 0, mean_score: 100, mean_elapsed: 25, refused: 0, unsafe_runs: 0, turns: 2, idle_turns: 0, spent: 0, brains: ["mac"] }],
-    runs: [], markdown: "# Trial" } });
-  if (!trial.includes("<table") || !trial.includes("mac") || trial.includes("<b>dee</b>")) fail("holodeck: a trial is not compared side by side, or not escaped: " + trial);
-  // Tapping Open fetches the scenario and shows it; tapping a trial fetches the trial.
+  // The league alone, before any match is listed, still shows the card.
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: { scenarios: [], league: HQ.snap.holodeck.league } });`, context);
+  if (!html("hqHolodeck(HQ.snap)").includes("Model league")) fail("holodeck: the league alone does not show the card");
+  // Tapping a match fetches it and shows it; an old trial or re-run tap fetches nothing.
   runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
   await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
   await runInContext(`hqDispatch("hq", "holo", "trial", "bo-vs-dee")`, context);
+  await runInContext(`hqDispatch("hq", "holo", "rerun", "all")`, context);
   const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
-  if (asked.join("|") !== "GET /v1/hq/scenarios/708|GET /v1/hq/trials/bo-vs-dee") fail("holodeck: the taps do not fetch what they open: " + asked.join("|"));
+  if (asked.join("|") !== "GET /v1/hq/scenarios/708") fail("holodeck: the taps do not fetch what they open, or a retired one still asks: " + asked.join("|"));
   runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
-  console.log("holodeck: scenarios and trials are listed and opened, escaped");
+  console.log("holodeck: matches and the league are listed and opened, escaped; nothing retired is offered");
 }
 
 // Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own

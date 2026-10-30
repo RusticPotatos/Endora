@@ -387,12 +387,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}/rank", post(hq_loop_rank))
         .route("/v1/hq/one-team", post(hq_one_team))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
-        .route("/v1/hq/scenarios/rerun", post(hq_rerun_holodeck))
         .route("/v1/hq/league", post(hq_start_league))
         .route("/v1/hq/league/reset", post(hq_reset_league))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
-        .route("/v1/hq/trials", post(hq_start_trial))
-        .route("/v1/hq/trials/{name}", get(hq_trial))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
