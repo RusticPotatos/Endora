@@ -87,3 +87,30 @@ than by a new role.
   nothing would gate a model's actions on the house.
 - **A week's pilot beside the team.** Rejected by the owner: cut straight over, with the
   `before-loops` image and snapshots as the way back.
+
+## Amended 2026-10-30: round 1 of closing the gap
+
+After the baseline experiment (`docs/proposals/baseline-experiment-2026-10-28.md`: Claude Code
+10 of 10, HQ 1 of 10), the owner had its design defects fixed and the bottom of the ranks
+strengthened, as the experiment's first rounds.
+
+- **Rank 1 runs.** The member whose brain is Opus thinks with it, at the dollar a turn the CEO
+  had, in the relay and in HQ's reservation. Before, the relay kept Opus for a role nobody had.
+- **A failure at the top rank lets its loop go on.** The item is blocked and let go, and the
+  owner is told once; before, it stayed with Mara and stalled the loop.
+- **Only finished turns count against an item.** A turn the system ended (refused, timed out,
+  failed) is not the member showing nothing.
+- **A read-only task's turns are refused the lab's acts.** When a task's words leave the lab as
+  it is, HQ tells the node to refuse `restart_container`; and the node refuses to restart a
+  container others run in the network of (gluetun) whatever the task.
+- **A chess move is given three turns.** Then the side to move forfeits, so nobody is woken for
+  a move it never makes.
+- **The owner's projects need no lead role**, and a paused world or league neither forfeits
+  nor opens games.
+- **DeepSeek Flash is a brain**, ranked between Haiku and the Mac (Opus 1, Sonnet 2, Haiku 3,
+  DeepSeek 4, Mac 5, the house's model 6). It is a cloud model, so it is offered nothing
+  Restricted (ADR 0141), which was the owner's condition; its calls go through the node's local
+  relay to the DeepSeek entry on the Everyday list alone, are held to the turn's budget and
+  charged at DeepSeek's peak prices. A DeepSeek member is refused every Claude.
+- **The house's model is qwen3.5:9b** on the NAS's A2000, in place of qwen3:8b (a setting on the
+  Everyday list, not code).

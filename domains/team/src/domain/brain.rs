@@ -28,15 +28,20 @@ pub enum Brain {
     Haiku,
     /// Claude Opus, through the same relay: the CEO's only (ADR 0111).
     Opus,
+    /// DeepSeek Flash, through the node's local relay to the DeepSeek entry on the owner's
+    /// Everyday list (the owner, 2026-10-28): a cloud model, so it is offered nothing
+    /// Restricted (ADR 0141), and metered against the team's pool at DeepSeek's prices.
+    DeepSeek,
 }
 
 /// Every brain, in the order the owner is offered them.
-const ALL: [Brain; 5] = [
+const ALL: [Brain; 6] = [
     Brain::Local,
     Brain::Mac,
     Brain::Opus,
     Brain::Sonnet,
     Brain::Haiku,
+    Brain::DeepSeek,
 ];
 
 impl Brain {
@@ -50,8 +55,13 @@ impl Brain {
             Self::Sonnet => "claude-sonnet-5-5",
             Self::Haiku => "claude-haiku-5-5",
             Self::Opus => "claude-opus-5-5",
+            Self::DeepSeek => "deepseek-flash",
         }
     }
+
+    /// The lowest rank, the house's model's: where a loop's items start unless the owner
+    /// says otherwise.
+    pub const BOTTOM: u8 = 6;
 
     /// Its rank on the team (ADR 0142): 1 is the most able. An item that fails its checks climbs
     /// from the house's model to Opus.
@@ -61,8 +71,9 @@ impl Brain {
             Self::Opus => 1,
             Self::Sonnet => 2,
             Self::Haiku => 3,
-            Self::Mac => 4,
-            Self::Local => 5,
+            Self::DeepSeek => 4,
+            Self::Mac => 5,
+            Self::Local => Self::BOTTOM,
         }
     }
 
@@ -75,13 +86,17 @@ impl Brain {
             Self::Sonnet => "Claude Sonnet",
             Self::Haiku => "Claude Haiku",
             Self::Opus => "Claude Opus",
+            Self::DeepSeek => "DeepSeek Flash",
         }
     }
 
     /// The brain with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        // Its stored name, or the short one the owner says ("sonnet").
+        // Its stored name, or the short one the owner says ("sonnet", "deepseek").
+        if name == "deepseek" {
+            return Some(Self::DeepSeek);
+        }
         ALL.into_iter().find(|b| {
             b.name() == name
                 || b.name()
@@ -118,12 +133,13 @@ impl Brain {
             Self::Opus => 1_000,
             Self::Sonnet => 500,
             Self::Haiku => 25,
+            Self::DeepSeek => 75,
         }
     }
 
     /// Every brain, in the order the owner is offered them.
     #[must_use]
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         ALL
     }
 
@@ -131,7 +147,7 @@ impl Brain {
     #[must_use]
     pub const fn allowed_for(self, role: Role) -> bool {
         match self {
-            Self::Local | Self::Mac => true,
+            Self::Local | Self::Mac | Self::DeepSeek => true,
             Self::Opus => matches!(role, Role::Ceo),
             Self::Sonnet => !matches!(role, Role::Researcher),
             Self::Haiku => !matches!(role, Role::Ceo),
@@ -247,7 +263,13 @@ mod tests {
         for role in [Role::Lead, Role::Developer, Role::Reviewer] {
             assert_eq!(
                 Brain::choices(role),
-                [Brain::Local, Brain::Mac, Brain::Sonnet, Brain::Haiku]
+                [
+                    Brain::Local,
+                    Brain::Mac,
+                    Brain::Sonnet,
+                    Brain::Haiku,
+                    Brain::DeepSeek
+                ]
             );
             assert_eq!(
                 Brain::for_role(role, "claude-sonnet-5-5"),
@@ -256,7 +278,7 @@ mod tests {
         }
         assert_eq!(
             Brain::choices(Role::Researcher),
-            [Brain::Local, Brain::Mac, Brain::Haiku]
+            [Brain::Local, Brain::Mac, Brain::Haiku, Brain::DeepSeek]
         );
         assert_eq!(
             Brain::for_role(Role::Researcher, "claude-haiku-5-5"),
@@ -266,7 +288,13 @@ mod tests {
         // the house's model, and Opus is nobody else's.
         assert_eq!(
             Brain::choices(Role::Ceo),
-            [Brain::Local, Brain::Mac, Brain::Opus, Brain::Sonnet]
+            [
+                Brain::Local,
+                Brain::Mac,
+                Brain::Opus,
+                Brain::Sonnet,
+                Brain::DeepSeek
+            ]
         );
         assert_eq!(
             Brain::for_role(Role::Ceo, "claude-opus-5-5"),
@@ -294,6 +322,47 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(said.contains("Opus is the CEO's alone"), "{said}");
+    }
+
+    #[test]
+    fn deepseek_flash_is_a_cheap_cloud_brain_ranked_between_haiku_and_the_mac() {
+        // The owner, 2026-10-28: DeepSeek's API, as long as nothing above Confidential goes to it
+        // (a cloud turn is offered nothing Restricted, ADR 0141) and its tokens are cheap.
+        let deep = Brain::from_name("deepseek-flash").unwrap();
+        assert_eq!(deep, Brain::DeepSeek);
+        assert_eq!(
+            Brain::from_name("deepseek"),
+            Some(Brain::DeepSeek),
+            "its short name"
+        );
+        assert!(deep.cloud() && !deep.house());
+        assert_eq!(deep.label(), "DeepSeek Flash");
+        assert!(deep.price_class() > 0 && deep.price_class() < Brain::Sonnet.price_class());
+        let ranks: Vec<u8> = [
+            Brain::Opus,
+            Brain::Sonnet,
+            Brain::Haiku,
+            Brain::DeepSeek,
+            Brain::Mac,
+            Brain::Local,
+        ]
+        .iter()
+        .map(|b| b.rank())
+        .collect();
+        assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(Brain::BOTTOM, 6);
+        for role in [
+            Role::Developer,
+            Role::Researcher,
+            Role::Lead,
+            Role::Reviewer,
+        ] {
+            assert!(deep.allowed_for(role), "{role:?}");
+        }
+        assert!(
+            Brain::for_work(Role::Developer, "deepseek-flash").is_err(),
+            "not the house's"
+        );
     }
 
     #[test]

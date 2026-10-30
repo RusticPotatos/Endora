@@ -26,7 +26,7 @@ pub const fn chars_for(brain: Brain) -> usize {
     match brain {
         Brain::Local => MAP_CHARS_LOCAL,
         Brain::Mac => MAP_CHARS_MAC,
-        Brain::Sonnet | Brain::Haiku | Brain::Opus => MAP_CHARS,
+        Brain::Sonnet | Brain::Haiku | Brain::Opus | Brain::DeepSeek => MAP_CHARS,
     }
 }
 /// The most characters of one line of a map.

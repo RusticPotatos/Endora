@@ -279,14 +279,14 @@ fn the_snapshot_lists_both_brains_and_what_each_may_be() {
     assert_eq!(names(&ada["work_brains"]), ["mac", "local"]);
     assert_eq!(
         names(&ada["judgment_brains"]),
-        ["claude-sonnet-5-5", "claude-haiku-5-5"],
+        ["claude-sonnet-5-5", "claude-haiku-5-5", "deepseek-flash"],
         "never Opus"
     );
     let sam = find(t.researcher);
     assert_eq!(
         names(&sam["judgment_brains"]),
-        ["claude-haiku-5-5"],
-        "a researcher judges with Haiku only"
+        ["claude-haiku-5-5", "deepseek-flash"],
+        "a researcher judges with Haiku or DeepSeek"
     );
     assert_eq!(sam["judgment_brain"], "claude-haiku-5-5");
 }

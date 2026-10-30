@@ -173,9 +173,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// same way (ADR 0142): no roles, only its model's rank.
     pub(super) fn briefing_body(&self, member: &Member, run: &Run, memory: &str) -> Done<String> {
         let mut told = format!(
-            "You are {}, rank {} of the team's five, thinking with {}. Today is {}.\n",
+            "You are {}, rank {} of {}, thinking with {}. Today is {}.\n",
             member.name,
             member.brain.rank(),
+            crate::domain::Brain::BOTTOM,
             member.brain.label(),
             self.said_today()
         );

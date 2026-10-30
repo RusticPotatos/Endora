@@ -785,6 +785,22 @@ pub(super) fn local_target(state: &AppState) -> Local {
     }
 }
 
+/// Where a DeepSeek member's call goes: the first enabled Everyday entry that names `model`.
+/// None when the owner's list has none: the turn is answered by nothing else.
+fn deepseek_target(state: &AppState, model: &str) -> Option<Local> {
+    use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
+    let providers = state.config.providers().unwrap_or_default();
+    let everyday = state.config.entries(Job::Everyday).unwrap_or_default();
+    let found = targets(&providers, &everyday)
+        .into_iter()
+        .find(|t| t.model == model)?;
+    Some(Local {
+        url: found.url,
+        model: found.model,
+        key: found.api_key,
+    })
+}
+
 /// `POST /team-relay/local/v1/chat/completions`: a model call of a team member's turn, to the
 /// house's own model, whole (never streamed). It is asked with the model the owner's list
 /// names, whatever the worker named. Local costs nothing, so HQ is charged nothing; the use is
@@ -806,13 +822,37 @@ pub(super) async fn chat_completions(
         );
     };
     // The token first, so a stranger cannot make the node read a body at all.
-    let turn = match turn_of(hq, token_of(&headers), refuse_openai).await {
+    let turn = match turn_of(hq.clone(), token_of(&headers), refuse_openai).await {
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
     // A member who thinks with the owner's Mac (ADR 0130) is answered by the Mac, only while it
     // is free, and by nothing else: no other model, no Claude, not the house's own.
     let on_the_mac = turn.brain == "mac";
+    // A member who thinks with DeepSeek (the owner, 2026-10-28) is answered by the DeepSeek
+    // entry on the Everyday list alone, its output held to what the turn can afford, and each
+    // call charged to HQ at DeepSeek's prices, as the Anthropic relay charges Claude's.
+    let on_deepseek = turn.brain.starts_with("deepseek");
+    let mut afford = None;
+    if on_deepseek {
+        let Some(price) = price_of(&turn.brain, 0) else {
+            return refuse_openai(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                &format!("{} is not a model the team may use", turn.brain),
+            );
+        };
+        let left = turn.left.min(most_a_turn_as(&turn.role, &turn.brain));
+        let most = affordable_output(price, left);
+        if most == 0 {
+            return refuse_openai(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_error",
+                "this turn's budget is spent",
+            );
+        }
+        afford = Some(most);
+    }
     let Ok(body) = axum::body::to_bytes(body, LARGEST_LOCAL_CALL).await else {
         return refuse_openai(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -834,8 +874,15 @@ pub(super) async fn chat_completions(
             "the local relay does not stream: ask with \"stream\": false",
         );
     }
+    let (run, brain) = (turn.run, turn.brain.clone());
     let done = tokio::task::spawn_blocking(move || {
-        let local = if on_the_mac {
+        let local = if on_deepseek {
+            let Some(found) = deepseek_target(&state, &brain) else {
+                let said = json!({ "error": { "message": format!("{brain} is not on the Everyday list"), "type": "api_error" } });
+                return Ok::<_, String>((503, said.to_string().into_bytes()));
+            };
+            found
+        } else if on_the_mac {
             let now = state.clock.now().unix_millis();
             match mac::target(&state, now) {
                 Ok(mac) => Local {
@@ -853,6 +900,13 @@ pub(super) async fn chat_completions(
             local_target(&state)
         };
         call.insert("model".to_owned(), json!(local.model));
+        if let Some(most) = afford {
+            let asked = call
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(most);
+            call.insert("max_tokens".to_owned(), json!(asked.min(most)));
+        }
         if call
             .get("reasoning_effort")
             .and_then(serde_json::Value::as_str)
@@ -864,6 +918,10 @@ pub(super) async fn chat_completions(
         let (status, bytes) = send_local(&local.url, &local.key, &sent)?;
         if status < 300 {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if on_deepseek {
+                    charge(&hq, &state, run, &local.model, Used::from_openai(&v["usage"]));
+                    return Ok((status, bytes));
+                }
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
                 endora_application::UsageLog::record(
                     state.store.as_ref(),
@@ -1843,6 +1901,108 @@ pub(super) mod tests {
                 v["model"].as_str().map(str::to_owned)
             })
             .collect()
+    }
+
+    /// HQ knowing one turn of a member who thinks with DeepSeek, with `left` micros.
+    fn hq_on_deepseek(left: i64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Sol", "role": "developer", "left": left,
+                        "cloud": true, "brain": "deepseek-flash" })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"may_go_on":true}"#.to_owned()),
+        }))
+    }
+
+    /// The owner, 2026-10-28: DeepSeek Flash as a brain. A member who thinks with it is
+    /// answered by the DeepSeek entry on the Everyday list and nothing else, with its output
+    /// held to what the turn can afford, and the call is charged to HQ at DeepSeek's prices.
+    #[tokio::test]
+    async fn a_deepseek_turn_is_answered_by_the_deepseek_entry_capped_and_charged() {
+        let (hq_url, to_hq) = hq_on_deepseek(1_200);
+        let (house, to_house) = local_model();
+        let (deepseek, to_deepseek) = fake(Arc::new(|_path, _body| {
+            (
+                200,
+                "application/json",
+                json!({ "choices": [{ "message": { "role": "assistant", "content": "Done." } }],
+                        "usage": { "prompt_tokens": 1_000, "completion_tokens": 100,
+                                   "prompt_cache_hit_tokens": 600,
+                                   "prompt_cache_miss_tokens": 400 } })
+                .to_string(),
+            )
+        }));
+        // DeepSeek is not on the house's network: an entry like it is passed over for a house
+        // turn, and the only one a DeepSeek turn is given.
+        let state = local_node(
+            &hq_url,
+            &house,
+            &[
+                (&house, "qwen3.5:9b", "", true),
+                (
+                    &format!("{deepseek}/v1"),
+                    "deepseek-flash",
+                    "a-deepseek-key",
+                    true,
+                ),
+            ],
+        );
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            to_house.lock().unwrap().is_empty(),
+            "never the house's model"
+        );
+        let asked = to_deepseek.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1);
+        let call: serde_json::Value = serde_json::from_str(&asked[0].2).unwrap();
+        assert_eq!(call["model"], "deepseek-flash");
+        // $0.0012 left at $1.20 a million out: 1,000 tokens at most.
+        assert_eq!(call["max_tokens"], 1_000, "{call}");
+        assert!(
+            asked[0]
+                .1
+                .iter()
+                .any(|(k, v)| k == "authorization" && v == "Bearer a-deepseek-key")
+        );
+        let charged: Vec<serde_json::Value> = to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/usage")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(charged.len(), 1);
+        assert_eq!(charged[0]["micros"], 244);
+        assert_eq!(charged[0]["cache_read"], 600);
+    }
+
+    #[tokio::test]
+    async fn a_deepseek_turn_with_nothing_left_or_no_entry_is_answered_by_nothing() {
+        let (hq_url, _) = hq_on_deepseek(0);
+        let (house, to_house) = local_model();
+        let (deepseek, to_deepseek) = local_model();
+        let state = local_node(&hq_url, &house, &[(&deepseek, "deepseek-flash", "k", true)]);
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::PAYMENT_REQUIRED);
+        let (hq_url, _) = hq_on_deepseek(400_000);
+        let state = local_node(&hq_url, &house, &[(&house, "qwen3.5:9b", "", true)]);
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(to_house.lock().unwrap().is_empty() && to_deepseek.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -218,9 +218,10 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
         json!([{ "name": "local", "label": "Local" },
                { "name": "mac", "label": "Mac" },
                { "name": "claude-sonnet-5-5", "label": "Claude Sonnet" },
-               { "name": "claude-haiku-5-5", "label": "Claude Haiku" }])
+               { "name": "claude-haiku-5-5", "label": "Claude Haiku" },
+               { "name": "deepseek-flash", "label": "DeepSeek Flash" }])
     );
     let marie = &snap["members"][2];
-    assert_eq!(marie["brains"].as_array().unwrap().len(), 3);
+    assert_eq!(marie["brains"].as_array().unwrap().len(), 4);
     assert_eq!(hq.store().count_events("member.brain").unwrap().0, 2);
 }

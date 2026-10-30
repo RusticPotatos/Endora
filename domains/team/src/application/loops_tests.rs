@@ -111,19 +111,20 @@ fn members_are_ranked_by_their_model() {
         Brain::Opus,
         Brain::Sonnet,
         Brain::Haiku,
+        Brain::DeepSeek,
         Brain::Mac,
         Brain::Local,
     ]
     .into_iter()
     .map(Brain::rank)
     .collect();
-    assert_eq!(ranks, [1, 2, 3, 4, 5]);
+    assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let rae = hq.hire("Rae", Role::Developer, 10, 2, 0).unwrap();
     hq.set_model(rae, "mac").unwrap();
     let snap = hq.snapshot().unwrap();
-    assert_eq!(snap["members"][0]["rank"], 4, "{}", snap["members"][0]);
+    assert_eq!(snap["members"][0]["rank"], 5, "{}", snap["members"][0]);
 }
 
 /// Opus is no longer the CEO's alone: a title is a name only (ADR 0142).
@@ -275,7 +276,7 @@ fn a_loop_may_start_at_a_higher_rank() {
     let hard = item(&hq, &f, "Find what stops gluetun", Priority::Normal);
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, hard), Some(f.ada), "rank 3 is Ada, on Haiku");
-    assert!(hq.set_loop_rank(f.loop_, 0).is_err() && hq.set_loop_rank(f.loop_, 6).is_err());
+    assert!(hq.set_loop_rank(f.loop_, 0).is_err() && hq.set_loop_rank(f.loop_, 7).is_err());
 }
 
 /// With the member at the starting rank paused, the next one up takes the item.

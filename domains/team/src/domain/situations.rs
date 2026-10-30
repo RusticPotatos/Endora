@@ -129,7 +129,7 @@ pub const fn budget(role: Role, brain: Brain, situation: Situation) -> usize {
     let cap = match brain {
         Brain::Local => LOCAL_BUDGET,
         Brain::Mac => MAC_BUDGET,
-        Brain::Sonnet | Brain::Haiku | Brain::Opus => usize::MAX,
+        Brain::Sonnet | Brain::Haiku | Brain::Opus | Brain::DeepSeek => usize::MAX,
     };
     if most > cap {
         most = cap;

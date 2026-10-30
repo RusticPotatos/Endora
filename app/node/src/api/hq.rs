@@ -828,7 +828,7 @@ pub(super) struct HqLoopRank {
     rank: u8,
 }
 
-/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 5 (the house's
+/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 6 (the house's
 /// model).
 pub(super) async fn hq_loop_rank(
     State(state): State<AppState>,

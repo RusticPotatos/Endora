@@ -44,7 +44,7 @@ fn failures_key(task: TaskId) -> String {
 }
 
 /// The rank a loop starts at when the owner has not said: the house's model.
-const START: u8 = 5;
+const START: u8 = Brain::BOTTOM;
 
 /// Where a loop's starting rank is kept.
 fn rank_key(project: ProjectId) -> String {
@@ -131,7 +131,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(serde_json::json!({ "seated": seated, "retired": retired, "still_playing": playing }))
     }
 
-    /// The owner sets the rank a loop's items start at: 1 (Opus) to 5 (the house's model).
+    /// The owner sets the rank a loop's items start at: 1 (Opus) to 6 (the house's model).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a project that does not exist; [`Refusal::Scenario`] for a
@@ -139,9 +139,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn set_loop_rank(&self, project: ProjectId, rank: u8) -> Done<()> {
         let _held = self.held();
         self.project(project)?;
-        if !(1..=5).contains(&rank) {
+        if !(1..=Brain::BOTTOM).contains(&rank) {
             return Err(EngineError::Refused(Refusal::Scenario(
-                "a loop starts at a rank from 1 (Opus) to 5 (the house's model)".to_owned(),
+                "a loop starts at a rank from 1 (Opus) to 6 (the house's model)".to_owned(),
             )));
         }
         self.store

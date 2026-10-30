@@ -129,7 +129,9 @@ impl Need {
         let (kind, allowed) = match brain {
             Brain::Mac => (TurnKind::Work, Allowed::Mac),
             Brain::Local => (TurnKind::Work, Allowed::Local),
-            Brain::Sonnet | Brain::Haiku | Brain::Opus => (TurnKind::Judgment, Allowed::Either),
+            Brain::Sonnet | Brain::Haiku | Brain::Opus | Brain::DeepSeek => {
+                (TurnKind::Judgment, Allowed::Either)
+            }
         };
         Self {
             kind,

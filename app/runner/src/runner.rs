@@ -254,9 +254,10 @@ fn cloud_of(brain: &Value) -> Result<Option<String>, ()> {
         Value::String(name) => name.as_str(),
         _ => return Err(()),
     };
-    // The house's own model, and the owner's Mac (ADR 0130): both through the node's local
-    // relay, which sends a Mac member's calls to the Mac and to nothing else.
-    if name == "local" || name == "mac" {
+    // The house's own model, the owner's Mac (ADR 0130) and DeepSeek Flash (the owner,
+    // 2026-10-28): all through the node's local relay, which sends a Mac member's calls to the
+    // Mac and a DeepSeek member's to DeepSeek, and to nothing else.
+    if name == "local" || name == "mac" || name == "deepseek-flash" {
         return Ok(None);
     }
     let Some(rest) = name.strip_prefix("claude-") else {
@@ -1840,6 +1841,26 @@ mod tests {
         assert_eq!(
             specs[0]["HostConfig"], specs[1]["HostConfig"],
             "the same fence either way"
+        );
+    }
+
+    #[test]
+    fn a_turn_on_deepseek_goes_to_the_local_relay_which_sends_it_to_deepseek() {
+        // The node's local relay knows the turn's brain from HQ and answers it from the
+        // DeepSeek entry alone; the worker speaks OpenAI's API to it, as for the house's models.
+        let mut on_deepseek = turn(25);
+        on_deepseek["brain"] = json!("deepseek-flash");
+        let hq = FakeHq::new(vec![on_deepseek]);
+        let docker = FakeDocker::default();
+        let mut first = runner("deepseek", &hq, &docker, 1);
+        first.step(T0);
+        assert_eq!(
+            docker.specs()[0]["Env"],
+            json!([
+                format!("ENDORA_RUN_TOKEN={}", token(25)),
+                "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
+                "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
+            ])
         );
     }
 

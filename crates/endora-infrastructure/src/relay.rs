@@ -165,6 +165,16 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
             output: 20.0,
         });
     }
+    // DeepSeek Flash, through the local relay to the owner's DeepSeek entry, at its peak prices
+    // (off-peak is half): it writes its cache for nothing.
+    if is("deepseek-flash") {
+        return Some(Price {
+            input: 0.30,
+            cache_write: 0.30,
+            cache_read: 0.006,
+            output: 1.20,
+        });
+    }
     if is("claude-haiku-5-5") {
         if prompt > HAIKU_LONG_PROMPT {
             return Some(Price {
@@ -202,6 +212,20 @@ impl Used {
     #[must_use]
     pub const fn prompt(&self) -> u64 {
         self.input + self.cache_write + self.cache_read
+    }
+
+    /// From an OpenAI-shaped `usage` object, as DeepSeek reports it: what its cache held
+    /// (`prompt_cache_hit_tokens`) is read from the cache, the rest of the prompt is fresh.
+    #[must_use]
+    pub fn from_openai(usage: &Value) -> Self {
+        let n = |k: &str| usage[k].as_u64().unwrap_or(0);
+        let read = n("prompt_cache_hit_tokens");
+        Self {
+            input: n("prompt_tokens").saturating_sub(read),
+            cache_write: 0,
+            cache_read: read,
+            output: n("completion_tokens"),
+        }
     }
 
     /// From an Anthropic `usage` object; a field it lacks counts as none.
@@ -606,6 +630,12 @@ pub fn most_a_turn_as(role: &str, brain: &str) -> i64 {
 /// # Errors
 /// Why not, said to the worker.
 pub fn may_use_as(role: &str, brain: &str, model: &str) -> Result<(), String> {
+    // A member who thinks with DeepSeek thinks with nothing else: no Claude on its turn.
+    if brain.starts_with("deepseek") {
+        return Err(format!(
+            "a member who thinks with {brain} may not use {model}"
+        ));
+    }
     if is_opus(brain) {
         return may_use("ceo", model);
     }
@@ -1304,6 +1334,47 @@ mod tests {
             may_use("", "claude-sonnet-5-5").is_err(),
             "no role, no model"
         );
+    }
+
+    #[test]
+    fn a_deepseek_member_is_metered_at_deepseeks_prices_and_never_reaches_claude() {
+        // DeepSeek's peak prices, a million tokens: $0.30 in, $0.006 read from its cache,
+        // $1.20 out (owner, 2026-10-28).
+        let price = price_of("deepseek-flash", 0).unwrap();
+        let used = Used::from_openai(&json!({ "prompt_tokens": 1_000, "completion_tokens": 100,
+            "prompt_cache_hit_tokens": 600, "prompt_cache_miss_tokens": 400 }));
+        assert_eq!(
+            used,
+            Used {
+                input: 400,
+                cache_write: 0,
+                cache_read: 600,
+                output: 100
+            }
+        );
+        assert_eq!(
+            cost(price, used),
+            244,
+            "400×0.30 + 600×0.006 + 100×1.20, rounded up"
+        );
+        let plain = Used::from_openai(&json!({ "prompt_tokens": 50, "completion_tokens": 5 }));
+        assert_eq!(
+            plain,
+            Used {
+                input: 50,
+                cache_write: 0,
+                cache_read: 0,
+                output: 5
+            }
+        );
+        // Its calls go to DeepSeek alone: the Anthropic relay refuses it every Claude.
+        for model in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"] {
+            assert!(
+                may_use_as("developer", "deepseek-flash", model).is_err(),
+                "{model}"
+            );
+        }
+        assert_eq!(most_a_turn_as("developer", "deepseek-flash"), 400_000);
     }
 
     #[test]
