@@ -873,6 +873,8 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "base": taken.base, "files": taken.files, "plus": taken.plus,
                 "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
                 "can_push": state.lab.can_push(),
+                // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
+                "changed": taken.changed, "texts": taken.texts,
             }),
         )
         .map_err(|e| {

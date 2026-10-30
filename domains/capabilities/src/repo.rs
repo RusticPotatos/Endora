@@ -26,6 +26,9 @@ pub const FILES_MOST: usize = 200;
 pub const DIFF_MOST: usize = 1024 * 1024;
 /// The most of a diff shown in the task's document.
 pub const SHOWN_MOST: usize = 64 * 1024;
+/// The most of one file at a submission's head handed to HQ's mechanical checks, in bytes: a
+/// longer one is not handed over, never cut.
+pub const CHECKED_TEXT_MOST: usize = 32 * 1024;
 /// How often the mirror is refreshed from the fork, at most.
 pub const REFRESH_MS: i64 = 5 * 60 * 1000;
 /// Where the team's branches live: under `hq/`, and nowhere else.
@@ -100,6 +103,28 @@ pub fn forbidden_path(path: &str) -> bool {
                 | "inventory.ini"
         ) || p.contains("vault")
     })
+}
+
+/// The files at a submission's head HQ's mechanical checks read (ADR 0142, amended
+/// 2026-10-30): each role README the branch changes (`roles/x/README.md`) and that role's
+/// `defaults/main.yml`, each once, and never a forbidden path.
+#[must_use]
+pub fn read_for_checks(changed: &[String]) -> Vec<String> {
+    let mut wanted: Vec<String> = Vec::new();
+    for file in changed {
+        let Some((dir, name)) = file.rsplit_once('/') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("readme.md") || !dir.starts_with("roles/") {
+            continue;
+        }
+        for path in [file.clone(), format!("{dir}/defaults/main.yml")] {
+            if !forbidden_path(&path) && !wanted.contains(&path) {
+                wanted.push(path);
+            }
+        }
+    }
+    wanted
 }
 
 /// A branch name as the team may use one: a plain name under `hq/`, nothing else.
@@ -235,6 +260,11 @@ pub struct Submitted {
     pub diff: String,
     /// Where the bundle is kept.
     pub path: PathBuf,
+    /// Every file it changes (`git diff --name-only`).
+    pub changed: Vec<String>,
+    /// `(path, text)` at its head of what [`read_for_checks`] names, for HQ's mechanical
+    /// checks: what exists there and fits [`CHECKED_TEXT_MOST`].
+    pub texts: Vec<(String, String)>,
 }
 
 impl Submitted {
@@ -702,6 +732,20 @@ impl Mirror {
             minus += cols.next().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
         }
         let stat = text(git(&self.dir, &["diff", "--stat=100", &base, &head], &[])?);
+        let changed: Vec<String> = names
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        // A file the head does not have (a role with no defaults) is simply not handed over.
+        let texts = read_for_checks(&changed)
+            .into_iter()
+            .filter_map(|path| {
+                let bytes = git(&self.dir, &["show", &format!("{head}:{path}")], &[]).ok()?;
+                (bytes.len() <= CHECKED_TEXT_MOST)
+                    .then(|| (path, String::from_utf8_lossy(&bytes).into_owned()))
+            })
+            .collect();
         let path = self.submission_path(task, branch, &head);
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
@@ -719,6 +763,8 @@ impl Mirror {
             stat,
             diff: shown(&diff),
             path,
+            changed,
+            texts,
         })
     }
 
@@ -889,6 +935,12 @@ mod tests {
         std::fs::write(seed.join("nas.yml"), "---\n- hosts: all\n").unwrap();
         std::fs::create_dir_all(seed.join("roles/deluge")).unwrap();
         std::fs::write(seed.join("roles/deluge/README.md"), "# deluge\n").unwrap();
+        std::fs::create_dir_all(seed.join("roles/deluge/defaults")).unwrap();
+        std::fs::write(
+            seed.join("roles/deluge/defaults/main.yml"),
+            "---\ndeluge_port: 8112\n",
+        )
+        .unwrap();
         run(&seed, &["add", "."]);
         commit(&seed, "the lab", "John Doe <john@example.com>");
         run(&seed, &["push", "-q", "origin", "HEAD:main"]);
@@ -968,6 +1020,27 @@ mod tests {
     }
 
     #[test]
+    fn the_checks_read_each_role_readme_and_its_defaults_and_nothing_forbidden() {
+        let changed: Vec<String> = [
+            "roles/media/README.md",
+            "roles/media/tasks/main.yml",
+            "docs/README.md",
+            "roles/vault-thing/README.md",
+            "roles/media/readme.md",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            read_for_checks(&changed),
+            [
+                "roles/media/README.md",
+                "roles/media/defaults/main.yml",
+                "roles/media/readme.md"
+            ]
+        );
+    }
+
+    #[test]
     fn githubs_host_keys_are_the_three_github_publishes_in_shape() {
         let lines: Vec<&str> = GITHUB_KNOWN_HOSTS.lines().collect();
         assert_eq!(lines.len(), 3);
@@ -1028,6 +1101,22 @@ mod tests {
         assert_eq!(taken.title(), "branch hq/task-3-tidy (1 file, +1 −1)");
         assert!(taken.stat.contains("README.md"), "{}", taken.stat);
         assert!(taken.diff.contains("+# hq/task-3-tidy"), "{}", taken.diff);
+        // HQ's mechanical checks are handed the file names and the role's README and
+        // defaults as they are at the head (ADR 0142, amended 2026-10-30).
+        assert_eq!(taken.changed, ["roles/deluge/README.md"]);
+        assert_eq!(
+            taken.texts,
+            [
+                (
+                    "roles/deluge/README.md".to_owned(),
+                    "# hq/task-3-tidy\n".to_owned()
+                ),
+                (
+                    "roles/deluge/defaults/main.yml".to_owned(),
+                    "---\ndeluge_port: 8112\n".to_owned()
+                ),
+            ]
+        );
         assert!(taken.path.exists() && taken.path.to_string_lossy().contains("task-3"));
         assert_eq!(
             s.mirror.stored(3, "hq/task-3-tidy", &taken.head),
