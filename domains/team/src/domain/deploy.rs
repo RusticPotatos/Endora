@@ -220,6 +220,7 @@ mod tests {
             "repo_checkout",
             "repo_submit",
             "ansible_nas_doc",
+            "image_tags",
         ] {
             assert!(!LAB_READS.contains(&act), "{act}");
         }

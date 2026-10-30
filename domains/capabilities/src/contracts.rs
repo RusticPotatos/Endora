@@ -113,6 +113,8 @@ pub const ANSIBLE_NAS_DOC: &str = "ansible_nas_doc";
 pub const REPO_CHECKOUT: &str = "repo_checkout";
 /// The contract that takes a sandbox's branch as a bundle (ADR 0115).
 pub const REPO_SUBMIT: &str = "repo_submit";
+/// The contract that reads an image's tags from its public registry (amended 2026-10-30).
+pub const IMAGE_TAGS: &str = "image_tags";
 
 /// Every contract Endora offers the team, in the order a turn is offered them.
 #[must_use]
@@ -178,6 +180,18 @@ pub fn all() -> Vec<Contract> {
                 "branch": { "type": "string", "description": "Your branch, hq/task-N-slug, N being your task's number." },
                 "why": { "type": "string", "description": "What the branch does, in a sentence the tester reads." },
             }, "required": ["branch", "why"] }),
+        },
+        Contract {
+            name: IMAGE_TAGS,
+            description: "Look up an image's tags on its public registry (Docker Hub, ghcr.io, quay.io, lscr.io), which Endora reads for you: the newest 30, highest version first, optionally only releases (semver_only, e.g. 1.2.3) or those starting with a prefix, and whether a tag exists. Use it to pin an image to a release that exists. Free.",
+            kind: Kind::Read,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {
+                "image": { "type": "string", "description": "The image, as a compose file or role names it, e.g. grafana/grafana, telegraf or ghcr.io/gethomepage/homepage:v1.4.5." },
+                "tag": { "type": "string", "description": "A tag to check exists, e.g. 12.0.0." },
+                "prefix": { "type": "string", "description": "Only tags starting with this, e.g. v1. or 12." },
+                "semver_only": { "type": "boolean", "description": "Only releases like 1.2.3 or v1.2.3." },
+            }, "required": ["image"] }),
         },
     ]
 }
@@ -391,7 +405,7 @@ mod tests {
     const NOON: i64 = 1_792_166_400_000;
 
     #[test]
-    fn seven_contracts_each_a_tool_with_a_schema() {
+    fn eight_contracts_each_a_tool_with_a_schema() {
         let tools: Vec<Value> = all().iter().map(Contract::as_tool).collect();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert_eq!(
@@ -403,7 +417,8 @@ mod tests {
                 HOMELAB_MAP,
                 ANSIBLE_NAS_DOC,
                 REPO_CHECKOUT,
-                REPO_SUBMIT
+                REPO_SUBMIT,
+                IMAGE_TAGS
             ]
         );
         for tool in &tools {
@@ -420,7 +435,8 @@ mod tests {
                 Kind::Read,
                 Kind::Read,
                 Kind::Read,
-                Kind::AutomaticAct
+                Kind::AutomaticAct,
+                Kind::Read
             ]
         );
         assert_eq!(all()[1].tier, "confidential", "logs are");
@@ -456,6 +472,21 @@ mod tests {
         for cloud in [false, true] {
             assert!(checkout.offered_to("reviewer", cloud));
             assert!(!submit.offered_to("reviewer", cloud));
+        }
+    }
+
+    #[test]
+    fn every_role_on_any_brain_may_look_up_an_images_tags() {
+        // A sandbox is offline: HQ twice failed to pin an image off latest for want of a
+        // registry to ask (2026-10-30). The tags are public, so every role reads them.
+        let all = all();
+        let tags = all.iter().find(|c| c.name == IMAGE_TAGS).unwrap();
+        assert_eq!((tags.kind, tags.tier), (Kind::Read, "internal"));
+        assert_eq!(tags.input["required"], json!(["image"]));
+        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
+            for cloud in [false, true] {
+                assert!(tags.offered_to(role, cloud), "a {role}");
+            }
         }
     }
 

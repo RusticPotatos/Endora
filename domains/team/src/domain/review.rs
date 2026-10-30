@@ -19,6 +19,7 @@ const TOOL_NAMES: &[&str] = &[
     "restart_container",
     "homelab_map",
     "ansible_nas_doc",
+    "image_tags",
     "review",
     "note_lesson",
     "note_house",
