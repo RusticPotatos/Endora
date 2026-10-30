@@ -225,6 +225,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some((project, brains)) = self.league()? else {
             return Ok(());
         };
+        // Paused by the owner, it sets nobody down (baseline 28 Oct: it went on opening games).
+        if self.held_by_owner(Some(project))? {
+            return Ok(());
+        }
         if !self.rerun_queue()?.is_empty() || self.a_world_is_live()? {
             return Ok(());
         }

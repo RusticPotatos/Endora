@@ -1100,6 +1100,35 @@ fn the_tick_closes_a_world_that_has_ended() {
     assert_eq!(hq.scenario_shown(mission).unwrap()["end"], "partial");
 }
 
+// Baseline 28 Oct: the owner paused the league, its players' wakes were held, and the idle check
+// still counted the game idle, so black forfeited a game it was never let play. A paused
+// world is not idle: it waits for the owner, and nobody forfeits.
+#[test]
+fn a_world_in_a_paused_project_is_not_idle_and_nobody_forfeits() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
+    let [w, _b] = <[RunContext; 2]>::try_from(turns(&hq, &[white, black]))
+        .ok()
+        .unwrap();
+    play(&hq, &w, "e4").unwrap();
+    hq.change_project(project, "pause").unwrap();
+    for _ in 0..12 {
+        for started in hq.runner().started() {
+            hq.runner().finish(started.run, true);
+        }
+        clock.0.fetch_add(11 * 60 * 1000, Ordering::SeqCst);
+        hq.tick().unwrap();
+    }
+    assert_ne!(
+        hq.store().task(game).unwrap().unwrap().status,
+        TaskStatus::Done,
+        "not forfeited while paused"
+    );
+    assert_eq!(hq.scenario_shown(game).unwrap()["result"], json!(null));
+}
+
 // Live, black's turn on the Mac ran past its time and was stopped, the wake that would have
 // brought it back had been folded into that turn, and the match waited for ever. A world whose
 // player has no turn coming is woken again when it has sat idle, three times at most; then the
@@ -1453,6 +1482,26 @@ fn the_holodeck_re_run_starts_over_with_every_scenario_and_keeps_what_ran() {
 // pinned to one brain whoever sits at the board; a Claude side is paid from the league's
 // project, which must be capped; the next pair goes when nothing else is being played; and the
 // table is rated from the results.
+// Baseline 28 Oct: the owner paused the league and it went on opening games. Paused, it sets
+// nobody down; resumed, it does.
+#[test]
+fn a_paused_league_opens_no_game() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    hq.set_project_cap(project, Some(5_000_000)).unwrap();
+    hq.start_league(project, &["claude-haiku-5-5", "local"])
+        .unwrap();
+    hq.change_project(project, "pause").unwrap();
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(league["games"], json!([]), "{league}");
+    hq.change_project(project, "resume").unwrap();
+    hq.tick().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert!(league["games"][0]["task"].is_i64(), "{league}");
+}
+
 #[test]
 fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
     let clock = Hands(AtomicI64::new(OCT_17));

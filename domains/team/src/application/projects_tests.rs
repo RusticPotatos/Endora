@@ -212,10 +212,12 @@ fn the_projects_caps_together_never_pass_the_pools_month() {
     hq.change_project(b, "drop").unwrap();
     hq.set_project_cap(a, Some(70 * DOLLAR)).unwrap();
     assert_eq!(project(&hq, a).cap, Some(70 * DOLLAR));
-    assert_eq!(
-        hq.add_project(t.goal, "Led by a developer", "", t.dev, None),
-        Err(EngineError::Refused(Refusal::NotAProjectLead))
-    );
+    // One team (ADR 0142) has no leads: the owner's project may be any member's. Baseline
+    // 28 Oct: no project could be made at all, as no member was a lead or the CEO.
+    let led = hq
+        .add_project(t.goal, "Led by a developer", "", t.dev, None)
+        .unwrap();
+    assert_eq!(project(&hq, led).lead, t.dev);
 }
 
 #[test]

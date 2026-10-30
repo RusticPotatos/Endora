@@ -796,6 +796,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.scenario_ended(&place, name, done, &now.look())?;
                 continue;
             }
+            // A paused world waits for the owner, and is not idle (baseline 28 Oct: a paused
+            // league game was forfeited by the side whose wakes the pause held).
+            let project = self.store.task(place.world)?.and_then(|t| t.project);
+            if self.held_by_owner(project)? {
+                continue;
+            }
             self.wake_the_idle(&place, &now, &runs)?;
         }
         Ok(())

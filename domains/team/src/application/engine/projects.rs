@@ -166,8 +166,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the owner's projects ------------------------------------------------------------
 
-    /// The owner makes a project, active at once: under an active goal, led by a lead or the
-    /// CEO, with a cap if they give one (all the caps together within the pool's month).
+    /// The owner makes a project, active at once: under an active goal, led by any member,
+    /// with a cap if they give one (all the caps together within the pool's month).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a goal or member that does not exist, a goal that is not
@@ -181,7 +181,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cap: Option<Micros>,
     ) -> Done<ProjectId> {
         let _held = self.held();
-        let (title, reason) = self.project_words(goal, title, reason, lead)?;
+        // The owner's project may be any member's: one team (ADR 0142) has no leads.
+        let (title, reason) = self.project_words(goal, title, reason, lead, false)?;
         if let Some(cap) = cap {
             self.may_cap(cap, None)?;
         }
@@ -206,19 +207,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A project's title and reason, each on one line, once its goal is active and its lead
-    /// may lead.
+    /// is a member (and, `by_role`, may lead by its role).
     fn project_words(
         &self,
         goal: GoalId,
         title: &str,
         reason: &str,
         lead: MemberId,
+        by_role: bool,
     ) -> Done<(String, String)> {
         let found = self.store.goal(goal)?.ok_or(EngineError::Unknown("goal"))?;
         if found.status != GoalStatus::Active {
             return Err(EngineError::Unknown("active goal to serve"));
         }
-        projects::may_lead(self.member(lead)?.role).map_err(EngineError::Refused)?;
+        let member = self.member(lead)?;
+        if by_role {
+            projects::may_lead(member.role).map_err(EngineError::Refused)?;
+        }
         let title = one_line(title, 120);
         if title.is_empty() {
             return Err(EngineError::Unknown("project title"));
@@ -672,6 +677,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &proposal.title,
             &proposal.reason,
             proposal.lead,
+            true,
         )?;
         if reason.is_empty() {
             return Err(EngineError::Unknown("reason for the project"));
