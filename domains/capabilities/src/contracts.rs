@@ -359,6 +359,18 @@ pub fn newest_within(log: &str, most_lines: usize, most_bytes: usize) -> String 
         kept.push(line);
     }
     kept.reverse();
+    if kept.is_empty() {
+        // The newest line alone is longer than the allowance: its end, marked as cut, rather
+        // than nothing, which would read as an empty log (review of 30 Oct).
+        if let Some(last) = newest.last().filter(|l| !l.is_empty()) {
+            let room = most_bytes.saturating_sub("[cut] ".len());
+            let mut from = last.len().saturating_sub(room);
+            while !last.is_char_boundary(from) {
+                from += 1;
+            }
+            return format!("[cut] {}", &last[from..]);
+        }
+    }
     kept.join("\n")
 }
 
@@ -713,6 +725,13 @@ mod tests {
             .map(|i| format!("{i:04} {}\n", "x".repeat(400)))
             .collect();
         assert!(newest_within(&long, 40, 6 * 1024).len() <= 6 * 1024);
+        // A newest line longer than the whole allowance is cut to its end and marked, never
+        // dropped to an empty answer that reads as an empty log (review of 30 Oct).
+        let stack = format!("old line\n{}é{}\n", "a".repeat(7_000), "z".repeat(100));
+        let kept = newest_within(&stack, 40, 6 * 1024);
+        assert!(!kept.trim().is_empty(), "never empty for a log that is not");
+        assert!(kept.len() <= 6 * 1024, "{}", kept.len());
+        assert!(kept.starts_with("[cut] ") && kept.ends_with(&"z".repeat(100)), "{kept:.40}");
     }
 
     /// The contracts a house turn may start with say their rules briefly: each rule is kept.
