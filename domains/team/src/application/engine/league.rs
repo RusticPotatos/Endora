@@ -218,9 +218,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    /// On the tick: when the league is on, no world is being played, nothing waits to run
-    /// again and two members are free, the next pair of brains sits down to a game, by two of
-    /// the free members (who plays is the board's; which brain thinks is the league's).
+    /// On the tick: when the league is on, no match is being played and two members are free,
+    /// the next pair of brains sits down to a game, by two of the free members (who plays is
+    /// the board's; which brain thinks is the league's).
     pub(super) fn league_tick(&self, now: Millis) -> Done<()> {
         let Some((project, brains)) = self.league()? else {
             return Ok(());
@@ -229,7 +229,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.held_by_owner(Some(project))? {
             return Ok(());
         }
-        if !self.rerun_queue()?.is_empty() || self.a_world_is_live()? {
+        if self.a_world_is_live()? {
             return Ok(());
         }
         let mut kept = self.league_kept()?;

@@ -381,10 +381,10 @@ fn a_scenarios_turn_is_bounded_by_its_world_not_by_its_players_day_of_free_turns
         .set_goal("Holodeck", "", super::engine::Author::Owner)
         .unwrap();
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let project = hq.add_project(goal, "Lighthouse", "", lead, None).unwrap();
+    let project = hq.add_project(goal, "Holodeck", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
         .unwrap();
-    let world = hq.start_scenario(project, linus, 7).unwrap();
+    let world = hq.start_chess(project, [linus, lead], 7).unwrap();
     hq.tick().unwrap();
     let played = hq
         .store()

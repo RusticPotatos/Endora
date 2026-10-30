@@ -544,7 +544,7 @@ fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
     let hq = engine(&clock);
     let t = team(&hq);
     let scenario = hq
-        .add_project(t.goal, "Silent Station", "", t.lead, None)
+        .add_project(t.goal, "Holodeck", "", t.lead, None)
         .unwrap();
     hq.set_project_tools(scenario, Some(vec!["shell".to_owned()]))
         .unwrap();

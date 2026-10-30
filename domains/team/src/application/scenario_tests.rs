@@ -1,6 +1,7 @@
-//! A scenario (the Holodeck plan's phase 5), end to end over HQ's real store and the
-//! simulated runner: started in a project that gives its work the scenario tool alone, played
-//! through that tool, closed by the world and replayed from its log.
+//! A scenario (ADR 0135), a chess match since the other worlds were retired (2026-10-30), end
+//! to end over HQ's real store and the simulated runner: started in a project that gives its
+//! work the scenario tool alone, played through that tool, closed by the world and replayed
+//! from its log; and the model league that seats its games.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -9,15 +10,9 @@ use crate::application::run_ports::RunStore;
 use serde_json::json;
 
 use super::engine::{Author, Engine, EngineError, Settings};
-use super::guard_ports::GuardStore as _;
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools_in};
-use crate::application::event_ports::EventStore;
 use crate::application::receipt_ports::ReceiptStore;
-use crate::domain::closure::{Closure, DoneWhy, DropWhy};
-use crate::domain::scenario::{Action, Cause, Lighthouse, Part};
-use crate::domain::station::{Action as StationAction, Anomaly, Station};
-use crate::domain::trials::Arm;
 use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -48,15 +43,10 @@ fn holodeck(hq: &Hq<'_>) -> (MemberId, ProjectId) {
     let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
     let goal = hq.set_goal("Holodeck", "", Author::Owner).unwrap();
-    let project = hq.add_project(goal, "Lighthouse", "", lead, None).unwrap();
+    let project = hq.add_project(goal, "Chess", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
         .unwrap();
     (dev, project)
-}
-
-/// A seed whose lighthouse has `cause`.
-fn seed_for(cause: Cause) -> u64 {
-    (0..).find(|s| Lighthouse::new(*s).cause == cause).unwrap()
 }
 
 fn turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
@@ -79,47 +69,29 @@ fn use_tool(
     call(hq, &run, &member, tool, args)
 }
 
-fn acted(hq: &Hq<'_>) -> Vec<serde_json::Value> {
-    hq.store()
-        .events_after(0)
-        .unwrap()
-        .into_iter()
-        .filter(|e| e.kind == "scenario.acted")
-        .map(|e| e.data)
-        .collect()
-}
-
 // G3 of the roadmap: the world changes only through its tool, in code, and a model's claim
-// changes nothing. The turn is offered its own four and the scenario tool, nothing of the
-// node's and no shell; a refused action is kept and changes nothing; the lamp lit, the world
-// closes the task; and the log replays to the same lighthouse.
+// changes nothing. A player's turn is offered its own four and the scenario tool, nothing of
+// the node's and no shell; and a member's word does not close its match.
 #[test]
-fn a_scenario_is_played_through_its_tool_alone_and_the_world_closes_it() {
+fn a_match_is_played_through_its_tool_alone_and_no_word_closes_it() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let (dev, project) = holodeck(&hq);
-    let seed = seed_for(Cause::Bulb);
-    let task = hq.start_scenario(project, dev, seed).unwrap();
+    let ([white, black, _], project) = crew(&hq);
+    let game = hq.start_chess(project, [white, black], 1).unwrap();
     assert_eq!(
         super::history_ports::HistoryStore::input_origin(
             hq.store(),
-            crate::domain::history::InputRef::TaskBody(task)
+            crate::domain::history::InputRef::TaskBody(game)
         )
         .unwrap(),
         crate::domain::history::InputOrigin::Unknown,
         "owner-budgeted generated content is not an authenticated owner-authored input"
     );
-    let found = hq.store().task(task).unwrap().unwrap();
-    assert_eq!((found.project, found.assignee), (Some(project), Some(dev)));
-    assert!(
-        found.description.contains("lamp is dark"),
-        "{}",
-        found.description
-    );
-
-    let context = turn(&hq, dev);
-    let (run, member) = hq.turn_of(&context.token).unwrap().unwrap();
-    assert_eq!(run.task, Some(task));
+    let [w] = <[RunContext; 1]>::try_from(turns(&hq, &[white]))
+        .ok()
+        .unwrap();
+    let (run, member) = hq.turn_of(&w.token).unwrap().unwrap();
+    assert_eq!(run.task, Some(game));
     let mut offered: Vec<String> = tools_in(&hq, &run, &member)
         .as_array()
         .unwrap()
@@ -132,177 +104,54 @@ fn a_scenario_is_played_through_its_tool_alone_and_the_world_closes_it() {
         ["claim", "my_turn", "post", "scenario", "set_status"]
     );
     assert!(!hq.may_use_a_shell(run.id).unwrap());
-
-    use_tool(&hq, &context, "claim", &json!({ "task": task.0 })).unwrap();
+    use_tool(&hq, &w, "claim", &json!({ "task": game.0 })).unwrap();
     let claimed = use_tool(
         &hq,
-        &context,
+        &w,
         "set_status",
-        &json!({ "task": task.0, "status": "done", "reason": "I lit it" }),
+        &json!({ "task": game.0, "status": "done", "reason": "I won" }),
     )
     .unwrap_err();
     assert!(claimed.contains("the world"), "{claimed}");
+    assert!(!hq.store().task(game).unwrap().unwrap().status.finished());
     assert!(
-        use_tool(&hq, &context, "scenario", &json!({ "action": "look" }))
-            .unwrap()
-            .contains("The lamp is dark")
-    );
-    let refused = use_tool(
-        &hq,
-        &context,
-        "scenario",
-        &json!({ "action": "test_circuit" }),
-    )
-    .unwrap_err();
-    assert!(refused.contains("inspect the lamp first"), "{refused}");
-    assert!(
-        use_tool(&hq, &context, "scenario", &json!({ "action": "inspect" }))
-            .unwrap()
-            .contains("filament is broken")
-    );
-    let lit = use_tool(
-        &hq,
-        &context,
-        "scenario",
-        &json!({ "action": "replace_part", "part": "bulb" }),
-    )
-    .unwrap();
-    assert!(
-        lit.contains("The lamp lights")
-            && lit.contains("Solved")
-            && lit.ends_with("this turn has ended: stop now."),
-        "the world's last word ends the turn: {lit}"
-    );
-
-    let closed = hq.store().task(task).unwrap().unwrap();
-    assert_eq!(closed.status, TaskStatus::Done);
-    let why = hq.store().closure(task).unwrap().unwrap();
-    assert_eq!(
-        (why.closure, why.by.as_str()),
-        (Closure::Done(DoneWhy::MetCriteria), "endora")
-    );
-    assert!(
-        hq.store()
-            .thread(task)
-            .unwrap()
-            .iter()
-            .any(|p| p.author == "endora" && p.text.contains("solved")),
-        "the world says so in the thread"
-    );
-    assert!(
-        use_tool(&hq, &context, "scenario", &json!({ "action": "inspect" }))
+        act(&hq, &w, "inspect")
             .unwrap_err()
-            .contains("over")
+            .contains("`action` is look, move with san")
     );
-
-    // Every action is in the log, the refused ones too; only the accepted change the world.
-    let log = hq.store().scenario_actions(task).unwrap();
-    let kept: Vec<(&str, bool)> = log.iter().map(|a| (a.action.as_str(), a.ok)).collect();
-    assert_eq!(
-        kept,
-        [
-            ("test_circuit", false),
-            ("inspect", true),
-            ("replace_part bulb", true),
-            ("inspect", false),
-        ]
-    );
-    assert!(log.iter().all(|a| a.run == run.id && a.member == dev));
-    let events = acted(&hq);
-    assert_eq!(events.len(), 4);
-    assert_eq!(events[2]["end"], "solved");
-    let replayed = hq.replay_scenario(task).unwrap();
-    assert_eq!((replayed.lit, replayed.minutes), (true, 20));
-    assert_eq!(
-        replayed,
-        Lighthouse::replay(seed, &[Action::Inspect, Action::Replace(Part::Bulb)]).unwrap()
-    );
-
-    // The owner's view: the log step by step, who acted, what was refused, and how it ended;
-    // the cause is told once it is over.
-    let shown = hq.scenario_shown(task).unwrap();
-    assert_eq!(
-        (
-            &shown["seed"],
-            &shown["end"],
-            &shown["minutes"],
-            &shown["cause"]
-        ),
-        (&json!(seed), &json!("solved"), &json!(20), &json!("bulb"))
-    );
-    let steps = shown["log"].as_array().unwrap();
-    assert_eq!(steps.len(), 4);
-    assert_eq!(
-        (&steps[0]["action"], &steps[0]["ok"], &steps[0]["by"]),
-        (&json!("test_circuit"), &json!(false), &json!("Linus"))
-    );
-    assert!(
-        steps[0]["said"]
-            .as_str()
-            .unwrap()
-            .contains("inspect the lamp first")
-    );
-}
-
-#[test]
-fn time_running_out_drops_it_and_a_reset_is_a_new_task_with_the_same_seed() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let (dev, project) = holodeck(&hq);
-    let seed = seed_for(Cause::Fuse);
-    let task = hq.start_scenario(project, dev, seed).unwrap();
-    let context = turn(&hq, dev);
-    use_tool(&hq, &context, "claim", &json!({ "task": task.0 })).unwrap();
-    let mut said = String::new();
-    for _ in 0..12 {
-        said = use_tool(&hq, &context, "scenario", &json!({ "action": "inspect" })).unwrap();
-    }
-    assert!(said.contains("failed"), "{said}");
-    assert_eq!(
-        hq.store().task(task).unwrap().unwrap().status,
-        TaskStatus::Dropped
-    );
-    assert_eq!(
-        hq.store().closure(task).unwrap().unwrap().closure,
-        Closure::Dropped(DropWhy::BlockedForever)
-    );
-
-    let again = hq.start_scenario(project, dev, seed).unwrap();
-    assert_ne!(again, task);
-    assert_eq!(hq.replay_scenario(again).unwrap(), Lighthouse::new(seed));
-    let shown = hq.scenario_shown(again).unwrap();
-    assert_eq!(
-        (&shown["end"], &shown["cause"], &shown["log"]),
-        (&json!(null), &json!(null), &json!([])),
-        "a fresh world hides its cause"
-    );
-    assert_eq!(hq.scenario_of(again).unwrap(), Some(seed));
+    assert_eq!(hq.scenario_of(game).unwrap(), Some(1));
     assert_eq!(hq.scenario_of(TaskId(999)).unwrap(), None);
 }
 
-// A scenario's work is given the scenario tool and nothing else of anyone's: a project with
-// no list, or one that gives more, cannot hold one. A turn on other work is never offered it.
+// A match's work is given the scenario tool and nothing else of anyone's: a project with no
+// list, or one that gives more, cannot hold one. A turn on other work is never offered it.
 #[test]
 fn a_scenario_starts_only_in_a_project_that_gives_it_the_tool_alone() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let (dev, project) = holodeck(&hq);
+    let ([dev, zed, _], project) = crew(&hq);
     for list in [
         None,
         Some(vec!["scenario".to_owned(), "homelab_status".to_owned()]),
         Some(Vec::new()),
     ] {
         hq.set_project_tools(project, list.clone()).unwrap();
-        let refused = hq.start_scenario(project, dev, 1).unwrap_err();
+        let refused = hq.start_chess(project, [dev, zed], 1).unwrap_err();
         assert!(
             matches!(&refused, EngineError::Refused(Refusal::Scenario(why)) if why.contains("scenario")),
             "{list:?}: {refused}"
         );
     }
     assert_eq!(
-        hq.start_scenario(ProjectId(99), dev, 1),
+        hq.start_chess(ProjectId(99), [dev, zed], 1),
         Err(EngineError::Unknown("project"))
     );
+    hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
+        .unwrap();
+    assert!(matches!(
+        hq.start_chess(project, [dev, dev], 1),
+        Err(EngineError::Refused(Refusal::Scenario(_)))
+    ));
 
     let goal = hq.set_goal("Keep the house", "", Author::Owner).unwrap();
     let other = hq
@@ -345,11 +194,6 @@ fn crew(hq: &Hq<'_>) -> ([MemberId; 3], ProjectId) {
     ([dev, zed, rae], project)
 }
 
-/// The station whose anomaly is `anomaly`, by seed.
-fn station_seed(anomaly: Anomaly) -> u64 {
-    (0..).find(|s| Station::new(*s).anomaly == anomaly).unwrap()
-}
-
 /// Each member's running turn, once the tick has started them.
 fn turns(hq: &Hq<'_>, members: &[MemberId]) -> Vec<RunContext> {
     hq.tell_mac(true, "ready");
@@ -384,367 +228,6 @@ fn turns(hq: &Hq<'_>, members: &[MemberId]) -> Vec<RunContext> {
 
 fn act(hq: &Hq<'_>, context: &RunContext, action: &str) -> Result<String, String> {
     use_tool(hq, context, "scenario", &json!({ "action": action }))
-}
-
-// G4 of the roadmap: Silent Station plays end to end, with enforced consequences and not a
-// scripted chat. Three members wear the mission's roles: the captain holds the mission, science
-// and the engineer a part of it each, all in one world. Each acts only as its role; an accepted
-// action wakes the rest of the crew; the world closes the mission and every part of it, scored.
-#[test]
-fn silent_station_is_played_by_a_crew_in_one_world_and_closes_itself() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let seed = station_seed(Anomaly::MagneticField);
-    let mission = hq
-        .start_station(project, [captain, science, engineer], seed)
-        .unwrap();
-    let parts: Vec<_> = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.parent == Some(mission))
-        .collect();
-    assert_eq!(
-        parts.iter().map(|t| t.assignee).collect::<Vec<_>>(),
-        [Some(science), Some(engineer)]
-    );
-    assert!(parts[1].description.contains("You are the engineer"));
-    let [c, s, e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
-        .ok()
-        .unwrap();
-    let (run, member) = hq.turn_of(&e.token).unwrap().unwrap();
-    let scenario_tool = tools_in(&hq, &run, &member)
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "scenario")
-        .cloned()
-        .expect("the crew is offered the scenario tool");
-    assert!(
-        scenario_tool.to_string().contains("route_power"),
-        "the station's actions: {scenario_tool}"
-    );
-
-    // Each role acts alone, and nothing happens before the scan.
-    assert!(
-        act(&hq, &c, "attempt_contact")
-            .unwrap_err()
-            .contains("scan")
-    );
-    assert!(
-        act(&hq, &e, "scan_station")
-            .unwrap_err()
-            .contains("the science's to do, not the engineer's")
-    );
-    let woken_before = hq.store().wakes().unwrap().len();
-    assert!(
-        act(&hq, &s, "scan_station")
-            .unwrap()
-            .contains("looks intact")
-    );
-    let woken: Vec<MemberId> = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .into_iter()
-        .skip(woken_before)
-        .map(|w| w.member)
-        .collect();
-    assert!(
-        woken.contains(&captain) && woken.contains(&engineer) && !woken.contains(&science),
-        "the rest of the crew hears of it: {woken:?}"
-    );
-    assert!(
-        use_tool(
-            &hq,
-            &e,
-            "set_status",
-            &json!({ "task": parts[1].id.0, "status": "done", "reason": "fixed it" }),
-        )
-        .unwrap_err()
-        .contains("the world")
-    );
-
-    // The probe as a relay: analyse, place it, call.
-    assert!(
-        act(&hq, &s, "analyze_anomaly")
-            .unwrap()
-            .contains("magnetic field")
-    );
-    assert!(act(&hq, &c, "send_probe").unwrap().contains("relay"));
-    let answered = act(&hq, &c, "attempt_contact").unwrap();
-    assert!(
-        answered.contains("answers") && answered.contains("success"),
-        "{answered}"
-    );
-
-    for task in std::iter::once(mission).chain(parts.iter().map(|t| t.id)) {
-        assert_eq!(
-            hq.store().task(task).unwrap().unwrap().status,
-            TaskStatus::Done,
-            "the world closes the mission and its parts"
-        );
-    }
-    let shown = hq.scenario_shown(mission).unwrap();
-    assert_eq!(
-        (
-            &shown["kind"],
-            &shown["end"],
-            &shown["score"],
-            &shown["anomaly"]
-        ),
-        (
-            &json!("silent_station"),
-            &json!("success"),
-            &json!(75),
-            &json!("magnetic field")
-        )
-    );
-    let log: Vec<(String, bool, String)> = shown["log"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| {
-            (
-                a["action"].as_str().unwrap().to_owned(),
-                a["ok"].as_bool().unwrap(),
-                a["role"].as_str().unwrap().to_owned(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        log,
-        [
-            ("attempt_contact".to_owned(), false, "captain".to_owned()),
-            ("scan_station".to_owned(), false, "engineer".to_owned()),
-            ("scan_station".to_owned(), true, "science".to_owned()),
-            ("analyze_anomaly".to_owned(), true, "science".to_owned()),
-            ("send_probe".to_owned(), true, "captain".to_owned()),
-            ("attempt_contact".to_owned(), true, "captain".to_owned()),
-        ]
-    );
-    // The same log replays to the same station.
-    assert_eq!(
-        hq.replay_station(mission).unwrap(),
-        Station::replay(
-            seed,
-            &[
-                StationAction::ScanStation,
-                StationAction::AnalyzeAnomaly,
-                StationAction::SendProbe,
-                StationAction::AttemptContact
-            ]
-        )
-        .unwrap()
-    );
-}
-
-#[test]
-fn rushing_the_storm_fails_the_mission_and_drops_every_part_of_it() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let mission = hq
-        .start_station(
-            project,
-            [captain, science, engineer],
-            station_seed(Anomaly::IonStorm),
-        )
-        .unwrap();
-    let [_, s, e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
-        .ok()
-        .unwrap();
-    act(&hq, &s, "scan_station").unwrap();
-    act(&hq, &e, "inspect_comms").unwrap();
-    let hurt = act(&hq, &e, "route_power").unwrap();
-    assert!(hurt.contains("hurt") && hurt.contains("failure"), "{hurt}");
-    let all: Vec<TaskStatus> = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.id == mission || t.parent == Some(mission))
-        .map(|t| t.status)
-        .collect();
-    assert_eq!(all, [TaskStatus::Dropped; 3]);
-    assert_eq!(hq.scenario_shown(mission).unwrap()["score"], 0);
-    assert_eq!(
-        hq.start_station(project, [captain, captain, engineer], 1),
-        Err(EngineError::Refused(Refusal::Scenario(
-            "a crew is three different members".to_owned()
-        )))
-    );
-}
-
-fn arm(label: &str, members: &[MemberId]) -> Arm {
-    Arm {
-        label: label.to_owned(),
-        members: members.to_vec(),
-        brief: None,
-    }
-}
-
-// The Holodeck plan's phase 7: one thing changes between conditions, here who plays, and the
-// world, its version and its seeds do not. Each condition plays every seed; what each run was
-// configured with is kept when it starts; the report puts the conditions side by side from the
-// record, every run with its own, and says what a few runs cannot.
-#[test]
-fn a_trial_plays_each_condition_on_the_same_seeds_and_reports_them_side_by_side() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([linus, zed, _], project) = crew(&hq);
-    let seed = seed_for(Cause::Bulb);
-    let started = hq
-        .start_trial(
-            "who-lights-it",
-            project,
-            "lighthouse",
-            &[arm("linus", &[linus]), arm("zed", &[zed])],
-            &[seed],
-        )
-        .unwrap();
-    assert_eq!(started.len(), 2);
-    assert!(
-        started
-            .iter()
-            .all(|t| hq.scenario_of(*t).unwrap() == Some(seed))
-    );
-    let [l, z] = <[RunContext; 2]>::try_from(turns(&hq, &[linus, zed]))
-        .ok()
-        .unwrap();
-    // Linus goes straight to it; Zed tries the circuit first and the wrong part.
-    for (context, actions) in [
-        (&l, &[("inspect", None), ("replace_part", Some("bulb"))][..]),
-        (
-            &z,
-            &[
-                ("test_circuit", None),
-                ("inspect", None),
-                ("replace_part", Some("fuse")),
-                ("replace_part", Some("bulb")),
-            ][..],
-        ),
-    ] {
-        for (action, part) in actions {
-            let _ = use_tool(
-                &hq,
-                context,
-                "scenario",
-                &json!({ "action": action, "part": part }),
-            );
-        }
-    }
-
-    let report = hq.trial_report("who-lights-it").unwrap();
-    assert_eq!(
-        (&report["kind"], &report["version"], &report["seeds"]),
-        (&json!("lighthouse"), &json!(1), &json!([seed]))
-    );
-    let conditions = report["conditions"].as_array().unwrap();
-    let by = |i: usize, key: &str| conditions[i][key].clone();
-    assert_eq!(
-        (
-            by(0, "label"),
-            by(0, "done"),
-            by(0, "mean_score"),
-            by(0, "mean_elapsed"),
-            by(0, "refused")
-        ),
-        (json!("linus"), json!(1), json!(100), json!(20), json!(0))
-    );
-    assert_eq!(
-        (
-            by(1, "label"),
-            by(1, "done"),
-            by(1, "mean_elapsed"),
-            by(1, "refused"),
-            by(1, "turns")
-        ),
-        (json!("zed"), json!(1), json!(35), json!(1), json!(1))
-    );
-    let first = &report["runs"][0];
-    assert_eq!(
-        (&first["condition"], &first["config"]["members"][0]["name"]),
-        (&json!("linus"), &json!("Linus"))
-    );
-    assert!(first["config"]["members"][0]["work_brain"].is_string());
-    let markdown = report["markdown"].as_str().unwrap();
-    assert!(markdown.starts_with("# Trial who-lights-it"), "{markdown}");
-    assert!(
-        markdown.contains("| zed | 1 | 1 | 0 | 0 | 100 | 35 | 1 |"),
-        "{markdown}"
-    );
-}
-
-#[test]
-fn a_trial_compares_two_conditions_or_more_once_and_within_bounds() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([a, b, c], project) = crew(&hq);
-    let refused = |name: &str, kind: &str, arms: &[Arm], seeds: &[u64]| match hq
-        .start_trial(name, project, kind, arms, seeds)
-    {
-        Err(EngineError::Refused(Refusal::Scenario(why))) => why,
-        other => panic!("{name}: {other:?}"),
-    };
-    let two = [arm("a", &[a]), arm("b", &[b])];
-    assert!(refused("Bad Name", "lighthouse", &two, &[1]).contains("name"));
-    assert!(refused("one", "lighthouse", &two[..1], &[1]).contains("two conditions"));
-    assert!(
-        refused(
-            "same",
-            "lighthouse",
-            &[arm("a", &[a]), arm("a", &[b])],
-            &[1]
-        )
-        .contains("label")
-    );
-    assert!(refused("no-seeds", "lighthouse", &two, &[]).contains("seed"));
-    assert!(refused("big", "lighthouse", &two, &(0..13).collect::<Vec<_>>()).contains("24"));
-    assert!(refused("crew", "silent_station", &two, &[1]).contains("three"));
-    assert!(
-        refused("what", "holodeck", &two, &[1]).contains("lighthouse, silent_station or chess")
-    );
-    let mut odd = arm("odd", &[a]);
-    odd.brief = Some("plan_first".to_owned());
-    assert!(refused("brief", "lighthouse", &[odd, arm("b", &[b])], &[1]).contains("no briefing"));
-    assert_eq!(
-        hq.start_trial("ok", project, "lighthouse", &two, &[1])
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(refused("ok", "lighthouse", &two, &[2]).contains("already"));
-    assert_eq!(
-        hq.trial_report("nothing"),
-        Err(EngineError::Unknown("trial"))
-    );
-    let crews = [arm("x", &[a, b, c]), arm("y", &[c, b, a])];
-    assert_eq!(
-        hq.start_trial("crews", project, "silent_station", &crews, &[1])
-            .unwrap()
-            .len(),
-        2
-    );
-
-    // What a run is configured with is the brain its turns will really get, as the engine
-    // places them: live, a reviewer whose own work brain was the house's model played on the
-    // Mac, since a tester's work is the Mac's (ADR 0131), and the trial said "local".
-    let ivy = hq.hire("Ivy", Role::Reviewer, 20, 2, 1).unwrap();
-    hq.start_trial(
-        "roles",
-        project,
-        "lighthouse",
-        &[arm("dev", &[a]), arm("tester", &[ivy])],
-        &[1],
-    )
-    .unwrap();
-    let report = hq.trial_report("roles").unwrap();
-    let turn_brain = |i: usize| report["runs"][i]["config"]["members"][0]["turn_brain"].clone();
-    assert_eq!(turn_brain(1), json!("mac"), "{}", report["runs"][1]);
-    assert!(turn_brain(0).is_string());
 }
 
 fn play(hq: &Hq<'_>, context: &RunContext, san: &str) -> Result<String, String> {
@@ -870,73 +353,29 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
         hq.replay_chess(game).unwrap().move_text(),
         "1. f3 e5 2. g4 Qh4#"
     );
-
-    // Model against model: the same two, colours swapped between conditions.
-    let started = hq
-        .start_trial(
-            "colours",
-            project,
-            "chess",
-            &[
-                arm("linus-white", &[white, black]),
-                arm("zed-white", &[black, white]),
-            ],
-            &[1],
-        )
-        .unwrap();
-    assert_eq!(started.len(), 2);
-    let report = hq.trial_report("colours").unwrap();
-    assert_eq!(report["kind"], "chess");
-    assert!(report["runs"][0]["by_role"].is_array());
 }
 
-// The owner's screen lists the Holodeck: the scenarios, newest first, with their world, title
-// and end, and the trials, with their world and how many runs they started.
-#[test]
-fn the_screen_lists_the_scenarios_and_the_trials() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([linus, zed, rae], project) = crew(&hq);
-    let lamp = hq.start_scenario(project, linus, 2).unwrap();
-    let game = hq.start_chess(project, [zed, rae], 1).unwrap();
-    hq.start_trial(
-        "pair",
-        project,
-        "lighthouse",
-        &[arm("a", &[linus]), arm("b", &[zed])],
-        &[3],
-    )
-    .unwrap();
-    let shown = hq.holodeck_shown().unwrap();
-    let scenarios = shown["scenarios"].as_array().unwrap();
-    assert_eq!(
-        scenarios.len(),
-        4,
-        "the two started and the trial's two: {shown}"
-    );
-    assert_eq!(scenarios[2]["task"], game.0, "newest first");
-    assert_eq!(scenarios[2]["kind"], "chess");
-    assert_eq!(scenarios[3]["task"], lamp.0);
-    assert!(
-        scenarios[3]["title"]
-            .as_str()
-            .unwrap()
-            .contains("lighthouse")
-    );
-    assert_eq!(scenarios[3]["end"], json!(null));
-    assert_eq!(
-        shown["trials"],
-        json!([{ "name": "pair", "kind": "lighthouse", "runs": 2 }])
-    );
+/// A match and black's part of it.
+fn chess_game(hq: &Hq<'_>, project: ProjectId, players: [MemberId; 2]) -> (TaskId, TaskId) {
+    let game = hq.start_chess(project, players, 1).unwrap();
+    let part = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .unwrap()
+        .id;
+    (game, part)
 }
 
-// Live, the project's lead was woken on the crew's parts by the stuck-work ladder and acted in
-// their roles: a role is its task's member's, and nobody else's, whoever is woken on it.
+// Live, the project's lead was woken on a crew's parts by the stuck-work ladder and acted in
+// their roles: a side is its task's member's, and nobody else's, whoever is woken on it.
 #[test]
 fn only_a_tasks_own_member_acts_in_its_role() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
+    let ([white, black, _], project) = crew(&hq);
     let ada = hq
         .store()
         .members()
@@ -945,31 +384,18 @@ fn only_a_tasks_own_member_acts_in_its_role() {
         .find(|m| m.name == "Ada")
         .unwrap()
         .id;
-    let mission = hq
-        .start_station(
-            project,
-            [captain, science, engineer],
-            station_seed(Anomaly::IonStorm),
-        )
-        .unwrap();
-    let part = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.parent == Some(mission))
-        .unwrap();
-    // The crew's first turns end, so a wake on a part is not held behind its own member's.
-    for c in turns(&hq, &[captain, science, engineer]) {
+    let (game, part) = chess_game(&hq, project, [white, black]);
+    // The players' first turns end, so a wake on a part is not held behind its own member's.
+    for c in turns(&hq, &[white, black]) {
         hq.runner().finish(c.run, true);
     }
     hq.tick().unwrap();
-    hq.wake(ada, Some(part.id), WakeReason::Mentioned).unwrap();
+    hq.wake(ada, Some(part), WakeReason::Mentioned).unwrap();
     let [lead] = <[RunContext; 1]>::try_from(turns(&hq, &[ada]))
         .ok()
         .unwrap();
     let (run, member) = hq.turn_of(&lead.token).unwrap().unwrap();
-    assert_eq!(run.task, Some(part.id));
+    assert_eq!(run.task, Some(part));
     assert!(
         !tools_in(&hq, &run, &member)
             .as_array()
@@ -978,37 +404,25 @@ fn only_a_tasks_own_member_acts_in_its_role() {
             .any(|t| t["name"] == "scenario"),
         "not offered to her"
     );
-    let refused = act(&hq, &lead, "scan_station").unwrap_err();
+    let refused = act(&hq, &lead, "look").unwrap_err();
     assert!(refused.contains("Zed's"), "{refused}");
     assert!(
-        hq.store().scenario_actions(mission).unwrap().is_empty(),
+        hq.store().scenario_actions(game).unwrap().is_empty(),
         "nothing kept as an act"
     );
 }
 
-// A scenario's parts wait for their world to wake them, by design: the stuck-work guards and
-// the ladder leave them alone (live, the parts were blocked and the lead woken to decide).
+// A match's tasks wait for their world to wake them, by design: the stuck-work guards and the
+// ladder leave them alone (live, a crew's parts were blocked and the lead woken to decide).
 #[test]
 fn the_stuck_work_guards_leave_a_scenario_alone() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let mission = hq
-        .start_station(
-            project,
-            [captain, science, engineer],
-            station_seed(Anomaly::IonStorm),
-        )
-        .unwrap();
-    let contexts = turns(&hq, &[captain, science, engineer]);
-    for (context, task) in contexts.iter().zip(
-        hq.store()
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .filter(|t| t.id == mission || t.parent == Some(mission)),
-    ) {
-        use_tool(&hq, context, "claim", &json!({ "task": task.id.0 })).unwrap();
+    let ([white, black, _], project) = crew(&hq);
+    let (game, part) = chess_game(&hq, project, [white, black]);
+    let contexts = turns(&hq, &[white, black]);
+    for (context, task) in contexts.iter().zip([game, part]) {
+        use_tool(&hq, context, "claim", &json!({ "task": task.0 })).unwrap();
     }
     for c in &contexts {
         hq.runner().finish(c.run, true);
@@ -1027,13 +441,9 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
             hq.runner().finish(started.run, true);
         }
     }
-    let statuses: Vec<TaskStatus> = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.id == mission || t.parent == Some(mission))
-        .map(|t| t.status)
+    let statuses: Vec<TaskStatus> = [game, part]
+        .iter()
+        .map(|t| hq.store().task(*t).unwrap().unwrap().status)
         .collect();
     assert!(!statuses.contains(&TaskStatus::Blocked), "{statuses:?}");
     let decided = hq
@@ -1052,30 +462,18 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
 fn the_tick_closes_a_world_that_has_ended() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let mission = hq
-        .start_station(
-            project,
-            [captain, science, engineer],
-            station_seed(Anomaly::IonStorm),
-        )
-        .unwrap();
-    let [c] = <[RunContext; 1]>::try_from(turns(&hq, &[captain]))
+    let ([white, black, _], project) = crew(&hq);
+    let (game, part) = chess_game(&hq, project, [white, black]);
+    let [w] = <[RunContext; 1]>::try_from(turns(&hq, &[white]))
         .ok()
         .unwrap();
-    for action in [
-        "scan_station",
-        "analyze_anomaly",
-        "inspect_comms",
-        "route_power",
-        "send_probe",
-    ] {
+    for action in ["move f3", "move e5", "move g4", "move Qh4"] {
         hq.store()
             .add_scenario_action(&super::ports::ScenarioAction {
                 id: 0,
-                task: mission,
-                run: c.run,
-                member: captain,
+                task: game,
+                run: w.run,
+                member: white,
                 action: action.to_owned(),
                 ok: true,
                 said: String::new(),
@@ -1084,20 +482,14 @@ fn the_tick_closes_a_world_that_has_ended() {
             .unwrap();
     }
     hq.tick().unwrap();
-    for task in hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.id == mission || t.parent == Some(mission))
-    {
+    for task in [game, part] {
         assert_eq!(
-            task.status,
-            TaskStatus::Dropped,
-            "partial is not the work done"
+            hq.store().task(task).unwrap().unwrap().status,
+            TaskStatus::Done,
+            "a match played out is the work done"
         );
     }
-    assert_eq!(hq.scenario_shown(mission).unwrap()["end"], "partial");
+    assert_eq!(hq.scenario_shown(game).unwrap()["end"], "black_won");
 }
 
 // Baseline 28 Oct: the owner paused the league, its players' wakes were held, and the idle check
@@ -1264,217 +656,6 @@ fn acting_again_resets_the_count_of_wakes() {
     }
     play(&hq, &b, "e5").unwrap();
     assert!(!hq.store().task(game).unwrap().unwrap().status.finished());
-}
-
-// A trial whose conditions differ in how the crew is briefed, not in who plays: the same crew,
-// the same seeds; in one the captain posts the crew's plan before anyone acts, and the world
-// holds every action until it has.
-#[test]
-fn a_trial_compares_briefings_with_the_crew_and_seeds_fixed() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let crew_of = [captain, science, engineer];
-    let mut planned = arm("plan-first", &crew_of);
-    planned.brief = Some("plan_first".to_owned());
-    let seed = station_seed(Anomaly::IonStorm);
-    let started = hq
-        .start_trial(
-            "briefings",
-            project,
-            "silent_station",
-            &[arm("current", &crew_of), planned],
-            &[seed],
-        )
-        .unwrap();
-    assert_eq!(started.len(), 2);
-    let report = hq.trial_report("briefings").unwrap();
-    assert_eq!(report["runs"][0]["config"]["brief"], json!(null));
-    assert_eq!(report["runs"][1]["config"]["brief"], "plan_first");
-
-    // Played alone, so each member's turn is on its part of this mission.
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ([captain, science, engineer], project) = crew(&hq);
-    let mission = hq
-        .start_station_with(project, [captain, science, engineer], seed, true)
-        .unwrap();
-    let parts: Vec<_> = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.parent == Some(mission))
-        .collect();
-    assert!(parts[0].description.contains("Wait for the captain's plan"));
-    let [c, s, _e] = <[RunContext; 3]>::try_from(turns(&hq, &[captain, science, engineer]))
-        .ok()
-        .unwrap();
-    assert!(
-        act(&hq, &s, "scan_station")
-            .unwrap_err()
-            .contains("has not posted the crew's plan")
-    );
-    let woken_before = hq.store().wakes().unwrap().len();
-    let posted = use_tool(
-        &hq,
-        &c,
-        "scenario",
-        &json!({ "action": "plan", "text": "Science scans and analyses; the engineer inspects and routes power; I call." }),
-    )
-    .unwrap();
-    assert!(posted.starts_with("The captain's plan:"), "{posted}");
-    assert!(
-        hq.store().wakes().unwrap().len() > woken_before,
-        "the crew is woken to the plan"
-    );
-    assert!(
-        act(&hq, &s, "scan_station")
-            .unwrap()
-            .contains("Four life signs")
-    );
-    let shown = hq.scenario_shown(mission).unwrap();
-    assert_eq!(shown["brief"], "plan_first");
-    assert!(shown["plan"].as_str().unwrap().contains("I call."));
-    assert_eq!(
-        shown["log"][0]["action"], "scan_station",
-        "the refused scan is kept first"
-    );
-}
-
-/// The owner, 2026-10-25: reset the Holodeck so the team re-attempts the whole testing set. The
-/// earlier round is archived, kept and labelled, never deleted; each distinct scenario is queued
-/// again with its seed and players, and run one at a time so it does not crowd out real work.
-#[test]
-fn the_holodeck_runs_every_scenario_again_one_at_a_time_and_keeps_the_earlier_round() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let (crew, project) = crew(&hq);
-    let lit = hq.start_scenario(project, crew[0], 7).unwrap();
-    let mission = hq.start_station(project, crew, 2).unwrap();
-    let again = hq.start_station(project, crew, 2).unwrap();
-    let game = hq.start_chess(project, [crew[1], crew[2]], 3).unwrap();
-    for world in [lit, mission, again, game] {
-        hq.store()
-            .set_task_status(world, TaskStatus::Dropped)
-            .unwrap();
-    }
-    let before = hq.store().tasks().unwrap().len();
-    // Two distinct setups: the second mission is the first one's twin, and the match is the
-    // league's, which is reset on its own.
-    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
-    assert!(
-        hq.rerun_holodeck("round 2").is_err(),
-        "one re-run at a time"
-    );
-    let listed = |hq: &Hq<'_>| hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    for world in [lit, mission, again] {
-        assert!(
-            listed(&hq)
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|s| s["task"] == world.0 && s["round"] == "round 1"),
-            "{world:?} is kept and labelled: {}",
-            listed(&hq)
-        );
-    }
-    let open = |hq: &Hq<'_>| -> Vec<crate::domain::Task> {
-        hq.store()
-            .tasks()
-            .unwrap()
-            .into_iter()
-            .skip(before)
-            .filter(|t| t.parent.is_none() && !t.status.finished())
-            .collect()
-    };
-    hq.tick().unwrap();
-    let first = open(&hq);
-    assert_eq!(first.len(), 1, "one at a time: {first:?}");
-    assert_eq!(
-        hq.scenario_of(first[0].id).unwrap(),
-        Some(7),
-        "the lighthouse first, its seed"
-    );
-    assert_eq!(first[0].assignee, Some(crew[0]));
-    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 1);
-    hq.tick().unwrap();
-    assert_eq!(open(&hq).len(), 1, "the next waits for this one to end");
-    hq.store()
-        .set_task_status(first[0].id, TaskStatus::Dropped)
-        .unwrap();
-    hq.tick().unwrap();
-    let second = open(&hq);
-    assert_eq!(second.len(), 1);
-    assert_eq!(
-        hq.scenario_of(second[0].id).unwrap(),
-        Some(2),
-        "then the mission"
-    );
-    assert_eq!(second[0].assignee, Some(crew[0]), "its captain");
-    hq.store()
-        .set_task_status(second[0].id, TaskStatus::Dropped)
-        .unwrap();
-    hq.tick().unwrap();
-    assert!(open(&hq).is_empty(), "and no match: {:?}", open(&hq));
-    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 0);
-    let _ = game;
-}
-
-/// The owner, 2026-10-25: have every scenario play out again on the new engine, while a re-run
-/// is still under way. Starting over drops the scenario in progress (kept, never deleted),
-/// labels what this round finished, and queues every distinct setup again, earlier rounds'
-/// included, one at a time as before.
-#[test]
-fn the_holodeck_re_run_starts_over_with_every_scenario_and_keeps_what_ran() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let (crew, project) = crew(&hq);
-    let lit = hq.start_scenario(project, crew[0], 7).unwrap();
-    let mission = hq.start_station(project, crew, 2).unwrap();
-    for world in [lit, mission] {
-        hq.store()
-            .set_task_status(world, TaskStatus::Dropped)
-            .unwrap();
-    }
-    assert_eq!(hq.rerun_holodeck("round 1").unwrap(), 2);
-    hq.tick().unwrap();
-    // The lighthouse is being played again when the owner starts over.
-    let playing = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .rfind(|t| t.parent.is_none() && !t.status.finished())
-        .unwrap();
-    assert_eq!(hq.scenario_of(playing.id).unwrap(), Some(7));
-    assert!(
-        hq.rerun_holodeck("round 2").is_err(),
-        "a plain re-run still waits"
-    );
-    assert_eq!(
-        hq.restart_holodeck("round 2").unwrap(),
-        2,
-        "every setup, both rounds'"
-    );
-    let dropped = hq.store().task(playing.id).unwrap().unwrap();
-    assert_eq!(dropped.status, TaskStatus::Dropped, "kept, not deleted");
-    let listed = hq.snapshot().unwrap()["holodeck"]["scenarios"].clone();
-    assert!(
-        listed
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["task"] == playing.id.0 && s["round"] == "round 2"),
-        "{listed}"
-    );
-    assert_eq!(hq.snapshot().unwrap()["holodeck"]["queued"], 2);
-    hq.tick().unwrap();
-    assert_eq!(
-        hq.snapshot().unwrap()["holodeck"]["queued"],
-        1,
-        "one starts again"
-    );
 }
 
 // The model league (ADR 0135, amended 2026-10-25): the owner wants the models compared at a
@@ -1702,26 +883,157 @@ fn the_owner_resets_the_league_and_it_starts_again_keeping_the_games_before() {
     assert_ne!(league["games"][0]["task"], live.0);
 }
 
-// Chess belongs to the league, which the owner resets on its own: running the Holodeck again
-// queues its scenarios and never an old match, which would be played outside the league.
+// The owner retired the Holodeck's other worlds (2026-10-30), the lighthouse and Silent Station,
+// their trials and their re-runs, and kept chess. What they left in the store is kept, never
+// deleted: an old world's task, its log, its parts, a queued re-run, a round's label and a
+// trial are skipped wherever the Holodeck is read, and nothing errors on them; one left open
+// neither holds the league back nor is touched by the tick.
 #[test]
-fn running_the_holodeck_again_queues_its_scenarios_and_no_chess_match() {
+fn a_retired_worlds_rows_are_kept_and_break_nothing() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let ([linus, zed, rae], project) = crew(&hq);
-    let lamp = hq.start_scenario(project, linus, 2).unwrap();
+    let goal = hq
+        .store()
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == project)
+        .unwrap()
+        .goal;
+    let task = |title: &str, to: MemberId, parent: Option<TaskId>| {
+        hq.add_task(
+            Author::Owner,
+            super::ports::NewTask {
+                goal,
+                project: Some(project),
+                parent,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(to),
+                priority: crate::domain::Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    // A lighthouse left open, and a finished mission with its parts, as the store kept them.
+    let lamp = task("The dark lighthouse (seed 7)", linus, None);
+    let mission = task("Silent Station (seed 3)", linus, None);
+    let science = task("Silent Station: science", zed, Some(mission));
+    let engineer = task("Silent Station: engineer", rae, Some(mission));
+    for done in [mission, science, engineer] {
+        hq.store().set_task_status(done, TaskStatus::Done).unwrap();
+    }
+    for (key, value) in [
+        (format!("scenario:{}", lamp.0), "7".to_owned()),
+        (
+            format!("scenario:{}", mission.0),
+            format!("silent_station_plan:3:{}:{}", science.0, engineer.0),
+        ),
+        (
+            format!("scenario:{}", science.0),
+            format!("crew:{}:science", mission.0),
+        ),
+        (
+            format!("scenario:{}", engineer.0),
+            format!("crew:{}:engineer", mission.0),
+        ),
+        (
+            format!("scenario_round:{}", mission.0),
+            "round 1".to_owned(),
+        ),
+        (
+            "holodeck_rerun".to_owned(),
+            format!("lighthouse:7:{}:0:{}", project.0, linus.0),
+        ),
+        ("trials".to_owned(), "[\"old\"]".to_owned()),
+        (
+            "trial:old".to_owned(),
+            format!(
+                "{{\"kind\":\"lighthouse\",\"version\":1,\"project\":{},\"seeds\":[7],\"runs\":[{{\"task\":{},\"condition\":\"a\",\"seed\":7}}]}}",
+                project.0, lamp.0
+            ),
+        ),
+    ] {
+        hq.store().set_setting(&key, &value).unwrap();
+    }
+    for (world, action) in [
+        (lamp, "inspect"),
+        (mission, "plan we go"),
+        (mission, "scan_station"),
+    ] {
+        hq.store()
+            .add_scenario_action(&super::ports::ScenarioAction {
+                id: 0,
+                task: world,
+                run: crate::domain::RunId(1),
+                member: linus,
+                action: action.to_owned(),
+                ok: true,
+                said: String::new(),
+                at: OCT_17,
+            })
+            .unwrap();
+    }
+
     let game = hq.start_chess(project, [zed, rae], 1).unwrap();
-    for task in hq.store().tasks().unwrap() {
-        if [lamp, game].contains(&task.id) || task.parent == Some(game) {
-            hq.store()
-                .set_task_status(task.id, crate::domain::TaskStatus::Done)
-                .unwrap();
+    let listed = hq.snapshot().unwrap()["holodeck"].clone();
+    let kinds: Vec<(i64, &str)> = listed["scenarios"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["task"].as_i64().unwrap(), s["kind"].as_str().unwrap()))
+        .collect();
+    assert_eq!(kinds, [(game.0, "chess")], "{listed}");
+    assert!(
+        listed.get("trials").is_none() && listed.get("queued").is_none(),
+        "{listed}"
+    );
+    for old in [lamp, mission, science] {
+        assert_eq!(
+            hq.scenario_shown(old),
+            Err(EngineError::Unknown("scenario")),
+            "a retired world is no scenario now"
+        );
+        assert_eq!(hq.scenario_of(old).unwrap(), None);
+    }
+
+    // The tick neither closes nor restarts them, and the old log and settings stay as kept.
+    hq.tick().unwrap();
+    assert!(!hq.store().task(lamp).unwrap().unwrap().status.finished());
+    assert_eq!(hq.store().scenario_actions(mission).unwrap().len(), 2);
+    assert!(hq.store().setting("holodeck_rerun").unwrap().is_some());
+    assert_eq!(
+        hq.store()
+            .tasks()
+            .unwrap()
+            .iter()
+            .filter(|t| t.title.contains("lighthouse"))
+            .count(),
+        1,
+        "no lighthouse started again"
+    );
+
+    // The league is not held back by the open lighthouse or the old queue.
+    let held = hq.store().task(game).unwrap().unwrap();
+    for t in hq.store().tasks().unwrap() {
+        if t.id == held.id || t.parent == Some(held.id) {
+            hq.store().set_task_status(t.id, TaskStatus::Done).unwrap();
         }
     }
+    for started in hq.runner().started() {
+        hq.runner().finish(started.run, true);
+    }
+    hq.tick().unwrap();
+    hq.start_league(project, &["mac", "local"]).unwrap();
+    hq.tick().unwrap();
     assert_eq!(
-        hq.rerun_holodeck("before").unwrap(),
+        hq.snapshot().unwrap()["holodeck"]["league"]["games"]
+            .as_array()
+            .unwrap()
+            .len(),
         1,
-        "the lighthouse alone"
+        "a league game sat down"
     );
-    assert_eq!(hq.restart_holodeck("again").unwrap(), 1, "and again");
 }

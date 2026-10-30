@@ -62,7 +62,6 @@ mod running;
 mod runtime;
 mod scenario;
 mod staffing;
-mod trials;
 mod waking;
 mod wing;
 mod world;
@@ -2025,8 +2024,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.games_tick(now)?;
         // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
         self.close_ended_scenarios()?;
-        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
-        self.holodeck_rerun_tick()?;
         // The model league: the next pair of brains sits down to chess once nothing is played.
         self.league_tick(now)?;
         // The loops hand out their plans' next items (ADR 0142).
@@ -3728,7 +3725,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "office": self.office_shown()?,
             // Ping-pong, pool and chess in the office (ADR 0121).
             "games": self.games_shown()?,
-            // The Holodeck's scenarios and trials (ADR 0135).
+            // The Holodeck's chess matches and the model league (ADR 0135).
             "holodeck": self.holodeck_shown()?,
             // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
             // The owner's Mac as the team sees it (ADR 0130).

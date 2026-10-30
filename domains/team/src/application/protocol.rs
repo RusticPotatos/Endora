@@ -320,9 +320,9 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
             }
         }
     }
-    // A scenario's turn acts in its world with its tool (the Holodeck plan's phases 5 and 6).
-    if let Ok(Some(kind)) = engine.scenario_kind_of_run(run.id) {
-        list.push(super::scenario_tool::tool(kind));
+    // A match's turn plays it with its tool (ADR 0135).
+    if let Ok(Some(_)) = engine.scenario_kind_of_run(run.id) {
+        list.push(super::scenario_tool::tool());
     }
     // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
     // the work of a project that lists its tools, those four and the list (the Holodeck plan's

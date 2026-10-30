@@ -1,14 +1,12 @@
-//! Scenarios (the Holodeck plan's phases 5 and 6, ADR 0135): the owner starts one as a task in
-//! a project that gives its work the scenario tool alone; members act through that tool; the
-//! world, in code, says what each action did and closes its tasks when it ends. The state is
-//! never kept: it is the seed's world with the log's accepted actions replayed, and the log is
-//! append-only, so a reset is a new task with the same seed.
+//! Scenarios (ADR 0135): the owner starts one as a task in a project that gives its work the
+//! scenario tool alone; members act through that tool; the world, in code, says what each
+//! action did and closes its tasks when it ends. The state is never kept: it is the world's
+//! start with the log's accepted actions replayed, and the log is append-only.
 //!
-//! Three worlds. The lighthouse is one member's task. Silent Station is a crew's: the captain
-//! holds the mission, science and the engineer a part of it each, all acting in the mission's
-//! one world and log, each as its role alone; an accepted action wakes the rest of the crew.
-//! A chess match is two members': white holds the match and black a part of it, a move a turn,
-//! the opponent woken when it is its move.
+//! One world is left: a chess match, two members', white holding the match and black a part of
+//! it, a move a turn, the opponent woken when it is its move. The lighthouse, Silent Station,
+//! their trials and their re-runs were retired by the owner on 2026-10-30 (ADR 0135, amended):
+//! what they left in the store is kept and read past, never as a world.
 
 use std::collections::HashMap;
 
@@ -18,8 +16,6 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, NewTask, ScenarioAction, TeamStore, WorkerAdapter};
 use crate::domain::chess_match::{self, Match, Side};
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
-use crate::domain::scenario::{self, Lighthouse};
-use crate::domain::station::{self, Station};
 use crate::domain::{
     EventKind, MemberId, Priority, ProjectId, Refusal, RunId, TaskId, TaskStatus, WakeReason,
 };
@@ -30,16 +26,14 @@ pub const TOOL: &str = "scenario";
 /// The longest action, as written, the log keeps.
 const ACTION_MOST: usize = 400;
 
-/// A mission's mark word where nothing is done before the captain's plan (a trial's briefing).
-const PLAN_FIRST: &str = "silent_station_plan";
-
 fn refused(why: impl Into<String>) -> EngineError {
     EngineError::Refused(Refusal::Scenario(why.into()))
 }
 
-/// Where a task's place in a scenario is kept: `<seed>` for a lighthouse;
-/// `silent_station:<seed>:<science's task>:<engineer's task>` for a mission;
-/// `chess:<seed>:<black's task>` for a match; `crew:<mission>:<role>` for a part of either.
+/// Where a task's place in a scenario is kept: `chess:<seed>:<black's task>` for a match;
+/// `crew:<match>:<side>` for black's part. A retired world's word (a bare seed for a lighthouse,
+/// `silent_station` or `silent_station_plan` for a mission) is kept as it was, and read as no
+/// world.
 fn key(task: TaskId) -> String {
     format!("scenario:{}", task.0)
 }
@@ -55,206 +49,32 @@ fn idle_key(world: TaskId) -> String {
     format!("scenario_idle:{}", world.0)
 }
 
-/// Where an earlier round's label is kept, by its world's task (the owner's re-run).
-fn round_key(world: TaskId) -> String {
-    format!("scenario_round:{}", world.0)
-}
-
-/// The scenarios queued to run again, oldest first: `kind:seed:project:plan:players`, `;`
-/// between them.
-const RERUN_QUEUE: &str = "holodeck_rerun";
-
-/// Which world a scenario is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// The lighthouse (phase 5).
-    Lighthouse,
-    /// Silent Station (phase 6).
-    Station,
-    /// A chess match.
-    Chess,
-}
-
-impl Kind {
-    /// Its name.
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Lighthouse => scenario::LIGHTHOUSE,
-            Self::Station => station::SILENT_STATION,
-            Self::Chess => chess_match::CHESS,
-        }
-    }
-
-    /// The role of the member who holds the world's own task: a mission's captain, a match's
-    /// white.
-    const fn holder(self) -> Option<&'static str> {
-        match self {
-            Self::Lighthouse => None,
-            Self::Station => Some(station::Role::Captain.name()),
-            Self::Chess => Some(Side::White.name()),
-        }
-    }
-
-    /// A role's name in this world, as its own.
-    fn role(self, name: &str) -> Option<&'static str> {
-        match self {
-            Self::Lighthouse => None,
-            Self::Station => station::Role::from_name(name).map(station::Role::name),
-            Self::Chess => Side::from_name(name).map(Side::name),
-        }
-    }
-}
-
-/// Where a task stands in a scenario.
+/// Where a task stands in a match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Place {
-    /// The task whose world and log it is: the lighthouse's own, or the mission.
+    /// The task whose world and log it is: the match, white's own.
     world: TaskId,
-    kind: Kind,
+    /// Which game among the league's (chess has no chance in it).
     seed: u64,
-    /// The world's parts: a mission's science's then engineer's, a match's black's.
+    /// The world's parts: black's.
     parts: Vec<TaskId>,
-    /// The role this task's member wears: in a mission, or a side in a match.
+    /// The side this task's member plays.
     role: Option<&'static str>,
-    /// Whether nothing is done before the captain posts the crew's plan.
-    plan_first: bool,
 }
 
-/// What the record says of one scenario: what a trial sums.
-pub(super) struct Facts {
-    /// How it ended, if it has.
-    pub end: Option<&'static str>,
-    /// Whether that end is the work done.
-    pub done: bool,
-    /// What it scored.
-    pub score: u32,
-    /// Time spent in the world.
-    pub elapsed: u32,
-    /// Actions the world accepted.
-    pub accepted: u32,
-    /// Actions it refused.
-    pub refused: u32,
-    /// Whether anyone was hurt.
-    pub unsafe_act: bool,
-    /// The tasks its turns were taken on: the world's, and its parts.
-    pub tasks: Vec<TaskId>,
-    /// Each role's actions, accepted and refused, with the member who wore it: a match's
-    /// illegal moves by side.
-    pub by_role: Vec<Value>,
+/// Whose move it is, while the match goes on.
+fn to_move(game: &Match) -> Option<&'static str> {
+    game.outcome().is_none().then(|| game.to_move().name())
 }
 
-/// A world as it stands, whichever it is.
-enum World {
-    Lighthouse(Lighthouse),
-    Station(Station),
-    Chess(Match),
+/// How a match ended: its name, and that it is the work done (playing it out was the work).
+fn end(game: &Match) -> Option<(&'static str, bool)> {
+    game.outcome().map(|(result, _)| (result, true))
 }
 
-impl World {
-    fn replay(kind: Kind, seed: u64, plan_first: bool, actions: &[String]) -> Result<Self, String> {
-        match kind {
-            Kind::Lighthouse => {
-                let acts: Vec<_> = actions
-                    .iter()
-                    .filter_map(|a| scenario::Action::read(a))
-                    .collect();
-                Lighthouse::replay(seed, &acts).map(Self::Lighthouse)
-            }
-            Kind::Station => Station::replay_logged(seed, plan_first, actions).map(Self::Station),
-            Kind::Chess => Match::replay_logged(actions).map(Self::Chess),
-        }
-    }
-
-    /// One action, as written, by a member in `role` (a mission's, or a match's side).
-    fn step(&self, role: Option<&str>, written: &str) -> Result<(Self, String), String> {
-        match self {
-            Self::Lighthouse(now) => {
-                let act = scenario::Action::read(written).ok_or(
-                    "`action` is look, inspect, test_circuit or replace_part (with part: bulb or \
-                     fuse)",
-                )?;
-                now.step(act)
-                    .map(|(next, said)| (Self::Lighthouse(next), said))
-            }
-            Self::Station(now) => {
-                if let Some(text) = written.strip_prefix("plan ") {
-                    let role = role
-                        .and_then(station::Role::from_name)
-                        .ok_or("this task wears no role in the mission")?;
-                    return now
-                        .post_plan(role, text)
-                        .map(|(next, said)| (Self::Station(next), said));
-                }
-                let act = station::Action::read(written).ok_or(
-                    "`action` is look, scan_station, inspect_comms, analyze_anomaly, \
-                     route_power, send_probe or attempt_contact",
-                )?;
-                let role = role
-                    .and_then(station::Role::from_name)
-                    .ok_or("this task wears no role in the mission")?;
-                now.step(role, act)
-                    .map(|(next, said)| (Self::Station(next), said))
-            }
-            Self::Chess(now) => {
-                let side = role
-                    .and_then(Side::from_name)
-                    .ok_or("this task plays no side in the match")?;
-                // Tipping the king: a side resigns, and the other wins.
-                if written == format!("resign {}", side.name()) {
-                    return now
-                        .concede(side, &format!("{} resigned", side.name()))
-                        .map(|(next, said)| (Self::Chess(next), said));
-                }
-                let san = written
-                    .strip_prefix("move ")
-                    .filter(|s| !s.trim().is_empty())
-                    .ok_or(
-                        "`action` is look, move with san (the move in standard notation), or \
-                         resign",
-                    )?;
-                now.step(side, san)
-                    .map(|(next, said)| (Self::Chess(next), said))
-            }
-        }
-    }
-
-    /// How it ended: its name, and whether that is the work done (a match is, however it
-    /// ended: playing it out was the work).
-    fn end(&self) -> Option<(&'static str, bool)> {
-        match self {
-            Self::Lighthouse(now) => now.end().map(|e| (e.name(), e == scenario::End::Solved)),
-            Self::Station(now) => now
-                .outcome()
-                .map(|o| (o.name(), o == station::Outcome::Success)),
-            Self::Chess(now) => now.outcome().map(|(result, _)| (result, true)),
-        }
-    }
-
-    /// Where things stand: every side sees the same.
-    fn look(&self) -> String {
-        match self {
-            Self::Lighthouse(now) => now.look(),
-            Self::Station(now) => now.look(),
-            Self::Chess(now) => now.look(),
-        }
-    }
-
-    /// Time spent, in the world's own unit: a match's half-moves.
-    fn elapsed(&self) -> u32 {
-        match self {
-            Self::Lighthouse(now) => now.minutes,
-            Self::Station(now) => now.elapsed,
-            Self::Chess(now) => u32::try_from(now.moves().len()).unwrap_or(u32::MAX),
-        }
-    }
-
-    /// Whose move it is, in a match.
-    fn to_move(&self) -> Option<&'static str> {
-        match self {
-            Self::Chess(now) if now.outcome().is_none() => Some(now.to_move().name()),
-            _ => None,
-        }
-    }
+/// Time spent in a match: its half-moves.
+fn elapsed(game: &Match) -> u32 {
+    u32::try_from(game.moves().len()).unwrap_or(u32::MAX)
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -271,156 +91,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(found)
     }
 
-    /// The owner starts the lighthouse for `member`, from `seed`, as a task in `project`, which
-    /// must give its work the scenario tool and nothing else. Starting it again with the same
-    /// seed is its reset: a new task, the same world.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a project there is not; [`Refusal::Scenario`] for a project
-    /// that does not list the scenario tool alone; what adding the task refuses.
-    pub fn start_scenario(&self, project: ProjectId, member: MemberId, seed: u64) -> Done<TaskId> {
-        let _held = self.held();
-        self.start_scenario_held_lock(project, member, seed)
-    }
-
-    /// [`Self::start_scenario`] taken under the engine's lock, as the owner's asking.
-    fn start_scenario_held_lock(
-        &self,
-        project: ProjectId,
-        member: MemberId,
-        seed: u64,
-    ) -> Done<TaskId> {
-        let _asked = self.for_owner();
-        let found = self.holds_scenarios(project)?;
-        let task = self.add_task_held_lock(
-            Author::Owner,
-            NewTask {
-                goal: found.goal,
-                project: Some(project),
-                parent: None,
-                title: format!("The dark lighthouse (seed {seed})"),
-                description: scenario::lighthouse_brief(),
-                assignee: Some(member),
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )?;
-        self.store.set_setting(&key(task), &seed.to_string())?;
-        Ok(task)
-    }
-
-    /// The owner starts Silent Station for a crew of three different members, the captain,
-    /// science and the engineer, from `seed`, in `project`: the mission is the captain's task,
-    /// and science and the engineer each have a part of it. Starting it again with the same
-    /// seed is its reset.
-    ///
-    /// # Errors
-    /// As [`Self::start_scenario`]; [`Refusal::Scenario`] for a crew that is not three
-    /// different members.
-    pub fn start_station(
-        &self,
-        project: ProjectId,
-        crew: [MemberId; 3],
-        seed: u64,
-    ) -> Done<TaskId> {
-        self.start_station_with(project, crew, seed, false)
-    }
-
-    /// The same, and with `plan_first` nothing is done before the captain posts the crew's
-    /// plan, as the crew is told: a trial's briefing.
-    ///
-    /// # Errors
-    /// As [`Self::start_station`].
-    pub fn start_station_with(
-        &self,
-        project: ProjectId,
-        crew: [MemberId; 3],
-        seed: u64,
-        plan_first: bool,
-    ) -> Done<TaskId> {
-        let _held = self.held();
-        self.start_station_with_held_lock(project, crew, seed, plan_first)
-    }
-
-    /// [`Self::start_station_with`] taken under the engine's lock, as the owner's asking.
-    fn start_station_with_held_lock(
-        &self,
-        project: ProjectId,
-        crew: [MemberId; 3],
-        seed: u64,
-        plan_first: bool,
-    ) -> Done<TaskId> {
-        let _asked = self.for_owner();
-        let found = self.holds_scenarios(project)?;
-        let [captain, science, engineer] = crew;
-        if captain == science || captain == engineer || science == engineer {
-            return Err(refused("a crew is three different members"));
-        }
-        for member in crew {
-            self.member(member)?;
-        }
-        let task = |title: String, role: station::Role, to: MemberId, parent| NewTask {
-            goal: found.goal,
-            project: Some(project),
-            parent,
-            title,
-            description: if plan_first {
-                station::brief_plan_first(role)
-            } else {
-                station::brief(role)
-            },
-            assignee: Some(to),
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        };
-        // The mark first, with no parts, so that the parts' turns, woken as they are added,
-        // already find their world.
-        let mission = self.add_task_held_lock(
-            Author::Owner,
-            task(
-                format!("Silent Station (seed {seed})"),
-                station::Role::Captain,
-                captain,
-                None,
-            ),
-        )?;
-        let word = if plan_first {
-            PLAN_FIRST
-        } else {
-            station::SILENT_STATION
-        };
-        self.store
-            .set_setting(&key(mission), &format!("{word}:{seed}"))?;
-        let mut parts = Vec::new();
-        for (role, member) in [
-            (station::Role::Science, science),
-            (station::Role::Engineer, engineer),
-        ] {
-            let part = self.add_task_held_lock(
-                Author::Owner,
-                task(
-                    format!("Silent Station: {}", role.name()),
-                    role,
-                    member,
-                    Some(mission),
-                ),
-            )?;
-            self.store
-                .set_setting(&key(part), &format!("crew:{}:{}", mission.0, role.name()))?;
-            parts.push(part.0.to_string());
-        }
-        self.store
-            .set_setting(&key(mission), &format!("{word}:{seed}:{}", parts.join(":")))?;
-        Ok(mission)
-    }
-
     /// The owner starts a chess match between two different members, white and black, in
-    /// `project`: the match is white's task, and black has a part of it. `seed` names the game
-    /// among a trial's (chess has no chance in it). Black's first turn finds it is white's move
-    /// and ends; each legal move wakes the other side.
+    /// `project`, which must give its work the scenario tool and nothing else: the match is
+    /// white's task, and black has a part of it. `seed` names the game. Black's first turn
+    /// finds it is white's move and ends; each legal move wakes the other side.
     ///
     /// # Errors
-    /// As [`Self::start_scenario`]; [`Refusal::Scenario`] for one member on both sides.
+    /// [`EngineError::Unknown`] for a project or member there is not; [`Refusal::Scenario`] for
+    /// a project that does not list the scenario tool alone, or one member on both sides; what
+    /// adding the task refuses.
     pub fn start_chess(
         &self,
         project: ProjectId,
@@ -483,66 +162,40 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(game)
     }
 
-    /// Where a task stands in a scenario, if it is in one.
+    /// Where a task stands in a match, if it is in one. A retired world's task, or a part of
+    /// one, is in none.
     fn place_of(&self, task: TaskId) -> Done<Option<Place>> {
         let Some(kept) = self.store.setting(&key(task))? else {
             return Ok(None);
         };
         let words: Vec<&str> = kept.split(':').collect();
         let place = match words.as_slice() {
-            [seed] => seed.parse().ok().map(|seed| Place {
-                world: task,
-                kind: Kind::Lighthouse,
-                seed,
-                parts: Vec::new(),
-                role: None,
-                plan_first: false,
-            }),
-            [kind, seed, parts @ ..]
-                if *kind == station::SILENT_STATION
-                    || *kind == PLAN_FIRST
-                    || *kind == chess_match::CHESS =>
-            {
-                let plan_first = *kind == PLAN_FIRST;
-                let kind = if *kind == chess_match::CHESS {
-                    Kind::Chess
-                } else {
-                    Kind::Station
-                };
+            [kind, seed, parts @ ..] if *kind == chess_match::CHESS => {
                 seed.parse().ok().map(|seed| Place {
                     world: task,
-                    kind,
                     seed,
                     parts: parts
                         .iter()
                         .filter_map(|p| p.parse().ok().map(TaskId))
                         .collect(),
-                    role: kind.holder(),
-                    plan_first,
+                    role: Some(Side::White.name()),
                 })
             }
-            ["crew", mission, role] => {
-                let Some(mission) = mission.parse().ok().map(TaskId) else {
+            ["crew", game, side] => {
+                let Some(game) = game.parse().ok().map(TaskId) else {
                     return Ok(None);
                 };
-                let Some(at) = self.place_of_world(mission)? else {
+                let Some(at) = self.place_of(game)?.filter(|p| p.world == game) else {
                     return Ok(None);
                 };
                 Some(Place {
-                    role: at.kind.role(role),
+                    role: Side::from_name(side).map(Side::name),
                     ..at
                 })
             }
             _ => None,
         };
         Ok(place)
-    }
-
-    /// A shared world's own place, never a part's: what a part points at.
-    fn place_of_world(&self, mission: TaskId) -> Done<Option<Place>> {
-        Ok(self
-            .place_of(mission)?
-            .filter(|p| p.world == mission && p.kind != Kind::Lighthouse))
     }
 
     /// A task's scenario, by its seed, if it is in one.
@@ -562,7 +215,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.player_of(task)? != Some(found.member) {
             return Ok(None);
         }
-        Ok(self.place_of(task)?.map(|p| p.kind.name()))
+        Ok(self.place_of(task)?.map(|_| chess_match::CHESS))
     }
 
     /// The member who plays a scenario's task: its assignee, or its owner.
@@ -570,162 +223,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.task(task)?.and_then(|t| t.assignee.or(t.owner)))
     }
 
-    /// Whether a task is in a scenario: its world wakes its players, so the stuck-work guards
-    /// and the ladder leave it alone.
+    /// Whether a task is in a scenario, a retired world's included: its world wakes its
+    /// players, so the stuck-work guards and the ladder leave it alone.
     pub(super) fn in_a_scenario(&self, task: TaskId) -> Done<bool> {
         Ok(self.store.setting(&key(task))?.is_some())
     }
 
-    /// The owner runs the Holodeck again (2026-10-25: so the team re-attempts the whole
-    /// testing set). Every finished scenario not yet in a round is labelled `round`, and kept;
-    /// each distinct setup among them (its world, seed, players and plan) is queued to start
-    /// again, oldest first, one at a time (see [`Self::holodeck_rerun_tick`]). Returns how many
-    /// are queued.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for an empty label; [`Refusal::Scenario`] while a re-run is
-    /// queued or a scenario is still running; a store failure.
-    pub fn rerun_holodeck(&self, round: &str) -> Done<usize> {
-        let _held = self.held();
-        let _asked = self.for_owner();
-        let round = super::one_line(round, 60);
-        if round.is_empty() {
-            return Err(EngineError::Unknown("round label"));
-        }
-        if !self.rerun_queue()?.is_empty() {
-            return Err(refused(
-                "the Holodeck is already running its scenarios again",
-            ));
-        }
-        let mut tasks = self.store.tasks()?;
-        tasks.sort_by_key(|t| t.id);
-        let mut archived = Vec::new();
-        let mut setups: Vec<String> = Vec::new();
-        for task in tasks.iter().filter(|t| t.parent.is_none()) {
-            // Chess is the league's, reset on its own: an old match is never queued again.
-            let Some(place) = self
-                .place_of(task.id)?
-                .filter(|p| p.world == task.id && p.kind != Kind::Chess)
-            else {
-                continue;
-            };
-            if !task.status.finished() {
-                return Err(refused("a scenario is still running: let it end first"));
-            }
-            if self.store.setting(&round_key(task.id))?.is_some() {
-                continue;
-            }
-            let setup = self.setup_of(task, &place)?;
-            if !setups.contains(&setup) {
-                setups.push(setup);
-            }
-            archived.push(task.id);
-        }
-        for task in archived {
-            self.store.set_setting(&round_key(task), &round)?;
-        }
-        self.store.set_setting(RERUN_QUEUE, &setups.join(";"))?;
-        Ok(setups.len())
-    }
-
-    /// The owner starts the re-run over, on the engine as it is now (2026-10-25): the scenario
-    /// being played is dropped (kept, never deleted), every world not yet in a round is
-    /// labelled `round`, and every distinct setup there has ever been, earlier rounds'
-    /// included, is queued again, oldest first, one at a time. Returns how many are queued.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for an empty label; a store failure.
-    pub fn restart_holodeck(&self, round: &str) -> Done<usize> {
-        let _held = self.held();
-        let _asked = self.for_owner();
-        let round = super::one_line(round, 60);
-        if round.is_empty() {
-            return Err(EngineError::Unknown("round label"));
-        }
-        let mut tasks = self.store.tasks()?;
-        tasks.sort_by_key(|t| t.id);
-        let mut setups: Vec<String> = Vec::new();
-        for task in tasks.iter().filter(|t| t.parent.is_none()) {
-            // Chess is the league's, reset on its own: an old match is never queued again.
-            let Some(place) = self
-                .place_of(task.id)?
-                .filter(|p| p.world == task.id && p.kind != Kind::Chess)
-            else {
-                continue;
-            };
-            if !task.status.finished() {
-                self.drop_world(task.id, &place)?;
-            }
-            if self.store.setting(&round_key(task.id))?.is_none() {
-                self.store.set_setting(&round_key(task.id), &round)?;
-            }
-            let setup = self.setup_of(task, &place)?;
-            if !setups.contains(&setup) {
-                setups.push(setup);
-            }
-        }
-        self.store.set_setting(RERUN_QUEUE, &setups.join(";"))?;
-        Ok(setups.len())
-    }
-
-    /// A world and each of its parts still open are dropped.
-    fn drop_world(&self, world: TaskId, place: &Place) -> Done<()> {
-        for part in std::iter::once(world).chain(place.parts.iter().copied()) {
-            if !self.task(part)?.status.finished() {
-                self.store
-                    .set_task_status(part, crate::domain::TaskStatus::Dropped)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// A scenario's setup, as the re-run queue keeps it: `kind:seed:project:plan:players`.
-    fn setup_of(&self, task: &crate::domain::Task, place: &Place) -> Done<String> {
-        let holder = |id: TaskId| -> Done<i64> {
-            Ok(self
-                .task(id)?
-                .assignee
-                .ok_or(EngineError::Unknown("a scenario's player"))?
-                .0)
-        };
-        let mut players = vec![holder(task.id)?];
-        for part in &place.parts {
-            players.push(holder(*part)?);
-        }
-        Ok(format!(
-            "{}:{}:{}:{}:{}",
-            place.kind.name(),
-            place.seed,
-            task.project.map_or(0, |p| p.0),
-            u8::from(place.plan_first),
-            players
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        ))
-    }
-
-    /// The scenarios waiting to run again, in order.
-    pub(super) fn rerun_queue(&self) -> Done<Vec<String>> {
-        Ok(self
-            .store
-            .setting(RERUN_QUEUE)?
-            .map(|kept| {
-                kept.split(';')
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default())
-    }
-
-    /// How many scenarios wait to run again, for the screen.
-    pub(super) fn rerun_queued(&self) -> Done<usize> {
-        Ok(self.rerun_queue()?.len())
-    }
-
-    /// Whether a scenario's world is being played: one at a time, for the re-run and the league.
+    /// Whether a match is being played: one at a time, for the league.
     pub(super) fn a_world_is_live(&self) -> Done<bool> {
         for task in self.store.tasks()? {
             if task.parent.is_none()
@@ -738,49 +242,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(false)
     }
 
-    /// On the tick: when no scenario is running, the next one queued to run again starts. A
-    /// setup that no longer starts (a player let go, a project changed) is passed over.
-    pub(super) fn holodeck_rerun_tick(&self) -> Done<()> {
-        let mut queue = self.rerun_queue()?;
-        if queue.is_empty() || self.a_world_is_live()? {
-            return Ok(());
-        }
-        let next = queue.remove(0);
-        self.store.set_setting(RERUN_QUEUE, &queue.join(";"))?;
-        let words: Vec<&str> = next.split(':').collect();
-        let [kind, seed, project, plan, players] = words.as_slice() else {
-            return Ok(());
-        };
-        let (Ok(seed), Ok(project)) = (seed.parse::<u64>(), project.parse::<i64>()) else {
-            return Ok(());
-        };
-        let project = ProjectId(project);
-        let players: Vec<MemberId> = players
-            .split(',')
-            .filter_map(|p| p.parse().ok().map(MemberId))
-            .collect();
-        let started = match (*kind, players.as_slice()) {
-            (scenario::LIGHTHOUSE, [member]) => {
-                self.start_scenario_held_lock(project, *member, seed)
-            }
-            (station::SILENT_STATION, [a, b, c]) => {
-                self.start_station_with_held_lock(project, [*a, *b, *c], seed, *plan == "1")
-            }
-            (chess_match::CHESS, [white, black]) => {
-                self.start_chess_held_lock(project, [*white, *black], seed)
-            }
-            _ => return Ok(()),
-        };
-        // A setup that no longer starts is passed over; the next tick takes the one after.
-        let _ = started;
-        Ok(())
-    }
-
-    /// What the tick does for the scenarios: a world that has ended with its tasks still open
-    /// (an end a rule added after its last action gives it) is closed; and a world whose
-    /// players have no turn coming, and that has sat idle, has them woken again, three times at
-    /// most, and is then abandoned. Live, a turn stopped for its time had folded into it the
-    /// wake that would have brought its player back, and a match waited for ever.
+    /// What the tick does for the matches: one that has ended with its tasks still open (an
+    /// end a rule added after its last move gives it) is closed; and one whose players have no
+    /// turn coming, and that has sat idle, has them woken again, three times at most, and is
+    /// then abandoned. Live, a turn stopped for its time had folded into it the wake that would
+    /// have brought its player back, and a match waited for ever.
     pub(super) fn close_ended_scenarios(&self) -> Done<()> {
         let runs = self.store.runs()?;
         for listed in self.scenarios_listed(usize::MAX)? {
@@ -792,7 +258,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             };
             let now = self.world_at(&place)?;
-            if let Some((name, done)) = now.end() {
+            if let Some((name, done)) = end(&now) {
                 self.scenario_ended(&place, name, done, &now.look())?;
                 continue;
             }
@@ -807,13 +273,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Wakes a world's players again when none has a turn coming and it has sat idle since its
-    /// last action or its last such wake; after [`REWAKES`] wakes with nothing done, abandons
-    /// it. Kept as a setting a world: `<actions logged>:<wakes>:<when>`.
+    /// Wakes a match's side to move again when neither has a turn coming and it has sat idle
+    /// since its last move or its last such wake; after [`REWAKES`] wakes with nothing done,
+    /// abandons it. Kept as a setting a world: `<actions logged>:<wakes>:<when>`.
     fn wake_the_idle(
         &self,
         place: &Place,
-        now: &World,
+        now: &Match,
         runs: &[crate::application::ports::Run],
     ) -> Done<()> {
         let tasks: Vec<TaskId> = std::iter::once(place.world)
@@ -878,8 +344,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )?;
             return Ok(());
         }
-        // Who is to act: a match's side to move; otherwise every player still at it.
-        let to_wake: Vec<TaskId> = match now.to_move() {
+        // Who is to act: the side to move; otherwise every player still at it.
+        let to_wake: Vec<TaskId> = match to_move(now) {
             Some(side) => tasks
                 .iter()
                 .copied()
@@ -921,68 +387,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    fn world_at(&self, place: &Place) -> Done<World> {
-        World::replay(
-            place.kind,
-            place.seed,
-            place.plan_first,
-            &self.accepted(place.world)?,
-        )
-        .map_err(refused)
-    }
-
-    /// A lighthouse as its log replays.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a task that is no lighthouse; [`Refusal::Scenario`] for a
-    /// log that does not replay, which an append-only log written by this engine never is.
-    pub fn replay_scenario(&self, task: TaskId) -> Done<Lighthouse> {
-        let place = self
-            .place_of(task)?
-            .filter(|p| p.kind == Kind::Lighthouse)
-            .ok_or(EngineError::Unknown("scenario"))?;
-        match self.world_at(&place)? {
-            World::Lighthouse(now) => Ok(now),
-            World::Station(_) | World::Chess(_) => Err(EngineError::Unknown("scenario")),
-        }
-    }
-
-    /// A mission of Silent Station as its log replays.
-    ///
-    /// # Errors
-    /// As [`Self::replay_scenario`], for a task in no mission.
-    pub fn replay_station(&self, task: TaskId) -> Done<Station> {
-        let place = self
-            .place_of(task)?
-            .filter(|p| p.kind == Kind::Station)
-            .ok_or(EngineError::Unknown("scenario"))?;
-        match self.world_at(&place)? {
-            World::Station(now) => Ok(now),
-            World::Lighthouse(_) | World::Chess(_) => Err(EngineError::Unknown("scenario")),
-        }
+    /// A match as its log replays: its moves, and a side's resigning or forfeit.
+    fn world_at(&self, place: &Place) -> Done<Match> {
+        Match::replay_logged(&self.accepted(place.world)?).map_err(refused)
     }
 
     /// A chess match as its log replays.
     ///
     /// # Errors
-    /// As [`Self::replay_scenario`], for a task in no match.
+    /// [`EngineError::Unknown`] for a task in no match; [`Refusal::Scenario`] for a log that
+    /// does not replay, which an append-only log written by this engine never is.
     pub fn replay_chess(&self, task: TaskId) -> Done<Match> {
         let place = self
             .place_of(task)?
-            .filter(|p| p.kind == Kind::Chess)
             .ok_or(EngineError::Unknown("scenario"))?;
-        match self.world_at(&place)? {
-            World::Chess(now) => Ok(now),
-            World::Lighthouse(_) | World::Station(_) => Err(EngineError::Unknown("scenario")),
-        }
+        self.world_at(&place)
     }
 
-    /// Who wears which role in a world: the holder of its own task and its parts' members.
+    /// Who plays which side in a match: the holder of its own task and its part's member.
     fn roles_in(&self, place: &Place) -> Done<HashMap<MemberId, &'static str>> {
         let mut roles = HashMap::new();
-        if place.kind == Kind::Lighthouse {
-            return Ok(roles);
-        }
         for task in std::iter::once(place.world).chain(place.parts.iter().copied()) {
             let Some(found) = self.store.task(task)? else {
                 continue;
@@ -997,17 +421,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(roles)
     }
 
-    /// A scenario as the owner's screen shows it: its seed, where it stands, how it ended and
-    /// what it scored, and, once it has ended, what was hidden; and its log step by step,
-    /// refused actions too, each with who acted, as what, and what the world said.
+    /// A match as the owner's screen shows it: its seed, the board, how it ended and what it
+    /// scored; and its log move by move, illegal moves too, each with who played it, as which
+    /// side, and what the world said.
     ///
     /// # Errors
-    /// [`EngineError::Unknown`] for a task that is no scenario; a store failure.
+    /// [`EngineError::Unknown`] for a task that is no match (a retired world's among them); a
+    /// store failure.
     pub fn scenario_shown(&self, task: TaskId) -> Done<Value> {
         let place = self
             .place_of(task)?
             .ok_or(EngineError::Unknown("scenario"))?;
-        let now = self.world_at(&place)?;
+        let game = self.world_at(&place)?;
         let names = self.names()?;
         let roles = self.roles_in(&place)?;
         let log: Vec<Value> = self
@@ -1020,69 +445,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         "role": roles.get(&a.member), "at": a.at })
             })
             .collect();
-        let mut shown = json!({ "task": place.world.0, "kind": place.kind.name(),
-                                "seed": place.seed, "end": now.end().map(|(name, _)| name),
-                                "elapsed": now.elapsed(), "said": now.look(),
+        let mut shown = json!({ "task": place.world.0, "kind": chess_match::CHESS,
+                                "seed": place.seed, "end": end(&game).map(|(name, _)| name),
+                                "elapsed": elapsed(&game), "said": game.look(),
                                 "status": self.task(place.world)?.status.name(),
                                 "log": log });
-        let over = now.end().is_some();
-        match &now {
-            World::Lighthouse(lamp) => {
-                shown["minutes"] = json!(lamp.minutes);
-                shown["limit"] = json!(scenario::TIME_LIMIT);
-                shown["lit"] = json!(lamp.lit);
-                shown["cause"] = json!(over.then_some(match lamp.cause {
-                    scenario::Cause::Bulb => "bulb",
-                    scenario::Cause::Fuse => "fuse",
-                }));
-            }
-            World::Station(at) => {
-                shown["score"] = json!(at.score());
-                shown["anomaly"] = json!(over.then_some(at.anomaly.name()));
-                shown["plan"] = json!(at.plan);
-                shown["brief"] = json!(if at.plan_first {
-                    "plan_first"
-                } else {
-                    "standard"
-                });
-                shown["state"] = json!({ "station_power": at.station_power,
-                    "life_support": at.life_support, "ship_energy": at.ship_energy,
-                    "hazard": at.hazard, "crew_safe": at.crew_safe,
-                    "power_routed": at.power_routed, "probe_out": at.probe_out,
-                    "contact": at.contact });
-                shown["crew"] = json!(
-                    roles
-                        .iter()
-                        .map(|(m, r)| ((*r).to_owned(), json!(names.get(m))))
-                        .collect::<serde_json::Map<_, _>>()
-                );
-            }
-            World::Chess(game) => {
-                shown["score"] = json!(game.score());
-                shown["result"] = json!(game.outcome().map(|(r, _)| r));
-                shown["reason"] = json!(game.outcome().map(|(_, why)| why));
-                shown["moves"] = json!(game.move_text());
-                shown["move_list"] = json!(game.moves());
-                shown["positions"] = json!(game.positions());
-                shown["to_move"] = json!(now.to_move());
-                if let Some((fen, rows)) = game.board() {
-                    shown["fen"] = json!(fen);
-                    shown["rows"] = json!(rows);
-                }
-                shown["sides"] = json!(
-                    roles
-                        .iter()
-                        .map(|(m, r)| ((*r).to_owned(), json!(names.get(m))))
-                        .collect::<serde_json::Map<_, _>>()
-                );
-            }
+        shown["score"] = json!(game.score());
+        shown["result"] = json!(game.outcome().map(|(r, _)| r));
+        shown["reason"] = json!(game.outcome().map(|(_, why)| why));
+        shown["moves"] = json!(game.move_text());
+        shown["move_list"] = json!(game.moves());
+        shown["positions"] = json!(game.positions());
+        shown["to_move"] = json!(to_move(&game));
+        if let Some((fen, rows)) = game.board() {
+            shown["fen"] = json!(fen);
+            shown["rows"] = json!(rows);
         }
+        shown["sides"] = json!(
+            roles
+                .iter()
+                .map(|(m, r)| ((*r).to_owned(), json!(names.get(m))))
+                .collect::<serde_json::Map<_, _>>()
+        );
         shown["by_role"] = json!(self.by_role(&place, &roles)?);
         Ok(shown)
     }
 
-    /// Each role's actions in a world, accepted and refused, and who wore it: a match's legal
-    /// and illegal moves by side, for the owner and for comparing brains.
+    /// Each side's moves in a match, legal and illegal, and who played it, for the owner and
+    /// for comparing brains.
     fn by_role(&self, place: &Place, roles: &HashMap<MemberId, &'static str>) -> Done<Vec<Value>> {
         let log = self.store.scenario_actions(place.world)?;
         let names = self.names()?;
@@ -1100,9 +490,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    /// The scenarios as the owner's screen lists them, newest first, the latest `most`: each
-    /// world's task, kind, title and status, how it ended and its time. Read from the projects
-    /// that give their work the scenario tool alone, where every scenario is.
+    /// The matches as the owner's screen lists them, newest first, the latest `most`: each
+    /// one's task, kind, title and status, how it ended and its half-moves. Read from the
+    /// projects that give their work the scenario tool alone, where every match is; a retired
+    /// world's task there is passed over.
     pub(super) fn scenarios_listed(&self, most: usize) -> Done<Vec<Value>> {
         let mut holding = Vec::new();
         for project in self.store.projects()? {
@@ -1126,60 +517,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(place) = self.place_of(task.id)?.filter(|p| p.world == task.id) else {
                 continue;
             };
-            let now = self.world_at(&place)?;
-            let round = match self.store.setting(&round_key(task.id))? {
-                Some(round) => Some(round),
-                None if set_aside.contains(&task.id) => Some("before the league reset".to_owned()),
-                None => None,
-            };
+            let game = self.world_at(&place)?;
             listed.push(
-                json!({ "task": task.id.0, "kind": place.kind.name(), "title": task.title,
-                                "status": task.status.name(),
-                                "end": now.end().map(|(name, _)| name),
-                                "elapsed": now.elapsed(),
-                                "round": round }),
+                json!({ "task": task.id.0, "kind": chess_match::CHESS, "title": task.title,
+                        "status": task.status.name(),
+                        "end": end(&game).map(|(name, _)| name),
+                        "elapsed": elapsed(&game),
+                        "round": set_aside.contains(&task.id)
+                            .then_some("before the league reset") }),
             );
         }
         Ok(listed)
     }
 
-    /// What the record says of one scenario, for a trial: its world, how it ended, its score
-    /// and time, its accepted and refused actions, whether anyone was hurt, and the tasks its
-    /// turns were taken on.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a task that is no scenario; a store failure.
-    pub(super) fn scenario_facts(&self, task: TaskId) -> Done<Facts> {
-        let place = self
-            .place_of(task)?
-            .ok_or(EngineError::Unknown("scenario"))?;
-        let now = self.world_at(&place)?;
-        let log = self.store.scenario_actions(place.world)?;
-        let count =
-            |ok: bool| u32::try_from(log.iter().filter(|a| a.ok == ok).count()).unwrap_or(0);
-        let (score, unsafe_act) = match &now {
-            World::Lighthouse(lamp) => (if lamp.lit { 100 } else { 0 }, false),
-            World::Station(at) => (at.score(), !at.crew_safe),
-            World::Chess(game) => (game.score(), false),
-        };
-        let roles = self.roles_in(&place)?;
-        Ok(Facts {
-            end: now.end().map(|(name, _)| name),
-            done: now.end().is_some_and(|(_, done)| done),
-            score,
-            elapsed: now.elapsed(),
-            accepted: count(true),
-            refused: count(false),
-            unsafe_act,
-            tasks: std::iter::once(place.world)
-                .chain(place.parts.iter().copied())
-                .collect(),
-            by_role: self.by_role(&place, &roles)?,
-        })
+    /// The Holodeck as the owner's screen lists it: the latest matches, newest first, and the
+    /// model league.
+    pub fn holodeck_shown(&self) -> Done<Value> {
+        Ok(json!({ "scenarios": self.scenarios_listed(20)?, "league": self.league_shown()? }))
     }
 
-    /// Why a turn is refused one of HQ's tools on a scenario, if it is: moving a scenario's
-    /// task, or a part of a mission, is the world's, never a member's word.
+    /// Why a turn is refused one of HQ's tools on a match, if it is: moving a match's task, or
+    /// black's part of it, is the world's, never a member's word.
     pub fn scenario_refuses(&self, tool: &str, args: &Value) -> Done<Option<String>> {
         if tool != "set_status" {
             return Ok(None);
@@ -1197,21 +555,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// `scenario`: `look` says where things stand; any other action is the world's to accept
-    /// or refuse, as the turn's role in a mission. Every action is kept in the world's log,
-    /// refused ones too, and said as an event; an accepted one wakes the rest of a crew, and
-    /// one that ends the world closes its tasks.
+    /// `scenario`: `look` says where the match stands; `move` and `resign` are the world's to
+    /// accept or refuse, as the turn's side. Every move tried is kept in the world's log, illegal ones
+    /// too, and said as an event; a legal one wakes the other side, and one that ends the match
+    /// closes its tasks.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::Scenario`] for a turn whose task is no scenario, an
-    /// action the world does not know, or one it refuses; a store failure.
-    pub fn scenario_in(&self, run: RunId, action: &str, part: Option<&str>) -> Done<String> {
+    /// [`Refusal::TurnOver`]; [`Refusal::Scenario`] for a turn whose task is no match, an
+    /// action the world does not know, or a move it refuses; a store failure.
+    pub fn scenario_in(&self, run: RunId, action: &str, san: Option<&str>) -> Done<String> {
         let _held = self.held();
         let turn = self.running(run)?;
         let no_scenario = || refused("this turn's task is no scenario: there is nothing to act in");
         let task = turn.task.ok_or_else(no_scenario)?;
         let place = self.place_of(task)?.ok_or_else(no_scenario)?;
-        // A role is its task's member's: anyone else woken on the task does not play it.
+        // A side is its task's member's: anyone else woken on the task does not play it.
         if let Some(player) = self.player_of(task)?.filter(|p| *p != turn.member) {
             return Err(refused(format!(
                 "this task is {}'s to play in the world, not yours",
@@ -1222,7 +580,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if action.trim() == "look" {
             let seen = now.look();
             // A side that looks on the other's move has nothing to do until it is woken.
-            if now.to_move().is_some_and(|side| Some(side) != place.role) {
+            if to_move(&now).is_some_and(|side| Some(side) != place.role) {
                 return Ok(format!(
                     "{seen}\nIt is not your move: this turn has ended, and you are woken when \
                      it is."
@@ -1230,21 +588,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             return Ok(seen);
         }
-        let written = match part {
-            Some(part) if action.trim() == "replace_part" => {
-                format!("replace_part {}", part.trim())
-            }
+        let written = match san {
             Some(san) if action.trim() == "move" => format!("move {}", san.trim()),
-            Some(text) if action.trim() == "plan" => format!("plan {}", text.trim()),
             // A side's resigning is kept with its side, so the log replays to who resigned.
-            _ if action.trim() == "resign" && place.kind == Kind::Chess => {
+            _ if action.trim() == "resign" => {
                 format!("resign {}", place.role.unwrap_or_default())
             }
             _ => action.trim().to_owned(),
         };
         let kept: String = written.chars().take(ACTION_MOST).collect();
         // What is kept is what is played, so the log replays to the same world.
-        let (next, said) = match now.step(place.role, &kept) {
+        let (next, said) = match Self::step(&now, place.role, &kept) {
             Ok(done) => done,
             Err(why) => {
                 self.act_kept(&place, run, turn.member, &kept, false, &why, &now)?;
@@ -1256,7 +610,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             found.moved_forward = true;
             self.store.save_run(&found)?;
         }
-        if let Some((name, done)) = next.end() {
+        if let Some((name, done)) = end(&next) {
             self.scenario_ended(&place, name, done, &said)?;
             // The worker ends a turn HQ says has ended: live, models went on to set_status.
             return Ok(format!(
@@ -1265,26 +619,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.crew_told(&place, turn.member)?;
         // A match is a move a turn: the mover's turn ends, and the other side is woken.
-        if place.kind == Kind::Chess {
-            return Ok(format!(
-                "{said} Your move is made: this turn has ended, and you are woken when it is \
-                 your move again."
-            ));
+        Ok(format!(
+            "{said} Your move is made: this turn has ended, and you are woken when it is \
+             your move again."
+        ))
+    }
+
+    /// One move or a resignation, as written, by the member playing `side`.
+    fn step(now: &Match, side: Option<&str>, written: &str) -> Result<(Match, String), String> {
+        let side = side
+            .and_then(Side::from_name)
+            .ok_or("this task plays no side in the match")?;
+        // Tipping the king: a side resigns, and the other wins.
+        if written == format!("resign {}", side.name()) {
+            return now.concede(side, &format!("{} resigned", side.name()));
         }
-        Ok(said)
+        let san = written
+            .strip_prefix("move ")
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("`action` is look, move with san (the move in standard notation), or resign")?;
+        now.step(side, san)
     }
 
     /// A match whose side to move has stopped moving: that side forfeits, kept in the log as
     /// its own action on its last turn, and the other side wins (owner, 2026-10-28: else
-    /// stopping is a way out of a lost game). False for any other world, or a side that never
-    /// had a turn to forfeit in.
+    /// stopping is a way out of a lost game). False for a side that never had a turn to
+    /// forfeit in.
     fn forfeited(
         &self,
         place: &Place,
-        now: &World,
+        game: &Match,
         runs: &[crate::application::ports::Run],
     ) -> Done<bool> {
-        let (World::Chess(game), Some(side)) = (now, now.to_move()) else {
+        let Some(side) = to_move(game) else {
             return Ok(false);
         };
         let tasks: Vec<TaskId> = std::iter::once(place.world)
@@ -1306,7 +673,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (next, said) = game
             .concede(loser, &format!("{side} stopped moving, and forfeits"))
             .map_err(refused)?;
-        let next = World::Chess(next);
         self.act_kept(
             place,
             last.id,
@@ -1316,17 +682,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &said,
             &next,
         )?;
-        let (name, done) = next.end().unwrap_or(("abandoned", false));
+        let (name, done) = end(&next).unwrap_or(("abandoned", false));
         self.scenario_ended(place, name, done, &said)?;
         Ok(true)
     }
 
-    /// The rest of a crew, or a match's other side, is woken on its own part, to act on what
-    /// changed.
+    /// A match's other side is woken on its own task, to act on what changed.
     fn crew_told(&self, place: &Place, actor: MemberId) -> Done<()> {
-        if place.kind == Kind::Lighthouse {
-            return Ok(());
-        }
         for task in std::iter::once(place.world).chain(place.parts.iter().copied()) {
             let Some(found) = self.store.task(task)? else {
                 continue;
@@ -1352,7 +714,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         action: &str,
         ok: bool,
         said: &str,
-        after: &World,
+        after: &Match,
     ) -> Done<()> {
         self.store.add_scenario_action(&ScenarioAction {
             id: 0,
@@ -1367,15 +729,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let by = self.member(member)?.name;
         self.emit(
             EventKind::ScenarioActed,
-            json!({ "task": place.world.0, "kind": place.kind.name(), "run": run.0,
+            json!({ "task": place.world.0, "kind": chess_match::CHESS, "run": run.0,
                     "member": member.0, "by": by, "role": place.role,
-                    "action": action, "ok": ok, "said": said, "elapsed": after.elapsed(),
-                    "end": after.end().map(|(name, _)| name) }),
+                    "action": action, "ok": ok, "said": said, "elapsed": elapsed(after),
+                    "end": end(after).map(|(name, _)| name) }),
         )
     }
 
     /// The world closes its tasks: done when it ended well, dropped (it cannot go on)
-    /// otherwise. A mission's parts close with it, after it, so nothing wakes its captain.
+    /// otherwise. Black's part closes with it, after it, so nothing wakes white.
     fn scenario_ended(&self, place: &Place, name: &str, done: bool, said: &str) -> Done<()> {
         let (status, closure) = if done {
             (TaskStatus::Done, Closure::Done(DoneWhy::MetCriteria))
