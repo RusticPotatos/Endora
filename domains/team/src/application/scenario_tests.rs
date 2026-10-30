@@ -270,6 +270,8 @@ fn a_chess_match_is_played_a_move_a_turn_with_its_illegal_moves_kept() {
         .cloned()
         .unwrap();
     assert!(tool.to_string().contains("san"), "{tool}");
+    // A match's turn is offered its tool up front (ADR 0142, amended 2026-10-30).
+    assert_eq!(tool["_meta"][super::protocol::UP_FRONT], true, "{tool}");
 
     let waiting = act(&hq, &b, "look").unwrap();
     assert!(

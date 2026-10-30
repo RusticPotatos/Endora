@@ -1064,6 +1064,7 @@ name = "endora-worker"
 version = "0.12.0"
 dependencies = [
  "base64 0.22.1",
+ "endora-capabilities",
  "endora-kernel",
  "endora-protocol",
  "endora-team",

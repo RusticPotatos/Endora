@@ -182,21 +182,6 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     }
     // A lesson is a story since ADR 0122: told with tell_story.
     let lessons = offered.iter().any(|t| t["name"] == "tell_story");
-    // A local model reads every definition on every call, slowly: past a dozen tools, it starts
-    // with its core and finds the rest (Anthropic's and OpenAI's advice, 2026-10-25). Claude
-    // does the same with Anthropic's own tool search (2026-10-27): its cache lasts minutes and
-    // its turns come half an hour apart, so every turn paid to write all the definitions.
-    let claude_searches = setup.api == Api::Anthropic && offered.len() > DEFER_PAST;
-    let mut deferred = if setup.api == Api::OpenAi && offered.len() > DEFER_PAST {
-        let (now, later): (Vec<Value>, Vec<Value>) = offered
-            .into_iter()
-            .partition(|t| t["name"].as_str().is_some_and(|n| ALWAYS.contains(&n)));
-        offered = now;
-        offered.push(find_tools_tool());
-        later
-    } else {
-        Vec::new()
-    };
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
@@ -221,24 +206,18 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
-    let mut told = instructions(task.is_some(), &on_the_node, lessons, shell.is_some());
-    if !deferred.is_empty() {
-        told.push_str(&format!(
-            "\n\nMore tools are yours than are listed ({} more): call {FIND_TOOLS} with what you \
-             want to do, and the matching ones are yours from your next step.",
-            deferred.len()
-        ));
-    }
-    if claude_searches {
-        told.push_str(&format!(
-            "\n\nMore tools are yours than are loaded: search for them with {CLAUDE_SEARCH}, \
-             saying what you want to do."
-        ));
-    }
-    let mut talk = Talk::new(setup.api, told, briefing, &offered);
-    if claude_searches {
-        talk.search_for_all_but(&ALWAYS);
-    }
+    let Opening {
+        mut talk,
+        mut deferred,
+    } = opening(
+        setup.api,
+        offered,
+        briefing,
+        &on_the_node,
+        task.is_some(),
+        lessons,
+        shell.is_some(),
+    );
     talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
@@ -264,7 +243,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             let mut replies = Vec::new();
             for call in &said.calls {
                 if call.name == FIND_TOOLS {
-                    let (found, reply) = find(&mut deferred, &call.arguments);
+                    let (found, reply) = find(&mut deferred, &talk.offered(), &call.arguments);
                     talk.offer(&found);
                     replies.push((call.id.clone(), reply));
                     continue;
@@ -333,10 +312,30 @@ pub(crate) const FIND_TOOLS: &str = "find_tools";
 /// Past this many tools a local turn starts with its core and finds the rest.
 const DEFER_PAST: usize = 12;
 
-/// A local turn's core, always offered: its turn, its task, its way up a model tier, its word up
-/// and to a colleague, its notes, the workbench's shell and the lab's container tools the
-/// instructions name.
-const ALWAYS: [&str; 13] = [
+/// HQ's core, offered up front in every house turn: its turn, its task, its word in the thread
+/// and the move that ends it (ADR 0142, amended 2026-10-30).
+const CORE: [&str; 4] = ["my_turn", "claim", "post", "set_status"];
+
+/// Beside the core in a house turn with a task: the other way it ends (asking the owner), and the
+/// lab's container tools the instructions name as the turn's own.
+const ON_A_TASK: [&str; 4] = [
+    "ask_owner",
+    "homelab_status",
+    "container_logs",
+    "restart_container",
+];
+
+/// HQ's mark on a tool the turn's kind needs up front (`_meta`): a downtime turn's game, a
+/// review turn's verdict, a match's tool. It grants nothing: HQ decides every call.
+const UP_FRONT: &str = "endora/up_front";
+
+/// The most tools one `find_tools` call brings in by name.
+const NAMED_AT_MOST: usize = 8;
+
+/// Claude's loaded tools when it searches for the rest: its turn, its task, its way up a model
+/// tier, its word up and to a colleague, its notes, the game, the workbench's shell and the
+/// lab's container tools the instructions name.
+const CLAUDE_LOADS: [&str; 13] = [
     "my_turn",
     "claim",
     "post",
@@ -360,19 +359,163 @@ const CLAUDE_SEARCH: &str = "tool_search_tool_bm25";
 /// How many tools one search brings in.
 const FOUND_AT_MOST: usize = 5;
 
-fn find_tools_tool() -> Value {
-    json!({ "name": FIND_TOOLS,
-        "description": "Some of your tools are not listed until you need them. Say in a few words what you want to do (read a container's log, tell a story, propose a project): the best matches are added for your next step, and this says which.",
-        "inputSchema": { "type": "object", "properties": {
-            "query": { "type": "string", "description": "what you want to do, in a few words" } },
-            "required": ["query"] } })
+/// How a turn opens: the conversation as its first call sends it, and the tools held back for
+/// [`FIND_TOOLS`] to bring in.
+struct Opening {
+    talk: Talk,
+    deferred: Vec<Value>,
 }
 
-/// The deferred tools that best match `arguments`' query, taken out of `deferred`, and what
-/// the model is told: the ones added, or every name left when nothing matched.
-fn find(deferred: &mut Vec<Value>, given: &Value) -> (Vec<Value>, Reply) {
+/// Whether a house turn is offered `tool` in its first call: HQ's core, what HQ marks for the
+/// turn's kind, the workbench's shell, and on a turn with a task [`ON_A_TASK`].
+fn up_front(tool: &Value, task: bool) -> bool {
+    let name = tool["name"].as_str().unwrap_or("");
+    CORE.contains(&name)
+        || name == SHELL
+        || tool["_meta"][UP_FRONT] == true
+        || (task && ON_A_TASK.contains(&name))
+}
+
+/// The first call of a turn: the instructions, the briefing and the tools it starts with.
+///
+/// A local model reads every definition on every call, slowly: past a dozen tools, it starts
+/// with its core and finds the rest (Anthropic's and OpenAI's advice, 2026-10-25), and since
+/// round 2 of the gap-closing ladder (2026-10-30) its core is sized to the turn: HQ's four, and
+/// what the turn's kind needs. Claude does the same with Anthropic's own tool search
+/// (2026-10-27): its cache lasts minutes and its turns come half an hour apart, so every turn
+/// paid to write all the definitions.
+fn opening(
+    api: Api,
+    mut offered: Vec<Value>,
+    briefing: String,
+    on_the_node: &[String],
+    task: bool,
+    lessons: bool,
+    shell: bool,
+) -> Opening {
+    let claude_searches = api == Api::Anthropic && offered.len() > DEFER_PAST;
+    let deferred = if api == Api::OpenAi && offered.len() > DEFER_PAST {
+        let (now, later): (Vec<Value>, Vec<Value>) =
+            offered.into_iter().partition(|t| up_front(t, task));
+        offered = now;
+        offered.push(find_tools_tool());
+        later
+    } else {
+        Vec::new()
+    };
+    // The lab's rules are said in full where its tools are up front; elsewhere (a house turn
+    // with no task: a chess move, a look round) they are named, to be found.
+    let lab_found_later = !deferred.is_empty() && !task;
+    let mut told = if lab_found_later {
+        instructions(task, &[], lessons, shell)
+    } else {
+        instructions(task, on_the_node, lessons, shell)
+    };
+    let lab_later: Vec<&str> = LAB_TOOLS
+        .into_iter()
+        .filter(|t| on_the_node.iter().any(|n| n == t))
+        .collect();
+    if lab_found_later && !lab_later.is_empty() {
+        told.push_str(&format!(
+            "\n\nEndora's tools on the home lab ({}) are yours too, through {FIND_TOOLS}: look \
+             with them before you say anything about the lab.",
+            lab_later.join(", ")
+        ));
+    }
+    if !deferred.is_empty() {
+        let names: Vec<&str> = deferred.iter().filter_map(|t| t["name"].as_str()).collect();
+        told.push_str(&format!(
+            "\n\nMore tools are yours than are listed: {}. Call {FIND_TOOLS} with their names, \
+             or with what you want to do, and they are yours from your next step.",
+            names.join(", ")
+        ));
+    }
+    if claude_searches {
+        told.push_str(&format!(
+            "\n\nMore tools are yours than are loaded: search for them with {CLAUDE_SEARCH}, \
+             saying what you want to do."
+        ));
+    }
+    let mut talk = Talk::new(api, told, briefing, &offered);
+    if claude_searches {
+        talk.search_for_all_but(&CLAUDE_LOADS);
+    }
+    Opening { talk, deferred }
+}
+
+fn find_tools_tool() -> Value {
+    json!({ "name": FIND_TOOLS,
+        "description": "Bring in tools of yours not listed yet, for your next step: by their names, or by what you want to do in a few words (read a container's log, tell a story).",
+        "inputSchema": { "type": "object", "properties": {
+            "names": { "type": "array", "items": { "type": "string" }, "description": "the tools' names" },
+            "query": { "type": "string", "description": "what you want to do" } } } })
+}
+
+/// The deferred tools `given` names, and those that best match its query, taken out of
+/// `deferred`, and what the model is told: the ones added, and every name it asked for that
+/// this turn was never offered, which is never added (`offered` is what it already has). Only
+/// what HQ and the node listed for the turn is ever in `deferred`, so nothing here widens it.
+fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Value>, Reply) {
     let parsed = arguments(given).unwrap_or_else(|_| json!({}));
-    let query = parsed["query"].as_str().unwrap_or("").to_lowercase();
+    let mut found: Vec<Value> = Vec::new();
+    let (mut already, mut not_ours): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let asked = parsed["names"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|n| n.trim().chars().take(64).collect::<String>())
+        .filter(|n| !n.is_empty())
+        .take(NAMED_AT_MOST);
+    for name in asked {
+        if let Some(at) = deferred.iter().position(|t| t["name"] == name.as_str()) {
+            found.push(deferred.remove(at));
+        } else if offered.contains(&name) || found.iter().any(|t| t["name"] == name.as_str()) {
+            already.push(name);
+        } else {
+            not_ours.push(name);
+        }
+    }
+    let (searched, mut text) = search(deferred, parsed["query"].as_str().unwrap_or(""));
+    found.extend(searched);
+    let line = |t: &Value| {
+        let about = t["description"].as_str().unwrap_or("");
+        let first = about.split_inclusive(". ").next().unwrap_or(about).trim();
+        format!("{}: {first}", t["name"].as_str().unwrap_or(""))
+    };
+    if !found.is_empty() {
+        text = format!(
+            "Added for your next step:\n{}",
+            found.iter().map(line).collect::<Vec<_>>().join("\n")
+        );
+    }
+    if !already.is_empty() {
+        text.push_str(&format!("\nAlready yours: {}.", already.join(", ")));
+    }
+    if !not_ours.is_empty() {
+        text.push_str(&format!(
+            "\nNot among this turn's tools, and never added: {}.",
+            not_ours.join(", ")
+        ));
+    }
+    (
+        found,
+        Reply {
+            text: text.trim_start().to_owned(),
+            refused: false,
+            asked: false,
+            moved_on: false,
+        },
+    )
+}
+
+/// The deferred tools that best match `query`, taken out of `deferred`, and what the model is
+/// told when nothing matched: every name left (nothing, for no query).
+fn search(deferred: &mut Vec<Value>, query: &str) -> (Vec<Value>, String) {
+    let query = query.to_lowercase();
+    if query.trim().is_empty() {
+        return (Vec::new(), String::new());
+    }
     let words: Vec<&str> = query
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 2)
@@ -396,36 +539,19 @@ fn find(deferred: &mut Vec<Value>, given: &Value) -> (Vec<Value>, Reply) {
     picked.sort_unstable_by(|a, b| b.cmp(a));
     let mut found: Vec<Value> = picked.into_iter().map(|i| deferred.remove(i)).collect();
     found.reverse();
-    let line = |t: &Value| {
-        let about = t["description"].as_str().unwrap_or("");
-        let first = about.split_inclusive(". ").next().unwrap_or(about).trim();
-        format!("{}: {first}", t["name"].as_str().unwrap_or(""))
-    };
-    let text = if found.is_empty() {
-        let left: Vec<&str> = deferred.iter().filter_map(|t| t["name"].as_str()).collect();
-        format!(
-            "Nothing matched. The tools not yet yours: {}. Ask again with words from one of these.",
-            if left.is_empty() {
-                "none".to_owned()
-            } else {
-                left.join(", ")
-            }
-        )
-    } else {
-        format!(
-            "Added for your next step:\n{}",
-            found.iter().map(line).collect::<Vec<_>>().join("\n")
-        )
-    };
-    (
-        found,
-        Reply {
-            text,
-            refused: false,
-            asked: false,
-            moved_on: false,
-        },
-    )
+    if !found.is_empty() {
+        return (found, String::new());
+    }
+    let left: Vec<&str> = deferred.iter().filter_map(|t| t["name"].as_str()).collect();
+    let text = format!(
+        "Nothing matched. The tools not yet yours: {}. Ask again with one of these names.",
+        if left.is_empty() {
+            "none".to_owned()
+        } else {
+            left.join(", ")
+        }
+    );
+    (found, text)
 }
 
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
@@ -914,6 +1040,19 @@ impl Talk {
             0,
             json!({ "type": "tool_search_tool_bm25_20251119", "name": CLAUDE_SEARCH }),
         );
+    }
+
+    /// The names of the tools offered now, whichever API holds them.
+    fn offered(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter_map(|t| {
+                t["function"]["name"]
+                    .as_str()
+                    .or_else(|| t["name"].as_str())
+                    .map(str::to_owned)
+            })
+            .collect()
     }
 
     /// Tools found mid-turn, offered from the next call on.
@@ -2051,6 +2190,296 @@ mod tests {
         assert!(arguments(&json!(r#"{"task": "#)).is_err());
         assert!(arguments(&json!("[7]")).is_err());
         assert!(arguments(&Value::Null).is_err());
+    }
+
+    /// A bridged tool as the node lists one (ADR 0108): the measure's stand-in for the lab's
+    /// own servers, which only the live node knows.
+    fn bridged(name: &str, about: &str) -> Value {
+        json!({ "name": name, "kind": "read", "description": about,
+                "inputSchema": { "type": "object", "properties": {
+                    "why": { "type": "string", "description": "Why, in a few words." } } } })
+    }
+
+    /// What a turn's first call is made of, measured: the bytes of its tools, its instructions
+    /// and its briefing, and of the whole body the relay is sent.
+    struct Measured {
+        tools: usize,
+        system: usize,
+        briefing: usize,
+        body: usize,
+        offered: Vec<String>,
+    }
+
+    impl Measured {
+        /// Roughly, the tokens a model reads: four bytes a token for English and JSON.
+        fn tokens(&self) -> usize {
+            self.body / 4
+        }
+    }
+
+    /// The first call of a real turn of the engine's, on the house's model: HQ's own tools for
+    /// that turn and its briefing, the node's real contracts as a house turn of its role is
+    /// offered them, and ten bridged tools.
+    fn first_call_of(
+        hq: &Engine<SqliteTeamStore, SimulatedRunner, Noon>,
+        context: &endora_team::application::RunContext,
+    ) -> (Measured, Talk) {
+        let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+        let mut offered: Vec<Value> =
+            endora_team::application::protocol::tools_in(hq, &run, &member)
+                .as_array()
+                .cloned()
+                .unwrap();
+        let role = member.role.name();
+        let contracts: Vec<Value> = endora_capabilities::contracts::all()
+            .iter()
+            .filter(|c| c.offered_to(role, false) && !is_repo_tool(c.name))
+            .map(endora_capabilities::contracts::Contract::as_tool)
+            .chain(
+                [
+                    ("sonarr_queue", "Read Sonarr's download queue: each item, its state, and any import that is stuck, with why."),
+                    ("radarr_queue", "Read Radarr's download queue: each item, its state, and any import that is stuck, with why."),
+                    ("plex_sessions", "Read who is watching on Plex now: the title, the device and whether it is transcoding."),
+                    ("pihole_summary", "Read Pi-hole's summary for today: queries, the share blocked, and the top blocked domains."),
+                    ("unifi_clients", "Read the network's clients from UniFi: each device's name, its address and when it was last seen."),
+                    ("nas_status", "Read the NAS's load, memory, disks and temperatures, and any disk whose health is failing."),
+                    ("prowlarr_indexers", "Read Prowlarr's indexers: each one's state, and the ones failing with why."),
+                    ("deluge_torrents", "Read Deluge's torrents: each one's state, its progress and its ratio."),
+                    ("uptime_monitors", "Read Uptime Kuma's monitors: each one's state, and the ones down with since when."),
+                    ("grafana_alerts", "Read Grafana's alert rules that are firing now, with their labels."),
+                ]
+                .iter()
+                .map(|(name, about)| bridged(name, about)),
+            )
+            .collect();
+        let on_the_node: Vec<String> = contracts
+            .iter()
+            .filter_map(|c| c["name"].as_str().map(str::to_owned))
+            .collect();
+        offered.extend(contracts);
+        let lessons = offered.iter().any(|t| t["name"] == "tell_story");
+        let briefing =
+            endora_team::application::protocol::call(hq, &run, &member, "my_turn", &json!({}))
+                .unwrap();
+        let briefing_size = briefing.len();
+        let Opening { talk, .. } = opening(
+            Api::OpenAi,
+            offered,
+            briefing,
+            &on_the_node,
+            context.task.is_some(),
+            lessons,
+            false,
+        );
+        let body = talk.body("local");
+        let measured = Measured {
+            tools: body["tools"].to_string().len(),
+            system: body["messages"][0]["content"].as_str().unwrap().len(),
+            briefing: briefing_size,
+            body: body.to_string().len(),
+            offered: talk.offered(),
+        };
+        (measured, talk)
+    }
+
+    /// The bytes of every call of a turn that makes `calls` through HQ, one a round, after its
+    /// first, each answered as HQ answers it, then answers: what the model reads in all.
+    fn whole_turn(
+        hq: &Engine<SqliteTeamStore, SimulatedRunner, Noon>,
+        context: &endora_team::application::RunContext,
+        mut talk: Talk,
+        calls: &[(&str, Value)],
+    ) -> usize {
+        let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+        let mut read = talk.body("local").to_string().len();
+        for (i, (tool, args)) in calls.iter().enumerate() {
+            let id = json!(format!("c{i}"));
+            talk.said(&Said {
+                text: String::new(),
+                calls: Vec::new(),
+                message: json!({ "role": "assistant", "content": null, "tool_calls": [{
+                    "id": id, "type": "function",
+                    "function": { "name": tool, "arguments": args.to_string() } }] }),
+                limit_reached: false,
+            });
+            let text = endora_team::application::protocol::call(hq, &run, &member, tool, args)
+                .unwrap_or_else(|e| e);
+            talk.answered(vec![(
+                id,
+                Reply {
+                    text,
+                    refused: false,
+                    asked: false,
+                    moved_on: false,
+                },
+            )]);
+            read += talk.body("local").to_string().len();
+        }
+        read
+    }
+
+    /// Round 2 of the gap-closing ladder, context sized to the turn (ADR 0142, amended
+    /// 2026-10-30): the first call of a chess move and of a task turn on the house's model,
+    /// measured on the engine's real briefings and HQ's and the node's real tools.
+    #[test]
+    fn a_house_turns_first_call_is_sized_to_the_turn() {
+        use endora_team::application::office_ports::OfficeStore;
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(4),
+            Noon,
+            Settings {
+                games: true,
+                ..Settings::default()
+            },
+        );
+        let lead = hq.hire("Jane", Role::Lead, 25, 2, 0).unwrap();
+        let dev = hq.hire("John", Role::Developer, 40, 2, 4).unwrap();
+        // A chess move: the developer's, in a game the lead opened.
+        hq.store()
+            .add_chess_game(lead, dev, Noon.now() - 1)
+            .unwrap();
+        let mut game = hq.store().chess_games().unwrap().remove(0);
+        game.play(lead, "e4", Noon.now()).unwrap();
+        hq.store().save_chess_game(&game).unwrap();
+        // A task on the lab: the lead's.
+        let goal = hq.set_goal("Keep the house", "", Author::Owner).unwrap();
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Sonarr is unhealthy".to_owned(),
+                description: "Endora's alarm: sonarr's health check has failed for ten minutes. \
+                              Find out why and put it right."
+                    .to_owned(),
+                assignee: Some(lead),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+        hq.tick().unwrap();
+        hq.tick().unwrap();
+        let started = hq.runner().started();
+        let chess = started
+            .iter()
+            .find(|c| c.member == dev && c.task.is_none())
+            .expect("a turn for the move");
+        let work = started
+            .iter()
+            .find(|c| c.member == lead && c.task.is_some())
+            .expect("a turn on the task");
+        let said = |what: &str, m: &Measured| {
+            eprintln!(
+                "{what}: first call {} bytes (~{} tokens): tools {} ({} offered: {}), system {}, \
+                 briefing {}",
+                m.body,
+                m.tokens(),
+                m.tools,
+                m.offered.len(),
+                m.offered.join(" "),
+                m.system,
+                m.briefing
+            );
+        };
+        let (moved, talk) = first_call_of(&hq, chess);
+        said("chess move", &moved);
+        // The move as a house model makes it: the board, the move, then a word.
+        let whole = whole_turn(
+            &hq,
+            chess,
+            talk,
+            &[
+                ("chess", json!({ "action": "board" })),
+                ("chess", json!({ "action": "move", "san": "e5" })),
+            ],
+        );
+        eprintln!(
+            "chess move, its three calls: {whole} bytes (~{} tokens)",
+            whole / 4
+        );
+        let (worked, _) = first_call_of(&hq, work);
+        said("task turn", &worked);
+
+        // A move starts with HQ's core, its game and the way to the rest, and is not told the
+        // lab's rules it has no tool for yet.
+        assert_eq!(
+            moved.offered,
+            [
+                "my_turn",
+                "claim",
+                "post",
+                "set_status",
+                "chess",
+                FIND_TOOLS
+            ]
+        );
+        // A turn on a task has its lab tools and the way to ask the owner up front.
+        for tool in [
+            "ask_owner",
+            "homelab_status",
+            "container_logs",
+            "restart_container",
+        ] {
+            assert!(worked.offered.iter().any(|t| t == tool), "{tool}");
+        }
+        assert!(!worked.offered.iter().any(|t| t == "chess"));
+        // Measured the same way before this change (4b7d5766): a move's first call 12,497
+        // bytes and its three calls 38,857 (about 9,700 tokens); a task turn's first call 12,991.
+        assert!(moved.body <= 8_000, "a move's first call: {}", moved.body);
+        assert!(whole <= 25_000, "a move in all: {whole}");
+        assert!(
+            worked.body <= 12_000,
+            "a task turn's first call: {}",
+            worked.body
+        );
+    }
+
+    /// A house turn with no task (a chess move, a look round) whose lab tools are to be found is
+    /// not told the lab's rules for tools it does not have yet: it is told they are there, and
+    /// how to bring them in. A turn with a task, or one whose tools are all listed, is told them
+    /// in full, as before.
+    #[test]
+    fn a_house_turn_is_told_the_labs_rules_where_its_tools_are_up_front() {
+        let lab: Vec<String> = LAB_TOOLS.iter().map(|t| (*t).to_owned()).collect();
+        let many: Vec<Value> = (0..20)
+            .map(|i| json!({ "name": format!("tool_{i}"), "description": "Read a thing." }))
+            .chain(
+                lab.iter()
+                    .map(|t| json!({ "name": t, "description": "The lab." })),
+            )
+            .collect();
+        let system = |task: bool, offered: Vec<Value>| {
+            let Opening { talk, .. } = opening(
+                Api::OpenAi,
+                offered,
+                String::new(),
+                &lab,
+                task,
+                false,
+                false,
+            );
+            talk.messages[0]["content"].as_str().unwrap().to_owned()
+        };
+        let idle = system(false, many.clone());
+        assert!(!idle.contains("restart_container is a safe fix"), "{idle}");
+        assert!(
+            idle.contains("(homelab_status, container_logs, restart_container) are yours too, through find_tools"),
+            "{idle}"
+        );
+        assert!(
+            idle.contains("tool_7"),
+            "the tools to find are named: {idle}"
+        );
+        let working = system(true, many);
+        assert!(
+            working.contains("restart_container is a safe fix"),
+            "{working}"
+        );
+        let few = system(false, lab.iter().map(|t| json!({ "name": t })).collect());
+        assert!(few.contains("restart_container is a safe fix"), "{few}");
     }
 
     #[test]

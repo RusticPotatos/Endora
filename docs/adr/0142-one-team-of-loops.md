@@ -133,3 +133,40 @@ item at a time, so they ran one after another for hours while other members sat 
   holds one of the loop's items, as a climb may).
 - **A world is not a loop.** A project holding scenarios (the Holodeck league) is skipped as
   before: its games go one at a time.
+
+## Amended 2026-10-30: round 2 of closing the gap, context sized to the turn
+
+The ladder's rung 4 ("context sized to the turn") moved up to be round 2, since rungs 1 and 2
+are measured together. A house turn (brains `local` and `mac`, and DeepSeek, which speaks the
+same OpenAI shape through the node's local relay) read every tool's definition and the lab's
+whole rulebook on every call: a chess move read about 9,700 tokens over its three calls, and a
+turn on the Mac timed out at its relay once it had read a few 16 KB logs.
+
+- **Tools on demand, sized to the turn's kind.** A house turn with more than a dozen tools starts
+  with HQ's core (`my_turn`, `claim`, `post`, `set_status`), what HQ marks for the turn's kind
+  (MCP `_meta` `endora/up_front`: `chess` in a downtime turn, `review` in a review turn, a
+  match's own tool), the workbench's shell, and on a turn with a task `ask_owner` and the lab's
+  container tools. The rest are named in its instructions and brought in with the worker's
+  `find_tools`, by name or by a few words, for its next call. `find_tools` only ever picks from
+  what HQ and the node listed for the turn, where every narrowing already happens (a project's
+  tool list, `only` and `never`, the Restricted tier, the NAS's keep from tools that can end on
+  the owner's desk); a name it was not offered is said to be none of the turn's tools and is
+  never added, and a call to it anyway is refused by HQ and never reaches the node. HQ's mark
+  grants nothing: every call is decided as before. Claude keeps Anthropic's tool search and its
+  loaded set, unchanged.
+- **The lab's rules where its tools are.** A house turn with no task whose lab tools are to be
+  found (a chess move, a look round) is told the tools are there and how to bring them in, not
+  their rules; a turn with a task, or with all its tools listed, is told them in full.
+- **Shorter descriptions, the same rules.** HQ's core tools, `chess`, `review` and the lab's
+  contracts say each rule in fewer words; tests hold each rule's words and a size per tool.
+- **Less of a log on the house's models.** `container_logs` gives a turn on the NAS's model or
+  the Mac the newest 40 lines and 6 KB, says when older lines were left out and that `lines`
+  (up to 100) asks for more; a Claude or DeepSeek turn reads the newest 100 lines and 16 KB, as
+  before. HQ's narrowing comes first: a turn not given the log is refused it however much it
+  asks for.
+
+Measured on the engine's real briefings and HQ's and the node's real tools (the worker's test
+`a_house_turns_first_call_is_sized_to_the_turn`, bytes of the relay's body, about four a token):
+a chess move's first call 12,497 to 7,798 bytes and its three calls 38,857 to 24,760 (about
+9,700 to 6,200 tokens); a task turn's first call 12,991 to 11,866. A log on a house model is
+at most 6 KB instead of 16 KB unless the turn asks.

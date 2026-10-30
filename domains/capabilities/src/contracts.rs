@@ -19,6 +19,25 @@ pub const TEAM_RESTARTS_AN_HOUR: usize = 3;
 pub const MOST_OF_A_LOG: usize = 16 * 1024;
 /// The most lines of a container's log a turn is given: the newest.
 pub const LOG_LINES: usize = 100;
+/// The lines of a log a turn on a house model (the NAS's or the Mac) reads unless it asks for
+/// more (ADR 0142, amended 2026-10-30): a slow model's turn is sized to what it can read.
+pub const HOUSE_LOG_LINES: usize = 40;
+/// The most of a log such a turn reads unless it asks for more.
+pub const HOUSE_MOST_OF_A_LOG: usize = 6 * 1024;
+
+/// How much of a log a turn reads, in lines and bytes: `asked` lines (1 to [`LOG_LINES`]), or
+/// by default all a turn is given, except that a turn on a house model is given
+/// [`HOUSE_LOG_LINES`] and [`HOUSE_MOST_OF_A_LOG`] unless it asks for more lines than that.
+#[must_use]
+pub fn log_size(on_a_house_model: bool, asked: Option<u64>) -> (usize, usize) {
+    let asked = asked.map(|n| usize::try_from(n).unwrap_or(LOG_LINES).clamp(1, LOG_LINES));
+    match (on_a_house_model, asked) {
+        (true, None) => (HOUSE_LOG_LINES, HOUSE_MOST_OF_A_LOG),
+        (true, Some(n)) if n <= HOUSE_LOG_LINES => (n, HOUSE_MOST_OF_A_LOG),
+        (_, Some(n)) => (n, MOST_OF_A_LOG),
+        (false, None) => (LOG_LINES, MOST_OF_A_LOG),
+    }
+}
 
 /// What kind of ability a contract is (ADR 0106).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,30 +138,34 @@ pub const IMAGE_TAGS: &str = "image_tags";
 /// Every contract Endora offers the team, in the order a turn is offered them.
 #[must_use]
 pub fn all() -> Vec<Contract> {
-    let container = json!({ "type": "string", "description": "The container's name, as homelab_status lists it, e.g. sonarr." });
+    let container =
+        json!({ "type": "string", "description": "as homelab_status names it, e.g. sonarr" });
     vec![
         Contract {
             name: HOMELAB_STATUS,
-            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items. For each container its name, state, status text and health. Marked stale when Endora has not seen it for a minute. Free.",
+            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items; each container's name, state, status and health. Marked stale when unseen for a minute. Free.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {} }),
         },
         Contract {
             name: CONTAINER_LOGS,
-            description: "Read the newest 100 lines of one container's log, at most 16 KB, with secrets replaced by [redacted]. Not Endora's own containers. Free.",
+            description: "Read the newest lines of one container's log, secrets replaced by [redacted]: 100 lines and 16 KB at most, and on the house's own model 40 lines and 6 KB unless you ask for up to 100 with lines. Not Endora's own containers. Free.",
             kind: Kind::Read,
             tier: "confidential",
-            input: json!({ "type": "object", "properties": { "container": container }, "required": ["container"] }),
+            input: json!({ "type": "object", "properties": {
+                "container": container,
+                "lines": { "type": "integer", "minimum": 1, "maximum": LOG_LINES, "description": "how many of the newest lines" },
+            }, "required": ["container"] }),
         },
         Contract {
             name: RESTART_CONTAINER,
-            description: "Restart one container, and read back its state. A safe fix: it runs at once, and the owner is told, with your reason. At most one restart of a container an hour, and three in all an hour across the team. Never Endora's own containers, and never one a restart will not fix (already restarting, out of memory, or crash-looping) or one others run in the network of, like gluetun: ask the owner instead. Say why in a sentence.",
+            description: "Restart one container and read back its state: a safe fix, run at once, and the owner is told your reason. At most once a container an hour, three an hour across the team. Never Endora's own, nor one a restart will not fix (restarting, out of memory, crash-looping), nor one others run in the network of, like gluetun: ask the owner. Say why in a sentence.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "container": container,
-                "why": { "type": "string", "description": "Why it needs a restart, in a sentence the owner reads." },
+                "why": { "type": "string", "description": "a sentence the owner reads" },
             }, "required": ["container", "why"] }),
         },
         Contract {
@@ -317,12 +340,19 @@ fn millis_of(at: &str) -> Option<i64> {
 /// end on a line's edge, so what is kept is whole lines.
 #[must_use]
 pub fn newest_of(log: &str) -> String {
+    newest_within(log, LOG_LINES, MOST_OF_A_LOG)
+}
+
+/// The newest `most_lines` lines of a log, held to `most_bytes` from the newest end on a line's
+/// edge, so what is kept is whole lines.
+#[must_use]
+pub fn newest_within(log: &str, most_lines: usize, most_bytes: usize) -> String {
     let lines: Vec<&str> = log.lines().collect();
-    let newest = &lines[lines.len().saturating_sub(LOG_LINES)..];
+    let newest = &lines[lines.len().saturating_sub(most_lines)..];
     let mut kept: Vec<&str> = Vec::new();
     let mut size = 0;
     for line in newest.iter().rev() {
-        if size + line.len() + 1 > MOST_OF_A_LOG {
+        if size + line.len() + 1 > most_bytes {
             break;
         }
         size += line.len() + 1;
@@ -663,5 +693,77 @@ mod tests {
         assert!(kept.len() <= MOST_OF_A_LOG);
         assert!(kept.ends_with(&"x".repeat(400)));
         assert!(kept.lines().all(|l| l.len() == 405), "whole lines only");
+    }
+
+    /// A turn on a house model reads less of a log unless it asks (ADR 0142, amended
+    /// 2026-10-30); a Claude or DeepSeek turn reads what it always has. Asking never goes past
+    /// the most any turn is given.
+    #[test]
+    fn a_house_model_reads_40_lines_and_6_kb_of_a_log_unless_it_asks_for_more() {
+        assert_eq!(log_size(true, None), (40, 6 * 1024));
+        assert_eq!(log_size(false, None), (LOG_LINES, MOST_OF_A_LOG));
+        assert_eq!(log_size(true, Some(100)), (100, MOST_OF_A_LOG));
+        assert_eq!(log_size(true, Some(5)), (5, 6 * 1024));
+        assert_eq!(log_size(true, Some(10_000)), (LOG_LINES, MOST_OF_A_LOG));
+        assert_eq!(log_size(false, Some(0)), (1, MOST_OF_A_LOG));
+        let log: String = (1..=150).map(|i| format!("line {i}\n")).collect();
+        let kept = newest_within(&log, 40, 6 * 1024);
+        assert!(kept.starts_with("line 111\n") && kept.ends_with("line 150"));
+        let long: String = (1..=40)
+            .map(|i| format!("{i:04} {}\n", "x".repeat(400)))
+            .collect();
+        assert!(newest_within(&long, 40, 6 * 1024).len() <= 6 * 1024);
+    }
+
+    /// The contracts a house turn may start with say their rules briefly: each rule is kept.
+    #[test]
+    fn the_lab_contracts_say_their_rules_briefly() {
+        let about = |name: &str| {
+            all()
+                .into_iter()
+                .find(|c| c.name == name)
+                .map(|c| c.as_tool().to_string())
+                .unwrap()
+        };
+        for (name, most, rules) in [
+            (
+                HOMELAB_STATUS,
+                300,
+                &["docker, sonarr, radarr", "health", "stale", "Free"][..],
+            ),
+            (
+                CONTAINER_LOGS,
+                550,
+                &[
+                    "[redacted]",
+                    "Not Endora's own",
+                    "40 lines",
+                    "up to 100",
+                    "Free",
+                ][..],
+            ),
+            (
+                RESTART_CONTAINER,
+                650,
+                &[
+                    "safe fix",
+                    "owner is told",
+                    "once a container an hour",
+                    "three an hour across the team",
+                    "Never Endora's own",
+                    "out of memory",
+                    "crash-looping",
+                    "gluetun",
+                    "ask the owner",
+                    "Say why",
+                ][..],
+            ),
+        ] {
+            let text = about(name);
+            assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
+            for rule in rules {
+                assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+            }
+        }
     }
 }

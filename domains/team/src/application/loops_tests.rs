@@ -558,8 +558,8 @@ fn work_in_review_goes_to_the_member_one_rank_up() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["name"] == "review"),
-        "the reviewer one rank up is offered the review tool"
+            .any(|t| t["name"] == "review" && t["_meta"][super::protocol::UP_FRONT] == true),
+        "the reviewer one rank up is offered the review tool, up front"
     );
     use_tool(
         &hq,
