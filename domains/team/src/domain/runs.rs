@@ -133,9 +133,7 @@ pub fn fault_of(exit: Exit, ran: Millis) -> Fault {
     }
 }
 
-/// The exit the runner gives a turn whose container never started (it could not start the
-/// member's runtime, or its image): the worker never ran.
-pub const NEVER_STARTED_EXIT: i64 = -1;
+pub use endora_kernel::exit_code::NEVER_STARTED_EXIT;
 
 /// How a turn that never started begins its end reason, so the record knows it again.
 pub const NEVER_STARTED: &str = "never started";

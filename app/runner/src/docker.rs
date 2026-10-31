@@ -5,6 +5,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use endora_kernel::exit_code::{NEVER_STARTED_EXIT, UNREADABLE_EXIT};
 use serde_json::Value;
 
 use crate::http::{self, Answer};
@@ -203,10 +204,11 @@ impl Docker for Engine {
         }
         // Made but never started: its exit code is 0, and it succeeded at nothing.
         if state["Status"] == "created" {
-            return Ok(Some(State::Exited(-1)));
+            return Ok(Some(State::Exited(NEVER_STARTED_EXIT)));
         }
+        // Ended with no code Docker says: it ran, so it is not one that never started.
         Ok(Some(State::Exited(
-            state["ExitCode"].as_i64().unwrap_or(-1),
+            state["ExitCode"].as_i64().unwrap_or(UNREADABLE_EXIT),
         )))
     }
 
@@ -368,6 +370,9 @@ mod tests {
             "GET /containers/never/json HTTP/1.1" => {
                 chunked(r#"{"State":{"Status":"created","Running":false,"ExitCode":0}}"#)
             }
+            "GET /containers/unread/json HTTP/1.1" => {
+                chunked(r#"{"State":{"Status":"exited","Running":false}}"#)
+            }
             "GET /containers/going/json HTTP/1.1" => {
                 chunked(r#"{"State":{"Status":"running","Running":true,"ExitCode":0}}"#)
             }
@@ -406,9 +411,15 @@ mod tests {
         assert_eq!(engine.inspect("ended").unwrap(), Some(State::Exited(0)));
         assert_eq!(
             engine.inspect("never").unwrap(),
-            Some(State::Exited(-1)),
+            Some(State::Exited(NEVER_STARTED_EXIT)),
             "made but never started is no success"
         );
+        assert_eq!(
+            engine.inspect("unread").unwrap(),
+            Some(State::Exited(UNREADABLE_EXIT)),
+            "an exit code that cannot be read is not one of a container that never started"
+        );
+        assert_ne!(UNREADABLE_EXIT, NEVER_STARTED_EXIT);
         assert_eq!(engine.inspect("going").unwrap(), Some(State::Running));
         assert_eq!(engine.inspect("gone").unwrap(), None);
         engine.kill("c0ffee").unwrap();

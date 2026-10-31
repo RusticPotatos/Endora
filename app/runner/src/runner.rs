@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use endora_kernel::exit_code::{NEVER_STARTED_EXIT, UNREADABLE_EXIT};
 use serde_json::{Value, json};
 
 use crate::docker::{CHECK_LABEL, Docker, LEASE_LABEL, RUN_LABEL, State, WATCHTOWER_LABEL};
@@ -32,13 +33,15 @@ const LONGEST_WHY: usize = 400;
 const TOKEN_LENGTH: usize = 24;
 
 /// What a worker's exit code says (see `endora-worker`): 0, a turn taken; 3, the turn was
-/// over before it ended; 1, it failed; -1, its container never started; 137, killed, after
-/// thirty minutes when the runner killed it.
+/// over before it ended; 1, it failed; [`NEVER_STARTED_EXIT`], its container never started;
+/// [`UNREADABLE_EXIT`], it ended with no code the runner could read; 137, killed, after thirty
+/// minutes when the runner killed it.
 pub fn meaning(code: Option<i64>, past_time: bool) -> String {
     match code {
         None => "its container was gone before it was seen to end".to_owned(),
         Some(0) => "taken".to_owned(),
-        Some(-1) => "its container never started".to_owned(),
+        Some(NEVER_STARTED_EXIT) => "its container never started".to_owned(),
+        Some(UNREADABLE_EXIT) => "its exit code could not be read".to_owned(),
         Some(KILLED) if past_time => "killed after thirty minutes".to_owned(),
         Some(KILLED) => "killed (exit 137)".to_owned(),
         Some(code) => format!("exit {code}"),
@@ -795,8 +798,8 @@ impl<D: Docker> Runner<D> {
     fn never_ran(&mut self, run: u64, lease: u64, what: &str) {
         let ending = Ending {
             succeeded: false,
-            code: Some(-1),
-            why: why(&meaning(Some(-1), false), what),
+            code: Some(NEVER_STARTED_EXIT),
+            why: why(&meaning(Some(NEVER_STARTED_EXIT), false), what),
         };
         match self.hq.ended(run, lease, &ending) {
             Ok(()) => {}
@@ -1071,7 +1074,9 @@ mod tests {
             docker.made += 1;
             let id = format!("c{}", docker.made);
             docker.specs.push(spec.clone());
-            docker.containers.insert(id.clone(), State::Exited(-1));
+            docker
+                .containers
+                .insert(id.clone(), State::Exited(NEVER_STARTED_EXIT));
             docker.calls.push(format!("create {id}"));
             Ok(id)
         }
@@ -1157,6 +1162,20 @@ mod tests {
     fn runner(name: &str, hq: &FakeHq, docker: &FakeDocker, capacity: usize) -> Runner<FakeDocker> {
         let hq = Hq::new(&hq.url, token_file(name)).unwrap();
         Runner::new(docker.clone(), hq, work(capacity))
+    }
+
+    /// An exit code the runner cannot read is said so, never as a container that never
+    /// started: HQ counts a turn that never started as nobody's failure.
+    #[test]
+    fn an_unread_exit_code_is_not_a_turn_that_never_started() {
+        assert_eq!(
+            meaning(Some(NEVER_STARTED_EXIT), false),
+            "its container never started"
+        );
+        assert_eq!(
+            meaning(Some(UNREADABLE_EXIT), false),
+            "its exit code could not be read"
+        );
     }
 
     #[test]
@@ -1522,7 +1541,7 @@ mod tests {
         let (run, refused) = &endings[0];
         assert_eq!(*run, 7);
         assert_eq!(refused["succeeded"], false);
-        assert_eq!(refused["code"], -1);
+        assert_eq!(refused["code"], NEVER_STARTED_EXIT);
         assert_eq!(
             refused["why"],
             "its container never started: its brain is not a model's name"

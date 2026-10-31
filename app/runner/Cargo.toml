@@ -18,6 +18,8 @@ path = "src/main.rs"
 serde_json = "1.0.150"
 # Pure wire contract validation, shared with both worker entry points; no HTTP stack.
 endora-protocol = { path = "../../shared/protocol" }
+# The exit codes HQ judges a turn by (never started, unread), defined once with the team's.
+endora-kernel = { path = "../../shared/kernel" }
 
 [lints]
 workspace = true
