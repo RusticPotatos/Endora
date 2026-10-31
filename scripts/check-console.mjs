@@ -580,8 +580,6 @@ if (failures.length) {
                            args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] },
                // Which criterion of its task the request serves (ADR 0124): the member's own words.
                serves: { n: 2, text: "The <u>queue</u> is clear" } },
-             { id: 18, kind: "decision", task: 7, text: "Decision: Give sonarr 2 GB?\\nRecommendation: Yes.\\nWhy: It ran out.",
-               decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } },
              { id: 19, kind: "project_cap", project: 2, goal: 1, text: "A cap for project #2 Backups: $5.00 a month.\\nThe CEO recommends: <u>they fail</u>" },
              { id: 20, kind: "project_budget", project: 1, goal: 1, text: "Project #1 Upkeep spent its $0.50 cap for the month ($0.46): its Claude turns wait" },
              { id: 21, kind: "rounds", task: 7, text: "Sent back 3 times: fix it. Its next round is yours.\\n- <i>Dee</i>: no reading" },
@@ -591,10 +589,6 @@ if (failures.length) {
              { id: 24, kind: "push", task: 9, text: "Branch hq/task-9-other is accepted (1 file, checks passed), but pushing is not set up on the node (ENDORA_GIT_PUSH_KEY_FILE names no deploy key). Download its bundle from the node at /v1/hq/bundles/9/task-9-other and push it yourself." },
              // A member at twice its share (ADR 0113): an allowance for today, or wait.
              { id: 27, kind: "out_for_day", member: 6, text: "Kit is out for today: $1.64 spent (share $0.82, borrowed $0.82); the pool has <b>$0.50</b> left today." },
-             // A branch on the fork to merge (owner, 2026-10-26): it opens on GitHub from its card;
-             // an address that is not GitHub's is never a link.
-             { id: 40, kind: "deploy", task: 9, text: "hq/task-9-docs is on your fork.", branch_url: "https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs" },
-             { id: 41, kind: "deploy", task: 9, text: "hq/task-9-evil is on your fork.", branch_url: "javascript:alert(1)" },
              ],
       // While you were away (ADR 0132): stuck work and a notice. None needs a decision, so
       // none is on the desk; each keeps the choices it has always had. Newest first, as HQ
@@ -819,12 +813,12 @@ if (failures.length) {
     if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
     const order = ["hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
     if (order.some((at) => at < 0) || order[0] > order[1]) fail(`hq: the digest is not newest first: ${order}`);
-    if (!yours.startsWith(` <span class="hq-count">15</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
+    if (!yours.startsWith(` <span class="hq-count">12</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
     for (const act of ["hq:decide:16:seen", "hq:decide:12:retry"]) {
       if (yours.includes(act)) fail(`hq: ${act} is on the desk as well as in the digest`);
     }
     if (digest.includes("<b>Upkeep</b>") || !digest.includes("&lt;b&gt;Upkeep&lt;/b&gt;")) fail("hq: a digest item's words became markup");
-    for (const kind of ["goal", "approval", "decision", "push", "out_for_day"]) {
+    for (const kind of ["goal", "approval", "push", "out_for_day"]) {
       if (!yours.includes(`<div class="hq-need ${kind}">`)) fail(`hq: a ${kind} no longer interrupts`);
     }
     const none = runInContext(`(() => { const kept = HQ.snap.digest; HQ.snap.digest = [];
@@ -1003,11 +997,9 @@ if (failures.length) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk or the team card does not offer ${act}`);
   }
   if (office.includes("hq:decide:24:approve")) fail("hq: a push the node cannot make was offered Approve");
-  if (!office.includes('href="https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs"') || !office.includes("Open the pull request on GitHub")) fail("hq: a branch to merge does not open on GitHub from its card");
-  if (office.includes("javascript:alert")) fail("hq: a card's link is not GitHub's");
   if (office.includes("hq:bundle:9:task-9-tidy")) fail("hq: a push the node can make offers a download instead");
   if (office.includes("<b>with nobody free</b>")) fail("hq: a lead's hire request became markup");
-  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-work", "hq-hire-judgment", "hq-hire-to"]) {
+  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-brain"]) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
   // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
@@ -1113,16 +1105,6 @@ if (failures.length) {
   if (moved.includes('id="hq-house"') || !moved.includes("The old house log (read-only)")) fail("hq: the moved house log is still editable");
   if (moved.includes("<img src=h")) fail("hq: the read-only house log became markup");
   runInContext("HQ.snap.world.migrated = false;", context);
-  // The CEO's decision for the board: decision, recommendation and why, with Approve, Decline
-  // and an answer box.
-  for (const act of ["hq:decide:18:approve", "hq:decide:18:decline", "hq:decide:18:answer"]) {
-    if (!office.includes(`data-act="${act}"`)) fail(`hq: a decision does not offer ${act}`);
-  }
-  if (!office.includes('id="hq-answer-18"')) fail("hq: a decision cannot be answered from its card");
-  for (const said of ["<dt>Decision</dt><dd>Give sonarr 2 GB?</dd>", "<dt>Recommendation</dt>", "<dt>Why</dt><dd>It was killed for memory three times.</dd>", "Yes, &lt;i&gt;until the upgrade&lt;/i&gt;."]) {
-    if (!office.includes(said)) fail(`hq: the decision card does not show ${said}`);
-  }
-  if (office.includes("<i>until")) fail("hq: a decision's words became markup");
   // Projects (ADR 0113): grouped by goal, each with its lead, status and money against its cap
   // (amber from 80%, red once spent); the owner's buttons offer only what each status takes;
   // whatever a member wrote stays text.
@@ -1237,29 +1219,29 @@ if (failures.length) {
     // The Mac is a brain on the roster and on the hire form, and costs nothing.
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
-    if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
+    if (!runInContext("hqHireForm()", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
     if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("developer · between turns · costs nothing")) fail("mac: a Mac member's roster line is wrong");
     if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac member's opened line does not say Mac");
-    // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
-    // turn that waits says what for; the top bar counts the turns waiting for budget.
+    // A member is its model (ADR 0142): the roster line says it, the controls set it, and a turn
+    // that waits says what for; the top bar counts the turns waiting for budget.
     {
-      const zed = `{ id: 9, name: "Zed", role: "developer", brain: "claude-haiku-5-5", work_brain: "mac", judgment_brain: "claude-haiku-5-5",
-        work_brains: [{ name: "mac", label: "Mac" }, { name: "local", label: "Local" }], judgment_brains: [{ name: "claude-haiku-5-5", label: "Claude Haiku" }],
+      const zed = `{ id: 9, name: "Zed", role: "developer", brain: "claude-haiku-5-5",
+        brains: [{ name: "mac", label: "Mac" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }],
         running: [], spent: 0, held: 0, per_day: 100 }`;
       const line = runInContext(`HQ.roster[9] = true; hqRosterLine(${zed}, [])`, context);
-      if (!line.includes("Work: Mac · Judgment: Haiku")) fail("brains: the roster line does not say both brains");
-      for (const act of ["hq:workbrain:9:mac", "hq:workbrain:9:local", "hq:judge:9:claude-haiku-5-5"]) {
+      if (!line.includes('<span class="hq-tag">Haiku</span>')) fail("brains: the roster line does not say the member's model");
+      for (const act of ["hq:brain:9:mac", "hq:brain:9:claude-haiku-5-5"]) {
         if (!line.includes(`data-act="${act}"`)) fail(`brains: the controls lack ${act}`);
       }
-      if (!/aria-pressed="true"[^>]*data-act="hq:workbrain:9:mac"/.test(line) || !/aria-pressed="true"[^>]*data-act="hq:judge:9:claude-haiku-5-5"/.test(line)) fail("brains: the brains a member has are not marked");
-      // Every member judges with a Claude: there is no taking it away, and work costs nothing.
-      if (line.includes("hq:judge:9:none") || line.includes(">None<")) fail("brains: a member can be left with no judgment brain");
-      if (!line.includes("its work costs nothing")) fail("brains: a member's work is not said to cost nothing");
-      const form = runInContext("hqHireForm(HQ.snap)", context);
-      for (const want of ['id="hq-hire-work"', 'id="hq-hire-judgment"', '<option value="local">Local</option>', '<option value="claude-haiku-5-5">Claude Haiku</option>']) {
+      if (!/aria-pressed="true"[^>]*data-act="hq:brain:9:claude-haiku-5-5"/.test(line)) fail("brains: the model a member is is not marked");
+      if (line.includes("hq:workbrain:") || line.includes("hq:judge:")) fail("brains: a member is still offered two brains");
+      const form = runInContext("hqHireForm()", context);
+      for (const want of ['id="hq-hire-brain"', '<option value="local">Local</option>', '<option value="claude-haiku-5-5">Claude Haiku</option>']) {
         if (!form.includes(want)) fail(`brains: the hire form lacks ${want}`);
       }
-      if (form.includes('id="hq-hire-brain"')) fail("brains: the hire form still names one brain");
+      for (const gone of ['id="hq-hire-work"', 'id="hq-hire-judgment"', 'id="hq-hire-to"']) {
+        if (form.includes(gone)) fail(`brains: the hire form still asks for ${gone}`);
+      }
       const waiting = runInContext(`HQ.snap.runs = [{ id: 90, member: 9, task: 7, status: "queued", why: "waiting for budget: the budget for it is spent" }];
         const shown = hqRosterLine(${zed}, []); HQ.snap.runs = []; shown`, context);
       if (!waiting.includes("waiting for budget: the budget for it is spent")) fail("brains: a turn waiting for budget does not say so on the roster");
@@ -1543,18 +1525,15 @@ if (failures.length) {
         hqPlacePeople(); hqDraw();
         [HQ.people[5].at === HQ_MEETING.head, HQ.people[1].at === HQ_MEETING.chairs[0], HQ.people[2].at.desk === true]`, context);
       if (review.some((ok) => !ok)) fail(`hq: the daily review does not take the CEO and the lead to the meeting room: ${review}`);
-      // A question for the CEO: the one who asked goes to the CEO's open door; a decision for
-      // the board: the CEO takes it to the board room's door and says so there.
+      // A question for the CEO: the one who asked goes to the CEO's open door, and back.
       const errands = runInContext(`HQ.snap.members.find((m) => m.id === 5).running = []; hqPlacePeople();
         hqTell({ id: 60, at: 0, kind: "thread.posted", data: { task: 7, author: "Ada", preview: "@Mara <b>which</b>?" } }, true);
         hqTell({ id: 61, at: 0, kind: "wake.queued", data: { member: 5, task: 7, reason: "question_asked" } }, true);
-        hqTell({ id: 62, at: 0, kind: "desk.added", data: { item: 30, kind: "decision", task: 7 } }, true);
-        const ada = HQ.people[1], mara = HQ.people[5];
+        const ada = HQ.people[1];
         const there = ada.at.cx === HQ_ROOMS.ceo.out.cx && ada.at.cy === HQ_ROOMS.ceo.out.cy && ada.path.length > 0;
-        const board = mara.at.cx === HQ_P.boardDoor.cx && mara.at.cy === HQ_P.boardDoor.cy && mara.path.length > 0;
         hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
-        [there, board, !ada.errand, ada.at === ada.seat.work]`, context);
-      if (errands.some((ok) => !ok)) fail(`hq: a question or a decision does not send its member to the right door and back: ${errands}`);
+        [there, !ada.errand, ada.at === ada.seat.work]`, context);
+      if (errands.some((ok) => !ok)) fail(`hq: a question does not send its member to the right door and back: ${errands}`);
       // A question for someone on a team: the one who asked walks to their desk, and goes back.
       const asks = runInContext(`HQ.snap.members.find((m) => m.id === 6).running = [];
         hqPlacePeople();
@@ -1735,14 +1714,14 @@ if (failures.length) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab at rest`);
     }
     // No action was lost to the regrouping: every act the four tabs offered (2026-10-29, the
-    // same snapshot) is on one of the three, at rest or once its fold is opened.
+    // same snapshot) is on one of the three, at rest or once its fold is opened. The CEO's
+    // decision card (18) and the Deployed cards (40, 41) retired with ADR 0142.
     {
       const before = ["go:models", "hq:bundle:9:task-9-other", "hq:contracts:all:off", "hq:contracts:restart_container:on", "hq:decide:11:approve", "hq:decide:11:decline",
         "hq:decide:12:drop", "hq:decide:12:retry", "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:not_now", "hq:decide:14:read", "hq:decide:15:dismiss",
-        "hq:decide:15:seen", "hq:decide:16:dismiss", "hq:decide:16:seen", "hq:decide:17:approve", "hq:decide:17:decline", "hq:decide:18:answer", "hq:decide:18:approve",
-        "hq:decide:18:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
+        "hq:decide:15:seen", "hq:decide:16:dismiss", "hq:decide:16:seen", "hq:decide:17:approve", "hq:decide:17:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
         "hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline", "hq:decide:24:dismiss", "hq:decide:24:seen", "hq:decide:27:approve",
-        "hq:decide:27:decline", "hq:decide:40:deployed", "hq:decide:40:not_deploying", "hq:decide:41:deployed", "hq:decide:41:not_deploying", "hq:find:task:go", "hq:goal",
+        "hq:decide:27:decline", "hq:find:task:go", "hq:goal",
         "hq:hire:new:add", "hq:house:save", "hq:logolder:0:more", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
         "hq:more:outcome0:toggle", "hq:more:outcome4:toggle", "hq:more:proj1:toggle", "hq:more:proj2:toggle", "hq:more:proj3:toggle", "hq:more:routine3:toggle",
         "hq:more:routine4:toggle", "hq:pick:task:7", "hq:pick:task:9", "hq:pool:topup:go", "hq:project:new:add", "hq:roster:1:toggle", "hq:roster:8:toggle",
@@ -1873,7 +1852,7 @@ if (failures.length) {
     const atRest = runInContext("viewHQ()", context).split('id="hq-panel-work"')[1].split("<h2>Looking at")[0].split("While you were away")[0];
     if ((atRest.match(/<div class="hq-need /g) || []).length !== 5 || !atRest.includes('data-act="hq:more:desk27:toggle"')) fail("hq: the desk does not show its first five whole and the rest as lines to open");
     const cardsShown = [...desk.matchAll(/<div class="hq-need (\w+)">/g)].map((m) => m[1]);
-    if (cardsShown.length < 15) fail(`hq: only ${cardsShown.length} desk items rendered`);
+    if (cardsShown.length < 12) fail(`hq: only ${cardsShown.length} desk items rendered`);
     for (const kind of new Set(cardsShown)) {
       const card = desk.split(`<div class="hq-need ${kind}">`)[1].split('<div class="hq-row">')[0];
       if (!card.includes('class="hq-help"')) fail(`hq: a ${kind} desk item shows no help line`);
