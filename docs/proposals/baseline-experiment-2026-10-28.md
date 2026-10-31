@@ -614,6 +614,19 @@ ways. To fix after the one-team clean-up lands, in this order:
   `loop_*` settings overlapping.
 - [ ] **A likely bug:** the runner counts an exit code it cannot read as "never started" (-1).
 
+### HQ console, the owner's notes of 31 Oct (one branch, after the clean-up)
+
+- [ ] Activity on a tab of its own (Work, Manage, Health, Activity): the latest 20, and "Show
+  more" opens a full-screen, paged view; never an endless scroll.
+- [ ] On a task, each turn shows what the model was given: its instructions, tools and briefing,
+  secrets redacted (HQ keeps every turn's conversation, ADR 0129).
+- [ ] The team board takes a line a member; the rest on a tap.
+- [ ] Routines join Projects as a kind of project; the ones turned off fold away.
+- [ ] Manage in this order: money first, then goals, then projects.
+- [ ] The Mac's card leaves HQ for Settings, AI, beside the local model.
+- [ ] A Chess tab: every league game, live boards for those in play, and the month's bracket
+  (who has played whom, results and standings), with each game's PGN.
+
 ### The owner's
 
 - [ ] Decide on round 3's changes once round 2 is judged.
