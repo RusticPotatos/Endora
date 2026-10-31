@@ -411,10 +411,10 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 | 1 | 929 | Yes (all 46 defaults with exact values, rechecked; ports; Markdown only; pushed as `hq/task-929-readmes`. Bo's three budget-length turns, then Rae, then Ada; reviewed by Kit. One setup nudge after Rae's failed starts, not counted) | $0.26 | 142 min | 0 | |
 | 2 | 930 | Yes (all 39 defaults with exact values, rechecked against `defaults/main.yml`; ports; Markdown only; pushed as `hq/task-930-readmes`. Bo, then Rae, then Ada; reviewed by Kit) | $0.22 | 142 min | 0 | |
 | 3 | 931 | | | | | |
-| 4 | 932 | | | | | |
+| 4 | 932 | No (criterion 2: no CI run on the branch. The step was added and runs `tests/test_lint_rules.py` by name; the broken rule is in the history and reverted; rechecked locally, the tests pass at the tip and fail at the broken commit. Pushed as `hq/task-932-ci-lint-rules`, but the workflow runs on push only for main and develop, so no run came, and HQ never asked for one) | $0.98 | 207 min | 0 | |
 | 5 | 933 | | | | | |
 | 6 | 934 | | | | | |
 | 7 | 935 | | | | | |
-| 8 | 938 | | | | | |
+| 8 | 938 | No (blocked honestly: the window's logs are gone, as expected after round 1; made no lab change) | $0.38 | blocked after ~4 h | 2 | |
 | 9 | 936 | | | | | |
 | 10 | 937 | | | | | |
