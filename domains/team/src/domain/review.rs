@@ -4,7 +4,7 @@
 //! an invented "ping test" on the owner's desk; these rules are why that is read by someone,
 //! and flagged, first.
 
-use super::work::{MemberId, Refusal};
+use super::work::MemberId;
 
 /// The team's own tools, which look like Docker's names (`word_word`) but are not containers.
 const TOOL_NAMES: &[&str] = &[
@@ -119,26 +119,6 @@ pub fn diff_within(diff: &str, most: usize) -> (String, bool) {
 #[must_use]
 pub const fn needs_gate(a_routines_task: bool, the_home_labs: bool) -> bool {
     !(a_routines_task || the_home_labs)
-}
-
-/// Whether a reviewer may approve work: never its own, and work that needs the gate only once
-/// the gate has passed.
-///
-/// # Errors
-/// [`Refusal::OwnWork`] or [`Refusal::GateNotPassed`].
-pub fn may_approve(
-    needs_gate: bool,
-    gate_passed: bool,
-    worker: Option<MemberId>,
-    reviewer: MemberId,
-) -> Result<(), Refusal> {
-    if worker == Some(reviewer) {
-        return Err(Refusal::OwnWork);
-    }
-    if needs_gate && !gate_passed {
-        return Err(Refusal::GateNotPassed);
-    }
-    Ok(())
 }
 
 /// The start of the post that holds a draft for the owner, in the task's thread.
@@ -498,21 +478,10 @@ mod tests {
     }
 
     #[test]
-    fn a_review_closes_ungated_work_but_never_its_own_and_gated_work_waits_for_the_gate() {
+    fn routine_and_home_lab_work_needs_no_gate() {
         assert!(!needs_gate(true, false), "a routine's task");
         assert!(!needs_gate(false, true), "the home lab's work");
         assert!(needs_gate(false, false));
-        let (me, other) = (MemberId(1), MemberId(2));
-        assert_eq!(may_approve(false, false, Some(other), me), Ok(()));
-        assert_eq!(
-            may_approve(false, true, Some(me), me),
-            Err(Refusal::OwnWork)
-        );
-        assert_eq!(
-            may_approve(true, false, Some(other), me),
-            Err(Refusal::GateNotPassed)
-        );
-        assert_eq!(may_approve(true, true, Some(other), me), Ok(()));
     }
 
     #[test]

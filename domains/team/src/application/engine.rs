@@ -1415,7 +1415,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
             return Ok(());
         }
-        // Nobody one rank up: the owner reads it.
+        // No reviewer on the team: the owner reads it.
         let members = self.store.members()?;
         let thread: Vec<String> = self
             .store
@@ -1446,92 +1446,101 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The reviewer's verdict on work in review, in its turn: `approve` closes work that needs
-    /// no gate as done (work that needs the gate waits for it, as [`Self::approve`] says), and
-    /// `send_back` returns it to its owner as `doing`, waking them. The notes go in the thread
-    /// either way. Only the reviewer gives a verdict, and never on its own work.
-    ///
-    /// The tester's tool reaches it for a send-back alone ([`Self::test_in`]): a pass is judged
-    /// there, on evidence, and never closes a draft for the owner (ADR 0114, amended).
-    ///
-    /// A send-back may name its `reason` when it is one HQ counts (ADR 0132); a pass has none.
+    /// The one gate for a verdict on work in review (ADR 0142, amended 2026-10-31), a pass's
+    /// ([`Self::test_in`]) or a send-back's ([`Self::send_back_in`]): the turn reaches the item,
+    /// its member is the item's reviewer in the loops, the item is in review, and the work is
+    /// not the reviewer's own; a pass also needs a CI criterion a push can meet. Returns the
+    /// reviewer, the item and who holds its work.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
-    /// is not a reviewer; [`Refusal::NotAStep`] for a task not in review; [`Refusal::OwnWork`];
-    /// [`Refusal::GateNotPassed`] for work that needs the gate.
-    pub fn review_in(
+    /// [`Refusal::OutOfReach`], [`Refusal::NotYours`] for a member who is not its reviewer,
+    /// [`Refusal::NotAStep`] for a task not in review, [`Refusal::OwnWork`]; for a pass, what
+    /// [`Self::ci_can_be_had`] refuses.
+    fn verdict_gate(
         &self,
-        run: RunId,
+        run: &Run,
         task: TaskId,
-        approve: bool,
-        notes: &str,
-        reason: Option<SendBackReason>,
-    ) -> Done<()> {
-        let _held = self.held();
-        let run = self.running(run)?;
-        self.reach(&run, task, true)?;
+        pass: bool,
+    ) -> Done<(Member, Task, Option<MemberId>)> {
+        self.reach(run, task, true)?;
         let reviewer = self.member(run.member)?;
         let current = self.task(task)?;
-        // In the loops, the member one rank up reviews (ADR 0142); otherwise, the tester.
-        let in_the_loops = self
+        if self
             .loop_reviewer_of(&current)?
-            .is_some_and(|r| r.id == reviewer.id);
-        if !in_the_loops {
+            .is_none_or(|r| r.id != reviewer.id)
+        {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
-        let to = if approve {
-            TaskStatus::Done
-        } else {
-            TaskStatus::Doing
-        };
         if current.status != TaskStatus::InReview {
+            let to = if pass {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Doing
+            };
             return Err(EngineError::Refused(Refusal::NotAStep {
                 from: current.status,
                 to,
             }));
         }
-        let worker = current.owner.or(current.assignee);
+        let worker = current.holder();
         if worker == Some(reviewer.id) {
             return Err(EngineError::Refused(Refusal::OwnWork));
         }
-        // The tester's verdict is her deliverable, whichever way it goes (ADR 0114).
-        self.mark_progress(reviewer.id, task)?;
-        if !approve {
-            self.store.set_task_status(task, TaskStatus::Doing)?;
-            self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
-            self.emit_status(&current, TaskStatus::Doing)?;
-            self.emit_sent_back(task, reviewer.id, "tester", reason)?;
-            if let Some(owner) = worker {
-                self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
-            }
-            // In the loops a send-back is one of the item's failures (ADR 0142); kept at its
-            // rank, it goes back to its worker with a handover (amended 2026-10-30). What the
-            // worker and the reviewer marked as lessons goes in the loop's list first.
-            if in_the_loops {
-                self.learn_held_lock(&current, notes)?;
-                self.loop_failed(task)?;
-                let now = self.task(task)?;
-                if let Some(worker) = worker.filter(|w| now.owner.or(now.assignee) == Some(*w)) {
-                    self.hand_over(task, worker, &format!("sent back by {}", reviewer.name))?;
-                }
-            }
+        if pass {
+            // A CI criterion no push can meet is never passed (ADR 0142, amended 2026-10-31).
+            self.ci_can_be_had(&current)?;
+        }
+        Ok((reviewer, current, worker))
+    }
+
+    /// After a verdict (the lock held): what the worker and the reviewer marked as lessons goes
+    /// in the loop's list; a send-back (`sent_back`: the reviewer's name and the work's holder)
+    /// is also one of the item's failures, and kept at its rank the item goes back to its
+    /// worker with a handover (ADR 0142, amended 2026-10-30).
+    fn after_verdict(
+        &self,
+        current: &Task,
+        notes: &str,
+        sent_back: Option<(&str, Option<MemberId>)>,
+    ) -> Done<()> {
+        self.learn_held_lock(current, notes)?;
+        let Some((reviewer, worker)) = sent_back else {
             return Ok(());
+        };
+        self.loop_failed(current.id)?;
+        let now = self.task(current.id)?;
+        if let Some(worker) = worker.filter(|w| now.holder() == Some(*w)) {
+            self.hand_over(current.id, worker, &format!("sent back by {reviewer}"))?;
         }
-        // A CI criterion no push can meet is never passed (ADR 0142, amended 2026-10-31).
-        self.ci_can_be_had(&current)?;
-        if self.gated(&current)? {
-            // Gated work keeps the gate's rule: done only once the gate has passed.
-            self.approve_held_lock(reviewer.id, task)?;
-            self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
-            return self.learn_held_lock(&current, notes);
+        Ok(())
+    }
+
+    /// The reviewer sends work in review back to its holder, in its turn ([`Self::test_in`]
+    /// without a pass): it returns as `doing`, its holder is woken, and the notes go in the
+    /// thread. A send-back may name its `reason` when it is one HQ counts (ADR 0132).
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], and what [`Self::verdict_gate`] refuses.
+    fn send_back_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        notes: &str,
+        reason: Option<SendBackReason>,
+    ) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        let (reviewer, current, worker) = self.verdict_gate(&run, task, false)?;
+        // The reviewer's verdict is its deliverable, whichever way it goes (ADR 0114).
+        self.mark_progress(reviewer.id, task)?;
+        self.store.set_task_status(task, TaskStatus::Doing)?;
+        self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
+        self.emit_status(&current, TaskStatus::Doing)?;
+        self.emit_sent_back(task, reviewer.id, "tester", reason)?;
+        if let Some(owner) = worker {
+            self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
         }
-        review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
-        self.learn_held_lock(&current, notes)?;
-        self.store.set_task_status(task, TaskStatus::Done)?;
-        self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
-        self.emit_status(&current, TaskStatus::Done)?;
-        self.after_finishing(&current)
+        self.after_verdict(&current, notes, Some((&reviewer.name, worker)))
     }
 
     /// Says a task moved to `to`, in the feed.

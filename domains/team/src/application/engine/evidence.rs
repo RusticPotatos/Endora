@@ -417,19 +417,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(id)
     }
 
-    /// The tester's verdict on work in review (ADR 0114), in her turn. She re-checks it
-    /// herself: a pass cites, per criterion, evidence that holds, with at least one reading of
-    /// her own this turn, and goes to the work's lead to accept (or closes it, when no other
-    /// lead is there). Sending it back is a finished test too, and keeps the review it had
-    /// ([`Engine::review_in`]), a draft for the owner included. A draft is never passed: it is
-    /// forwarded with `ask_owner`, or sent back. A CEO's draft puts the work task itself in
-    /// review, and a pass through the draft's path closed it as done, with the gate true, and
-    /// offered its push, with no evidence judged and no lead's acceptance.
+    /// The reviewer's verdict on work in review (ADR 0114), in its turn. A pass is re-checked:
+    /// it cites, per criterion, evidence that holds, with at least one reading of the
+    /// reviewer's own this turn, and closes the work (gated work through the gate's rule).
+    /// Without a pass the work is sent back ([`Engine::send_back_in`]). A draft is never
+    /// passed: it is forwarded with `ask_owner`, or sent back.
     ///
     /// A send-back may name its `reason` when it is one HQ counts (ADR 0132).
     ///
     /// # Errors
-    /// What [`Engine::review_in`] refuses, [`Refusal::ForwardTheDraft`], and what
+    /// What [`Engine::verdict_gate`] refuses, [`Refusal::ForwardTheDraft`], and what
     /// [`evidence::judge`] refuses for a pass.
     pub fn test_in(
         &self,
@@ -440,35 +437,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[Vec<Ref>],
         reason: Option<SendBackReason>,
     ) -> Done<()> {
-        let current = self.task(task)?;
         if !pass {
-            return self.review_in(run, task, false, notes, reason);
+            return self.send_back_in(run, task, notes, reason);
         }
         let _held = self.held();
         let turn = self.running(run)?;
-        self.reach(&turn, task, true)?;
-        let tester = self.member(turn.member)?;
-        // In the loops the member one rank up passes it (ADR 0142); otherwise, the tester.
-        let one_rank_up = self
-            .loop_reviewer_of(&current)?
-            .is_some_and(|r| r.id == tester.id);
-        if !one_rank_up {
-            return Err(EngineError::Refused(Refusal::NotYours));
-        }
-        if current.status != TaskStatus::InReview {
-            return Err(EngineError::Refused(Refusal::NotAStep {
-                from: current.status,
-                to: TaskStatus::Done,
-            }));
-        }
+        let (tester, current, _) = self.verdict_gate(&turn, task, true)?;
         if self.is_draft(&current)? {
             return Err(EngineError::Refused(Refusal::ForwardTheDraft));
         }
-        let worker = current.owner.or(current.assignee);
-        if worker == Some(tester.id) {
-            return Err(EngineError::Refused(Refusal::OwnWork));
-        }
-        self.ci_can_be_had(&current)?;
         self.judge_work(
             &current,
             cited,
@@ -492,8 +469,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &[],
         )?;
         self.mark_progress(tester.id, task)?;
-        // Accepted: what the worker and the reviewer marked as lessons goes in its loop's list.
-        self.learn_held_lock(&current, notes)?;
+        self.after_verdict(&current, notes, None)?;
         self.close_checked(&current, tester.id)
     }
 

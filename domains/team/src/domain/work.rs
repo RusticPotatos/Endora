@@ -342,6 +342,17 @@ pub struct Task {
     pub criteria: Vec<super::evidence::Criterion>,
 }
 
+impl Task {
+    /// Who holds it: the member working it, else the member it was handed to.
+    #[must_use]
+    pub const fn holder(&self) -> Option<MemberId> {
+        match self.owner {
+            Some(owner) => Some(owner),
+            None => self.assignee,
+        }
+    }
+}
+
 /// Why something a member asked for is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
