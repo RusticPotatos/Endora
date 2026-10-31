@@ -108,17 +108,17 @@ post-deploy check.
 
 ### What goes
 
-| Part | ADRs | About (code, before tests) |
-|---|---|---|
-| CEO, chain of command, board decisions, planning | 0111 | 1,400 lines |
-| Leads, areas, area reports, wings, staffing, furlough, seats | 0110, 0113 (part), 0115 (part), 0118 | 3,700 lines |
-| Enforced RACI, roles, discipline | 0120 | 850 lines |
-| The tester's review of every change | 0114 (part) | 800 lines |
-| Stuck ladder, huddles, decide_stuck | 0124 (part) | 900 lines |
-| Conversations, assistance, consult, peers | 0137, 0138, 0139 (part) | 1,900 lines |
-| Guards that police coordination | 0124 (part) | 2,000 lines |
-| Office proposals and votes; tracked ping-pong and pool | 0119 (part), 0121 (part) | 2,900 lines |
-| The world's stages, canon, stories, gaps, quiz, notebooks, retraction | 0118, 0122, 0126 (part) | 5,000 lines |
+| Part | ADRs | About (code, before tests) | Done (31 Oct) |
+|---|---|---|---|
+| CEO, chain of command, board decisions, planning | 0111 | 1,400 lines | [x] Step 8 E; the board's decisions, the CEO's house log and "one CEO" in the one-team clean-up. `Role::Ceo` stays as a title. |
+| Leads, areas, area reports, wings, staffing, furlough, seats | 0110, 0113 (part), 0115 (part), 0118 | 3,700 lines | [x] Step 8 F; the wing's seeded staff, the lead's lab routine, the check after a deploy, reporting lines, recalls and a lead's lessons in the clean-up. Kept: a retired member's furlough column, and the wing's git flow (branch, check, review). |
+| Enforced RACI, roles, discipline | 0120 | 850 lines | [x] Step 8 E; in the clean-up the rank of roles, CEO-only tools, and brains, money, effort and briefings by role, with the work and judgment brains (ADR 0131). The `Role` type stays as a title. |
+| The tester's review of every change | 0114 (part) | 800 lines | [x] Step 8 E; the tester woken on a check went in the clean-up. |
+| Stuck ladder, huddles, decide_stuck | 0124 (part) | 900 lines | [x] Step 8 C and D. |
+| Conversations, assistance, consult, peers | 0137, 0138, 0139 (part) | 1,900 lines | [x] Step 8 A. Kept: past consults, read-only in history. |
+| Guards that police coordination | 0124 (part) | 2,000 lines | [x] Step 8 D. |
+| Office proposals and votes; tracked ping-pong and pool | 0119 (part), 0121 (part) | 2,900 lines | [x] Step 8 B and F; the office's rules for proposals in the clean-up. |
+| The world's stages, canon, stories, gaps, quiz, notebooks, retraction | 0118, 0122, 0126 (part) | 5,000 lines | [ ] Step 8 F took all but the sections' stages and canon, which briefings still read; left for the fold into the map and notes pages. |
 
 ### Data
 
