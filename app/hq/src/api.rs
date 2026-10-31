@@ -158,6 +158,12 @@ pub fn app(state: State) -> Router {
             "/v1/team/push/{id}/outcome",
             post(crate::team::push_outcome),
         )
+        // Accepted work without a card (ADR 0115, amended 2026-10-31): what the node is to push
+        // or merge, and what came of it.
+        .route("/v1/team/deliveries", get(crate::team::deliveries))
+        .route("/v1/team/deliveries/{id}", post(crate::team::delivered))
+        // The owner's two settings for it: the cards back, and merging develop.
+        .route("/v1/delivery", post(set_delivery))
         // The team's world (ADR 0122): the owner reads and downloads it, and alone makes
         // something canon or demotes it.
         .merge(world::routes())
@@ -1020,6 +1026,29 @@ struct LoopLessons {
 }
 
 /// The owner sets a loop's lessons, the whole list: at most ten short lines, nothing secret.
+#[derive(Deserialize)]
+struct DeliverySettings {
+    #[serde(default)]
+    cards: Option<bool>,
+    #[serde(default)]
+    merge_develop: Option<bool>,
+}
+
+/// The owner's settings for accepted work (ADR 0115, amended 2026-10-31): the "Ready to merge"
+/// and "Push" cards back on the desk, and HQ merging pushed branches into the fork's develop.
+async fn set_delivery(
+    Extract(state): Extract<State>,
+    Json(req): Json<DeliverySettings>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let shown = blocking(move || {
+        hq.set_delivery(req.cards, req.merge_develop)?;
+        hq.snapshot()
+    })
+    .await?;
+    Ok(Json(json!({ "delivery": shown["delivery"] })))
+}
+
 async fn set_loop_lessons(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
@@ -4308,6 +4337,8 @@ mod tests {
             .store()
             .set_task_status(task, endora_team::domain::TaskStatus::Done)
             .unwrap();
+        // On the owner's card: the cards are back (ADR 0115, amended 2026-10-31).
+        st.hq.set_delivery(Some(true), None).unwrap();
         st.hq.offer_push(task).unwrap();
         let item = st
             .hq
@@ -4365,6 +4396,110 @@ mod tests {
                 .text
                 .contains("Pushed hq/task-1")
         );
+    }
+
+    /// Accepted work without a card (ADR 0115, amended 2026-10-31): the node, with its token
+    /// alone, reads what is due and says what came of it once; the owner sets merging.
+    #[tokio::test]
+    async fn the_node_reads_what_is_due_and_says_what_came_of_it_once() {
+        let st = state(false);
+        let (_, task) = a_wing_turn_starts(&st);
+        let context = {
+            let remote = st.hq.runner().remote().unwrap();
+            endora_team::infrastructure::RemoteRunner::next(remote).expect("a turn waits")
+        };
+        st.hq
+            .record_branch(
+                &context.turn.token,
+                &endora_team::application::Submission {
+                    branch: "hq/task-1-sort-the-cables".to_owned(),
+                    head: "a1b2c3d4e5f60718".to_owned(),
+                    base: "0123456789abcdef".to_owned(),
+                    files: 1,
+                    plus: 2,
+                    minus: 0,
+                    stat: String::new(),
+                    diff: String::new(),
+                    can_push: true,
+                    changed: Vec::new(),
+                    texts: Vec::new(),
+                    workflows: None,
+                },
+            )
+            .unwrap();
+        let check = st.hq.next_check().unwrap().expect("a check waits");
+        st.hq
+            .check_done(check.id, &check.token, true, "syntax ok", "")
+            .unwrap();
+        st.hq
+            .store()
+            .set_task_status(task, endora_team::domain::TaskStatus::Done)
+            .unwrap();
+        st.hq.offer_push(task).unwrap();
+        let app = app(st.clone());
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/v1/team/deliveries", Some(RUNNER), ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's token alone"
+        );
+        let due = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/team/deliveries", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(due["push"][0]["name"], "hq/task-1-sort-the-cables", "{due}");
+        assert_eq!(due["push"][0]["scan"], true, "{due}");
+        assert_eq!(due["merge"], json!([]));
+        let branch = due["push"][0]["branch"].as_i64().unwrap();
+        let told = |body: &str| {
+            call(
+                "POST",
+                &format!("/v1/team/deliveries/{branch}"),
+                Some(TOKEN),
+                body,
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(told(r#"{"step":"held"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "held says what");
+        let body = r#"{"step":"push","ok":true,"text":"pushed hq/task-1-sort-the-cables"}"#;
+        let res = app.clone().oneshot(told(body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app.clone().oneshot(told(body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT, "told once");
+        let set = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/delivery",
+                    Some(TOKEN),
+                    r#"{"merge_develop":true}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            set["delivery"],
+            json!({ "cards": false, "merge_develop": true })
+        );
+        let due = json_of(
+            app.oneshot(call("GET", "/v1/team/deliveries", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(due["merge"][0]["branch"], branch, "{due}");
     }
 
     /// The drain's door (ADR 0134) is the node's token's alone, as the owner's actions are: not

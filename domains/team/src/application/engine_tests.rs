@@ -236,7 +236,7 @@ fn only_the_owner_moves_a_task_and_never_to_done() {
 }
 
 #[test]
-fn done_is_the_gate_and_a_different_reviewer_and_lands_on_the_desk() {
+fn done_is_the_gate_and_a_different_reviewer_and_is_listed_not_carded() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -258,6 +258,25 @@ fn done_is_the_gate_and_a_different_reviewer_and_lands_on_the_desk() {
         hq.store().task(task).unwrap().unwrap().status,
         TaskStatus::Done
     );
+    // Accepted work is listed on Manage, not carded (ADR 0115, amended 2026-10-31).
+    let desk = hq.store().desk().unwrap();
+    assert!(desk.iter().all(|d| d.kind != "ready_to_merge"), "{desk:?}");
+}
+
+/// The owner who wants to review again puts the cards back: accepted work lands on the desk as
+/// it did before 31 Oct.
+#[test]
+fn with_the_cards_back_accepted_work_lands_on_the_desk() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    hq.set_delivery(Some(true), None).unwrap();
+    let task = task_for(&hq, t.goal, None, "Add a list");
+    hq.claim(t.dev, task).unwrap();
+    hq.set_status(t.dev, task, TaskStatus::InReview, "ready")
+        .unwrap();
+    hq.record_gate(task, true, "").unwrap();
+    hq.approve(t.reviewer, task).unwrap();
     let desk = hq.store().desk().unwrap();
     assert_eq!(desk.last().unwrap().kind, "ready_to_merge");
 }

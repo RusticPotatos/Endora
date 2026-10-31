@@ -573,6 +573,13 @@ are seen; quotes count only against the item's own receipts. The other six are f
    branch, a fold on the Money card (Manage) with a row per brain a turn ran on, its turns,
    spend, cost a turn and share for the last 7 days and the 7 before, and which way it went;
    computed in HQ's scorecard (`by_model`). Not yet merged or released.
+11. [x] Accepted work reaches the fork without a card (owner, 31 Oct: merging accepted work "is
+    just not something I need to review"; ADR 0115, amended 2026-10-31): no "Ready to merge" or
+    "Push" cards, a list on Manage, a push after a code privacy scan, merging develop behind a
+    setting that stays off while the rounds run. On the `r3-auto-merge` branch, to merge and
+    release with step 5. When the rounds end: turn "Merge into develop" on, and set
+    `ENDORA_PERSONAL_VALUES` for the node (in `local.mk`, or the role's `endora_personal_values`
+    from the vault).
 
 ### Code size (kept current)
 

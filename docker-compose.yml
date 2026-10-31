@@ -353,6 +353,10 @@ services:
       # Containers the owner has retired but kept, with a note the team's map shows beside
       # each: name=note pairs, ";" between them (e.g. owntone=retired, kept for its settings).
       ENDORA_LAB_RETIRED: "${ENDORA_LAB_RETIRED-}"
+      # The owner's own values (name, city, anyone they live with), comma separated, from the
+      # git-ignored local.mk: the privacy scan reads them before HQ's branches are pushed to the
+      # public fork (ADR 0115, amended 2026-10-31). Empty: shapes and the secret tripwire only.
+      ENDORA_PERSONAL_VALUES: "${ENDORA_PERSONAL_VALUES-}"
       # The house's vault (ADR 0127): ENDORA_VAULT_URL = http://openbao:8200 in local.mk once
       # the `openbao` role runs it on the vault network below. Empty: no vault. Passkeys that
       # unlock it are bound to a name, endora.home.arpa unless ENDORA_PASSKEY_RP_ID says

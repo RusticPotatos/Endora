@@ -84,6 +84,7 @@ fn submits_with_workflow(
 
 /// The member takes its item and asks for review, citing the item for each criterion, and its
 /// turn ends.
+#[given(expr = "{word} asks for review of {string}")]
 #[when(expr = "{word} asks for review of {string}")]
 fn asks_for_review(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);

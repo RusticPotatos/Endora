@@ -3,6 +3,8 @@
 ## Status
 
 Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+Amended 2026-10-31 by the owner: accepted work reaches the fork without a card, and HQ may merge
+develop behind a setting (see the last section).
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 [0106](0106-team-contracts.md) (two more contracts, `repo_checkout` and `repo_submit`, for a
@@ -311,3 +313,73 @@ one report per check, one push per approval) is code on the node or in HQ's engi
   checks load only the fork's collections, which are baked in.
 - **The check as a model's turn.** Rejected: the lab's own linters are the gate (0114), and a
   model's word about them would be a claim, not a reading.
+
+## Amended 2026-10-31: accepted work reaches the fork without a card
+
+**The owner's decision, 31 Oct.** Merging accepted work "is just not something I need to review",
+and no "Ready to merge" or "Push" cards on the desk. This is the record the Deferred list above
+waited for ("HQ merging anything. Not until the owner says the audit period is over"), and it
+amends [0142](0142-one-team-of-loops.md)'s "plus ready PRs" on the desk. Scenarios:
+`domains/team/features/accepted-work-reaches-the-fork.feature`.
+
+**What changes.**
+
+- **No ready-to-merge or push cards.** An accepted branch is listed on HQ's Manage tab, folded
+  to one line: "Accepted, waiting to merge", with its task, its branch, when it was accepted and
+  where it stands (pushing, on the fork, held, failed, not pushed and why). A merged branch leaves
+  the list. Cards already waiting stay until answered. What a researcher wrote is still the
+  owner's to read, and work nobody on the team can review still reaches the desk as before.
+- **The push is HQ's, by rule.** A branch is due to be pushed only when its review passed (the
+  item is accepted), its newest check passed, and HQ's mechanical checks find no forbidden path
+  and no CI criterion that cannot be met (`domains/team/src/domain/delivery.rs`, `may_push`). Any
+  other branch is listed with why it was not pushed; without a deploy key, with its bundle.
+- **The privacy scan, before every push.** The node asks HQ what is due every minute
+  (`GET /v1/team/deliveries`) and scans the branch's whole diff against where it left develop,
+  and every commit message, by code (`domains/capabilities/src/outgoing.rs`): only what the
+  branch adds is read. It looks for the shapes of `scripts/check-nothing-personal.mjs` (a real
+  mailbox, a real network address, coordinates, a phone number, a long hex string, with the same
+  allowed examples), the kernel's secret tripwire (`shared/kernel/src/secrets.rs`), and the
+  owner's own values. If it finds anything, nothing is pushed and one desk card (kind `privacy`)
+  says what and where (`a real network address (roles/x/defaults/main.yml line 3)`), never the
+  value; the owner sends it back to the team or, having read it, pushes it anyway. A branch the
+  node cannot read is not pushed: the scan could not tell.
+- **Where the owner's values come from.** `ENDORA_PERSONAL_VALUES`, the same comma-separated list
+  `make personal-check` reads, in the node's environment and in no tracked file: the Makefile
+  exports it from the git-ignored `local.mk`, Compose passes it to the node, and the `endora`
+  role renders it from `endora_personal_values`, which is meant to come from the owner's vault
+  (`{{ vault_endora_personal_values }}`). Absent, the scan reads shapes and the tripwire only, and
+  every push says so in the thread ("no personal values are set on the node").
+- **What needs the owner still reaches the desk.** From the same diff, by code: a role default
+  that now reads a `vault_*` variable it did not before, and an assert the change adds that a
+  variable is set (`is defined`, `| length > 0`, `!= ""`, `is not none`). Each puts one card (kind
+  `needs_owner`) naming the variable and the file. Everything else, a push or a merge, is a
+  notice that clears itself, with a receipt and a post in the change's thread.
+- **Merging develop, behind a setting that is off.** With `delivery_merge_develop` on, the node
+  merges each pushed branch into the fork's develop: a fast-forward when develop has not moved,
+  else one merge commit authored by Endora HQ with its trailer; a conflict merges nothing and is
+  listed for the owner's hand. Never a force, never `main` or `master`, never upstream, and only
+  branches HQ pushed under this rule. The owner's "Deployed" card, where there is one (not in the
+  loops, ADR 0142), follows a merge rather than a push, since develop is what the playbook runs. The setting stays off while the baseline experiment's rounds run
+  (the fork's develop is frozen at ee878f7); the owner, or the assistant, turns it on when they
+  end.
+- **The cards come back on a setting.** With `delivery_cards` on, accepted work puts the "Ready
+  to merge" and "Push" cards on the desk exactly as before, and nothing is pushed without them.
+  Both switches are on the Manage line, and `POST /v1/hq/delivery` through the node.
+
+**Can today's deploy key update develop?** Yes, with no new credential. Read on 31 Oct from
+GitHub's API: the fork's deploy key `endora-hq` has write access, and `develop` is not protected
+and has no rulesets. The push code refused the base branch; the merge is a separate path that
+pushes the base only as a fast-forward of what the fork has. The consequence above, "GitHub
+itself should protect main and develop", is now the owner's to weigh: protecting develop against
+everyone but the deploy key would keep a mistaken push elsewhere refused there too.
+
+**Safeguards, all code.** Models propose; deterministic policy authorizes: the review is a
+model's, but whether a branch is pushed is `may_push`, the scan, and the push path's own refusals
+(only `hq/` branches, only the stored head, never a force); a held branch is pushed only on the
+owner's word. Each step is told to HQ once (a second report is refused), and every push and
+merge is an audit line on the node.
+
+**Limits, accepted.** The shapes give false positives (a 40-character commit id pinned in a
+requirements file reads as a live-looking secret); the owner's "push anyway" is the way past
+one. The scan reads what leaves in the branch, not what is already on the fork. A personal value
+split across a line break is not seen, as in the repository's own check.

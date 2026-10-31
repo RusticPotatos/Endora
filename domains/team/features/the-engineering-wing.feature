@@ -1,9 +1,11 @@
 Feature: The engineering wing and the git flow
   The wing works on the lab's ansible-nas fork through branches (ADR 0115).
   A branch is checked on the dev node, read by the tester, accepted by the
-  lead, and reaches the fork only when the owner approves the push. HQ never
-  pushes on its own, opens no pull request and merges nothing. The wing's
-  seats are a rule in code; hiring is the owner's.
+  lead, and reaches the fork when the owner approves the push. Since 31 Oct the
+  push is HQ's own, without a card, unless the owner puts the cards back
+  (accepted-work-reaches-the-fork.feature); these scenarios have the cards.
+  HQ opens no pull request. The wing's seats are a rule in code; hiring is the
+  owner's.
 
   Background:
     Given Mara is the CEO

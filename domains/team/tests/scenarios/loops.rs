@@ -128,6 +128,7 @@ fn turns_can_start(w: &mut Office, name: String) {
     w.hq.runner().script(member, Script::StaysRunning);
 }
 
+#[given("the loop hands out its items")]
 #[when("the loop hands out its items")]
 fn loop_hands_out(w: &mut Office) {
     w.tick();

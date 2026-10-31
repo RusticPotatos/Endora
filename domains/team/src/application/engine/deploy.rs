@@ -44,7 +44,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .branches()?
             .into_iter()
-            .filter(|b| b.task == task && b.status == "pushed")
+            // Pushed on the owner's word, or merged into develop by HQ (ADR 0115, amended
+            // 2026-10-31).
+            .filter(|b| {
+                b.task == task
+                    && (b.status == "pushed" || b.status == crate::domain::delivery::MERGED)
+            })
             .max_by_key(|b| b.id)
             .ok_or(EngineError::Unknown("pushed branch"))?;
         if !deployed {

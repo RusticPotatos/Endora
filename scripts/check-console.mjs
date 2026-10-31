@@ -596,6 +596,10 @@ if (failures.length) {
              { id: 40, kind: "deploy", task: 9, text: "hq/task-9-docs is on your fork.", branch_url: "https://github.com/owner/ansible-nas/compare/develop...hq/task-9-docs" },
              { id: 41, kind: "deploy", task: 9, text: "hq/task-9-evil is on your fork.", branch_url: "javascript:alert(1)" },
              ],
+      // Accepted, waiting to merge (ADR 0115, amended 2026-10-31): listed on Manage, never a card.
+      accepted: [{ id: 5, task: 9, title: "<b>Tidy</b> the deluge role", branch: "hq/task-9-tidy", status: "on_fork", said: "on the fork", why: "", at: 1792238400000, can_push: true },
+                 { id: 6, task: 9, title: "Other", branch: "hq/task-9-other", status: "accepted", said: "not pushed", why: "pushing is not set up on the node", at: 1792238400000, can_push: false }],
+      delivery: { cards: false, merge_develop: false },
       // While you were away (ADR 0132): stuck work and a notice. None needs a decision, so
       // none is on the desk; each keeps the choices it has always had. Newest first, as HQ
       // serves them.
@@ -1753,7 +1757,9 @@ if (failures.length) {
     console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
     // Before the regrouping (2026-10-29, this snapshot): Now 51 buttons and 97 rows, Team 15 and
     // 29, Work 15 and 22, Manage 13 and 25.
-    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 15, rows: 37 } };
+    // Manage 26 -> 27 buttons (2026-10-31): the owner took the "Ready to merge" and "Push" cards
+    // off the desk (ADR 0115, amended), and accepted work became one folded line on Manage.
+    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 27, rows: 36 }, health: { buttons: 15, rows: 37 } };
     for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
       const d = density(panelOf(tabs, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
@@ -1775,6 +1781,28 @@ if (failures.length) {
     for (const [id, folded] of [["manage", "<details"], ["manage", "hq:hire:new:add"], ["manage", "hq:project:new:add"], ["manage", "hq:routine:new:add"],
       ["manage", "<h2>World</h2>"], ["manage", "<h2>Office"], ["work", "<h2>Projects</h2>"], ["work", "<h2>Activity</h2>"], ["health", "What the team may do"]]) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab at rest`);
+    }
+    // Accepted work (ADR 0115, amended 2026-10-31): one folded line on Manage at rest; open, each
+    // branch with its task, its place and why, the bundle when the node cannot push, and the
+    // owner's two switches. Nothing a person typed is markup.
+    {
+      const manage = panelOf(tabs, "manage");
+      if (!manage.includes('data-act="hq:more:accepted:toggle"')) fail("hq: accepted work is not a line on Manage");
+      if (manage.includes("<h2>Accepted, waiting to merge")) fail("hq: accepted work is open on Manage at rest");
+      if (panelOf(tabs, "work").includes("Accepted, waiting to merge")) fail("hq: accepted work is on Work");
+      runInContext("HQ.more.accepted = true;", context);
+      const open = panelOf(shown(), "manage");
+      runInContext("HQ.more.accepted = false;", context);
+      for (const text of ["<h2>Accepted, waiting to merge", "hq/task-9-tidy", "on the fork", "not pushed: pushing is not set up on the node",
+        'data-act="hq:bundle:9:task-9-other"', 'data-act="hq:delivery:merge_develop:on"', 'data-act="hq:delivery:cards:on"']) {
+        if (!open.includes(text)) fail(`hq: accepted work does not show ${text}`);
+      }
+      if (open.includes("<b>Tidy</b>")) fail("hq: a task's title in accepted work is markup");
+      if (open.includes('data-act="hq:bundle:9:task-9-tidy"')) fail("hq: a pushed branch offers its bundle");
+      for (const kind of ["privacy", "needs_owner"]) {
+        if (!runInContext(`typeof HQ_DESK_HELP[${JSON.stringify(kind)}] === "string" && HQ_DESK_HELP[${JSON.stringify(kind)}].length > 20`, context)) fail(`hq: a ${kind} card has no help line`);
+      }
+      if (runInContext(`hqDeskChoices({ kind: "privacy" }).map((c) => c[0]).join()`, context) !== "send_back,push_anyway") fail("hq: a privacy card does not offer Send it back and Push it anyway");
     }
     // No action was lost to the regrouping: every act the four tabs offered (2026-10-29, the
     // same snapshot) is on one of the three, at rest or once its fold is opened.

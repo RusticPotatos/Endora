@@ -50,6 +50,9 @@ ENDORA_TOKEN ?=
 # Empty here and empty in CI, deliberately. The machine that holds the real values is the
 # only machine that can check for them; CI checks by shape instead.
 ENDORA_PERSONAL_VALUES ?=
+# The node reads them too, from its environment: the privacy scan of HQ's branches before they
+# are pushed to the public fork (ADR 0115, amended 2026-10-31). Compose passes them through.
+export ENDORA_PERSONAL_VALUES
 
 # Compose derives its project name from the working directory, so running a
 # deploy from a git worktree would invent a NEW project — a fresh empty volume,

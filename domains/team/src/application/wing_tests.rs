@@ -802,6 +802,8 @@ fn what_the_node_pushed_on_the_owners_word_is_a_landed_change_in_the_outcomes() 
     assert_eq!(before["week"]["checks_passed"], 1);
     assert_eq!(before["week"]["landed"], 0);
 
+    // The owner's word on the push: the cards are back (ADR 0115, amended 2026-10-31).
+    hq.set_delivery(Some(true), None).unwrap();
     hq.store().set_task_status(task, TaskStatus::Done).unwrap();
     hq.offer_push(task).unwrap();
     let item = hq
@@ -836,6 +838,7 @@ fn without_a_deploy_key_the_desk_offers_the_bundle_instead() {
     let t = team(&hq);
     let (task, _, _) = submitted(&hq, &t, false);
     let current = hq.store().task(task).unwrap().unwrap();
+    hq.set_delivery(Some(true), None).unwrap();
     hq.store().set_task_status(task, TaskStatus::Done).unwrap();
     hq.offer_push(current.id).unwrap();
     let item = hq
@@ -1049,6 +1052,8 @@ fn waiting(hq: &Hq<'_>, kind: &str) -> super::ports::DeskItem {
 /// asks the owner to say when it is deployed.
 fn pushed(hq: &Hq<'_>, t: &Team) -> (TaskId, super::ports::DeskItem) {
     let (task, _, _) = submitted(hq, t, true);
+    // The owner's word on the push: the cards are back (ADR 0115, amended 2026-10-31).
+    hq.set_delivery(Some(true), None).unwrap();
     hq.store().set_task_status(task, TaskStatus::Done).unwrap();
     hq.offer_push(task).unwrap();
     let push = waiting(hq, "push");
@@ -1428,4 +1433,85 @@ fn an_alarm_during_a_check_goes_to_the_routines_own_task() {
         super::Fired::Skipped(why) => panic!("{why}"),
     };
     assert_ne!(alarm_task, check.id);
+}
+
+// --- Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31) ------------
+
+/// Without a deploy key, an accepted branch is listed with why it is not pushed, never put on
+/// the desk and never asked of the node.
+#[test]
+fn without_a_deploy_key_accepted_work_is_listed_not_pushed() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, false);
+    let handed = hq.next_check().unwrap().expect("a check waits");
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["status"], "accepted", "{listed}");
+    assert!(
+        listed[0]["why"]
+            .as_str()
+            .unwrap()
+            .contains("pushing is not set up"),
+        "{listed}"
+    );
+}
+
+/// A branch whose check has not passed is not pushed by rule, whatever review said.
+#[test]
+fn a_branch_whose_check_did_not_pass_is_not_pushed() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, true);
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["why"], "no check of it passed", "{listed}");
+}
+
+/// The node's word on each step is taken once; a merge is asked only while merging is on, and
+/// a branch merged leaves the list.
+#[test]
+fn each_step_is_told_once_and_merging_waits_for_its_setting() {
+    use super::engine::Delivered;
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, true);
+    let handed = hq.next_check().unwrap().expect("a check waits");
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    let due = hq.deliveries().unwrap();
+    assert_eq!(due.push.len(), 1);
+    let branch = due.push[0].branch.id;
+    let merged = Delivered::Merged {
+        ok: true,
+        text: "merged".to_owned(),
+    };
+    assert!(hq.delivered(branch, &merged).is_err(), "not pushed yet");
+    let pushed = Delivered::Pushed {
+        ok: true,
+        text: "pushed".to_owned(),
+        needs: Vec::new(),
+    };
+    hq.delivered(branch, &pushed).unwrap();
+    assert!(hq.delivered(branch, &pushed).is_err(), "told once");
+    assert!(hq.deliveries().unwrap().merge.is_empty(), "merging is off");
+    hq.set_delivery(None, Some(true)).unwrap();
+    assert_eq!(hq.deliveries().unwrap().merge.len(), 1);
+    hq.delivered(branch, &merged).unwrap();
+    assert!(hq.deliveries().unwrap().merge.is_empty());
+    assert_eq!(hq.snapshot().unwrap()["accepted"], json!([]));
+    let landed = hq.snapshot().unwrap()["scorecard"]["outcomes"]["day"]["landed"].clone();
+    assert_eq!(landed, 1, "an automatic push is a landed change");
 }
