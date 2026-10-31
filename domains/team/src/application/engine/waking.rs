@@ -111,8 +111,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             },
             // A blocked item in the loops waits for the owner (ADR 0142, amended 2026-10-31).
             blocked_for_the_owner: match task {
-                Some(task) if !reason.reaches_a_blocked_item() && !self.asked_by_owner() => {
-                    self.blocked_in_the_loops(task)?
+                Some(task) if !self.asked_by_owner() => {
+                    self.waits_for_the_owner(task, reason, None)?
                 }
                 _ => false,
             },

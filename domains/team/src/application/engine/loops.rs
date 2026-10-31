@@ -287,16 +287,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
-    /// The question about an item that waits on the owner's desk, whoever asked it.
-    pub(super) fn question_waiting_on(
+    /// Whether a wake for `reason` on `task` waits, because the item is blocked in the loops and
+    /// waits for the owner (ADR 0142, amended 2026-10-31): only a reason that reaches a blocked
+    /// item (the owner's word, the end of what it waits on) wakes anyone on it, and the owner's
+    /// decision only with words (`said`, when the wake carries the owner's). The one check of
+    /// a blocked item for wakes, nudges and the owner's answers alike.
+    pub(super) fn waits_for_the_owner(
         &self,
         task: TaskId,
-    ) -> Done<Option<crate::application::ports::DeskItem>> {
-        Ok(self
-            .store
-            .desk()?
-            .into_iter()
-            .find(|d| d.kind == "question" && d.status == "waiting" && d.task == Some(task)))
+        reason: WakeReason,
+        said: Option<&str>,
+    ) -> Done<bool> {
+        let reaches = reason.reaches_a_blocked_item() && said.is_none_or(|w| !w.trim().is_empty());
+        if reaches {
+            return Ok(false);
+        }
+        self.blocked_in_the_loops(task)
     }
 
     /// HQ asks the owner about an item: one question waits on the desk per item (ADR 0142,
@@ -308,18 +314,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         member: Option<MemberId>,
         text: &str,
     ) -> Done<()> {
-        if let Some(waiting) = self.question_waiting_on(task)? {
-            return Ok(self
-                .store
-                .set_desk_text(waiting.id, &format!("{}\n{text}", waiting.text))?);
-        }
-        let desk =
-            self.store
-                .add_desk("question", Some(task), None, member, text, self.clock.now())?;
-        self.emit(
-            crate::domain::EventKind::DeskAdded,
-            serde_json::json!({ "item": desk.0, "kind": "question", "task": task.0 }),
-        )
+        self.put_on_the_desk("question", task, member, text, false)?;
+        Ok(())
     }
 
     /// A member blocked its item in the loops: since nothing but the owner now moves it, the

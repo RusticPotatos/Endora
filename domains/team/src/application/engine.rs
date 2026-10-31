@@ -2470,34 +2470,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.waiting_question(member.id, task)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        // One question about an item waits at a time, whoever asked it (ADR 0142, amended
-        // 2026-10-31): round 1 put the same item's question on the desk five times.
-        if kind == "question" {
-            if let Some(waiting) = self.question_waiting_on(task)? {
-                return Err(EngineError::Refused(Refusal::QuestionWaits {
-                    item: waiting.id.0,
-                }));
-            }
-        }
-        // The same question from another task, already waiting, is one card (ADR 0124). An
-        // approval never is: each runs exactly the one action it stored.
-        let desk = if kind == "question" {
-            self.ask_on_the_desk(kind, task, member.id, &say(&member.name))?
-        } else {
-            let desk = self.store.add_desk(
-                kind,
-                Some(task),
-                None,
-                Some(member.id),
-                &say(&member.name),
-                self.clock.now(),
-            )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
-            )?;
-            desk
-        };
+        // One question about an item waits at a time, and the same question from another task
+        // is one card; an approval never is one with another (ADR 0124; ADR 0142, amended
+        // 2026-10-31).
+        let desk = self.put_on_the_desk(kind, task, Some(member.id), &say(&member.name), true)?;
         // The worker ends its turn on reading that it has; its container is let go too, so a
         // worker that does not cannot linger.
         let id = run.id;
@@ -2659,7 +2635,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 } else {
                     found.member.or(holder)
                 };
-                let wordless = words.trim().is_empty() && self.blocked_in_the_loops(task.id)?;
+                let wordless =
+                    self.waits_for_the_owner(task.id, WakeReason::ProposalDecided, Some(words))?;
                 if let (Some(member), false) = (to, wordless) {
                     self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
                 }
@@ -2775,7 +2752,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             // A blocked item in the loops waits for the owner, not for a nudge: item 938 woke
             // Kit about every eleven minutes this way (ADR 0142, amended 2026-10-31).
-            if task.status == TaskStatus::Blocked && self.blocked_in_the_loops(task.id)? {
+            if self.waits_for_the_owner(task.id, WakeReason::Recovery, None)? {
                 continue;
             }
             let on_the_desk = desk
