@@ -611,7 +611,7 @@ pub(crate) struct LabKnowledge {
     /// Where an approved branch is pushed: the fork over SSH, unless a test says a path.
     push_remote: Option<String>,
     /// The deploy key (`ENDORA_GIT_PUSH_KEY_FILE`), if one is set up.
-    push_key: Option<PathBuf>,
+    pub(crate) push_key: Option<PathBuf>,
     /// How the image registries are asked, for `image_tags`: the real ones, unless a test
     /// fakes them.
     registries: Box<dyn registry::Fetch>,
@@ -727,7 +727,7 @@ impl LabKnowledge {
     }
 
     /// Where an approved branch is pushed: the fork over SSH.
-    fn push_remote(&self) -> Option<String> {
+    pub(crate) fn push_remote(&self) -> Option<String> {
         self.push_remote
             .clone()
             .or_else(|| self.docs.fork().map(ansible_nas::Fork::ssh_url))

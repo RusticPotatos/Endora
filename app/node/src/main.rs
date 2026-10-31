@@ -199,6 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_homelab(state.clone());
     // Keeps HQ told whether the owner's Mac is free for the team's turns (ADR 0130).
     api::spawn_mac(state.clone());
+    api::spawn_delivery(state.clone());
     // Keeps HQ told what is left of Claude's grant, which sizes the day's pool (ADR 0113).
     api::spawn_credits(state.clone());
     // The team listener, in plain HTTP: HQ's model relays (ADR 0102, phase 4), the team's
@@ -287,6 +288,7 @@ mod tests {
             "spawn_homelab(",
             "spawn_mac(",
             "spawn_credits(",
+            "spawn_delivery(",
         ] {
             assert!(boot.contains(kept), "the node no longer starts {kept}");
         }

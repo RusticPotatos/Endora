@@ -878,6 +878,40 @@ pub(super) async fn hq_loop_lessons(State(state): State<AppState>, Path(id): Pat
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqDelivery {
+    #[serde(default)]
+    cards: Option<bool>,
+    #[serde(default)]
+    merge_develop: Option<bool>,
+}
+
+/// The owner's settings for accepted work (ADR 0115, amended 2026-10-31): the "Ready to merge"
+/// and "Push" cards back on the desk, and HQ merging pushed branches into the fork's develop.
+pub(super) async fn hq_delivery(
+    State(state): State<AppState>,
+    Json(req): Json<HqDelivery>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/delivery".to_owned(),
+        Some(json!({ "cards": req.cards, "merge_develop": req.merge_develop })),
+    )
+    .await?;
+    let said = |on: Option<bool>, what: &str| {
+        on.map(|on| format!("{what} {}", if on { "on" } else { "off" }))
+    };
+    let changed: Vec<String> = [
+        said(req.cards, "merge cards on the desk"),
+        said(req.merge_develop, "merging develop"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    record(&state, &format!("you turned {}", changed.join(" and ")));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqLoopLessons {
     lessons: Vec<String>,
 }

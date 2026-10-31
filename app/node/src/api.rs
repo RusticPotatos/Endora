@@ -390,6 +390,9 @@ pub fn app(state: AppState) -> Router {
             "/v1/hq/projects/{id}/lessons",
             get(hq_loop_lessons).post(hq_set_loop_lessons),
         )
+        // The owner's settings for accepted work: the cards back, merging develop (ADR 0115,
+        // amended 2026-10-31).
+        .route("/v1/hq/delivery", post(hq_delivery))
         .route("/v1/hq/one-team", post(hq_one_team))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
         .route("/v1/hq/league", post(hq_start_league))
@@ -650,6 +653,7 @@ mod terminal;
 mod vault;
 use auth::*;
 pub(crate) use credits::spawn as spawn_credits;
+pub(crate) use delivery::spawn as spawn_delivery;
 pub(crate) use homelab::spawn as spawn_homelab;
 pub(crate) use mac::spawn as spawn_mac;
 
@@ -702,6 +706,8 @@ mod relay;
 mod bench;
 // The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
 mod contracts;
+// Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31).
+mod delivery;
 // What is left with each paid model provider (the owner, 2026-10-30).
 mod credits;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).
