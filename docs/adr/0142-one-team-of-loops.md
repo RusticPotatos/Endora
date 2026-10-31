@@ -342,3 +342,19 @@ item was about; a reviewer's carried the same, and the item's whole thread besid
   on the Mac 11,967 to 5,557 (about 2,990 to 1,390 tokens), held under 5,800, while now carrying
   the diff it had none of. A work turn of ten calls saves about 8,000 prompt tokens on this
   world, more as the world grows: what is cut grows with it, what is kept with the item.
+
+## Amended 2026-10-30: what a review of the loops found
+
+A bug and security review of the loops (round 2) found rules that rested on a model's or a
+worker's word, or that held an item where the owner would not. Each is now decided by HQ.
+
+- **HQ decides whether a turn ran out of room.** The `continues` mark on the worker's last word
+  is the worker's word, not HQ's authorization: a Claude Code turn has the turn's token in its
+  environment and could post the mark itself. HQ continues the item only when the turn ran on
+  the worker (never Claude Code, which keeps its own context and has no prompt budget of the
+  worker's) and the relay metered at least half its brain's budget in prompt tokens (about
+  60,000 tokens on the house's models and DeepSeek, 120,000 on Claude): the worker ends a turn
+  when its next call would pass the budget, and the next call is about as large as the last.
+  Otherwise the last word is posted and the turn ends as any other, and is judged as any other.
+  So that HQ sees them, the relay now tells HQ the tokens of the house's free calls too
+  (`/v1/team/tokens`), charging nothing.

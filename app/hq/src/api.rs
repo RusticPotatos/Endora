@@ -120,6 +120,7 @@ pub fn app(state: State) -> Router {
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
+        .route("/v1/team/tokens", post(crate::team::tokens))
         // The node's receipts (ADR 0114): each call a turn made of Endora's tools, with the
         // turn's own token, written by the node and never by the model.
         .route("/v1/team/receipt", post(crate::team::receipt))
@@ -2168,6 +2169,23 @@ mod tests {
             ),
             (100, 9_000, 900, 250),
             "the turn's record keeps the tokens the relay reported, in and out"
+        );
+        // A free call (the house's models) costs nothing, but its tokens are kept all the same:
+        // HQ decides from them whether a turn ran out of room (ADR 0142, amended 2026-10-30).
+        let free = call(
+            "POST",
+            "/v1/team/tokens",
+            Some(TOKEN),
+            &json!({ "run": turn.run.0, "input": 5_000, "output": 50 }).to_string(),
+        );
+        assert_eq!(
+            app.clone().oneshot(free).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let kept = st.hq.store().run(turn.run).unwrap().unwrap();
+        assert_eq!(
+            (kept.input_tokens, kept.output_tokens, kept.spent),
+            (5_100, 300, 20)
         );
         let over = json_of(app.clone().oneshot(spend(left)).await.unwrap()).await;
         assert_eq!(over["may_go_on"], false, "past its budget, the turn stops");

@@ -1498,6 +1498,8 @@ fn bo_out_of_room(hq: &Hq<'_>, f: &Five, hard: TaskId) -> i64 {
         "gluetun",
         "AUTH_FAILED from the provider",
     );
+    // The relay metered what his calls read: near the house's budget of about 60,000 tokens.
+    hq.note_tokens(bo.run, 50_000, 0, 0, 500).unwrap();
     use_tool(
         hq,
         &bo,
@@ -1631,5 +1633,71 @@ fn only_the_workers_last_word_continues_a_turn() {
     .unwrap();
     hq.runner().finish(bo.run, true);
     hq.tick().unwrap();
+    assert!(!woken(&hq, f.bo, hard, WakeReason::Continued));
+}
+
+/// One turn of a member's on `task` that the relay metered at `tokens` prompt tokens, ending
+/// with a last word marked as continuing, as the worker's is.
+fn says_out_of_room(hq: &Hq<'_>, member: MemberId, task: TaskId, tokens: i64) -> String {
+    let turn = turn_of(hq, member);
+    use_tool(hq, &turn, "claim", &serde_json::json!({ "task": task.0 })).unwrap();
+    hq.note_tokens(turn.run, tokens, 0, 0, 100).unwrap();
+    let said = use_tool(
+        hq,
+        &turn,
+        "post",
+        &serde_json::json!({ "task": task.0, "last_word": true, "continues": true,
+            "text": "The turn's prompt reached its budget." }),
+    )
+    .unwrap();
+    hq.runner().finish(turn.run, true);
+    hq.tick().unwrap();
+    said
+}
+
+/// HQ decides whether a turn ran out of room, not the post that says so (models propose,
+/// policy authorizes): a turn the relay saw read far less than its brain's budget is not
+/// continued, whatever its last word is marked.
+///
+/// Given Bo's item, on the house's model (about 60,000 tokens a turn),
+/// when a turn of his that read 5,000 prompt tokens says it ran out of room,
+/// then its last word is posted, but he is not woken to continue it.
+#[test]
+fn a_turn_that_read_far_less_than_its_budget_does_not_continue() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let said = says_out_of_room(&hq, f.bo, hard, 5_000);
+    assert!(said.contains("not continued"), "{said}");
+    assert!(!woken(&hq, f.bo, hard, WakeReason::Continued));
+    let thread = hq.store().thread(hard).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.text.contains("The turn's prompt reached its budget.")),
+        "{thread:?}"
+    );
+}
+
+/// A Claude Code turn has no prompt budget of the worker's, and has the turn's token in its
+/// environment: its post marked as continuing is never taken as one, however much it read.
+///
+/// Given Bo on DeepSeek, his turns run by Claude Code, with the loop's item,
+/// when a turn of his that read 200,000 prompt tokens says it ran out of room,
+/// then he is not woken to continue it.
+#[test]
+fn a_claude_code_turn_never_continues() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_model(f.bo, "deepseek").unwrap();
+    hq.set_runtime(f.bo, "claude-code").unwrap();
+    hq.set_loop_rank(f.loop_, Brain::DeepSeek.rank()).unwrap();
+    let hard = hard_item(&hq, &f);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    let said = says_out_of_room(&hq, f.bo, hard, 200_000);
+    assert!(said.contains("not continued"), "{said}");
     assert!(!woken(&hq, f.bo, hard, WakeReason::Continued));
 }
