@@ -408,7 +408,7 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
-| 1 | 929 | | | | | |
+| 1 | 929 | Yes (all 46 defaults with exact values, rechecked; ports; Markdown only; pushed as `hq/task-929-readmes`. Bo's three budget-length turns, then Rae, then Ada; reviewed by Kit. One setup nudge after Rae's failed starts, not counted) | $0.26 | 142 min | 0 | |
 | 2 | 930 | Yes (all 39 defaults with exact values, rechecked against `defaults/main.yml`; ports; Markdown only; pushed as `hq/task-930-readmes`. Bo, then Rae, then Ada; reviewed by Kit) | $0.22 | 142 min | 0 | |
 | 3 | 931 | | | | | |
 | 4 | 932 | | | | | |
