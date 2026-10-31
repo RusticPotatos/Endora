@@ -475,8 +475,10 @@ needs a decision about task 8 first.
 
 **For the owner to decide:**
 1. **Task 8 (gluetun's restart).** Its window ended 29 Oct and has left the logs, so no round can
-   pass it. Proposed: switch the restart timer off for a fresh window and run task 8 again in
-   both arms with that window's date; until then the bar is 9.
+   pass it. Approved 31 Oct: a fresh window is already running, since the restart timer is off
+   (gluetun, prowlarr and deluge up since 30 Oct 03:09 EDT with no restart). It closes 2 Nov
+   03:09 EDT, 72 hours like the first; task 8 then runs in both arms at once with the new dates,
+   before the logs roll over.
 2. **D7, reviews.** Sonnet and Opus reviews were most of the cost. Proposed: the member one rank
    up reviews, but never above Haiku unless the work came from Haiku or above; HQ's mechanical
    checks carry the rest.
@@ -519,8 +521,9 @@ done. Defects are numbered so the next round's changes can name them.
   18th cannot be spent without daily top-ups (see Next steps).
 - [ ] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
   times, 920 four).
-- [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
-  record); cause unknown.
+- [ ] **D11. Lab: sonarr and nzbget restarted together at 03:24 EDT on 31 Oct** (07:24:54Z and
+  07:24:55Z), not by HQ (no restart in its record); two at once points to something scheduled on
+  the NAS, such as an image update or a maintenance job. Cause not found yet.
 - [ ] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
