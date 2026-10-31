@@ -516,3 +516,31 @@ results read whole within a Claude turn's 480,000): Kit's first turn after the c
 28,151 to 4,129 bytes and first call 38,253 to 14,058, 7 to 10 of the lab's calls; his fifth
 continuation, briefing 11,114 to 3,713 and first call 21,089 to 13,637, 9 to 10 calls. What a turn
 reads is now the briefing, its tools and the work, not the item's history.
+
+## Amended 2026-10-31: an away Mac holds an item, and a review goes on
+
+From the review of round 2's code (`docs/proposals/baseline-experiment-2026-10-28.md`, open
+issues; branch `r3-review-fixes`).
+
+- **An item waits for the away Mac above rather than blocking.** The Mac's member is passed over
+  while the Mac is away (amended 2026-10-30), so when it was the only member ranked above an
+  item's holder, the item's third failure found nobody above and blocked it, "failed at every
+  rank": an evening with the laptop in use ended the item for good. Now, when the only member
+  above is away, the item is held at its holder's rank: let go, back to todo, with no climb, no
+  block and no question for the owner. While held it counts no failure and nobody is woken on
+  it. Each tick, once a member above is free (the Mac back, or a member unpaused), it climbs as
+  it would have; an item no longer its holder's leaves the hold. Marked `loop_held:<task>`.
+- **A reviewer's turn that runs out of room goes on.** Only the item's holder was continued, so
+  a reviewer's turn that reached its prompt's budget ended the review with nobody woken. The
+  loop's reviewer of an item in review now goes on in a fresh review wake, under the same cap of
+  three continuations; the fourth time the owner is asked about the item instead. A review too
+  big for its reviewer is no failure of the worker's, so it does not count against the item.
+- **The worker gives each call its own id.** A house turn cuts and gists old results by call id,
+  and a model server that numbers calls afresh each round (`call_0`) made the newest result read
+  as the old one's stub. The worker makes each reply's call ids unique within the turn as it
+  reads the reply, and keeps the reply with them.
+- **The list of turns that ran out of room is bounded** to an item's newest 64, enough for its
+  whole climb (four turns a failure, three failures a rank, five ranks).
+
+Scenarios: `features/an-item-waits-for-the-mac.feature`,
+`features/a-review-that-runs-out-of-room-goes-on.feature`.

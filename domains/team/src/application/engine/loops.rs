@@ -44,6 +44,11 @@ fn failures_key(task: TaskId) -> String {
     format!("loop_failures:{}", task.0)
 }
 
+/// Where an item held for an away member above is marked (review of 31 Oct): empty when not.
+fn held_key(task: TaskId) -> String {
+    format!("loop_held:{}", task.0)
+}
+
 /// The rank a loop starts at when the owner has not said: the house's model.
 const START: u8 = Brain::BOTTOM;
 
@@ -264,7 +269,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let holder = task.owner.or(task.assignee);
         self.loop_failed(task.id)?;
         let now = self.task(task.id)?;
-        if now.owner.or(now.assignee) == holder {
+        if now.owner.or(now.assignee) == holder && !self.held_above(task.id)? {
             if let Some(holder) = holder {
                 self.wake_held_lock(holder, Some(task.id), WakeReason::Recovery)?;
             }
@@ -644,6 +649,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(holder) = self.loop_holder(&found)? else {
             return Ok(());
         };
+        // Held for an away member above: it neither counts nor climbs until one is free.
+        if self.held_above(task)? {
+            return Ok(());
+        }
         let failures = self.loop_failures(task)? + 1;
         if failures < FAILURES_A_RANK {
             self.store
@@ -658,12 +667,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
         }
         self.store.set_setting(&failures_key(task), "0")?;
-        let members: Vec<Member> = self
-            .loop_members()?
-            .into_iter()
+        let all = self.loop_members()?;
+        let members: Vec<Member> = all
+            .iter()
             .filter(|m| !self.mac_away_for(m))
+            .cloned()
             .collect();
         let Some(up) = Self::one_rank_up(&members, holder.brain.rank()) else {
+            // Only the away Mac's member is above (review of 31 Oct): a laptop in use for an
+            // evening must not block the item for good. It waits where it is.
+            if let Some(away) = Self::one_rank_up(&all, holder.brain.rank()) {
+                return self.hold_for(&found, &holder, away);
+            }
             // Blocked and let go, so its loop hands out its next item and nobody is woken to
             // fail it again (the baseline of 28 Oct: it stayed doing and stalled its loop).
             self.store.release(task)?;
@@ -676,7 +691,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
             return self.ask_about_the_item(task, None, &text);
         };
-        let up: MemberId = up.id;
+        self.climb(&found, &holder, up.id)
+    }
+
+    /// The item goes one rank up, to `up`, after [`FAILURES_A_RANK`] failures at `holder`'s.
+    fn climb(&self, found: &Task, holder: &Member, up: MemberId) -> Done<()> {
+        let task = found.id;
         let to = self.member(up)?;
         self.store.release(task)?;
         self.store.set_assignee(task, Some(up))?;
@@ -703,6 +723,65 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// Whether an item is held for an away member above its holder.
+    pub(super) fn held_above(&self, task: TaskId) -> Done<bool> {
+        Ok(self
+            .store
+            .setting(&held_key(task))?
+            .is_some_and(|v| !v.is_empty()))
+    }
+
+    /// The item failed at its holder's rank and only `away` (the Mac's member, the Mac not
+    /// free) is above (review of 31 Oct): it stays with its holder, let go and back to todo,
+    /// and nobody is woken on it until a member above is free ([`Self::climb_held`]).
+    fn hold_for(&self, found: &Task, holder: &Member, away: &Member) -> Done<()> {
+        let task = found.id;
+        self.store
+            .set_setting(&held_key(task), &holder.id.0.to_string())?;
+        self.store.release(task)?;
+        if found.status != TaskStatus::Todo {
+            self.store.set_task_status(task, TaskStatus::Todo)?;
+        }
+        self.post_held_lock(
+            super::Author::Endora,
+            task,
+            &format!(
+                "It failed {FAILURES_A_RANK} times at {}'s rank, and {}, one rank up, is away \
+                 (the Mac is not free): it waits for {} here, and nobody is woken on it until \
+                 a member above is free.",
+                holder.name, away.name, away.name
+            ),
+        )
+    }
+
+    /// Each held item whose holder still has it goes one rank up once a member above is free
+    /// (`at_work`: the loop members not away); one no longer its holder's is let out of hold.
+    fn climb_held(&self, at_work: &[Member]) -> Done<()> {
+        for task in self.store.tasks()? {
+            let Some(kept) = self.store.setting(&held_key(task.id))? else {
+                continue;
+            };
+            let Ok(held_by) = kept.parse::<i64>() else {
+                continue;
+            };
+            let holder = task.owner.or(task.assignee);
+            let still = holder.is_some_and(|h| h.0 == held_by) && in_hand(&task);
+            let Some(member) = at_work.iter().find(|m| still && m.id.0 == held_by) else {
+                if !still {
+                    self.store.set_setting(&held_key(task.id), "")?;
+                }
+                continue;
+            };
+            let Some(up) = Self::one_rank_up(at_work, member.brain.rank()) else {
+                continue;
+            };
+            let up = up.id;
+            self.store.set_setting(&held_key(task.id), "")?;
+            self.climb(&task, member, up)?;
+        }
+        Ok(())
+    }
+
     /// The loops' part of the tick: a paused member's items go one rank up, then each loop with
     /// fewer items in hand than it has at once hands out its top items, each to a different
     /// member at or nearest above its starting rank. A world's project is not a loop: its games
@@ -726,6 +805,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         self.paused_let_go(&members)?;
+        self.climb_held(&members)?;
         let tasks = self.store.tasks()?;
         for project in self.store.projects()? {
             if project.status != ProjectStatus::Active || project.pause.is_some() {

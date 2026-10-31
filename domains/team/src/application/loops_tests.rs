@@ -2109,3 +2109,146 @@ fn a_top_rank_failure_is_folded_into_the_question_already_waiting() {
     assert!(cards[0].text.contains("VPN's account"), "{}", cards[0].text);
     assert!(cards[0].text.contains("every rank"), "{}", cards[0].text);
 }
+
+/// Review of 31 Oct: with the Mac's member the only one ranked above, a Mac away for a while
+/// blocked the item for good, "failed at every rank". It is held where it is instead, neither
+/// climbing nor blocked, and goes up once the Mac is back.
+///
+/// Given Bo's item, with Mara, Kit and Ada paused and the Mac away,
+/// when it fails three times at Bo's rank,
+/// then it stays Bo's, not blocked, with nothing on the owner's desk, and nobody is woken on it;
+/// further failures change nothing; and when the Mac is free again it goes to Rae.
+#[test]
+fn an_item_waits_for_an_away_mac_above_rather_than_blocking() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let ids: Vec<MemberId> = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .filter(|m| ["Mara", "Kit", "Ada"].contains(&m.name.as_str()))
+        .map(|m| m.id)
+        .collect();
+    for id in ids {
+        hq.pause(id, true).unwrap();
+    }
+    let hard = item(&hq, &f, "Find what stops gluetun", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    hq.tell_mac(false, "in use");
+    let wakes_before = hq.wakes().unwrap().len();
+    for _ in 0..6 {
+        hq.loop_failed(hard).unwrap();
+    }
+    let found = hq.store().task(hard).unwrap().unwrap();
+    assert_ne!(found.status, TaskStatus::Blocked);
+    assert_eq!(found.assignee, Some(f.bo), "held at Bo's rank");
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.task != Some(hard)),
+        "nothing for the owner"
+    );
+    assert_eq!(
+        hq.wakes().unwrap().len(),
+        wakes_before,
+        "nobody woken to fail it again"
+    );
+    let thread = hq.store().thread(hard).unwrap();
+    let held: Vec<_> = thread
+        .iter()
+        .filter(|p| p.text.contains("waits for Rae"))
+        .collect();
+    assert_eq!(held.len(), 1, "said once: {thread:?}");
+    // The Mac is free again: the item climbs to Rae.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.rae));
+    assert!(woken(&hq, f.rae, hard, WakeReason::Assigned));
+    assert_eq!(
+        hq.loop_failures(hard).unwrap(),
+        0,
+        "counted afresh at Rae's rank"
+    );
+}
+
+/// Review of 31 Oct: a reviewer's turn that ran out of room was never continued, since only
+/// the item's holder was, and the review stalled. The reviewer goes on in a fresh review turn,
+/// under the same cap; past it, the owner is asked about the item, which is no failure of the
+/// worker's.
+///
+/// Given Bo's item in review, Rae reviewing it one rank up,
+/// when four of her review turns in a row end at their prompt's budget,
+/// then the first three wake her to review it afresh, and the fourth asks the owner; the item
+/// stays in review and Bo's, with no failure.
+#[test]
+fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": hard.0, "status": "in_review", "reason": "gluetun is up.",
+                             "evidence": [format!("task {}", hard.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tell_mac(true, "ready");
+    let reviews = |hq: &Hq<'_>| {
+        hq.wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| {
+                w.member == f.rae && w.task == Some(hard) && w.reason == WakeReason::ReviewRequested
+            })
+            .count()
+    };
+    assert_eq!(reviews(&hq), 1);
+    for n in 1..=4 {
+        let rae = turn_of(&hq, f.rae);
+        hq.note_tokens(rae.run, 50_000, 0, 0, 500).unwrap();
+        let said = use_tool(
+            &hq,
+            &rae,
+            "post",
+            &serde_json::json!({ "task": hard.0, "last_word": true, "continues": true,
+                "text": "Reading gluetun's log; the turn's prompt reached its budget." }),
+        )
+        .unwrap();
+        assert!(!said.contains("not continued"), "{said}");
+        hq.runner().finish(rae.run, true);
+        hq.tick().unwrap();
+        if n <= 3 {
+            assert_eq!(reviews(&hq), 1 + n, "review {n} goes on");
+            let thread = hq.store().thread(hard).unwrap();
+            assert!(
+                thread
+                    .iter()
+                    .any(|p| p.author == "endora"
+                        && p.text.contains(&format!("continuation {n} of 3"))),
+                "{thread:?}"
+            );
+        }
+    }
+    assert_eq!(reviews(&hq), 4, "not past the cap");
+    let found = hq.store().task(hard).unwrap().unwrap();
+    assert_eq!(found.status, TaskStatus::InReview);
+    assert_eq!(found.owner.or(found.assignee), Some(f.bo));
+    assert_eq!(hq.loop_failures(hard).unwrap(), 0, "no failure of Bo's");
+    let desk = hq.store().desk().unwrap();
+    assert!(
+        desk.iter().any(|d| d.task == Some(hard)
+            && d.status == "waiting"
+            && d.text.contains("ran out of room 4 times")),
+        "{desk:?}"
+    );
+}

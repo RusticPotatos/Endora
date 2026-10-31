@@ -224,6 +224,16 @@ pub trait CapabilitySettingsRepository {
         key: &str,
         value: &str,
     ) -> Result<(), RepositoryError>;
+
+    /// Sets several of a capability's settings together: all are kept, or none.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails; nothing is kept then.
+    fn set_settings(
+        &self,
+        capability_id: &str,
+        values: &[(&str, &str)],
+    ) -> Result<(), RepositoryError>;
 }
 
 /// A dashboard reader, intentionally absent from the model's capability catalogue.

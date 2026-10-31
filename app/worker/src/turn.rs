@@ -1378,6 +1378,33 @@ impl Talk {
         newly
     }
 
+    /// The calls of a reply, each with an id of the turn's own (review of 31 Oct): results are
+    /// cut and gisted by call id, and a model server may number its calls afresh each round
+    /// (`call_0`), or give two calls one id. An id already used in the turn, or empty, is
+    /// given a new one; the reply is kept with the new ids, so the server reads them back.
+    fn own_ids(&self, mut calls: Vec<Value>) -> Vec<Value> {
+        let mut used: std::collections::HashSet<String> = self
+            .messages
+            .iter()
+            .filter_map(|m| m["tool_calls"].as_array())
+            .flatten()
+            .filter_map(|c| c["id"].as_str().map(str::to_owned))
+            .collect();
+        for call in &mut calls {
+            let given = call["id"].as_str().unwrap_or("call").to_owned();
+            if !given.is_empty() && used.insert(given.clone()) {
+                continue;
+            }
+            let own = (1..)
+                .map(|n| format!("{given}-{n}"))
+                .find(|id| !used.contains(id))
+                .unwrap_or_default();
+            used.insert(own.clone());
+            call["id"] = json!(own);
+        }
+        calls
+    }
+
     /// The tool and arguments of the call with `id`, as the model asked for it.
     fn call_of(&self, id: &str) -> (String, Value) {
         let call = self
@@ -2349,10 +2376,12 @@ impl<'a> Model<'a> {
             if !message.is_object() {
                 return Err(no_message());
             }
-            let calls: Vec<Value> = message["tool_calls"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let calls = talk.own_ids(
+                message["tool_calls"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             return Ok(Said {
                 text: message["content"].as_str().unwrap_or("").to_owned(),
                 calls: calls
@@ -3674,6 +3703,39 @@ mod tests {
             .filter(|m| m["role"] == "tool")
             .map(|m| m["content"].as_str().unwrap().to_owned())
             .collect()
+    }
+
+    /// Review of 31 Oct: a model server that numbers its calls afresh each round (`call_0`)
+    /// gave two results one id, so cutting the old one stubbed the newest too. The ids are made
+    /// the turn's own as each reply is read.
+    #[test]
+    fn a_call_id_the_server_reuses_is_made_the_turns_own() {
+        let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
+        let call = |tool: &str| {
+            json!({ "id": "call_0", "type": "function",
+                    "function": { "name": tool, "arguments": "{}" } })
+        };
+        let mut ids = Vec::new();
+        for (tool, text) in [
+            ("container_logs", a_log("sonarr", 40, 41)),
+            ("homelab_status", a_log("status", 30, 42)),
+            ("read_doc", "Standards.\n".repeat(200)),
+            ("post", "Posted.".to_owned()),
+        ] {
+            let calls = talk.own_ids(vec![call(tool)]);
+            let id = calls[0]["id"].as_str().unwrap().to_owned();
+            round(&mut talk, &id, tool, &json!({}), &text);
+            ids.push(id);
+        }
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 4, "each call its own id: {ids:?}");
+        let read = what_is_read(&talk);
+        assert!(read[0].starts_with("[An older result"), "{}", read[0]);
+        assert!(read[1].len() > 1_000 && read[2].len() > 1_000, "{read:?}");
+        // Two calls in one reply with one id are told apart as well.
+        let two = talk.own_ids(vec![call("post"), call("post")]);
+        assert_ne!(two[0]["id"], two[1]["id"]);
     }
 
     /// Round 3 of the gap-closing ladder, an old result read as a stub (ADR 0142, amended

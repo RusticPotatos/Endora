@@ -35,6 +35,11 @@ pub(crate) const CONTINUES_MOST: u32 = 3;
 /// loops' money caps bound it too: this keeps one item from taking a member's every turn.
 pub(crate) const CONTINUES_IN_ALL: u32 = 12;
 
+/// How many of an item's turns that ran out of room are remembered, newest kept (review of
+/// 31 Oct: the list grew without bound). Four a failure, three failures a rank and five ranks
+/// come to sixty: a list this long covers an item's whole climb.
+const RUNS_KEPT: usize = 64;
+
 /// Where an item's continuations are kept.
 fn continued_key(task: TaskId) -> String {
     format!("loop_continued:{}", task.0)
@@ -70,6 +75,14 @@ impl Continued {
                 .map(|r| r.iter().filter_map(serde_json::Value::as_i64).collect())
                 .unwrap_or_default(),
         }
+    }
+
+    /// `run` ran out of room: it is pending, and remembered among the newest [`RUNS_KEPT`].
+    fn ran_out(&mut self, run: i64) {
+        self.pending = Some(run);
+        self.runs.push(run);
+        let over = self.runs.len().saturating_sub(RUNS_KEPT);
+        self.runs.drain(..over);
     }
 
     fn written(&self) -> String {
@@ -242,8 +255,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(false);
         }
         let mut kept = self.continued(task)?;
-        kept.pending = Some(run.id.0);
-        kept.runs.push(run.id.0);
+        kept.ran_out(run.id.0);
         self.keep_continued(task, &kept)?;
         Ok(true)
     }
@@ -280,6 +292,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             kept.total = 0;
         }
         let found = self.task(task)?;
+        if found.status == TaskStatus::InReview
+            && self
+                .loop_reviewer_of(&found)?
+                .is_some_and(|r| r.id == run.member)
+        {
+            return self.review_goes_on(task, run.member, kept);
+        }
         let still_its = found.owner.or(found.assignee) == Some(run.member)
             && !found.status.finished()
             && found.status != TaskStatus::InReview
@@ -329,7 +348,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.loop_failed(task)?;
         let now = self.task(task)?;
-        if now.owner.or(now.assignee) != Some(run.member) {
+        if now.owner.or(now.assignee) != Some(run.member) || self.held_above(task)? {
             return Ok(());
         }
         self.hand_over(task, run.member, "its turns kept running out of room")?;
@@ -356,6 +375,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let before = first.checked_sub(1).map(|i| branches[i].head.as_str());
         Ok(before != Some(newest.head.as_str()))
+    }
+
+    /// A reviewer's turn on the item ran out of room (review of 31 Oct): the reviewer goes on in
+    /// a fresh review turn, up to [`CONTINUES_MOST`] times. The next time the owner is asked
+    /// about the item, and the count starts again: a review too big for its reviewer is no
+    /// failure of the worker's.
+    fn review_goes_on(&self, task: TaskId, reviewer: MemberId, mut kept: Continued) -> Done<()> {
+        let name = self.member(reviewer)?.name;
+        if kept.n < CONTINUES_MOST {
+            kept.n += 1;
+            self.keep_continued(task, &kept)?;
+            self.post_held_lock(
+                Author::Endora,
+                task,
+                &format!(
+                    "{name}'s review ran out of room, continuation {} of {CONTINUES_MOST}: \
+                     {name} reviews it afresh.",
+                    kept.n
+                ),
+            )?;
+            self.wake_held_lock(reviewer, Some(task), WakeReason::ReviewRequested)?;
+            return Ok(());
+        }
+        kept.n = 0;
+        self.keep_continued(task, &kept)?;
+        let text = format!(
+            "{name}'s reviews of #{} ran out of room {} times. Read it yourself, or move it \
+             back to work.",
+            task.0,
+            CONTINUES_MOST + 1
+        );
+        self.ask_about_the_item(task, None, &text)
     }
 
     /// The handover kept for `member` on `task`, as it was posted, while the item is still
@@ -394,5 +445,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         self.unclassified_message_input(run.id)?;
         Ok(format!("{text}\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_newest_turns_out_of_room_are_remembered() {
+        let mut kept = Continued::default();
+        for run in 1..=100 {
+            kept.ran_out(run);
+        }
+        assert_eq!(kept.pending, Some(100));
+        assert_eq!(kept.runs.len(), RUNS_KEPT);
+        assert_eq!(kept.runs.first(), Some(&(100 - RUNS_KEPT as i64 + 1)));
+        let again = Continued::read(&serde_json::from_str(&kept.written()).unwrap());
+        assert_eq!(again.runs, kept.runs);
     }
 }

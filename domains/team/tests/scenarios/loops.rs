@@ -9,7 +9,7 @@ use serde_json::json;
 
 use endora_team::application::run_ports::RunStore;
 use endora_team::application::{Author, NewTask, TeamStore};
-use endora_team::domain::{Brain, DeskId, Priority, Receipt, Role, RunStatus};
+use endora_team::domain::{Brain, DeskId, Priority, Receipt, Role, RunStatus, TaskStatus};
 use endora_team::infrastructure::Script;
 
 use super::Office;
@@ -226,4 +226,51 @@ fn owner_pauses(w: &mut Office, name: String) {
     let member = w.member(&name);
     w.hq.pause(member, true).expect("paused");
     w.tick();
+}
+
+#[then(expr = "{string} waits at {word}'s rank, not blocked, with nothing on the owner's desk")]
+fn waits_at_rank(w: &mut Office, title: String, name: String) {
+    let task = w.task(&title);
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    assert_ne!(found.status, TaskStatus::Blocked, "{found:?}");
+    assert_eq!(found.owner.or(found.assignee), Some(w.member(&name)));
+    let desk: Vec<_> = w
+        .waiting_on_desk("")
+        .into_iter()
+        .filter(|d| d.task == Some(task))
+        .collect();
+    assert!(desk.is_empty(), "{desk:#?}");
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    assert!(
+        thread.iter().any(|p| p.text.contains("waits for Rae")),
+        "it failed and was held: {thread:#?}"
+    );
+}
+
+/// The member's turn on the item reads near its brain's budget, as the relay meters it, and
+/// ends as the worker ends one whose prompt reached its budget: its last word, marked as
+/// continuing.
+#[when(regex = r#"^(\w+)'s turn on "(.+)" ends at its prompt's budget(?: (\d+) times in a row)?$"#)]
+fn ends_at_budget(w: &mut Office, name: String, title: String, times: String) {
+    let task = w.task(&title);
+    for _ in 0..times.parse::<usize>().unwrap_or(1) {
+        let turn = w.turn_of(&name);
+        w.hq.note_tokens(turn.run, 50_000, 0, 0, 500)
+            .expect("the relay meters the turn");
+        let said = w
+            .use_tool(
+                &name,
+                "post",
+                &json!({ "task": task.0, "last_word": true, "continues": true,
+                         "text": "The turn's prompt reached its budget." }),
+            )
+            .expect("the last word is posted");
+        assert!(!said.contains("not continued"), "{said}");
+        w.hq.runner().finish(turn.run, true);
+        w.tick();
+    }
 }

@@ -316,6 +316,26 @@ and with it every share); counting bought credit (it does not expire, so spendin
 moves spending forward); a ceiling of its own (a new figure for the owner to keep, when the top-up
 bound already says how much one day may be).
 
+## Amendment (2026-10-31): the credit's figures are kept whole
+
+From the review of round 2's code (`docs/proposals/baseline-experiment-2026-10-28.md`, open
+issues; branch `r3-review-fixes`). The node's Claude estimate (grant spent first, then bought
+credit, renewed on the owner's renewal day) is what rule 2 sends HQ, so it must not drift.
+
+1. **Every renewal runs under the ledger.** The console's view (`GET /v1/credits`, and the view
+   returned after a change) renewed the plan outside the node's ledger lock, so a charge counted
+   at the same moment could be erased by the renewal's new anchor, or counted twice. It now
+   renews and reads Claude's figures under the lock, as a charge, the bench and HQ's word do.
+   DeepSeek's balance, a call over the network, is asked before the lock is taken or after it is
+   let go, never under it; and the owner's change takes the lock off the async thread.
+2. **An anchor is written in one transaction.** The figure, when it was set, what had been paid
+   by then and how much of it is bought are kept together or not at all.
+3. **A first grant always says what is bought.** A first grant entered with only a Console
+   balance counted all of it as grant, so bought credit would have been lost at the renewal. A
+   first grant (none kept before) is now refused without the bought credit left, $0 being an
+   answer; the owner's own entry (a $100 grant renewing on the 18th, $0 bought) is taken as it
+   was. A later balance, with a grant already kept, splits as before.
+
 ## Consequences
 
 - Money has a second axis: what a piece of work may cost in a month, beside what a member may

@@ -107,18 +107,23 @@ impl Kept {
 }
 
 /// Starts Claude's estimate afresh at `now`: `set` in all, `purchased` of it bought, counted
-/// from what Endora has paid by now. `rearm` clears the low warning's "told" mark.
+/// from what Endora has paid by now. `rearm` clears the low warning's "told" mark. Kept in one
+/// transaction (review of 31 Oct): a half-kept anchor would pair a new figure with an old
+/// count of what was spent.
 fn anchor(state: &AppState, set: i64, purchased: i64, now: i64, rearm: bool, spent: i64) {
-    keep(state, "claude_set", &set.to_string());
-    keep(state, "claude_set_at", &now.to_string());
-    keep(state, "claude_spent_at_set", &spent.to_string());
-    keep(
-        state,
-        "claude_purchased_at_set",
-        &purchased.min(set).to_string(),
-    );
+    let (set_s, now_s, spent_s) = (set.to_string(), now.to_string(), spent.to_string());
+    let purchased_s = purchased.min(set).to_string();
+    let mut values = vec![
+        ("claude_set", set_s.as_str()),
+        ("claude_set_at", now_s.as_str()),
+        ("claude_spent_at_set", spent_s.as_str()),
+        ("claude_purchased_at_set", purchased_s.as_str()),
+    ];
     if rearm {
-        keep(state, "claude_told", "0");
+        values.push(("claude_told", "0"));
+    }
+    if let Err(e) = state.config.set_settings(CREDITS, &values) {
+        eprintln!("credits: could not keep Claude's estimate: {e}");
     }
 }
 
@@ -188,11 +193,18 @@ fn deepseek_balance(state: &AppState, now: i64, fresh_ms: i64) -> Option<(credit
     }
 }
 
-/// What the console shows (blocking: it may ask DeepSeek).
+/// What the console shows (blocking: it may ask DeepSeek). Claude's figures are renewed and
+/// read under the ledger (review of 31 Oct: a renewal outside it could erase a charge counted
+/// at the same time, or count it twice); DeepSeek is asked after it is let go.
 fn shown(state: &AppState, now: i64) -> serde_json::Value {
-    renew_if_due(state, now);
-    let kept = Kept::load(state);
-    let spent = state.store.provider_spent("anthropic").unwrap_or(0);
+    let (kept, spent) = {
+        let _held = ledger();
+        renew_if_due(state, now);
+        (
+            Kept::load(state),
+            state.store.provider_spent("anthropic").unwrap_or(0),
+        )
+    };
     let claude = kept
         .claude_set
         .zip(kept.claude_pots(spent))
@@ -255,7 +267,6 @@ pub(super) fn after_bench_charge(state: &AppState, micros: i64) {
 }
 
 fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i64) {
-    let _held = ledger();
     let provider = if model.starts_with("claude-") {
         "anthropic"
     } else if model.starts_with("deepseek") {
@@ -263,6 +274,11 @@ fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i6
     } else {
         return;
     };
+    // DeepSeek is asked before the ledger is taken (review of 31 Oct): a slow answer must not
+    // hold up every Claude charge. Its balance is DeepSeek's own, so it needs no count of ours.
+    let deepseek_now =
+        (provider == "deepseek").then(|| deepseek_balance(state, now, DEEPSEEK_FRESH_MS));
+    let _held = ledger();
     if provider == "anthropic" {
         renew_if_due(state, now);
     }
@@ -298,7 +314,7 @@ fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i6
             ),
         )
         } else {
-            let Some((balance, _)) = deepseek_balance(state, now, DEEPSEEK_FRESH_MS) else {
+            let Some((balance, _)) = deepseek_now.flatten() else {
                 return;
             };
             #[allow(clippy::cast_possible_truncation)]
@@ -434,17 +450,13 @@ fn apply(state: &AppState, req: &Change, now: i64) -> Result<(), &'static str> {
     if grant_after.is_some() && req.claude_renews_on.or(kept.claude_renews_on).is_none() {
         return Err("a grant needs the day of the month the plan renews");
     }
-    // A first grant over an estimate made before grants existed: how much of it is bought credit
-    // is not known, so the owner says it (review of 30 Oct: guessing turned a $400 bought balance
-    // into this month's grant). Refused before anything is kept.
-    if grant.is_some_and(|g| g > 0)
-        && kept.claude_grant.is_none()
-        && kept.claude_set.is_some()
-        && purchased.is_none()
-        && balance.is_none()
-    {
+    // A first grant: how much of the credit is bought is not known, so the owner says it, $0
+    // when none (review of 30 Oct: guessing turned a $400 bought balance into this month's
+    // grant; review of 31 Oct: a Console balance alone was all counted as grant). Refused
+    // before anything is kept.
+    if grant.is_some_and(|g| g > 0) && kept.claude_grant.is_none() && purchased.is_none() {
         return Err(
-            "say how much of the balance is bought credit (\"bought credit left\"), or enter the Console's balance with it",
+            "with a first grant, say how much bought credit is left (\"bought credit left\"), $0 if none",
         );
     }
     if let Some(g) = grant {
@@ -492,11 +504,16 @@ pub(super) async fn change(
     Json(req): Json<Change>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let now = state.clock.now().unix_millis();
-    apply(&state, &req, now).map_err(|m| {
-        ApiError(AppError::BadRequest {
-            message: m.to_owned(),
-        })
-    })?;
+    // `apply` waits for the ledger, a blocking lock: off the async thread (review of 31 Oct).
+    let kept = state.clone();
+    tokio::task::spawn_blocking(move || apply(&kept, &req, now))
+        .await
+        .unwrap_or(Err("the change could not be kept"))
+        .map_err(|m| {
+            ApiError(AppError::BadRequest {
+                message: m.to_owned(),
+            })
+        })?;
     Ok(status(State(state)).await)
 }
 
@@ -592,6 +609,187 @@ mod tests {
         let shown = shown(&state, now);
         assert_eq!(shown["claude"]["left"], 400_000_000, "{shown}");
         assert_eq!(shown["claude"]["purchased_left"], 300_000_000, "{shown}");
+    }
+
+    #[test]
+    fn a_first_grant_always_says_what_is_bought() {
+        // Review of 31 Oct: a first grant with only a balance counted it all as grant, with or
+        // without an older estimate. The owner's own entry, bought $0, is taken.
+        let now = 1_793_000_000_000;
+        let first = |c: &Change| {
+            let (hq_url, _) = hq_as(0, "developer");
+            let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+            apply(&state, c, now).map(|()| shown(&state, now))
+        };
+        let only_balance = Change {
+            claude_grant: Some(100.0),
+            claude_renews_on: Some(18),
+            claude_balance: Some(400.0),
+            ..Change::default()
+        };
+        assert!(first(&only_balance).is_err(), "asks for the bought figure");
+        let only_grant = Change {
+            claude_grant: Some(100.0),
+            claude_renews_on: Some(18),
+            ..Change::default()
+        };
+        assert!(first(&only_grant).is_err(), "asks for the bought figure");
+        let (hq_url, _) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        apply(
+            &state,
+            &Change {
+                claude_balance: Some(400.0),
+                ..Change::default()
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            apply(&state, &only_balance, now).is_err(),
+            "over an estimate too"
+        );
+        let owners = Change {
+            claude_grant: Some(100.0),
+            claude_renews_on: Some(18),
+            claude_purchased: Some(0.0),
+            ..Change::default()
+        };
+        let shown = first(&owners).unwrap();
+        assert_eq!(shown["claude"]["grant_left"], 100_000_000, "{shown}");
+        assert_eq!(shown["claude"]["purchased_left"], 0, "{shown}");
+        assert_eq!(shown["claude_renews_on"], 18, "{shown}");
+        // Once a grant is kept, a later balance alone needs no bought figure.
+        let (hq_url, _) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        apply(&state, &owners, now).unwrap();
+        apply(
+            &state,
+            &Change {
+                claude_balance: Some(90.0),
+                claude_grant: Some(100.0),
+                ..Change::default()
+            },
+            now,
+        )
+        .unwrap();
+    }
+
+    /// Runs `f` on its own thread while the test holds the ledger, and `wait` meanwhile;
+    /// whether `f` finished before the ledger was let go, what `wait` said, and `f`'s answer.
+    fn under_held_ledger<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+        wait: impl FnOnce() -> bool,
+    ) -> (bool, bool, T) {
+        let held = ledger();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let answer = f();
+            let _ = tx.send(());
+            answer
+        });
+        let waited = wait();
+        let before = rx
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_ok();
+        drop(held);
+        (before, waited, worker.join().unwrap())
+    }
+
+    #[test]
+    fn a_renewal_seen_from_the_console_waits_for_the_ledger() {
+        // Review of 31 Oct: the console's view renewed outside the lock, so a charge counted at
+        // the same time could be erased or counted twice.
+        let (hq_url, _) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        let now = 1_793_000_000_000;
+        apply(
+            &state,
+            &Change {
+                claude_grant: Some(100.0),
+                claude_renews_on: Some(1),
+                claude_purchased: Some(0.0),
+                ..Change::default()
+            },
+            now,
+        )
+        .unwrap();
+        let later = now + 40 * credits::DAY_MS;
+        let looked = state.clone();
+        let (before, _, shown) = under_held_ledger(move || shown(&looked, later), || true);
+        assert!(!before, "the view waited for the ledger");
+        assert_eq!(shown["claude"]["grant_left"], 100_000_000, "{shown}");
+    }
+
+    #[test]
+    fn deepseeks_balance_is_asked_before_the_ledger_is_taken() {
+        // Review of 31 Oct: a slow DeepSeek held up every Claude charge behind the global lock.
+        use endora_capabilities::model_lists::ModelListRepository as _;
+        let (hq_url, _) = hq_as(0, "developer");
+        let (deepseek_url, asked) = fake(Arc::new(|_, _| {
+            (
+                200,
+                "application/json",
+                json!({ "is_available": true, "balance_infos": [
+                    { "currency": "USD", "total_balance": "40.00" } ] })
+                .to_string(),
+            )
+        }));
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        state
+            .config
+            .add_provider("DeepSeek", &format!("{deepseek_url}/v1"), "a-key")
+            .unwrap();
+        let charged = state.clone();
+        let seen = asked.clone();
+        let (_, asked_while_held, ()) = under_held_ledger(
+            move || after_charge(&charged, 7, "deepseek-flash", 2_000),
+            move || {
+                for _ in 0..100 {
+                    if !seen.lock().unwrap().is_empty() {
+                        return true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                false
+            },
+        );
+        assert!(asked_while_held, "asked while the ledger was held");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        assert_eq!(state.store.provider_spent("deepseek").unwrap(), 2_000);
+    }
+
+    #[tokio::test]
+    async fn the_owners_change_never_blocks_the_async_thread() {
+        // Review of 31 Oct: `change` took the ledger, a std mutex, on the async thread.
+        let (hq_url, _) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _held = ledger();
+            tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+        rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        let sleeper = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            started.elapsed()
+        });
+        let _ = change(
+            State(state),
+            Json(Change {
+                claude_low: Some(3.0),
+                ..Change::default()
+            }),
+        )
+        .await;
+        let slept = sleeper.await.unwrap();
+        holder.join().unwrap();
+        assert!(
+            slept < std::time::Duration::from_millis(200),
+            "the runtime stood still for {slept:?}"
+        );
     }
 
     #[test]
