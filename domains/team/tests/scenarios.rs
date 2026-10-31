@@ -21,7 +21,6 @@ use endora_team::application::event_ports::EventStore;
 use endora_team::application::protocol::call;
 use endora_team::application::{
     Author, Clock, Engine, NewRoutine, NewTask, RunContext, Settings, Submission, TeamStore,
-    WingSeeded,
 };
 use endora_team::domain::money::{DAY_MS, DOLLAR};
 use endora_team::domain::routines::HOUR_MS;
@@ -146,7 +145,7 @@ struct Office {
     /// Whether HQ seeded its house log the last time it started.
     seeded: Option<bool>,
     /// The engineering wing, once seeded (ADR 0115).
-    wing: Option<WingSeeded>,
+    wing: Option<Wing>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
     /// What the record last answered a member (ADR 0129), and how many wakes there were when
@@ -857,23 +856,70 @@ fn house_log_empty(w: &mut Office) {
 
 // --- The engineering wing (ADR 0115) --------------------------------------------------------
 
-/// HQ seeds the wing as it does on start: Kit the lead, Rae and Zed the developers, the goal
-/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task.
-#[given("the engineering wing")]
-fn the_wing(w: &mut Office) {
-    let seeded =
-        w.hq.seed_wing()
-            .expect("HQ seeds the wing")
-            .expect("not seeded yet");
-    for m in w.hq.store().members().expect("the store answers") {
-        w.members.entry(m.name.clone()).or_insert(m.id);
-    }
-    w.projects
-        .insert("ansible-nas clean-up".to_owned(), seeded.project);
-    w.wing = Some(seeded);
+/// The wing's goal, its project, and the lead's first task, the plan.
+#[derive(Debug)]
+struct Wing {
+    goal: GoalId,
+    project: ProjectId,
+    task: TaskId,
 }
 
-/// A member's first turn, the one HQ queues when it seeds the wing (Kit's, on the plan), is over.
+/// The wing: Kit the lead on Claude Sonnet, Rae and Zed the developers on Claude Haiku, the goal
+/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task, the plan.
+#[given("the engineering wing")]
+fn the_wing(w: &mut Office) {
+    let kit =
+        w.hq.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
+            .expect("Kit is hired");
+    w.hq.set_brain(kit, "claude-sonnet-5-5")
+        .expect("Kit thinks with Sonnet");
+    w.members.insert("Kit".to_owned(), kit);
+    for (name, look) in [("Rae", 2), ("Zed", 4)] {
+        let id =
+            w.hq.hire(name, Role::Developer, Role::Developer.share(), 2, look)
+                .expect("the developer is hired");
+        w.hq.set_brain(id, "claude-haiku-5-5")
+            .expect("the developer thinks with Haiku");
+        w.members.insert(name.to_owned(), id);
+    }
+    let goal =
+        w.hq.set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
+            .expect("the wing's goal is set");
+    let project =
+        w.hq.add_project(
+            goal,
+            endora_team::domain::wing::WING_PROJECT,
+            "",
+            kit,
+            None,
+        )
+        .expect("the wing's project is made");
+    let task =
+        w.hq.add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the clean-up".to_owned(),
+                description: String::new(),
+                assignee: Some(kit),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Three branches are proposed", false)],
+        )
+        .expect("Kit is given the plan");
+    w.projects
+        .insert("ansible-nas clean-up".to_owned(), project);
+    w.wing = Some(Wing {
+        goal,
+        project,
+        task,
+    });
+}
+
+/// A member's first turn, the one the plan queues (Kit's, on the plan), is over.
 /// The Mac takes one turn at a time (ADR 0131), and the scenario is about the others'.
 #[given(expr = "{word}'s planning turn is over")]
 fn planning_turn_is_over(w: &mut Office, name: String) {
@@ -882,7 +928,7 @@ fn planning_turn_is_over(w: &mut Office, name: String) {
     w.tick();
 }
 
-fn wing(w: &Office) -> &WingSeeded {
+fn wing(w: &Office) -> &Wing {
     w.wing.as_ref().expect("the scenario has the wing")
 }
 

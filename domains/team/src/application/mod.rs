@@ -23,7 +23,7 @@ pub mod world_ports;
 
 pub use engine::{
     Asked, Author, Engine, EngineError, Fired, KeptBranch, ModelSet, Proposal, Recorded, Settings,
-    Submission, TickReport, WingSeeded,
+    Submission, TickReport,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 

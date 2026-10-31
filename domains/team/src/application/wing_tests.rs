@@ -1,7 +1,7 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and check, the check's result as a receipt that wakes or sends back, the owner's
 //! push offered only once the work is done and run only on their approval, hiring by the owner
-//! and by a lead's request within the wing's seats, the wing seeded once, and documents read.
+//! and documents read.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -42,7 +42,53 @@ fn engine(clock: &Hands) -> Hq<'_> {
     )
 }
 
-/// The team as the owner has it: the CEO, Ada the lead, Dee the tester, and the wing seeded.
+/// The wing as the tests have it: the goal and its project, Kit leading it on Claude Sonnet, Rae
+/// and Zed on Claude Haiku, and Kit's first task, the plan.
+struct Wing {
+    goal: GoalId,
+    lead: MemberId,
+    developers: Vec<MemberId>,
+    task: TaskId,
+}
+
+fn wing(hq: &Hq<'_>) -> Wing {
+    let lead = hq.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5).unwrap();
+    hq.set_brain(lead, Brain::Sonnet.name()).unwrap();
+    let mut developers = Vec::new();
+    for (name, look) in [("Rae", 2), ("Zed", 4)] {
+        let id = hq
+            .hire(name, Role::Developer, Role::Developer.share(), 2, look)
+            .unwrap();
+        hq.set_brain(id, Brain::Haiku.name()).unwrap();
+        developers.push(id);
+    }
+    let goal = hq.set_goal(WING_GOAL, "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, WING_PROJECT, "", lead, None).unwrap();
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the clean-up".to_owned(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Three branches are proposed", false)],
+        )
+        .unwrap();
+    Wing {
+        goal,
+        lead,
+        developers,
+        task,
+    }
+}
+
+/// The team as the owner has it: the CEO, Ada the lead, Dee the tester, and the wing.
 struct Team {
     ceo: MemberId,
     ada: MemberId,
@@ -65,7 +111,7 @@ fn team(hq: &Hq<'_>) -> Team {
     let lab = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
-    let seeded = hq.seed_wing().unwrap().expect("the wing is seeded");
+    let seeded = wing(hq);
     // Kit's first turn, on the plan, is over: the Mac takes one turn at a time (ADR 0131), and
     // these tests are about the branches of the others.
     hq.tell_mac(true, "ready");
@@ -929,84 +975,6 @@ fn members_of(hq: &Hq<'_>, id: MemberId) -> crate::domain::Member {
         .into_iter()
         .find(|m| m.id == id)
         .unwrap()
-}
-
-#[test]
-fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-    hq.set_brain(ceo, "claude-opus-5-5").unwrap();
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
-    let seeded = hq.seed_wing().unwrap().expect("seeded");
-    let members = hq.store().members().unwrap();
-    let kit = members.iter().find(|m| m.name == "Kit").unwrap();
-    assert_eq!(
-        (kit.role, kit.brain, kit.reports_to),
-        (Role::Lead, Brain::Sonnet, None)
-    );
-    for name in ["Rae", "Zed"] {
-        let dev = members.iter().find(|m| m.name == name).unwrap();
-        assert_eq!(
-            (dev.role, dev.brain, dev.reports_to),
-            (Role::Developer, Brain::Haiku, None)
-        );
-        assert!(seeded.developers.contains(&dev.id));
-    }
-    let goal = hq.store().goal(seeded.goal).unwrap().unwrap();
-    assert_eq!(
-        (goal.title.as_str(), goal.status),
-        (WING_GOAL, crate::domain::GoalStatus::Active)
-    );
-    let note = hq.store().goal_note(seeded.goal).unwrap();
-    assert!(
-        note.contains("repo_checkout") && note.contains("never opens a pull request"),
-        "{note}"
-    );
-    let project = hq
-        .store()
-        .projects()
-        .unwrap()
-        .into_iter()
-        .find(|p| p.id == seeded.project)
-        .unwrap();
-    assert_eq!(
-        (project.title.as_str(), project.lead, project.goal),
-        (WING_PROJECT, kit.id, seeded.goal)
-    );
-    let task = hq.store().task(seeded.task).unwrap().unwrap();
-    assert_eq!(
-        (task.assignee, task.project),
-        (Some(kit.id), Some(seeded.project))
-    );
-    assert_eq!(task.criteria.len(), 2);
-    assert!(task.criteria[0].text.contains("by receipt"));
-    // With nobody reporting to anyone (ADR 0142), the wing is its lead.
-    assert_eq!(hq.wing_members().unwrap(), [kit.id]);
-    // Once: nothing is made twice, and a renamed or paused member stays as the owner left it.
-    hq.rename(kit.id, "Kai").unwrap();
-    assert_eq!(hq.seed_wing().unwrap(), None);
-    assert_eq!(hq.store().members().unwrap().len(), 6);
-    assert_eq!(hq.store().projects().unwrap().len(), 1);
-    assert_eq!(hq.store().tasks().unwrap().len(), 1);
-    // A team that already has the goal and a Kit (an older HQ) is completed, not doubled.
-    let other = engine(&clock);
-    {
-        let id = other.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        other.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
-    let kit = other.hire("Kit", Role::Lead, 25, 2, 5).unwrap();
-    let goal = other.set_goal(WING_GOAL, "mine", Author::Owner).unwrap();
-    let seeded = other.seed_wing().unwrap().unwrap();
-    assert_eq!((seeded.lead, seeded.goal), (kit, goal));
-    assert_eq!(other.store().goals().unwrap().len(), 1);
-    assert_eq!(
-        other.store().members().unwrap().len(),
-        4,
-        "Mara, Kit, Rae, Zed"
-    );
 }
 
 // ---- the check after a deploy (ADR 0115, amended) -------------------------------------------

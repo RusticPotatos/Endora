@@ -1,5 +1,5 @@
 //! What runs a member's turns (ADR 0117): the owner's setting, refused unless allowed, the
-//! worker again when it no longer is, and the pilot seeded once.
+//! worker again when it no longer is.
 
 use super::engine::{Engine, EngineError, Settings};
 use super::ports::{Clock, TeamStore};
@@ -56,36 +56,6 @@ fn claude_code_is_set_for_a_developer_and_refused_for_anyone_else() {
     hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
     assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::ClaudeCode);
     assert_eq!(hq.set_runtime(dev, "worker").unwrap(), Runtime::Worker);
-}
-
-#[test]
-fn the_pilot_puts_rae_on_claude_code_once_and_zed_stays_on_the_worker() {
-    let hq = engine();
-    assert_eq!(hq.seed_claude_code_pilot().unwrap(), None, "no Rae yet");
-    {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
-    hq.seed_wing().unwrap().expect("the wing is seeded");
-    let named = |name: &str| {
-        hq.store()
-            .members()
-            .unwrap()
-            .into_iter()
-            .find(|m| m.name == name)
-            .unwrap()
-            .id
-    };
-    let (rae, zed, kit) = (named("Rae"), named("Zed"), named("Kit"));
-    assert_eq!(hq.seed_claude_code_pilot().unwrap(), Some(rae));
-    assert_eq!(hq.runtime_of(rae).unwrap(), Runtime::ClaudeCode);
-    assert_eq!(hq.runtime_of(zed).unwrap(), Runtime::Worker);
-    assert_eq!(hq.runtime_of(kit).unwrap(), Runtime::Worker);
-    // The owner's later choice stands: seeding again changes nothing.
-    hq.set_runtime(rae, "worker").unwrap();
-    assert_eq!(hq.seed_claude_code_pilot().unwrap(), None);
-    assert_eq!(hq.runtime_of(rae).unwrap(), Runtime::Worker);
 }
 
 #[test]

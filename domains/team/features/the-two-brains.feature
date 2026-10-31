@@ -94,10 +94,10 @@ Feature: Two brains per member
     And the engineering wing
     And the node says the Mac is not ready: "owner active"
     When a tick passes
-    Then Kit's turn on "Plan the clean-up: read the fork's docs and propose the first three branches" is waiting for the Mac: "owner active"
+    Then Kit's turn on "Plan the clean-up" is waiting for the Mac: "owner active"
     And Kit has no turn running
     When the node says the Mac is ready
-    Then Kit's turn starts on "Plan the clean-up: read the fork's docs and propose the first three branches"
+    Then Kit's turn starts on "Plan the clean-up"
     And Kit's turn runs on "mac"
 
   Scenario: Another team's lead reads the lab on the house's model with the Mac busy

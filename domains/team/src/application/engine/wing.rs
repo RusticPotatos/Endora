@@ -1,21 +1,17 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and a check job queued for the dev node; the check's result as a receipt that
 //! wakes the submitter (or sends failed work back); the owner's push offered on the desk once
-//! the work passes review, and what came of it; hiring by the owner; the wing seeded once; and
-//! documents members read. Every rule is code: branch names, who is woken, what closes.
+//! the work passes review, and what came of it; hiring by the owner; and documents members read. Every rule is code: branch names, who is woken, what closes.
 
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
-use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
+use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
-    Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
-    MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
+    Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role,
+    RunId, TaskId, TaskStatus, WakeReason,
 };
-
-/// Set once HQ has seeded the wing, so it is never seeded again.
-const WING_SEEDED: &str = "wing_seeded";
 
 /// The most a document holds: the diff shown (64 KB) and its stat.
 pub const DOCUMENT_MOST: usize = 72 * 1024;
@@ -36,10 +32,6 @@ fn document_part(document: &Document, part: usize) -> String {
         document.id, document.task, document.title
     )
 }
-
-/// The wing's first task, for its lead.
-pub const WING_FIRST_TASK: &str =
-    "Plan the clean-up: read the fork's docs and propose the first three branches";
 
 /// A branch as the node took it (ADR 0115), told to HQ with the turn's token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,21 +85,6 @@ pub struct KeptBranch {
     /// The default branch's head it sits on.
     pub base: String,
     /// The task it was submitted for.
-    pub task: TaskId,
-}
-
-/// What seeding the wing made.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WingSeeded {
-    /// The wing's goal.
-    pub goal: GoalId,
-    /// Its first project.
-    pub project: ProjectId,
-    /// Its lead.
-    pub lead: MemberId,
-    /// Its developers.
-    pub developers: Vec<MemberId>,
-    /// Its first task, for the lead.
     pub task: TaskId,
 }
 
@@ -1006,131 +983,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|p| goals.contains(&p.goal))
             .map(|p| p.lead)
             .collect())
-    }
-
-    // ---- the wing, seeded once (ADR 0115) --------------------------------------------------
-
-    /// Seeds the wing, once (a setting remembers it), for HQ started with the demo off: the
-    /// owner's goal "Improve the lab" with the wing's notes for the team, the project
-    /// "ansible-nas clean-up" led by Kit, Kit (a lead on Claude Sonnet, reporting to the
-    /// CEO), Rae and Zed (developers on Claude Haiku, reporting to Kit), and Kit's first task,
-    /// to plan the clean-up. What is already there (by name or title) is kept, not made again.
-    ///
-    /// # Errors
-    /// What the engine refuses, or a store failure.
-    pub fn seed_wing(&self) -> Done<Option<WingSeeded>> {
-        if self.store.setting(WING_SEEDED)?.is_some() {
-            return Ok(None);
-        }
-        let goal = match self
-            .store
-            .goals()?
-            .into_iter()
-            .find(|g| g.title.trim().eq_ignore_ascii_case(WING_GOAL) && g.status != GoalStatus::Dropped)
-        {
-            Some(goal) => goal.id,
-            None => self.set_generated_goal(
-                WING_GOAL,
-                "The wing cleans up the lab's ansible-nas fork, one reviewed branch at a time; the owner merges.",
-            )?,
-        };
-        if self.store.goal_note(goal)?.trim().is_empty() {
-            self.set_goal_note(goal, WING_NOTE)?;
-        }
-        let (lead, developers) = self.wing_staff()?;
-        let project = match self
-            .store
-            .projects()?
-            .into_iter()
-            .find(|p| p.goal == goal && p.title.eq_ignore_ascii_case(WING_PROJECT))
-        {
-            Some(p) => p.id,
-            None => self.add_project(
-                goal,
-                WING_PROJECT,
-                "The fork's roles and docs, tidied one branch at a time; the owner merges each.",
-                lead,
-                None,
-            )?,
-        };
-        let task = match self
-            .store
-            .tasks()?
-            .into_iter()
-            .find(|t| t.project == Some(project) && t.title == WING_FIRST_TASK)
-        {
-            Some(t) => t.id,
-            None => self.add_task_with(
-                Author::Owner,
-                NewTask {
-                    goal,
-                    project: Some(project),
-                    parent: None,
-                    title: WING_FIRST_TASK.to_owned(),
-                    description: "Read the fork's docs (ansible_nas_doc: roles, website/docs) and \
-                        check out its default branch (repo_checkout) to see how it is laid out. \
-                        Then post a plan: the first three branches, each named hq/task-N-<slug>, \
-                        what each changes and why it is safe. Hand each to a developer as a \
-                        sub-task with criteria once the owner has read the plan."
-                        .to_owned(),
-                    assignee: Some(lead),
-                    priority: Priority::Normal,
-                    waits_on: Vec::new(),
-                },
-                &[
-                    Criterion::new(
-                        "The plan cites the fork's files it read, by receipt (ansible_nas_doc or repo_checkout)",
-                        false,
-                    ),
-                    Criterion::new(
-                        "Three branches are proposed, each named hq/task-N-<slug>, with what each changes and why",
-                        false,
-                    ),
-                ],
-            )?,
-        };
-        self.store.set_setting(WING_SEEDED, "1")?;
-        Ok(Some(WingSeeded {
-            goal,
-            project,
-            lead,
-            developers,
-            task,
-        }))
-    }
-
-    /// The wing's lead, Kit on Claude Sonnet, and its developers, Rae and Zed on Claude Haiku:
-    /// each hired unless one of that name is already on the team.
-    fn wing_staff(&self) -> Done<(MemberId, Vec<MemberId>)> {
-        let named = |name: &str| -> Done<Option<MemberId>> {
-            Ok(self
-                .store
-                .members()?
-                .into_iter()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .map(|m| m.id))
-        };
-        let lead = match named("Kit")? {
-            Some(id) => id,
-            None => {
-                let id = self.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)?;
-                self.set_brain(id, Brain::Sonnet.name())?;
-                id
-            }
-        };
-        let mut developers = Vec::new();
-        for (name, look) in [("Rae", 2), ("Zed", 4)] {
-            let id = match named(name)? {
-                Some(id) => id,
-                None => {
-                    let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
-                    self.set_brain(id, Brain::Haiku.name())?;
-                    id
-                }
-            };
-            developers.push(id);
-        }
-        Ok((lead, developers))
     }
 
     // ---- documents ---------------------------------------------------------------------

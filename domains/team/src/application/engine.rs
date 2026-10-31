@@ -75,7 +75,7 @@ pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use projects::{LAB_UPKEEP, Proposal};
 pub use runtime::ModelSet;
-pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -884,11 +884,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
         self.set_goal_authored_held_lock(title, reason, InputOrigin::Owner)
-    }
-
-    fn set_generated_goal(&self, title: &str, reason: &str) -> Done<GoalId> {
-        let _held = self.held();
-        self.set_goal_authored_held_lock(title, reason, InputOrigin::Unknown)
     }
 
     fn set_goal_authored_held_lock(

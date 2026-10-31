@@ -283,32 +283,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the office: {e}"),
         }
-        // The engineering wing (ADR 0115), once: its goal, project, lead, developers and first task.
-        match hq.seed_wing() {
-            Ok(Some(wing)) => println!(
-                "hq: seeded the engineering wing: goal {}, project {}, lead {} with {} developers, task {}",
-                wing.goal,
-                wing.project,
-                wing.lead,
-                wing.developers.len(),
-                wing.task
-            ),
-            Ok(None) => {}
-            Err(e) => eprintln!("hq: could not seed the wing: {e}"),
-        }
         // Routines from before their origin was kept, whose words are exactly HQ's own: their
         // tasks are HQ's words, not unknown ones (ADR 0138 A2b).
         match hq.vouch_template_routines(&[("Check the home lab", LAB_CHECK)]) {
             Ok(0) => {}
             Ok(n) => println!("hq: {n} routines are HQ's own words"),
             Err(e) => eprintln!("hq: could not vouch for HQ's routines: {e}"),
-        }
-        // The Claude Code pilot (ADR 0117), once: one wing developer on it, the other on the
-        // worker, for the scorecard to compare.
-        match hq.seed_claude_code_pilot() {
-            Ok(Some(member)) => println!("hq: member {} runs on Claude Code (the pilot)", member.0),
-            Ok(None) => {}
-            Err(e) => eprintln!("hq: could not seed the Claude Code pilot: {e}"),
         }
     }
 
