@@ -439,28 +439,6 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
 // wakes the tester when the work is submitted; a pass wakes her only for work already in
 // review, which she may have been waiting on, and only the tester review wakes.
 #[test]
-fn a_check_that_passes_on_work_in_review_wakes_its_tester_and_no_other() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let other = hq.hire("Ivy", Role::Reviewer, 20, 2, 1).unwrap();
-    let (task, _rae, _) = submitted(&hq, &t, true);
-    hq.store()
-        .set_task_status(task, TaskStatus::InReview)
-        .unwrap();
-    let handed = hq.next_check().unwrap().unwrap();
-    let before = hq.store().wakes().unwrap().len();
-    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
-        .unwrap();
-    let woken = wakes_after(&hq, before);
-    assert!(woken.contains(&(t.dee, WakeReason::CheckDone)), "{woken:?}");
-    assert!(
-        !woken.iter().any(|(m, _)| *m == other),
-        "one tester, as review wakes: {woken:?}"
-    );
-}
-
-#[test]
 fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
@@ -909,7 +887,7 @@ fn without_a_deploy_key_the_desk_offers_the_bundle_instead() {
 }
 
 #[test]
-fn the_owner_hires_and_a_second_ceo_is_refused() {
+fn the_owner_hires_any_title_on_any_model_endora_has() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
@@ -942,12 +920,13 @@ fn the_owner_hires_and_a_second_ceo_is_refused() {
         .hire_by_owner("Lee", Role::Researcher, "local", None)
         .unwrap();
     assert_eq!(members_of(&hq, lee).reports_to, None);
-    assert_eq!(
-        hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5", None),
-        Err(super::EngineError::Refused(Refusal::OnlyOneCeo))
-    );
+    // A title is a name only (ADR 0142): a second CEO, or a researcher on Sonnet, is a member.
+    hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5", None)
+        .unwrap();
+    hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5", None)
+        .unwrap();
     assert!(matches!(
-        hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5", None),
+        hq.hire_by_owner("Quinn", Role::Researcher, "gpt-5", None),
         Err(super::EngineError::Refused(Refusal::NotABrain { .. }))
     ));
     assert_eq!(

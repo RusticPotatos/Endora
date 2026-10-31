@@ -27,8 +27,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn set_runtime(&self, member: MemberId, runtime: &str) -> Done<Runtime> {
         let _held = self.held();
         let found = self.member(member)?;
-        let runtime =
-            Runtime::for_member(found.role, found.brain, runtime).map_err(EngineError::Refused)?;
+        let runtime = Runtime::for_member(found.brain, runtime).map_err(EngineError::Refused)?;
         self.store.set_runtime(member, runtime)?;
         self.emit(
             EventKind::RuntimeSet,
@@ -48,7 +47,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         brain: crate::domain::Brain,
     ) -> Done<Option<String>> {
         let set = self.store.runtime_of(member.id)?;
-        if set.allowed_for(member.role, brain) {
+        if set.allowed_for(brain) {
             return Ok(None);
         }
         self.store.set_runtime(member.id, Runtime::Worker)?;
@@ -73,7 +72,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn runtime_of(&self, member: MemberId) -> Done<Runtime> {
         let found = self.member(member)?;
         let set = self.store.runtime_of(member)?;
-        Ok(set.effective(found.role, found.brain))
+        Ok(set.effective(found.brain))
     }
 
     /// What runs one turn (ADR 0131): the member's setting while the brain the turn was started
@@ -86,6 +85,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let found = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
         let member = self.member(found.member)?;
         let set = self.store.runtime_of(member.id)?;
-        Ok(set.effective(member.role, found.brain.unwrap_or(member.brain)))
+        Ok(set.effective(found.brain.unwrap_or(member.brain)))
     }
 }

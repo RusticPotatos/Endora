@@ -8,7 +8,7 @@
 //! A member is its model (ADR 0142): the two brains of ADR 0131, one to work and one to judge,
 //! are one. A member who is given none is the house's own model.
 
-use super::work::{Refusal, Role};
+use super::work::Refusal;
 
 /// What a member thinks with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -153,40 +153,14 @@ impl Brain {
         ALL
     }
 
-    /// Whether a member in `role` may think with this.
-    #[must_use]
-    pub const fn allowed_for(self, role: Role) -> bool {
-        match self {
-            Self::Local | Self::Mac | Self::DeepSeek => true,
-            // Since one team (ADR 0142) Opus is no longer the CEO's alone: whoever the owner
-            // gives it, as Sonnet (the owner, 2026-10-30, to seat it in the league).
-            Self::Opus => !matches!(role, Role::Researcher),
-            Self::Sonnet => !matches!(role, Role::Researcher),
-            Self::Haiku => !matches!(role, Role::Ceo),
-        }
-    }
-
-    /// The brains a member in `role` may be given, in the order the owner is offered them.
-    #[must_use]
-    pub fn choices(role: Role) -> Vec<Self> {
-        ALL.into_iter().filter(|b| b.allowed_for(role)).collect()
-    }
-
-    /// The brain the owner asked for by `name`, for a member in `role`.
+    /// The brain the owner asked for by `name`: any member may be any model (ADR 0142).
     ///
     /// # Errors
-    /// [`Refusal::NotABrain`] for a name that is not one, or one the role may not use (Opus
-    /// for any role but the CEO).
-    pub fn for_role(role: Role, name: &str) -> Result<Self, Refusal> {
-        let refused = || Refusal::NotABrain {
-            role,
+    /// [`Refusal::NotABrain`] for a name that is not one.
+    pub fn named(name: &str) -> Result<Self, Refusal> {
+        Self::from_name(name.trim()).ok_or_else(|| Refusal::NotABrain {
             asked: name.chars().take(60).collect(),
-        };
-        let brain = Self::from_name(name.trim()).ok_or_else(refused)?;
-        if !brain.allowed_for(role) {
-            return Err(refused());
-        }
-        Ok(brain)
+        })
     }
 }
 
@@ -215,67 +189,19 @@ mod tests {
     }
 
     #[test]
-    fn the_roles_brains_are_the_plans_models_by_role_and_opus_is_anyones_since_one_team() {
-        for role in [Role::Lead, Role::Developer, Role::Reviewer] {
-            assert_eq!(
-                Brain::choices(role),
-                [
-                    Brain::Local,
-                    Brain::Mac,
-                    Brain::Opus,
-                    Brain::Sonnet,
-                    Brain::Haiku,
-                    Brain::DeepSeek
-                ]
-            );
-            assert_eq!(Brain::for_role(role, "claude-opus-5-5"), Ok(Brain::Opus));
-            assert_eq!(
-                Brain::for_role(role, "claude-sonnet-5-5"),
-                Ok(Brain::Sonnet)
-            );
+    fn any_member_may_be_any_model_endora_has_and_nothing_else() {
+        // A title is a name only (ADR 0142): the owner may give anyone any of the models.
+        for brain in ALL {
+            assert_eq!(Brain::named(brain.name()), Ok(brain));
         }
-        assert_eq!(
-            Brain::choices(Role::Researcher),
-            [Brain::Local, Brain::Mac, Brain::Haiku, Brain::DeepSeek]
-        );
-        assert_eq!(
-            Brain::for_role(Role::Researcher, "claude-haiku-5-5"),
-            Ok(Brain::Haiku)
-        );
-        // The owner's decision of 2026-10-17 (ADR 0111): the CEO thinks with Opus, Sonnet or
-        // the house's model, and Opus is nobody else's.
-        assert_eq!(
-            Brain::choices(Role::Ceo),
-            [
-                Brain::Local,
-                Brain::Mac,
-                Brain::Opus,
-                Brain::Sonnet,
-                Brain::DeepSeek
-            ]
-        );
-        assert_eq!(
-            Brain::for_role(Role::Ceo, "claude-opus-5-5"),
-            Ok(Brain::Opus)
-        );
-        for (role, asked) in [
-            (Role::Researcher, "claude-sonnet-5-5"),
-            (Role::Researcher, "claude-opus-5-5"),
-            (Role::Ceo, "claude-haiku-5-5"),
-            (Role::Ceo, "deepseek-chat"),
-            (Role::Lead, "gpt-5"),
-            (Role::Lead, ""),
-            (Role::Developer, "claude-sonnet-5-5-20261001"),
-        ] {
-            let refused = Brain::for_role(role, asked).unwrap_err();
+        assert_eq!(Brain::named(" claude-opus-5-5 "), Ok(Brain::Opus));
+        for asked in ["gpt-5", "", "claude-sonnet-5-5-20261001"] {
             assert!(
-                matches!(refused, Refusal::NotABrain { .. }),
-                "{role:?} {asked}"
+                matches!(Brain::named(asked), Err(Refusal::NotABrain { .. })),
+                "{asked}"
             );
         }
-        let said = Brain::for_role(Role::Researcher, "claude-opus-5-5")
-            .unwrap_err()
-            .to_string();
+        let said = Brain::named("gpt-5").unwrap_err().to_string();
         assert!(
             said.contains("thinks with") && said.contains("claude-haiku-5-5"),
             "{said}"
@@ -309,13 +235,5 @@ mod tests {
         .collect();
         assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
         assert_eq!(Brain::BOTTOM, 6);
-        for role in [
-            Role::Developer,
-            Role::Researcher,
-            Role::Lead,
-            Role::Reviewer,
-        ] {
-            assert!(deep.allowed_for(role), "{role:?}");
-        }
     }
 }

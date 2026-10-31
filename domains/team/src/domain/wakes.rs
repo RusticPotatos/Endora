@@ -139,22 +139,6 @@ impl WakeReason {
         )
     }
 
-    /// Whether the wake reaches the CEO (ADR 0111), who wakes only for escalations, the
-    /// board's word, its own work (its daily review, what it handed on) and the continuations
-    /// of its own turns: never to be named in a thread, for an alarm, for a look round, or for
-    /// downtime (the CEO is paid, and has an office of its own).
-    #[must_use]
-    pub const fn reaches_the_ceo(self) -> bool {
-        !matches!(
-            self,
-            Self::Mentioned
-                | Self::LeadReview
-                | Self::Alarm
-                | Self::ReviewRequested
-                | Self::Downtime
-        )
-    }
-
     /// Every reason there is, in the order they are declared. A reason added to the enum must
     /// be added here too, and classified in [`super::turns`], whose table test fails until it
     /// is.
@@ -354,9 +338,6 @@ pub struct WakeSituation {
     /// Whether the wake is for the owner of a task waiting for its reviewer, and is not one
     /// that [reaches work in review](WakeReason::reaches_work_in_review).
     pub waits_for_review: bool,
-    /// Whether the wake is for the CEO, and is not one that
-    /// [reaches the CEO](WakeReason::reaches_the_ceo).
-    pub not_for_the_ceo: bool,
     /// Whether the wake's task is in a project the owner paused (ADR 0113).
     pub project_paused: bool,
     /// Whether the member is on furlough (ADR 0118): never woken.
@@ -397,9 +378,6 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     }
     if situation.furloughed {
         return WakeDecision::Refuse(Refused::Furloughed);
-    }
-    if situation.not_for_the_ceo {
-        return WakeDecision::Refuse(Refused::NotForTheCeo);
     }
     if situation.nothing_to_do {
         return WakeDecision::Refuse(Refused::NothingToDo);
@@ -453,7 +431,6 @@ mod tests {
             already_held: false,
             nothing_to_do: false,
             waits_for_review: false,
-            not_for_the_ceo: false,
             project_paused: false,
             furloughed: false,
             woken_for_nothing: false,
@@ -625,40 +602,6 @@ mod tests {
         assert_eq!(
             WakeReason::from_name("sent_back"),
             Some(WakeReason::SentBack)
-        );
-    }
-
-    #[test]
-    fn the_ceo_wakes_for_escalations_and_its_own_work_and_never_for_routine_noise() {
-        let noise = WakeSituation {
-            not_for_the_ceo: true,
-            ..quiet()
-        };
-        assert_eq!(
-            decide(ME, &noise),
-            WakeDecision::Refuse(Refused::NotForTheCeo)
-        );
-        for reaches in [
-            WakeReason::ProposalDecided,
-            WakeReason::OwnerReplied,
-            WakeReason::Assigned,
-            WakeReason::SentBack,
-            WakeReason::SubtasksFinished,
-            WakeReason::CheckBack,
-        ] {
-            assert!(reaches.reaches_the_ceo(), "{reaches:?}");
-        }
-        for not in [
-            WakeReason::Mentioned,
-            WakeReason::LeadReview,
-            WakeReason::Alarm,
-            WakeReason::ReviewRequested,
-        ] {
-            assert!(!not.reaches_the_ceo(), "{not:?}");
-        }
-        assert_eq!(
-            Refused::from_name("not_for_the_ceo"),
-            Some(Refused::NotForTheCeo)
         );
     }
 

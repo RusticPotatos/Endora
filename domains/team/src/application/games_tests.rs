@@ -46,7 +46,6 @@ fn engine(clock: &Hands, downtime: bool, games: bool) -> Hq<'_> {
 }
 
 struct Team {
-    ceo: MemberId,
     ada: MemberId,
     bo: MemberId,
     cy: MemberId,
@@ -54,22 +53,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
     let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
-    Team {
-        ceo,
-        ada,
-        bo,
-        cy,
-        dee,
-    }
+    Team { ada, bo, cy, dee }
 }
 
 fn run_of(hq: &Hq<'_>, context: &RunContext) -> crate::application::ports::Run {
@@ -270,10 +258,6 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
     assert!(challenge("Ada").unwrap_err().contains("yourself"));
     assert!(challenge("Nobody").unwrap_err().contains("nobody"));
     assert!(
-        challenge("Mara").unwrap_err().contains("not at hand"),
-        "the CEO"
-    );
-    assert!(
         challenge("Cy").unwrap_err().contains("not at hand"),
         "paused"
     );
@@ -289,7 +273,6 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
     hq.pause(t.cy, false).unwrap();
     let busy = challenge("Cy").unwrap_err();
     assert!(busy.contains("already"), "{busy}");
-    let _ = t.ceo;
 }
 
 #[test]

@@ -23,7 +23,7 @@ fn engine() -> Engine<SqliteTeamStore, SimulatedRunner, Noon> {
 }
 
 #[test]
-fn claude_code_is_set_for_a_developer_and_refused_for_anyone_else() {
+fn claude_code_is_set_for_a_member_on_claude_and_refused_on_the_house() {
     let hq = engine();
     let dev = hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
     let lead = hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
@@ -36,12 +36,18 @@ fn claude_code_is_set_for_a_developer_and_refused_for_anyone_else() {
         Runtime::ClaudeCode
     );
     assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::ClaudeCode);
+    assert_eq!(
+        hq.set_runtime(lead, "claude-code").unwrap(),
+        Runtime::ClaudeCode,
+        "a title is a name only"
+    );
+    hq.set_brain(lead, "local").unwrap();
     assert!(
         matches!(
             hq.set_runtime(lead, "claude-code"),
             Err(EngineError::Refused(Refusal::NotARuntime { .. }))
         ),
-        "a lead keeps Endora's worker"
+        "the house's model keeps Endora's worker"
     );
     assert!(hq.set_runtime(dev, "codex").is_err());
     let said = hq.events_after(0).unwrap();

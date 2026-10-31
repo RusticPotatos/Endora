@@ -2980,7 +2980,7 @@ mod tests {
         )
         .await;
         assert_eq!(handed["brain"], "claude-sonnet-5-5");
-        assert_eq!(handed["effort"], "medium", "the lead's");
+        assert_eq!(handed["effort"], json!(null), "its model's own");
         let token = handed["token"].as_str().unwrap();
         let found = json_of(
             app.oneshot(call(
@@ -3064,13 +3064,19 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        // A developer on Claude may be given Claude Code; a lead keeps Endora's worker.
+        // A member on Claude may be given Claude Code; one on the house's model keeps Endora's
+        // worker.
+        st.hq.set_brain(lead, "local").unwrap();
         let refused = app
             .clone()
             .oneshot(set(Some(TOKEN), lead.0, "claude-code"))
             .await
             .unwrap();
-        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "a lead");
+        assert_eq!(
+            refused.status(),
+            StatusCode::BAD_REQUEST,
+            "the house's model"
+        );
         let res = app
             .clone()
             .oneshot(set(Some(TOKEN), dev.0, "claude-code"))
@@ -3643,7 +3649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_hires_through_the_node_and_one_ceo_is_enough() {
+    async fn the_owner_hires_through_the_node_on_any_model_endora_has() {
         let st = state(false);
         let app = app(st.clone());
         let hire = |signed: Option<&str>, body: serde_json::Value| {
@@ -3680,26 +3686,16 @@ mod tests {
             (rae.role, rae.brain.name(), rae.reports_to),
             (Role::Developer, "claude-haiku-5-5", Some(MemberId(kit)))
         );
-        {
-            let id = st.hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-            st.hq.set_brain(id, "claude-opus-5-5").unwrap();
-            id
-        };
+        // A model Endora lacks is refused, whatever the title.
         let res = app
             .clone()
             .oneshot(hire(
                 Some(TOKEN),
-                json!({ "name": "Second", "role": "ceo", "brain": "claude-opus-5-5" }),
+                json!({ "name": "Second", "role": "ceo", "brain": "gpt-5" }),
             ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        assert!(
-            json_of(res).await["error"]
-                .as_str()
-                .unwrap()
-                .contains("one CEO"),
-        );
         let res = app
             .oneshot(hire(Some(TOKEN), json!({ "name": "X", "role": "wizard" })))
             .await

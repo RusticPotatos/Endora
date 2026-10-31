@@ -6,7 +6,7 @@ use crate::domain::routines;
 use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::{
-    Brain, EventKind, Member, MemberId, Millis, Receipt, Refusal, Role, RunId, RunStatus, TaskId,
+    Brain, EventKind, Member, MemberId, Millis, Receipt, Refusal, RunId, RunStatus, TaskId,
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 use serde_json::json;
@@ -89,7 +89,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let project = self.project_of(task)?;
         Ok(WakeSituation {
             waits_for_review,
-            not_for_the_ceo: member.role == Role::Ceo && !reason.reaches_the_ceo(),
             project_paused: self.held_by_owner(project)?,
             stopped: self.store.stopped()?,
             paused: member.paused,

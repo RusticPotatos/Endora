@@ -411,17 +411,13 @@ pub enum Refusal {
     NotACheck,
     /// Longer than it may be, in characters.
     TooLong(usize),
-    /// Not a brain a member in this role may think with (ADR 0109).
+    /// Not a model Endora has (ADR 0109, 0142).
     NotABrain {
-        /// The member's role.
-        role: Role,
         /// What was asked for.
         asked: String,
     },
-    /// Not a runtime a member in this role, on its brain, may run on (ADR 0117).
+    /// Not a runtime a member on its brain may run on (ADR 0117).
     NotARuntime {
-        /// The member's role.
-        role: Role,
         /// What was asked for.
         asked: String,
     },
@@ -537,8 +533,6 @@ pub enum Refusal {
         /// What was asked.
         asked: String,
     },
-    /// The team has one CEO (ADR 0115).
-    OnlyOneCeo,
     /// Not a document on a task this turn may read.
     NotADocument,
     /// A kept branch is checked out by the work it is for and the member who submitted it
@@ -617,23 +611,17 @@ impl fmt::Display for Refusal {
                  claim it first",
             ),
             Self::TooLong(most) => write!(f, "that is longer than {most} characters"),
-            Self::NotABrain { role, asked } => {
-                let may: Vec<&str> = super::brain::Brain::choices(*role)
+            Self::NotABrain { asked } => {
+                let may: Vec<&str> = super::brain::Brain::all()
                     .into_iter()
                     .map(super::brain::Brain::name)
                     .collect();
-                write!(
-                    f,
-                    "a {} thinks with {} only, not {asked:?}",
-                    role.name(),
-                    may.join(", ")
-                )
+                write!(f, "a member thinks with {} only, not {asked:?}", may.join(", "))
             }
-            Self::NotARuntime { role, asked } => write!(
+            Self::NotARuntime { asked } => write!(
                 f,
-                "a {} runs on the worker, not {asked:?}: Claude Code is a developer's on Claude \
-                 alone",
-                role.name()
+                "this member runs on the worker, not {asked:?}: Claude Code is for a member on \
+                 Claude alone"
             ),
             Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
             Self::OnlyTheCeo => f.write_str("only the CEO does that"),
@@ -776,7 +764,6 @@ impl fmt::Display for Refusal {
                 "a member reports to another member, never itself and never in a circle; the \
                  CEO reports to the board",
             ),
-            Self::OnlyOneCeo => f.write_str("the team has one CEO already"),
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),

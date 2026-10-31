@@ -568,18 +568,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if asked != branch.member && self.member(asked)?.at_work() {
             self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
         }
-        // The tester only for work already in review, which she may be waiting on, and only
-        // the one review wakes: before it, a pass gave her nothing to judge (18-19 Oct, eight
-        // such turns, five asking the lead what to do).
-        if task.status != TaskStatus::InReview {
-            return Ok(());
-        }
-        if let Some(tester) = self
-            .reviewer()?
-            .filter(|m| m.at_work() && m.id != branch.member)
-        {
-            self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
-        }
         Ok(())
     }
 
@@ -831,15 +819,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- hiring (ADR 0115) ---------------------------------------------------------------
 
-    /// The owner hires a member: a name, a role, a brain its role may think with, and whom it
-    /// reports to (its role's default when `None`). The brain named goes to the slot it belongs
-    /// to (ADR 0131): a Claude is the brain it judges with, a house model the brain it works
-    /// with; the other has its default (Haiku to judge with, the Mac to work with). The team
-    /// has one CEO. Said in the feed as the owner's.
+    /// The owner hires a member: a name, a title (a name only, ADR 0142), its model, and whom it
+    /// reports to. Said in the feed as the owner's.
     ///
     /// # Errors
-    /// [`Refusal::OnlyOneCeo`], [`Refusal::NotAName`], [`Refusal::NotABrain`],
-    /// [`EngineError::Unknown`] for a manager that is no member; a store failure.
+    /// [`Refusal::NotAName`], [`Refusal::NotABrain`], [`EngineError::Unknown`] for a manager
+    /// that is no member; a store failure.
     pub fn hire_by_owner(
         &self,
         name: &str,
@@ -875,9 +860,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         by: &str,
     ) -> Done<MemberId> {
         let members = self.store.members()?;
-        if role == Role::Ceo && members.iter().any(|m| m.role == Role::Ceo) {
-            return Err(EngineError::Refused(Refusal::OnlyOneCeo));
-        }
         let name = super::one_line(name, 41);
         let taken = members.iter().any(|m| m.name.eq_ignore_ascii_case(&name));
         if name.is_empty() || name.chars().count() > 40 || taken {
@@ -885,11 +867,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let named = brain
             .filter(|b| !b.trim().is_empty())
-            .map(|b| Brain::for_role(role, b))
+            .map(Brain::named)
             .transpose()
             .map_err(EngineError::Refused)?;
         if let Some(to) = reports_to {
-            if role == Role::Ceo || !members.iter().any(|m| m.id == to) {
+            if !members.iter().any(|m| m.id == to) {
                 return Err(EngineError::Refused(Refusal::NotAManager));
             }
         }
@@ -919,7 +901,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .iter()
-            .filter(|m| m.role != Role::Ceo && leads.contains(&m.id))
+            .filter(|m| leads.contains(&m.id))
             .map(|m| m.id)
             .collect())
     }
@@ -929,14 +911,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
     /// for anyone outside the wing.
     pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
-        if !matches!(member.role, Role::Lead | Role::Developer) {
-            return Ok("");
-        }
         if !self.wing_members()?.contains(&member.id) {
             return Ok("");
-        }
-        if member.role == Role::Lead {
-            return Ok(wing::FORK_RULES_LEAD);
         }
         Ok(wing::FORK_RULES)
     }

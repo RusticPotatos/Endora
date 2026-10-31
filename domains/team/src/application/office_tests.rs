@@ -11,7 +11,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::office;
-use crate::domain::{GoalId, MemberId, Priority, Receipt, Refused, Role, WakeReason};
+use crate::domain::{GoalId, MemberId, Priority, Role, WakeReason};
 use crate::infrastructure::simulated::Script;
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -41,10 +41,9 @@ fn engine(clock: &Hands) -> Hq<'_> {
     )
 }
 
-/// The team: the CEO, a lead, a developer, a researcher and the tester, all on the house's
-/// model but the CEO, with nothing to do.
+/// The team: a lead, a developer, a researcher and the tester, all on the house's model, with
+/// nothing to do.
 struct Team {
-    ceo: MemberId,
     ada: MemberId,
     bo: MemberId,
     cy: MemberId,
@@ -52,22 +51,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
     let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
     let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
     let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
     let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
-    Team {
-        ceo,
-        ada,
-        bo,
-        cy,
-        dee,
-    }
+    Team { ada, bo, cy, dee }
 }
 
 fn run_of(hq: &Hq<'_>, context: &RunContext) -> crate::application::ports::Run {
@@ -119,22 +107,6 @@ fn downtime_turns(hq: &Hq<'_>) -> Vec<RunContext> {
 }
 
 #[test]
-fn downtime_is_a_wake_that_never_reaches_the_ceo() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    assert_eq!(WakeReason::Downtime.name(), "downtime");
-    assert_eq!(
-        WakeReason::from_name("downtime"),
-        Some(WakeReason::Downtime)
-    );
-    assert_eq!(
-        hq.wake(t.ceo, None, WakeReason::Downtime).unwrap(),
-        Receipt::Refused(Refused::NotForTheCeo)
-    );
-}
-
-#[test]
 fn a_member_with_nothing_to_do_gets_a_free_downtime_turn_once_a_day_one_at_a_time() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock);
@@ -145,7 +117,6 @@ fn a_member_with_nothing_to_do_gets_a_free_downtime_turn_once_a_day_one_at_a_tim
     let run = run_of(&hq, &first[0]);
     assert!(run.task.is_none(), "a downtime turn is about no task");
     assert_eq!(run.reserved, 0, "the house's model costs nothing");
-    assert_ne!(first[0].member, t.ceo);
     hq.tick().unwrap();
     assert_eq!(downtime_turns(&hq).len(), 1, "still the one is running");
     // It ends: the next member has its turn, and so on until everyone has had theirs today.

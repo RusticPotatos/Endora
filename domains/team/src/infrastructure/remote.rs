@@ -224,7 +224,6 @@ mod tests {
             task: None,
             told: "You are the developer.".to_owned(),
             token: token.to_owned(),
-            effort: None,
         }
     }
 

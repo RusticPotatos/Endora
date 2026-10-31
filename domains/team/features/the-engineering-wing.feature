@@ -23,10 +23,10 @@ Feature: The engineering wing and the git flow
     And Rae is woken about it
     And the owner's desk holds no push
 
-  Scenario: Hiring is the owner's, and one CEO is enough
+  Scenario: Hiring is the owner's, and a title is a name only
     When the owner hires Sam as a developer under Kit
     Then Sam reports to Kit
     And Sam's model is "Local"
     When the owner hires Second as a ceo under Mara
-    Then it is refused for "the team has one CEO already"
+    Then it is not refused
 

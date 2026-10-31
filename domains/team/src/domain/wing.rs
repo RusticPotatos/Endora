@@ -15,11 +15,6 @@ pub const BRANCH_PREFIX: &str = "hq/";
 pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the repo's rules; \
     propose one if missing.\n";
 
-/// What the wing's lead is told: the same, and that the draft is the first branch (ADR 0116).
-pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is the repo's \
-    rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
-    is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
-
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -224,6 +224,6 @@ fn the_owner_sets_what_a_member_thinks_with() {
                { "name": "deepseek-flash", "label": "DeepSeek Flash" }])
     );
     let marie = &snap["members"][2];
-    assert_eq!(marie["brains"].as_array().unwrap().len(), 4);
+    assert_eq!(marie["brains"], ada["brains"], "a title is a name only");
     assert_eq!(hq.store().count_events("member.brain").unwrap().0, 2);
 }

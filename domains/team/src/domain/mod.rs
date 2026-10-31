@@ -11,7 +11,6 @@ pub mod cut;
 pub mod desk;
 pub mod docs;
 pub mod drain;
-pub mod effort;
 pub mod events;
 pub mod evidence;
 pub mod games;
@@ -46,7 +45,6 @@ pub mod world;
 pub mod world_migration;
 
 pub use brain::Brain;
-pub use effort::Effort;
 pub use events::{Event, EventKind};
 pub use evidence::{CallReceipt, Criterion, Label, Ref};
 pub use money::Micros;

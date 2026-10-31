@@ -9,7 +9,7 @@ use serde_json::json;
 use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::office;
-use crate::domain::{Member, MemberId, Millis, Role, RunId, WakeId, WakeReason};
+use crate::domain::{Member, MemberId, Millis, RunId, WakeId, WakeReason};
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
 const OFFICE_SEEDED: &str = "office_seeded";
@@ -105,10 +105,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let today = self.today().to_string();
         let members = self.store.members()?;
         let mut waiting: Vec<&Member> = Vec::new();
-        for member in members
-            .iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work())
-        {
+        for member in members.iter().filter(|m| m.at_work()) {
             if self.store.setting(&downtime_day(member.id))?.as_deref() != Some(today.as_str()) {
                 waiting.push(member);
             }

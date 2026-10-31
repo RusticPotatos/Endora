@@ -8,12 +8,8 @@ use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::relevance::Relevance;
 use crate::domain::situations::{self, Briefed, Composed, Facts, Piece, Situation, Weight};
 use crate::domain::world::{HOUSE, Section, Stage};
-use crate::domain::world_migration::TimelineLine;
-use crate::domain::{Member, Millis, ProjectId, Role, RunId};
+use crate::domain::{Member, Millis, ProjectId, RunId};
 
-/// The most characters of the house page's newest timeline lines a briefing carries while the
-/// page has no sections yet.
-const TIMELINE_CHARS: usize = 1_600;
 /// The most lines of what changed a briefing carries after a gap.
 const CHANGED_MOST: usize = 12;
 
@@ -75,17 +71,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The turn inherits the lineage of each piece it was briefed: from the turns that wrote
     /// it, or unclassified where none is known.
-    fn inherit_briefed(&self, member: &Member, run: &Run, briefed: &[&String]) -> Done<()> {
+    fn inherit_briefed(&self, run: &Run, briefed: &[&String]) -> Done<()> {
         if briefed.is_empty() {
             return Ok(());
         }
         let sections = self.store.sections()?;
         for name in briefed {
-            for by in self.piece_written_in(member, run, name, &sections)? {
-                match by {
-                    Some(source) => self.inherit_input_from(run.id, Some(source))?,
-                    None => self.unclassified_message_input(run.id)?,
-                }
+            match Self::piece_written_in(name, &sections) {
+                Some(source) => self.inherit_input_from(run.id, Some(source))?,
+                None => self.unclassified_message_input(run.id)?,
             }
         }
         Ok(())
@@ -101,22 +95,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(false)
     }
 
-    /// The turns that wrote a briefed piece: the house timeline's lines by theirs, a section by
-    /// its own; none known for any other piece.
-    fn piece_written_in(
-        &self,
-        member: &Member,
-        run: &Run,
-        name: &str,
-        sections: &[Section],
-    ) -> Done<Vec<Option<RunId>>> {
-        if name == "world:house timeline" {
-            return self.house_timeline_runs(member, run, sections);
-        }
-        Ok(match sections.iter().find(|s| s.address() == name) {
-            Some(section) => vec![section.written_in_run],
-            None => vec![None],
-        })
+    /// The turn that wrote a briefed piece: a section's own; none known for any other piece.
+    fn piece_written_in(name: &str, sections: &[Section]) -> Option<RunId> {
+        sections
+            .iter()
+            .find(|s| s.address() == name)
+            .and_then(|s| s.written_in_run)
     }
 
     /// What of the world a member is told at the start of `run`, and its situation, composed
@@ -136,10 +120,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })
             .map(|piece| piece.name.clone())
             .collect();
-        let composed = situations::compose(
-            situations::budget(member.role, member.brain, situation),
-            pieces,
-        );
+        let composed = situations::compose(situations::budget(member.brain, situation), pieces);
         // Each piece briefed is classified by the turns that wrote it (ADR 0138 A2d): a house
         // section, a story and the house's timeline lines by their recorded runs. What has none,
         // and every other piece, fails closed.
@@ -147,7 +128,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .iter()
             .filter(|name| composed.briefed.contains(name))
             .collect();
-        self.inherit_briefed(member, run, &briefed)?;
+        self.inherit_briefed(run, &briefed)?;
         self.store.save_briefed(&Briefed {
             run: run.id,
             situation,
@@ -236,7 +217,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         let relevance = self.item_relevance(run)?;
-        pieces.extend(self.house_pieces(member, situation, last, relevance.as_ref())?);
+        pieces.extend(self.house_pieces(situation, relevance.as_ref())?);
         // How the lab is built, for every member (ADR 0142); on an item, its lines about it.
         let lab = match &relevance {
             Some(relevance) => self.lab_said_about(relevance),
@@ -246,99 +227,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(pieces)
     }
 
-    /// The turns that wrote the house's timeline lines a briefing shows (`None` for a line no
-    /// turn wrote): those since the member's last turn while the page has sections, else all of
-    /// them, which holds the newest lines shown.
-    fn house_timeline_runs(
-        &self,
-        member: &Member,
-        run: &Run,
-        sections: &[Section],
-    ) -> Done<Vec<Option<crate::domain::RunId>>> {
-        let current = sections
-            .iter()
-            .any(|s| s.page == HOUSE.slug && s.stage.current());
-        let last = self.last_turn_of(member, run)?;
-        Ok(self
-            .store
-            .timeline_with_runs(HOUSE.slug)?
-            .into_iter()
-            .filter(|(line, _)| !current || last.is_none_or(|last| line.at > last))
-            .map(|(_, by)| by)
-            .collect())
-    }
-
-    /// One line of a page's timeline as a briefing shows it.
-    fn timeline_said(&self, l: &TimelineLine) -> String {
-        format!(
-            "- {}, {}: {}\n",
-            super::world::day_with_year(l.at, self.settings.offset_minutes),
-            l.by,
-            l.line
-        )
-    }
-
-    /// The house page while it has no sections: its newest timeline lines, and for the CEO,
-    /// who keeps the page, the ask to write what is true now from them (ADR 0122).
-    fn house_without_sections(&self, member: &Member, timeline: &[TimelineLine]) -> Vec<Piece> {
-        let mut pieces = Vec::new();
-        if timeline.is_empty() {
-            return vec![Piece::new(
-                "world:house",
-                "No sections yet.\n",
-                Weight::Core,
-            )];
-        }
-        let mut newest: Vec<String> = Vec::new();
-        let mut chars = 0;
-        for l in timeline.iter().rev() {
-            let said = self.timeline_said(l);
-            if !newest.is_empty() && chars + said.chars().count() > TIMELINE_CHARS {
-                break;
-            }
-            chars += said.chars().count();
-            newest.push(said);
-        }
-        let more = timeline.len() - newest.len();
-        // The house log's lines are on the timeline now (ADR 0122): the CEO, who keeps the
-        // page, is asked to write what is true now from them.
-        if member.role == Role::Ceo {
-            pieces.push(Piece::new(
-                "world:house",
-                "No sections yet: write what is true of the house now, from its timeline, \
-                 with write_world (as insights, on evidence).\n",
-                Weight::Core,
-            ));
-        }
-        let mut text = String::from("No sections yet. Its timeline, newest last:\n");
-        if more > 0 {
-            text.push_str(&format!(
-                "- and {more} earlier lines (read_world world:house)\n"
-            ));
-        }
-        text.extend(newest.into_iter().rev());
-        pieces.push(Piece::new(
-            "world:house timeline",
-            text,
-            Weight::Recommended,
-        ));
-        pieces
-    }
-
-    /// The house page's pieces for a member: the CEO and the leads its current sections (canon
-    /// first) and what its timeline gained since their last turn, or its newest lines while it
-    /// has no sections; everyone else its canon, and in a fresh start its insights too. On an
-    /// item (`relevance`), only the sections and new timeline lines that name what it names,
-    /// whatever their stage short of an observation, and where the rest is read.
+    /// The house page's pieces for a member: what the owner wrote and its canon, and in a fresh
+    /// start its insights too. On an item (`relevance`), only the sections that name what it
+    /// names, whatever their stage short of an observation, and where the rest is read.
     fn house_pieces(
         &self,
-        member: &Member,
         situation: Situation,
-        last: Option<Millis>,
         relevance: Option<&Relevance>,
     ) -> Done<Vec<Piece>> {
         let mut pieces = Vec::new();
-        let keeps_house = matches!(member.role, Role::Ceo | Role::Lead);
         let mut current: Vec<(Section, Stage, String)> = Vec::new();
         for s in self.store.sections()? {
             if s.page != HOUSE.slug || !s.stage.current() {
@@ -351,22 +248,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         current.sort_by_key(|(s, stage, _)| {
             (s.written_by != "the owner", std::cmp::Reverse(*stage), s.id)
         });
-        let header = match member.role {
-            Role::Ceo => {
-                "The house page (world:house), yours to keep with write_world and note_house; \
-                 canon is the owner's:\n"
-            }
-            Role::Lead => {
-                "The house page (world:house), kept by the CEO (read it; it is not yours to \
-                 change):\n"
-            }
-            _ => "The house page's canon (world:house):\n",
-        };
+        let header = "The house page's canon (world:house):\n";
         let shown: Vec<&(Section, Stage, String)> = current
             .iter()
             .filter(|(s, stage, _)| {
-                keeps_house
-                    || s.written_by == "the owner"
+                s.written_by == "the owner"
                     || *stage == Stage::Canon
                     || (situation == Situation::Fresh && *stage == Stage::Insight)
                     || (relevance.is_some() && *stage == Stage::Insight)
@@ -378,7 +264,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Some(r) => r.keep(shown, |(s, _, _)| format!("{} {}", s.heading, s.headline)),
             None => (shown, 0),
         };
-        if !shown.is_empty() || (keeps_house && relevance.is_none()) {
+        if !shown.is_empty() {
             let header = if relevance.is_some() {
                 "The house page (world:house), its sections about this item:\n"
             } else {
@@ -406,35 +292,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                      world:house.\n"
                 ),
                 Weight::Core,
-            ));
-        }
-        if !keeps_house {
-            return Ok(pieces);
-        }
-        let timeline = self.store.timeline(HOUSE.slug)?;
-        if current.is_empty() {
-            pieces.extend(self.house_without_sections(member, &timeline));
-            return Ok(pieces);
-        }
-        let Some(last) = last else {
-            return Ok(pieces);
-        };
-        let new: Vec<String> = timeline
-            .iter()
-            .filter(|l| l.at > last)
-            .map(|l| self.timeline_said(l))
-            .collect();
-        let (new, _) = match relevance {
-            Some(r) => r.keep(new, String::clone),
-            None => (new, 0),
-        };
-        if !new.is_empty() {
-            let mut text = String::from("New on its timeline since your last turn:\n");
-            text.extend(new);
-            pieces.push(Piece::new(
-                "world:house timeline",
-                text,
-                Weight::Recommended,
             ));
         }
         Ok(pieces)

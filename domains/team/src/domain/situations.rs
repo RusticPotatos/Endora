@@ -5,7 +5,7 @@
 //! cut at all.
 
 use super::brain::Brain;
-use super::work::{Millis, Role};
+use super::work::Millis;
 
 /// A member's last turn on its task this long ago or more starts it after a gap.
 pub const GAP_ON_TASK_MS: Millis = 24 * 60 * 60 * 1000;
@@ -115,17 +115,12 @@ pub const MAC_BUDGET: usize = 2_800;
 /// What the dear situations add to any budget.
 pub const DEAR_EXTRA: usize = 1_200;
 
-/// How many tokens of the world a member's briefing may carry: the CEO 2,500 (its briefings
-/// are held short), a lead 4,000 (it stewards its area), anyone else 3,000; on the NAS's model
+/// How many tokens of the world a member's briefing may carry: 3,000; on the NAS's model
 /// never more than 1,800, and on the Mac never more than 2,800 (ADR 0130, amended); and 1,200
 /// more after a gap, on a handover or a recall.
 #[must_use]
-pub const fn budget(role: Role, brain: Brain, situation: Situation) -> usize {
-    let mut most = match role {
-        Role::Ceo => 2_500,
-        Role::Lead => 4_000,
-        _ => 3_000,
-    };
+pub const fn budget(brain: Brain, situation: Situation) -> usize {
+    let mut most = 3_000;
     let cap = match brain {
         Brain::Local => LOCAL_BUDGET,
         Brain::Mac => MAC_BUDGET,
@@ -391,17 +386,14 @@ mod tests {
     }
 
     #[test]
-    fn each_role_and_brain_has_its_budget_and_the_dear_situations_more() {
+    fn each_brain_has_its_budget_and_the_dear_situations_more() {
         use Situation::{AfterGap, Continuing, Handover, Recalled};
-        assert_eq!(budget(Role::Ceo, Brain::Opus, Continuing), 2_500);
-        assert_eq!(budget(Role::Lead, Brain::Sonnet, Continuing), 4_000);
-        assert_eq!(budget(Role::Developer, Brain::Haiku, Continuing), 3_000);
-        assert_eq!(budget(Role::Reviewer, Brain::Sonnet, Continuing), 3_000);
-        assert_eq!(budget(Role::Lead, Brain::Local, Continuing), 1_800);
-        assert_eq!(budget(Role::Developer, Brain::Local, Continuing), 1_800);
-        assert_eq!(budget(Role::Developer, Brain::Local, Handover), 3_000);
-        assert_eq!(budget(Role::Lead, Brain::Sonnet, AfterGap), 5_200);
-        assert_eq!(budget(Role::Ceo, Brain::Opus, Recalled), 3_700);
+        assert_eq!(budget(Brain::Opus, Continuing), 3_000);
+        assert_eq!(budget(Brain::Haiku, Continuing), 3_000);
+        assert_eq!(budget(Brain::Local, Continuing), 1_800);
+        assert_eq!(budget(Brain::Local, Handover), 3_000);
+        assert_eq!(budget(Brain::Sonnet, AfterGap), 4_200);
+        assert_eq!(budget(Brain::Opus, Recalled), 4_200);
     }
 
     #[test]
@@ -409,34 +401,20 @@ mod tests {
         use Situation::{AfterGap, Continuing, Fresh, Handover, Recalled};
         // The Mac runs a large context, so the NAS's small one is not its limit; it is a model
         // in the house, so Claude's is not its to have either.
-        for role in [
-            Role::Ceo,
-            Role::Lead,
-            Role::Developer,
-            Role::Reviewer,
-            Role::Researcher,
-        ] {
-            for situation in [Continuing, Fresh, Handover, AfterGap, Recalled] {
-                let nas = budget(role, Brain::Local, situation);
-                let mac = budget(role, Brain::Mac, situation);
-                let claude = budget(role, Brain::Sonnet, situation);
-                assert!(
-                    nas < mac && mac <= claude,
-                    "{role:?} {situation:?}: the NAS's {nas}, the Mac's {mac}, Claude's {claude}"
-                );
-            }
+        for situation in [Continuing, Fresh, Handover, AfterGap, Recalled] {
+            let nas = budget(Brain::Local, situation);
+            let mac = budget(Brain::Mac, situation);
+            let claude = budget(Brain::Sonnet, situation);
+            assert!(
+                nas < mac && mac <= claude,
+                "{situation:?}: the NAS's {nas}, the Mac's {mac}, Claude's {claude}"
+            );
         }
-        assert_eq!(budget(Role::Lead, Brain::Mac, Continuing), 2_800);
-        assert_eq!(budget(Role::Developer, Brain::Mac, Continuing), 2_800);
-        assert_eq!(budget(Role::Reviewer, Brain::Mac, Fresh), 2_800);
-        assert_eq!(
-            budget(Role::Ceo, Brain::Mac, Continuing),
-            2_500,
-            "the CEO's briefings are held short on every brain"
-        );
-        assert_eq!(budget(Role::Developer, Brain::Mac, AfterGap), 4_000);
+        assert_eq!(budget(Brain::Mac, Continuing), 2_800);
+        assert_eq!(budget(Brain::Mac, Fresh), 2_800);
+        assert_eq!(budget(Brain::Mac, AfterGap), 4_000);
         // And the NAS's model keeps the budget it had.
-        assert_eq!(budget(Role::Lead, Brain::Local, Continuing), LOCAL_BUDGET);
+        assert_eq!(budget(Brain::Local, Continuing), LOCAL_BUDGET);
     }
 
     #[test]

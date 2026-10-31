@@ -638,12 +638,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Records a model set (the lock held), and says it in the feed.
     fn brain_set_held_lock(&self, found: &Member, brain: &str) -> Done<Brain> {
-        let brain = Brain::from_name(brain.trim()).ok_or_else(|| {
-            EngineError::Refused(Refusal::NotABrain {
-                role: found.role,
-                asked: brain.chars().take(60).collect(),
-            })
-        })?;
+        let brain = Brain::named(brain).map_err(EngineError::Refused)?;
         self.store.set_brain(found.id, brain)?;
         self.emit(
             EventKind::BrainSet,
@@ -1502,16 +1497,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The team's reviewer: the first member with the reviewer's role, if there is one.
-    fn reviewer(&self) -> Done<Option<Member>> {
-        Ok(self
-            .store
-            .members()?
-            .into_iter()
-            .filter(|m| m.role == Role::Reviewer)
-            .min_by_key(|m| m.id))
-    }
-
     /// Work was moved to review by its owner: the reviewer is woken to look at it. With no
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
@@ -1745,15 +1730,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
         if current.parent.is_none() {
-            let researched = match current.owner {
-                Some(worker) => self.member(worker)?.role == Role::Researcher,
-                None => false,
-            };
-            let (kind, says) = if researched {
-                ("ready_to_read", "Ready to read")
-            } else {
-                ("ready_to_merge", "Ready to merge")
-            };
+            let (kind, says) = ("ready_to_merge", "Ready to merge");
             let desk = self.store.add_desk(
                 kind,
                 Some(task),
@@ -2422,7 +2399,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task: run.task,
             told: run.told.clone(),
             token: self.store.issue_token(run.id)?,
-            effort: self.effort_of(&on),
         };
         if let Err(why) = self.runner.start(&context) {
             let why = runs::never_started_said(&format!("could not start: {}", why.0));
@@ -3687,15 +3663,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // On furlough (ADR 0118): when it began, and when it ended if it has.
                 "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
                 "recalled_at": m.recalled_at,
-                // What it thinks with, and what the owner may choose for its role (ADR 0109).
+                // What it thinks with, and what the owner may choose (ADR 0109, 0142).
                 "brain": m.brain.name(),
-                "brains": Brain::choices(m.role).into_iter()
+                "brains": Brain::all().into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
                 "rank": m.brain.rank(),
                 // What runs its turns (ADR 0117), and whether Claude Code may.
-                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
-                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
+                "runtime": self.store.runtime_of(m.id)?.effective(m.brain).name(),
+                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.brain),
                 // Only its judgment is paid: the pool is shared by the members' claims.
                 "per_day": self.per_day(m, paid, pool_day),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
@@ -3802,7 +3778,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 }
 
 /// The most one of `member`'s turns may spend: the dollar when it thinks with Opus (ADR 0142),
-/// its role's cap otherwise.
+/// forty cents otherwise.
 fn most_a_turn_for(member: &Member) -> Micros {
-    money::most_a_turn_of(member.role, member.brain)
+    money::most_a_turn_of(member.brain)
 }

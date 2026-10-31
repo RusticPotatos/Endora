@@ -6,7 +6,7 @@
 //! [`Runtime::effective`] decides at each turn, so a stale setting never sends a turn out.
 
 use super::brain::Brain;
-use super::work::{Refusal, Role};
+use super::work::Refusal;
 
 /// What runs a member's turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,29 +46,28 @@ impl Runtime {
         ALL.into_iter().find(|r| r.name() == name)
     }
 
-    /// Whether a member in `role` thinking with `brain` may run on this: the worker always;
-    /// Claude Code only for a developer on Claude, the brains that speak Anthropic's API, as
-    /// the runner checks (not every cloud brain: DeepSeek is not one).
+    /// Whether a member thinking with `brain` may run on this: the worker always; Claude Code
+    /// only on Claude, the brains that speak Anthropic's API, as the runner checks (not every
+    /// cloud brain: DeepSeek is not one).
     #[must_use]
-    pub const fn allowed_for(self, role: Role, brain: Brain) -> bool {
+    pub const fn allowed_for(self, brain: Brain) -> bool {
         match self {
             Self::Worker => true,
-            Self::ClaudeCode => matches!(role, Role::Developer) && brain.claude(),
+            Self::ClaudeCode => brain.claude(),
         }
     }
 
-    /// The runtime the owner asked for by `name`, for a member in `role` on `brain`.
+    /// The runtime the owner asked for by `name`, for a member on `brain`.
     ///
     /// # Errors
-    /// [`Refusal::NotARuntime`] for a name that is not one, or Claude Code for anyone but a
-    /// developer on Claude.
-    pub fn for_member(role: Role, brain: Brain, name: &str) -> Result<Self, Refusal> {
+    /// [`Refusal::NotARuntime`] for a name that is not one, or Claude Code for a member that
+    /// does not think with Claude.
+    pub fn for_member(brain: Brain, name: &str) -> Result<Self, Refusal> {
         let refused = || Refusal::NotARuntime {
-            role,
             asked: name.chars().take(60).collect(),
         };
         let runtime = Self::from_name(name.trim()).ok_or_else(refused)?;
-        if !runtime.allowed_for(role, brain) {
+        if !runtime.allowed_for(brain) {
             return Err(refused());
         }
         Ok(runtime)
@@ -76,8 +75,8 @@ impl Runtime {
 
     /// What runs the turn now: the setting while it is still allowed, the worker otherwise.
     #[must_use]
-    pub const fn effective(self, role: Role, brain: Brain) -> Self {
-        if self.allowed_for(role, brain) {
+    pub const fn effective(self, brain: Brain) -> Self {
+        if self.allowed_for(brain) {
             return self;
         }
         Self::Worker
@@ -98,71 +97,34 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_is_a_developer_on_claudes_alone() {
+    fn claude_code_is_for_a_member_on_claude_alone() {
         for brain in [Brain::Haiku, Brain::Sonnet] {
             assert_eq!(
-                Runtime::for_member(Role::Developer, brain, "claude-code"),
+                Runtime::for_member(brain, "claude-code"),
                 Ok(Runtime::ClaudeCode)
             );
+            assert_eq!(Runtime::ClaudeCode.effective(brain), Runtime::ClaudeCode);
         }
-        for (role, brain) in [
-            (Role::Developer, Brain::Local),
-            (Role::Lead, Brain::Sonnet),
-            (Role::Ceo, Brain::Opus),
-            (Role::Reviewer, Brain::Haiku),
-            (Role::Researcher, Brain::Haiku),
-        ] {
-            assert!(
-                matches!(
-                    Runtime::for_member(role, brain, "claude-code"),
-                    Err(Refusal::NotARuntime { .. })
-                ),
-                "{role:?} on {brain:?}"
-            );
-            assert_eq!(
-                Runtime::for_member(role, brain, "worker"),
-                Ok(Runtime::Worker)
-            );
+        for brain in [Brain::Local, Brain::Mac] {
+            assert!(matches!(
+                Runtime::for_member(brain, "claude-code"),
+                Err(Refusal::NotARuntime { .. })
+            ));
+            assert_eq!(Runtime::for_member(brain, "worker"), Ok(Runtime::Worker));
+            assert_eq!(Runtime::ClaudeCode.effective(brain), Runtime::Worker);
         }
-        assert!(Runtime::for_member(Role::Developer, Brain::Haiku, "bash").is_err());
-        let said = Runtime::for_member(Role::Lead, Brain::Sonnet, "claude-code")
-            .unwrap_err()
-            .to_string();
-        assert!(said.contains("developer"), "{said}");
+        assert!(Runtime::for_member(Brain::Haiku, "bash").is_err());
     }
 
     #[test]
     fn claude_code_runs_only_claude_not_every_cloud_model() {
         // Round 2 (31 Oct): DeepSeek is a cloud model but not Claude; Claude Code speaks only
         // Anthropic's API, so the runner refused every turn of a developer moved to it.
-        assert!(!Runtime::ClaudeCode.allowed_for(Role::Developer, Brain::DeepSeek));
-        assert!(Runtime::for_member(Role::Developer, Brain::DeepSeek, "claude-code").is_err());
-        assert_eq!(
-            Runtime::ClaudeCode.effective(Role::Developer, Brain::DeepSeek),
-            Runtime::Worker
-        );
+        assert!(!Runtime::ClaudeCode.allowed_for(Brain::DeepSeek));
+        assert!(Runtime::for_member(Brain::DeepSeek, "claude-code").is_err());
+        assert_eq!(Runtime::ClaudeCode.effective(Brain::DeepSeek), Runtime::Worker);
         for brain in [Brain::Opus, Brain::Sonnet, Brain::Haiku] {
-            assert!(
-                Runtime::ClaudeCode.allowed_for(Role::Developer, brain),
-                "{brain:?}"
-            );
+            assert!(Runtime::ClaudeCode.allowed_for(brain), "{brain:?}");
         }
-    }
-
-    #[test]
-    fn a_setting_no_longer_allowed_falls_back_to_the_worker() {
-        assert_eq!(
-            Runtime::ClaudeCode.effective(Role::Developer, Brain::Haiku),
-            Runtime::ClaudeCode
-        );
-        assert_eq!(
-            Runtime::ClaudeCode.effective(Role::Developer, Brain::Local),
-            Runtime::Worker,
-            "a brain gone home takes the worker again"
-        );
-        assert_eq!(
-            Runtime::ClaudeCode.effective(Role::Lead, Brain::Sonnet),
-            Runtime::Worker
-        );
     }
 }

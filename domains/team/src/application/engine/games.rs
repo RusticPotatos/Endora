@@ -12,7 +12,7 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::chess::{self, Game, Refused};
 use crate::domain::games::{self, Rng};
-use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeReason};
+use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, RunId, WakeReason};
 
 /// The most results the office shows as the latest.
 const RECENT: usize = 5;
@@ -156,7 +156,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work())
+            .filter(crate::domain::Member::at_work)
             .filter(|m| {
                 // A wake held behind another member's turn is work coming (ADR 0120): not idle.
                 let busy = runs.iter().any(|r| r.member == m.id)
@@ -354,7 +354,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if other.id == me.id {
             return Err(refused(Refused::Yourself));
         }
-        if !other.at_work() || other.role == Role::Ceo {
+        if !other.at_work() {
             return Err(refused(Refused::NotAvailable(other.name)));
         }
         if self.chess_game_of(me.id)?.is_some() {
