@@ -33,7 +33,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let holds = match run.task {
             Some(task) => {
                 let t = self.task(task)?;
-                t.owner.or(t.assignee) == Some(member.id)
+                t.holder() == Some(member.id)
             }
             None => false,
         };

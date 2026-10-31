@@ -374,14 +374,8 @@ pub(super) fn tell_hq(state: &AppState, now: i64) -> bool {
 /// Keeps HQ told of Claude's grant every five minutes, so a restarted HQ, or a new owner's
 /// day, hears it soon. HQ sizes each day's pool from the first word it hears that day.
 pub(crate) fn spawn(state: AppState) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let (state, now) = (state.clone(), state.clock.now().unix_millis());
-            let _ = tokio::task::spawn_blocking(move || tell_hq(&state, now)).await;
-        }
+    super::every(state, 300, |state| {
+        tell_hq(state, state.clock.now().unix_millis());
     });
 }
 

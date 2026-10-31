@@ -110,7 +110,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// A store failure.
     pub fn mechanical_checks(&self, task: &Task) -> Done<Report> {
         let mut report = Report::default();
-        let worker = match task.owner.or(task.assignee) {
+        let worker = match task.holder() {
             Some(id) => Some(self.member(id)?.name),
             None => None,
         };
@@ -256,7 +256,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
         )?;
         self.emit_status(task, TaskStatus::Doing)?;
-        if let Some(worker) = task.owner.or(task.assignee) {
+        if let Some(worker) = task.holder() {
             self.wake_held_lock(worker, Some(task.id), WakeReason::SentBack)?;
         }
         if self.loop_holds(task)? {

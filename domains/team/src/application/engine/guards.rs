@@ -29,7 +29,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn task_facts(&self, task: &Task) -> Done<TaskFacts> {
         let runs = self.store.runs_of(task.id)?;
         let on_it: Vec<&Run> = runs.iter().collect();
-        let holder = task.owner.or(task.assignee);
+        let holder = task.holder();
         let members = self.store.members()?;
         let holder_at_work = holder.map(|h| members.iter().any(|m| m.id == h && m.at_work()));
         let last_turn_failed = on_it
@@ -275,7 +275,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .set_task_status(waiting.id, TaskStatus::Blocked)?;
                 self.emit_status(&waiting, TaskStatus::Blocked)?;
             }
-            if let Some(holder) = waiting.owner.or(waiting.assignee) {
+            if let Some(holder) = waiting.holder() {
                 self.wake_held_lock(holder, Some(waiting.id), WakeReason::WaitDropped)?;
             }
         }

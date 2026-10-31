@@ -643,7 +643,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 project.title
             ),
         )?;
-        if let Some(member) = found.owner.or(found.assignee) {
+        if let Some(member) = found.holder() {
             self.wake_held_lock(member, Some(task), WakeReason::Assigned)?;
         }
         Ok(())

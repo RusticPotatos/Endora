@@ -81,8 +81,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let waits_for_review = match task {
             Some(task) if !reason.reaches_work_in_review() => {
                 let task = self.task(task)?;
-                task.status == TaskStatus::InReview
-                    && task.owner.or(task.assignee) == Some(member.id)
+                task.status == TaskStatus::InReview && task.holder() == Some(member.id)
             }
             _ => false,
         };

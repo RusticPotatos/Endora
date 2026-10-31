@@ -326,7 +326,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ),
         )?;
         self.emit_status(&current, TaskStatus::Doing)?;
-        if let Some(worker) = current.owner.or(current.assignee) {
+        if let Some(worker) = current.holder() {
             self.wake_held_lock(worker, Some(task), WakeReason::SentBack)?;
         }
         Ok(())

@@ -219,7 +219,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The member who holds an item, if it is one who takes part in the loops.
     fn loop_holder(&self, task: &Task) -> Done<Option<Member>> {
-        let Some(holder) = task.owner.or(task.assignee) else {
+        let Some(holder) = task.holder() else {
             return Ok(None);
         };
         Ok(self.loop_members()?.into_iter().find(|m| m.id == holder))
@@ -262,10 +262,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// An item that sat with nothing moving it, after its one nudge: one of its failures. Kept
     /// at its rank, its holder is woken to try again; past the third, it has climbed.
     pub(super) fn loop_stalled(&self, task: &Task) -> Done<()> {
-        let holder = task.owner.or(task.assignee);
+        let holder = task.holder();
         self.loop_failed(task.id)?;
         let now = self.task(task.id)?;
-        if now.owner.or(now.assignee) == holder && !self.held_above(task.id)? {
+        if now.holder() == holder && !self.held_above(task.id)? {
             if let Some(holder) = holder {
                 self.wake_held_lock(holder, Some(task.id), WakeReason::Recovery)?;
             }
@@ -754,7 +754,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Ok(held_by) = kept.parse::<i64>() else {
                 continue;
             };
-            let holder = task.owner.or(task.assignee);
+            let holder = task.holder();
             let still = holder.is_some_and(|h| h.0 == held_by) && in_hand(&task);
             let Some(member) = at_work.iter().find(|m| still && m.id.0 == held_by) else {
                 if !still {
@@ -813,7 +813,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let mut holding: Vec<MemberId> = plan
                 .iter()
                 .filter(|t| in_hand(t))
-                .filter_map(|t| t.owner.or(t.assignee))
+                .filter_map(|t| t.holder())
                 .collect();
             let mut held = plan.iter().filter(|t| in_hand(t)).count();
             let mut waiting: Vec<&&Task> = plan

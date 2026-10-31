@@ -329,7 +329,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         }
         let found = self.task(task)?;
-        if found.owner.or(found.assignee) != Some(member.id) {
+        if found.holder() != Some(member.id) {
             return Ok(None);
         }
         Ok(Some(text))

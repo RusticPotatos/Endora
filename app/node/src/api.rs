@@ -648,6 +648,24 @@ mod mac;
 mod terminal;
 mod vault;
 use auth::*;
+/// The node's background upkeep: `f` runs with the node's state every `secs` seconds, the
+/// first time at once, off the async threads; a tick missed while the last one ran is skipped.
+pub(crate) fn every<F>(state: AppState, secs: u64, f: F)
+where
+    F: Fn(&AppState) + Send + Sync + 'static,
+{
+    let f = Arc::new(f);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let (state, f) = (state.clone(), f.clone());
+            let _ = tokio::task::spawn_blocking(move || f(&state)).await;
+        }
+    });
+}
+
 pub(crate) use credits::spawn as spawn_credits;
 pub(crate) use delivery::spawn as spawn_delivery;
 pub(crate) use homelab::spawn as spawn_homelab;

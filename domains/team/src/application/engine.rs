@@ -1138,7 +1138,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::Finished));
         }
         self.post_authored_held_lock_marked(by, task, text, &[], false, InputOrigin::Owner)?;
-        let Some(member) = found.owner.or(found.assignee) else {
+        let Some(member) = found.holder() else {
             return Ok(());
         };
         let members = self.store.members()?;
@@ -1690,7 +1690,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         let parent = self.task(parent)?;
-        if let Some(owner) = parent.owner.or(parent.assignee) {
+        if let Some(owner) = parent.holder() {
             self.wake_held_lock(owner, Some(parent.id), WakeReason::SubtasksFinished)?;
         }
         Ok(())
@@ -2139,7 +2139,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if task.waits_on.is_empty() || task.status.finished() {
                 continue;
             }
-            let Some(member) = task.owner.or(task.assignee) else {
+            let Some(member) = task.holder() else {
                 continue;
             };
             if self.store.woken_after_waits(task.id)? || !self.waits_over(&task.waits_on)? {
@@ -2593,7 +2593,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             ("stuck", "retry") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                let to = task.owner.or(task.assignee);
+                let to = task.holder();
                 // Tried again means someone is woken. If nobody can be, say so and change
                 // nothing: the item stays on the desk, rather than the button doing nothing
                 // with no word about it.
@@ -2629,7 +2629,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // and a blocked item is woken only by the owner's words (ADR 0142, amended
                 // 2026-10-31).
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                let holder = task.owner.or(task.assignee);
+                let holder = task.holder();
                 let to = if self.loop_holds(&task)? {
                     holder.or(found.member)
                 } else {
@@ -2744,7 +2744,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 continue;
             }
-            let Some(member) = task.owner.or(task.assignee) else {
+            let Some(member) = task.holder() else {
                 continue;
             };
             if members.iter().any(|m| m.id == member && !m.at_work()) {
@@ -3085,7 +3085,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
-        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        let to = task.holder().unwrap_or(routine.assignee);
         self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
         self.emit(
             EventKind::RoutinePosted,
@@ -3126,7 +3126,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let (Some(task), Firing::Alarm(said)) = (open, firing) {
             let text = format!("Alarm: {said}");
             self.post_held_lock(Author::Endora, task.id, &text)?;
-            let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+            let to = task.holder().unwrap_or(routine.assignee);
             self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
             routine.last_fired_at = Some(now);
             self.store.save_routine(&routine)?;

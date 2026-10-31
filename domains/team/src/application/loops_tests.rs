@@ -744,7 +744,7 @@ fn turns_that_show_nothing_are_one_of_the_items_failures() {
     }
     assert_eq!(hq.loop_failures(fix).unwrap(), 1);
     let now = hq.store().task(fix).unwrap().unwrap();
-    assert_eq!(now.owner.or(now.assignee), Some(f.bo));
+    assert_eq!(now.holder(), Some(f.bo));
 }
 
 /// A turn the system ended (refused by the relay, timed out, failed) says nothing of the
@@ -800,7 +800,7 @@ fn a_turn_the_system_ended_is_not_the_items_failure() {
     hq.tick().unwrap();
     assert_eq!(hq.loop_failures(fix).unwrap(), 0);
     let now = hq.store().task(fix).unwrap().unwrap();
-    assert_eq!(now.owner.or(now.assignee), Some(f.bo));
+    assert_eq!(now.holder(), Some(f.bo));
 }
 
 /// Three failures move an item up one rank; a failure at the top rank goes to the owner.
@@ -2235,7 +2235,7 @@ fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
     assert_eq!(reviews(&hq), 4, "not past the cap");
     let found = hq.store().task(hard).unwrap().unwrap();
     assert_eq!(found.status, TaskStatus::InReview);
-    assert_eq!(found.owner.or(found.assignee), Some(f.bo));
+    assert_eq!(found.holder(), Some(f.bo));
     assert_eq!(hq.loop_failures(hard).unwrap(), 0, "no failure of Bo's");
     let desk = hq.store().desk().unwrap();
     assert!(

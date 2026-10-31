@@ -537,7 +537,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         let task = self.task(task_id)?;
-        let mine = task.owner.or(task.assignee) == Some(run.member);
+        let mine = task.holder() == Some(run.member);
         if !mine || task.status.finished() || task.status == TaskStatus::InReview {
             return Ok(());
         }

@@ -26,15 +26,8 @@ pub(crate) fn spawn(state: AppState) {
              the secret tripwire only"
         );
     }
-    let own = Arc::new(own);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(EVERY_S));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let (state, own) = (state.clone(), own.clone());
-            let _ = tokio::task::spawn_blocking(move || deliver(&state, &own)).await;
-        }
+    super::every(state, EVERY_S, move |state| {
+        deliver(state, &own);
     });
 }
 
