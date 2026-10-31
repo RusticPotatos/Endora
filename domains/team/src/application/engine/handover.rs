@@ -15,6 +15,7 @@
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::handover::{self, CriterionSeen, ReadingSeen};
+use crate::domain::wing::IN_PROGRESS;
 use crate::domain::{Member, MemberId, Refusal, RunId, Runtime, TaskId, TaskStatus, WakeReason};
 
 /// How many of the members' last posts on the item a handover carries.
@@ -25,21 +26,28 @@ const SENT_BACK_MOST: usize = 2;
 const SENT_BACK: &str = "Sent back:";
 
 /// How many times an item goes on with one member in a fresh turn after its turn ran out of
-/// room; the next time is one of its failures, and the count starts again.
+/// room keeping no new work; the next time is one of its failures, and the count starts again.
+/// A turn that kept new work starts the count again (ADR 0142, amended 2026-10-31).
 pub(crate) const CONTINUES_MOST: u32 = 3;
+
+/// How many times in all an item goes on with one member after turns that ran out of room,
+/// new work kept or not; the next time is one of its failures, and the count starts again. The
+/// loops' money caps bound it too: this keeps one item from taking a member's every turn.
+pub(crate) const CONTINUES_IN_ALL: u32 = 12;
 
 /// Where an item's continuations are kept.
 fn continued_key(task: TaskId) -> String {
     format!("loop_continued:{}", task.0)
 }
 
-/// An item's continuations: with whom, how many since the count last started, the turn that
-/// ran out of room and has not ended yet, and every turn of it that ran out of room.
-/// Kept as `{member, n, pending, runs}`.
+/// An item's continuations: with whom, how many in a row kept no new work since the count last
+/// started, how many in all, the turn that ran out of room and has not ended yet, and every turn
+/// of it that ran out of room. Kept as `{member, n, total, pending, runs}`.
 #[derive(Debug, Default)]
 struct Continued {
     member: i64,
     n: u32,
+    total: u32,
     pending: Option<i64>,
     runs: Vec<i64>,
 }
@@ -52,6 +60,10 @@ impl Continued {
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok())
                 .unwrap_or(0),
+            total: kept["total"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
             pending: kept["pending"].as_i64(),
             runs: kept["runs"]
                 .as_array()
@@ -61,8 +73,8 @@ impl Continued {
     }
 
     fn written(&self) -> String {
-        serde_json::json!({ "member": self.member, "n": self.n, "pending": self.pending,
-                            "runs": self.runs })
+        serde_json::json!({ "member": self.member, "n": self.n, "total": self.total,
+                            "pending": self.pending, "runs": self.runs })
         .to_string()
     }
 }
@@ -173,7 +185,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|p| (p.author.clone(), p.text.clone()))
             .collect();
         let tried = tried[tried.len().saturating_sub(TRIED_MOST)..].to_vec();
+        // Where the work is kept, for the next turn to check out (ADR 0142, amended
+        // 2026-10-31).
+        let kept = self.newest_branch(task)?.map(|b| handover::KeptWork {
+            in_progress: b.status == IN_PROGRESS,
+            branch: b.name,
+            head: b.head,
+        });
         Ok(handover::Handover {
+            kept,
             task: task.0,
             title: found.title,
             to: to.name.clone(),
@@ -239,9 +259,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// After a turn that ran out of room has ended (the lock held): while the item is still its
     /// member's, in the loops and not in review or finished, the member goes on in a fresh turn
-    /// with a handover, counting no failure, up to [`CONTINUES_MOST`] times. The next time is
-    /// one of the item's failures, as a turn that never finished was, and the count starts
-    /// again; if the item is still the member's, it goes on from a fresh handover all the same.
+    /// with a handover, counting no failure. A turn that kept new work on the item's branch
+    /// ([`Self::kept_new_work`]) was making progress, and starts the count again (ADR 0142,
+    /// amended 2026-10-31); turns that kept nothing go on up to [`CONTINUES_MOST`] times in a
+    /// row, and [`CONTINUES_IN_ALL`] times in all. Past either, it is one of the item's
+    /// failures, as a turn that never finished was, and the counts start again; if the item is
+    /// still the member's, it goes on from a fresh handover all the same.
     pub(super) fn after_out_of_room(&self, run: &Run) -> Done<()> {
         let Some(task) = run.task else {
             return Ok(());
@@ -254,6 +277,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if kept.member != run.member.0 {
             kept.member = run.member.0;
             kept.n = 0;
+            kept.total = 0;
         }
         let found = self.task(task)?;
         let still_its = found.owner.or(found.assignee) == Some(run.member)
@@ -263,30 +287,44 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !still_its {
             return self.keep_continued(task, &kept);
         }
-        if kept.n < CONTINUES_MOST {
-            kept.n += 1;
-            self.keep_continued(task, &kept)?;
-            self.hand_over(
-                task,
-                run.member,
-                &format!(
+        let progress = self.kept_new_work(run, task)?;
+        if progress {
+            kept.n = 0;
+        }
+        if kept.n < CONTINUES_MOST && kept.total < CONTINUES_IN_ALL {
+            kept.total += 1;
+            let why = if progress {
+                format!(
+                    "its turn ran out of room having kept new work, continuation {} in all",
+                    kept.total
+                )
+            } else {
+                kept.n += 1;
+                format!(
                     "its turn ran out of room, continuation {} of {CONTINUES_MOST}",
                     kept.n
-                ),
-            )?;
+                )
+            };
+            self.keep_continued(task, &kept)?;
+            self.hand_over(task, run.member, &why)?;
             self.wake_held_lock(run.member, Some(task), WakeReason::Continued)?;
             return Ok(());
         }
+        let said = if kept.total >= CONTINUES_IN_ALL {
+            format!("{CONTINUES_IN_ALL} continuations in all")
+        } else {
+            format!("{} times without keeping new work", CONTINUES_MOST + 1)
+        };
         kept.n = 0;
+        kept.total = 0;
         self.keep_continued(task, &kept)?;
         let member = self.member(run.member)?;
         self.post_held_lock(
             Author::Endora,
             task,
             &format!(
-                "{}'s turns on this ran out of room {} times: that is one of its failures.",
-                member.name,
-                CONTINUES_MOST + 1
+                "{}'s turns on this ran out of room {said}: that is one of its failures.",
+                member.name
             ),
         )?;
         self.loop_failed(task)?;
@@ -297,6 +335,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.hand_over(task, run.member, "its turns kept running out of room")?;
         self.wake_held_lock(run.member, Some(task), WakeReason::Continued)?;
         Ok(())
+    }
+
+    /// Whether `run` kept new work on `task`: a branch it recorded (submitted, or kept in
+    /// progress as it ran out of room) whose head is not the head the item's branch had before.
+    /// HQ's record decides, not the turn's word.
+    fn kept_new_work(&self, run: &Run, task: TaskId) -> Done<bool> {
+        let mut branches: Vec<crate::domain::Branch> = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == task)
+            .collect();
+        branches.sort_by_key(|b| b.id);
+        let Some(first) = branches.iter().position(|b| b.run == run.id) else {
+            return Ok(false);
+        };
+        let Some(newest) = branches.iter().rfind(|b| b.run == run.id) else {
+            return Ok(false);
+        };
+        let before = first.checked_sub(1).map(|i| branches[i].head.as_str());
+        Ok(before != Some(newest.head.as_str()))
     }
 
     /// The handover kept for `member` on `task`, as it was posted, while the item is still

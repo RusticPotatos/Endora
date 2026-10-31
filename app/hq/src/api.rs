@@ -3934,6 +3934,50 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
+    /// D12 (ADR 0142, amended 2026-10-31): work in progress the node kept as a turn ran out of
+    /// room is recorded for the next turn to check out, with no document and no check queued.
+    #[tokio::test]
+    async fn work_in_progress_the_node_kept_is_recorded_unchecked() {
+        let st = state(false);
+        let (_, task) = a_wing_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    r#"{"free":2}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let token = handed["token"].as_str().unwrap().to_owned();
+        let kept = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/branch",
+                    Some(TOKEN),
+                    &json!({ "token": token, "branch": "hq/task-1-sort-the-cables",
+                             "head": "a1b2c3d4e5f60718", "base": "0123456789abcdef",
+                             "files": 1, "plus": 2, "minus": 0, "stat": " a | 2 ++",
+                             "diff": "+x\n+y", "can_push": true, "wip": true })
+                    .to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(kept["kept"], true, "{kept}");
+        assert!(kept["check"].is_null(), "no check is queued: {kept}");
+        assert!(st.hq.store().documents_of(task).unwrap().is_empty());
+        let branches = st.hq.store().branches().unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].status, "in_progress");
+    }
+
     #[tokio::test]
     async fn a_branch_the_node_took_is_checked_on_the_runner_and_reported_with_the_jobs_token() {
         let st = state(false);

@@ -1019,6 +1019,106 @@ fn a_turn_whose_prompt_reaches_its_budget_ends_cleanly_and_says_it_continues() {
     );
 }
 
+/// `git` in `dir`, which must succeed.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// D12 (ADR 0142, amended 2026-10-31): item 937's turns lost what they wrote in the sandbox
+/// each time they ran out of room. Now, when a turn in the workbench ends at its budget, the
+/// worker commits what /work/repo holds to the task's branch and sends it to the node marked
+/// as work in progress, and its last word says where it is kept.
+#[test]
+fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
+    let dir = std::env::temp_dir().join(format!("endora-wip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Jane) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    // What the turn wrote and did not commit before its prompt reached its budget.
+    std::fs::write(repo.join("rule.py"), "class SecretDefault: ...\n").unwrap();
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        ),
+        "/team-relay/contracts/repo_submit" => (
+            200,
+            json!({ "text": "Kept hq/task-7-work as work in progress." }).to_string(),
+        ),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }));
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(
+        (0..12)
+            .map(|i| {
+                let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+                (200, calls(&[("call_1", "post", &args)]))
+            })
+            .collect(),
+    );
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    env.push(("ENDORA_PROMPT_BUDGET", "16000".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    let kept = to_node
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.path == "/team-relay/contracts/repo_submit")
+        .map(|s| s.body.clone())
+        .expect("the work is sent to the node");
+    assert_eq!(kept["wip"], json!(true));
+    assert_eq!(kept["branch"], json!("hq/task-7-work"));
+    let head = git_in(&repo, &["rev-parse", "hq/task-7-work"]);
+    assert_eq!(kept["head"], json!(head));
+    assert!(
+        git_in(&repo, &["log", "-1", "--format=%B"]).contains("Made-by: Endora HQ"),
+        "the commit carries its trailer"
+    );
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"].clone())
+        .unwrap();
+    assert_eq!(last["continues"], json!(true), "{last}");
+    let text = last["text"].as_str().unwrap();
+    assert!(
+        text.contains("Its work in progress is kept on hq/task-7-work at"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The first call is always made, however large: a turn that could make none would never
 /// get anywhere. The next one is not.
 #[test]

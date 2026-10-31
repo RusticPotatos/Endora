@@ -831,6 +831,9 @@ fn kept_checkout(
 /// `repo_submit` (ADR 0115): a bundle of one `hq/` branch from the sandbox, taken by the
 /// mirror's rules (one branch, on top of the default branch, within the limits, every commit
 /// HQ's), kept under the task, and told to HQ, which writes its document and queues its check.
+/// With `wip` (ADR 0142, amended 2026-10-31), set by the worker alone as a turn runs out of
+/// room, it is taken by the same rules and told to HQ as work in progress: kept for the next
+/// turn to check out, and neither checked nor offered. Nothing goes to the fork either way.
 fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let Some(task) = turn.task else {
         return Err((
@@ -856,6 +859,7 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
     let Some(mirror) = state.lab.mirror(now) else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
     };
+    let wip = args["wip"] == true;
     let taken = mirror
         .submit(&bytes, branch, task, now)
         .map_err(|why| (StatusCode::UNPROCESSABLE_ENTITY, why))?;
@@ -874,7 +878,7 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
                 "can_push": state.lab.can_push(),
                 // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
-                "changed": taken.changed, "texts": taken.texts,
+                "changed": taken.changed, "texts": taken.texts, "wip": wip,
             }),
         )
         .map_err(|e| {
@@ -884,6 +888,23 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
             )
         })?;
     let short = &taken.head[..12.min(taken.head.len())];
+    if wip {
+        return Ok(Done {
+            text: format!(
+                "Kept {} at {short} as work in progress ({} file{}, +{} −{}): the next turn on \
+                 task #{task} is told to check it out. Nothing is checked or pushed.",
+                taken.branch,
+                taken.files,
+                if taken.files == 1 { "" } else { "s" },
+                taken.plus,
+                taken.minus
+            ),
+            said: format!(
+                "kept work in progress {} at {short} ({} files, +{} −{}) for task {task}: {why}",
+                taken.branch, taken.files, taken.plus, taken.minus
+            ),
+        });
+    }
     Ok(Done {
         text: format!(
             "Submitted {} at {short} ({} file{}, +{} −{}): document d{} on task #{task}, \
@@ -2853,6 +2874,24 @@ mod tests {
             "the base it sits on: develop's head"
         );
         assert_eq!(told_hq["files"], 1);
+        assert_eq!(told_hq["wip"], false, "submitted to be checked");
+        // 3b. The worker keeps a turn's work in progress the same way as the turn runs out of
+        //     room (ADR 0142, amended 2026-10-31): taken by the same rules, and told to HQ as
+        //     work in progress, to be checked out next turn and not checked.
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "work in progress", "bundle": delta,
+                    "wip": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(told_hq["wip"], true);
+        let text = said["text"].as_str().unwrap();
+        assert!(text.contains("work in progress"), "{text}");
+        assert!(!text.contains("check c"), "nothing is checked: {text}");
         // 4. The check job fetches the branch's whole history with its token, and the base HQ
         //    recorded rides in the header and is in that history: what "no worse than develop"
         //    needs to run the same checks there.

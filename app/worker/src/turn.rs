@@ -291,6 +291,18 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                     setup.prompt_budget,
                     did.line()
                 );
+                // What the sandbox holds is kept for the next turn (ADR 0142, amended
+                // 2026-10-31): the worker's doing, after the model's last call.
+                let kept = match (setup.workbench.as_deref(), task) {
+                    (Some(dir), Some(task)) if on_the_node.iter().any(|n| n == REPO_SUBMIT) => {
+                        keep_work(&node, dir, task)
+                    }
+                    _ => None,
+                };
+                let line = match kept {
+                    Some(kept) => format!("{line} {kept}"),
+                    None => line,
+                };
                 let room = POST_AT_MOST.saturating_sub(line.chars().count() + 2);
                 out_of_room(&mut hq, task, &newest(&on_the_way, room), &line)?;
                 return Ok(Taken::OutOfRoom);
@@ -392,6 +404,44 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     // node scrubs it of secrets on the way.
     node.tell_conversation("worker", &talk.as_text());
     taken
+}
+
+/// As a turn runs out of room, the worker keeps what its sandbox holds (ADR 0142, amended
+/// 2026-10-31): it commits `/work/repo` to the task's branch ([`repo::work_in_progress`]),
+/// bundles it, and sends it to the node's `repo_submit` marked `wip`, which takes it by a
+/// submission's rules and keeps it for the next turn, unchecked. Only the worker sets the mark:
+/// a model's `repo_submit` is built from its branch and words alone. Nothing reaches the fork.
+/// Returns what to say of it in the last word; `None` when there was nothing to keep.
+fn keep_work(node: &Node<'_>, dir: &Path, task: i64) -> Option<String> {
+    let not_kept = |why: &str| {
+        Some(format!(
+            "Its work could not be kept: {}.",
+            at_most(why, 200)
+        ))
+    };
+    let branch = match repo::work_in_progress(dir, task) {
+        Ok(Some(branch)) => branch,
+        Ok(None) => return None,
+        Err(why) => return not_kept(&why),
+    };
+    let (bytes, head) = match repo::bundle(dir, &branch) {
+        Ok(bundled) => bundled,
+        Err(why) => return not_kept(&why),
+    };
+    use base64::Engine as _;
+    let sent = json!({
+        "branch": branch, "head": head, "wip": true,
+        "why": "work in progress, kept as the turn's prompt reached its budget",
+        "bundle": base64::engine::general_purpose::STANDARD.encode(&bytes),
+    });
+    match node.call(REPO_SUBMIT, &sent) {
+        Ok((_, Outcome::Done, _)) => Some(format!(
+            "Its work in progress is kept on {branch} at {}: the next turn checks it out.",
+            &head[..12.min(head.len())]
+        )),
+        Ok((said, _, _)) => not_kept(&said),
+        Err(_) => not_kept("the node did not take it"),
+    }
 }
 
 /// A result a gist call may read: the turn's task as it is told, what the model said before
@@ -846,7 +896,9 @@ pub(crate) fn instructions(
              checks; the result comes back as a receipt. A branch of your work that is \
              submitted stays kept on the node, and repo_checkout with its name (branch: \
              hq/task-N-<slug>) brings it back whole in a later turn, on top of its base: go on \
-             from it, never recreate it. If a check failed for the check box's own reasons (its \
+             from it, never recreate it. If your turn ends at its budget, what /work/repo holds \
+             is committed to your task's branch and kept, and the next turn is told to check it \
+             out. If a check failed for the check box's own reasons (its \
              line says a tool could not run, or that develop could not be checked), ask for the \
              same branch to be checked again with recheck rather than submitting it again. \
              Then submit the task for review, citing that receipt. You never push: \
@@ -2942,6 +2994,196 @@ mod tests {
         );
         assert!(mac(&gisted, 300) < mac(&plain, 0), "the Mac's time");
         assert!(passes.passes.iter().all(|p| *p <= HOUSE_PROMPT_BUDGET));
+    }
+
+    /// What the worker posts as a turn's last word when its prompt reached its budget, about as
+    /// long as round 2's on item 937 were (450 to 950 characters).
+    const OUT_OF_ROOM_WORD: &str = "Now write the rule, its fixtures and its tests.\n\nThe \
+         turn's prompt reached its budget (447000 bytes read over 8 calls, of 480000): it ends \
+         here, and goes on in a fresh turn from HQ's handover. This turn did: checked out the \
+         fork; ran `cd /work/repo && git checkout -q -b hq/task-7-secret-defau…`; ran `cd \
+         /work/repo && sed -n 40,194p tests/lint_rules/nas_rules.p…`; ran `cd /work/repo && cut \
+         -c1-140 tests/test_lint_rules.py; cat t…`; ran `cd /work/repo && python3 - <<'EOF' \
+         import re,glob K=re.compi…`.";
+
+    /// The newest turn under way of `member`'s, once HQ has ticked.
+    fn running_turn_of(
+        hq: &Engine<SqliteTeamStore, SimulatedRunner, Noon>,
+        member: endora_team::domain::MemberId,
+    ) -> endora_team::application::RunContext {
+        hq.tick().unwrap();
+        hq.runner()
+            .started()
+            .into_iter()
+            .rfind(|c| c.member == member)
+            .expect("a turn of the member's")
+    }
+
+    /// One of `member`'s turns on `task` that ends as the worker ends one whose prompt reached
+    /// its budget, the relay having metered near a Claude turn's 120,000 tokens.
+    fn ends_out_of_room(
+        hq: &Engine<SqliteTeamStore, SimulatedRunner, Noon>,
+        member: endora_team::domain::MemberId,
+        task: i64,
+    ) {
+        let turn = running_turn_of(hq, member);
+        assert_eq!(turn.task.map(|t| t.0), Some(task));
+        let (run, who) = hq.turn_of(&turn.token).unwrap().expect("a running turn");
+        let call = |tool: &str, args: Value| {
+            endora_team::application::protocol::call(hq, &run, &who, tool, &args).unwrap()
+        };
+        call("claim", json!({ "task": task }));
+        hq.note_tokens(turn.run, 100_000, 0, 0, 2_000).unwrap();
+        call(
+            "post",
+            json!({ "task": task, "last_word": true, "continues": true,
+                    "text": OUT_OF_ROOM_WORD }),
+        );
+        hq.runner().finish(turn.run, true);
+        hq.tick().unwrap();
+    }
+
+    /// How many of the lab's calls (the twelve of [`long_turn_on_the_lab`], round and round)
+    /// a turn makes from `opening` before its next would pass `budget`.
+    fn calls_within(opening: &Talk, budget: usize) -> usize {
+        let calls: Vec<(&str, Value, String)> = (0..4)
+            .flat_map(|k| {
+                lab_calls().into_iter().map(move |(tool, mut args, text)| {
+                    args["round"] = json!(k);
+                    (tool, args, text)
+                })
+            })
+            .collect();
+        let (mut talk, mut read) = (opening.clone(), 0);
+        for (i, (tool, args, text)) in calls.iter().enumerate() {
+            let next = talk.body("local").to_string().len();
+            if !has_room(u32::try_from(i).unwrap(), read, next, budget) {
+                return i;
+            }
+            read += next;
+            round(&mut talk, &format!("c{i}"), tool, args, text);
+        }
+        calls.len()
+    }
+
+    /// D12 of round 2 (ADR 0142, amended 2026-10-31): item 937, a lint rule with tests, ran out
+    /// of room twelve times at Ada's rank and climbed to Kit, and every turn read the item's
+    /// thread again, by then dozens of handovers and last words long. Measured on the engine's
+    /// real briefing, thread and handovers: the first call of Kit's first turn on it after the
+    /// climb, and of his fifth continuation; and how many of the lab's calls each makes within a
+    /// Claude turn's budget, its results read whole.
+    #[test]
+    fn a_fifth_continuation_of_a_long_item_fits_its_budget_with_room_to_work() {
+        use endora_team::domain::{Brain, Criterion};
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(8),
+            Noon,
+            Settings::default(),
+        );
+        let mut seats = Vec::new();
+        for (name, model, role) in [
+            ("Mara", "opus", Role::Ceo),
+            ("Kit", "sonnet", Role::Lead),
+            ("Ada", "haiku", Role::Lead),
+            ("Rae", "mac", Role::Developer),
+            ("Bo", "local", Role::Developer),
+        ] {
+            let id = hq.hire(name, role, 10, 2, 0).unwrap();
+            hq.set_model(id, model).unwrap();
+            seats.push(id);
+        }
+        let (mara, kit, ada) = (seats[0], seats[1], seats[2]);
+        let goal = hq.set_goal("Improve the lab", "", Author::Owner).unwrap();
+        let project = hq
+            .add_project(goal, "ansible-nas clean-up", "the fork's work", mara, None)
+            .unwrap();
+        hq.set_loop_rank(project, Brain::Haiku.rank()).unwrap();
+        let task = hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "A lint rule that refuses literal secret defaults in role defaults"
+                        .to_owned(),
+                    description: "A rule in the fork's own lint rules, with tests.".to_owned(),
+                    assignee: None,
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        hq.set_criteria(
+            task,
+            &[
+                Criterion::new(
+                    "A rule in tests/lint_rules with tests: a literal secret default fails; a \
+                     vault reference or an empty default passes",
+                    false,
+                ),
+                Criterion::new(
+                    "It reports today's offenders without failing CI on them",
+                    false,
+                ),
+                Criterion::new("Ready for review as a branch off develop", false),
+            ],
+        )
+        .unwrap();
+        // Twelve turns out of room at Ada's rank: three failures, and it climbs to Kit.
+        for _ in 0..12 {
+            ends_out_of_room(&hq, ada, task.0);
+        }
+        let first = running_turn_of(&hq, kit);
+        assert_eq!(first.task, Some(task), "the item climbed to Kit");
+        let (climbed, mut climbed_whole) = first_call_of(&hq, &first);
+        climbed_whole.keep_whole = None;
+        let climbed_calls = calls_within(&climbed_whole, CLAUDE_PROMPT_BUDGET);
+        // His first turn and four continuations run out of room too.
+        for _ in 0..5 {
+            ends_out_of_room(&hq, kit, task.0);
+        }
+        let fifth = running_turn_of(&hq, kit);
+        assert_eq!(fifth.task, Some(task));
+        let (fifth_m, fifth_talk) = first_call_of(&hq, &fifth);
+        let mut fifth_whole = fifth_talk;
+        fifth_whole.keep_whole = None;
+        let fifth_calls = calls_within(&fifth_whole, CLAUDE_PROMPT_BUDGET);
+        let thread = endora_team::application::TeamStore::thread(hq.store(), task).unwrap();
+        eprintln!(
+            "a long item ({} posts on its thread, {} bytes): Kit's first turn after the climb, \
+             first call {} bytes (briefing {}), {climbed_calls} of the lab's calls within \
+             {CLAUDE_PROMPT_BUDGET}; his fifth continuation, first call {} bytes (briefing {}), \
+             {fifth_calls} calls",
+            thread.len(),
+            thread.iter().map(|p| p.text.len()).sum::<usize>(),
+            climbed.body,
+            climbed.briefing,
+            fifth_m.body,
+            fifth_m.briefing
+        );
+        // Measured before this change (round3-local at 18b8dedd): after the climb, briefing
+        // 28,151 bytes, first call 38,253, 7 of the lab's calls; the fifth continuation,
+        // briefing 11,114, first call 21,089, 9 calls. Live, Ada's first turn on 937 was told
+        // 27,960 bytes, Kit's 53,027 and Mara's 78,575 as the thread grew.
+        assert!(
+            climbed.briefing <= 6_000,
+            "the climb's briefing: {}",
+            climbed.briefing
+        );
+        assert!(
+            fifth_m.briefing <= 6_000,
+            "the fifth continuation's briefing: {}",
+            fifth_m.briefing
+        );
+        assert!(
+            fifth_m.body * 30 <= CLAUDE_PROMPT_BUDGET,
+            "a fifth continuation's first call is a thirtieth of its budget at most: {}",
+            fifth_m.body
+        );
+        assert!(climbed_calls >= 10, "room to work: {climbed_calls} calls");
+        assert!(fifth_calls >= 10, "room to work: {fifth_calls} calls");
     }
 
     /// The lab's ten calls and then its first two again, each round's arguments its own: a work

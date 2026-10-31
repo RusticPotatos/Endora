@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::application::desk_ports::DeskStore;
 use crate::application::schedule_ports::ScheduleStore;
+use crate::application::wing_ports::WingStore;
 
 use crate::application::run_ports::RunStore;
 
@@ -1612,6 +1613,172 @@ fn past_three_continuations_running_out_of_room_is_one_failure() {
     );
     let bo = turn_of(&hq, f.bo);
     assert!(handover_in(&bo.told).contains("out of room"), "{}", bo.told);
+}
+
+// ---- a long item makes progress across turns (ADR 0142, amended 2026-10-31, D12) -----------
+
+/// The work in progress a turn's worker keeps as the turn runs out of room, at `head`.
+fn kept_at(head: &str) -> super::engine::Submission {
+    super::engine::Submission {
+        branch: "hq/task-1-gluetun".to_owned(),
+        head: head.to_owned(),
+        base: "ee878f7619e9".to_owned(),
+        files: 1,
+        plus: 3,
+        minus: 0,
+        stat: " roles/gluetun/defaults/main.yml | 3 +++".to_owned(),
+        diff: "+gluetun_dns: 192.168.1.10".to_owned(),
+        can_push: false,
+        changed: vec!["roles/gluetun/defaults/main.yml".to_owned()],
+        texts: Vec::new(),
+    }
+}
+
+/// One turn of Bo's on `hard` that keeps its work at `head` (when given) and ends at its
+/// prompt's budget.
+fn bo_keeps_and_runs_out(hq: &Hq<'_>, f: &Five, hard: TaskId, head: Option<&str>) {
+    let bo = turn_of(hq, f.bo);
+    use_tool(hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    if let Some(head) = head {
+        hq.keep_work_in_progress(&bo.token, &kept_at(head)).unwrap();
+    }
+    hq.note_tokens(bo.run, 50_000, 0, 0, 500).unwrap();
+    use_tool(
+        hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": hard.0, "last_word": true, "continues": true,
+            "text": "The turn's prompt reached its budget: it ends here." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+}
+
+/// D12: work in progress is kept as a branch HQ records but neither checks nor offers, and the
+/// next turn is told to check it out, and may.
+#[test]
+fn work_kept_in_progress_is_handed_to_the_next_turn_unchecked() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    bo_keeps_and_runs_out(&hq, &f, hard, Some("3c1cc497e55d0000"));
+    assert!(
+        hq.store().checks().unwrap().is_empty(),
+        "nothing is checked"
+    );
+    assert!(hq.store().documents_of(hard).unwrap().is_empty());
+    let kept = hq.store().branches().unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].status, crate::domain::wing::IN_PROGRESS);
+    let bo = turn_of(&hq, f.bo);
+    let note = handover_in(&bo.told);
+    assert!(
+        note.contains("Its work so far is on hq/task-1-gluetun at 3c1cc497e55d"),
+        "{note}"
+    );
+    assert!(
+        note.contains("repo_checkout with branch hq/task-1-gluetun"),
+        "{note}"
+    );
+    let handed = hq.checkout_branch(&bo.token, "hq/task-1-gluetun").unwrap();
+    assert_eq!(handed.head, "3c1cc497e55d0000");
+}
+
+/// D12: an item in review keeps no work in progress, since a new head would void its review.
+#[test]
+fn work_in_review_keeps_no_work_in_progress() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    hq.store()
+        .set_task_status(hard, TaskStatus::InReview)
+        .unwrap();
+    let refused = hq.keep_work_in_progress(&bo.token, &kept_at("3c1cc497e55d0000"));
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("in review")),
+        "{refused:?}"
+    );
+    assert!(hq.store().branches().unwrap().is_empty());
+}
+
+/// D12: a turn out of room that kept new work was making progress, so it starts the count
+/// again; one that kept the same head kept nothing new.
+#[test]
+fn only_new_work_kept_starts_the_count_again() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    for n in 0..6 {
+        bo_keeps_and_runs_out(&hq, &f, hard, Some(&format!("{:040x}", n + 1)));
+        assert_eq!(hq.loop_failures(hard).unwrap(), 0, "turn {n}");
+    }
+    // The same head again, four times: nothing new, and the fourth is a failure.
+    for _ in 0..4 {
+        bo_keeps_and_runs_out(&hq, &f, hard, Some(&format!("{:040x}", 6)));
+    }
+    assert_eq!(hq.loop_failures(hard).unwrap(), 1);
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+}
+
+/// D12: an item goes on with one member at most twelve times in all, new work kept or not;
+/// the next is one of its failures.
+#[test]
+fn twelve_continuations_in_all_then_a_failure() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    for n in 0..12 {
+        bo_keeps_and_runs_out(&hq, &f, hard, Some(&format!("{:040x}", n + 1)));
+        assert_eq!(hq.loop_failures(hard).unwrap(), 0, "turn {n}");
+    }
+    bo_keeps_and_runs_out(&hq, &f, hard, Some(&format!("{:040x}", 13)));
+    assert_eq!(hq.loop_failures(hard).unwrap(), 1);
+    let thread = hq.store().thread(hard).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.text.contains("ran out of room 12 continuations in all")),
+        "{thread:?}"
+    );
+}
+
+/// D12: `my_turn` shows the newest handover once (in the briefing) and leaves out the older
+/// ones and the last words before it, saying so; the thread keeps them all.
+#[test]
+fn my_turn_shows_the_newest_handover_once() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    for _ in 0..5 {
+        bo_keeps_and_runs_out(&hq, &f, hard, None);
+    }
+    let bo = turn_of(&hq, f.bo);
+    let read = use_tool(&hq, &bo, "my_turn", &serde_json::json!({})).unwrap();
+    assert_eq!(
+        read.matches(crate::domain::handover::START).count(),
+        1,
+        "{read}"
+    );
+    assert!(read.contains("older handovers"), "{read}");
+    let thread = hq.store().thread(hard).unwrap();
+    assert_eq!(
+        thread
+            .iter()
+            .filter(|p| p.text.starts_with(crate::domain::handover::START))
+            .count(),
+        5,
+        "the record keeps every handover"
+    );
 }
 
 /// Only the worker's own last word says a turn continues: a post of the model's that says so

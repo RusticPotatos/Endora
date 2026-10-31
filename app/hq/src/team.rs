@@ -505,6 +505,10 @@ pub(crate) struct BranchTold {
     /// `[path, text]` at its head for HQ's mechanical checks; absent from an older node.
     #[serde(default)]
     texts: Vec<(String, String)>,
+    /// Work in progress the worker kept as its turn ran out of room (ADR 0142, amended
+    /// 2026-10-31): recorded to be checked out by the next turn, never checked or offered.
+    #[serde(default)]
+    wip: bool,
 }
 
 /// For the node's `repo_submit` (ADR 0115): a branch it took from a turn, recorded with its
@@ -514,30 +518,32 @@ pub(crate) async fn branch(
     Json(req): Json<BranchTold>,
 ) -> Response {
     let hq = state.hq.clone();
+    let wip = req.wip;
     let recorded = tokio::task::spawn_blocking(move || {
-        hq.record_branch(
-            &req.token,
-            &endora_team::application::Submission {
-                branch: req.branch,
-                head: req.head,
-                base: req.base,
-                files: req.files,
-                plus: req.plus,
-                minus: req.minus,
-                stat: req.stat,
-                diff: req.diff,
-                can_push: req.can_push,
-                changed: req.changed,
-                texts: req.texts,
-            },
-        )
+        let submission = endora_team::application::Submission {
+            branch: req.branch,
+            head: req.head,
+            base: req.base,
+            files: req.files,
+            plus: req.plus,
+            minus: req.minus,
+            stat: req.stat,
+            diff: req.diff,
+            can_push: req.can_push,
+            changed: req.changed,
+            texts: req.texts,
+        };
+        if wip {
+            return hq
+                .keep_work_in_progress(&req.token, &submission)
+                .map(|branch| json!({ "branch": branch, "kept": true }));
+        }
+        hq.record_branch(&req.token, &submission)
+            .map(|r| json!({ "branch": r.branch, "document": r.document, "check": r.check }))
     })
     .await;
     match recorded {
-        Ok(Ok(r)) => Json(json!({
-            "branch": r.branch, "document": r.document, "check": r.check,
-        }))
-        .into_response(),
+        Ok(Ok(said)) => Json(said).into_response(),
         Ok(Err(e)) => refused(&e),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

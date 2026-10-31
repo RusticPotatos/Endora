@@ -365,6 +365,54 @@ pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
     Ok((bytes, head))
 }
 
+/// What a work in progress's commit says.
+pub const IN_PROGRESS_MESSAGE: &str =
+    "Work in progress, kept as the turn's prompt reached its budget";
+
+/// Commits what the sandbox's checkout holds as work in progress for `task`, as a turn runs out
+/// of room (ADR 0142, amended 2026-10-31), on the branch it is on when that is the task's own
+/// (`hq/task-<task>-…`), else on a new `hq/task-<task>-work` from where it stands. Returns the
+/// branch to bundle, or `None` when there is no checkout or nothing beyond the base to keep.
+/// The model takes no part: the worker does this after the model's last call.
+///
+/// # Errors
+/// What git said, in a line.
+pub fn work_in_progress(work: &Path, task: i64) -> Result<Option<String>, String> {
+    let repo = work.join(REPO_DIR);
+    if !repo.join(".git").exists() {
+        return Ok(None);
+    }
+    let base = base_of(work);
+    let own = format!("{BRANCH_PREFIX}task-{task}-");
+    let on = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let branch = if on.starts_with(&own) && is_team_branch(&on) {
+        on
+    } else {
+        let made = format!("{own}work");
+        git(&repo, &["checkout", "-q", "-b", &made])?;
+        made
+    };
+    if !git(&repo, &["status", "--porcelain"])?.trim().is_empty() {
+        git(&repo, &["add", "-A"])?;
+        git(
+            &repo,
+            &["commit", "-q", "--no-verify", "-m", IN_PROGRESS_MESSAGE],
+        )?;
+    }
+    let ahead = git(
+        &repo,
+        &[
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{base}..refs/heads/{branch}"),
+        ],
+    )?;
+    if ahead.trim() == "0" {
+        return Ok(None);
+    }
+    Ok(Some(branch))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +499,50 @@ mod tests {
             ],
         );
         (root, std::fs::read(&file).unwrap(), head)
+    }
+
+    /// D12 (ADR 0142, amended 2026-10-31): what a turn left in its sandbox is committed as
+    /// work in progress on the task's branch, or on one made for it, and bundled for the node;
+    /// a checkout with nothing beyond its base keeps nothing.
+    #[test]
+    fn work_left_in_the_sandbox_is_committed_to_the_tasks_branch() {
+        let (root, fork) = a_bundle("wip");
+        let work = root.join("work");
+        let out = checkout(&work, &fork, "main", "main", false, "Kit", Some(7)).unwrap();
+        assert_eq!(work_in_progress(&work, 7).unwrap(), None, "nothing to keep");
+        // Edits left uncommitted on the base: a branch of the task's is made for them.
+        std::fs::write(out.path.join("rule.py"), "class SecretDefault: ...\n").unwrap();
+        let kept = work_in_progress(&work, 7).unwrap();
+        assert_eq!(kept.as_deref(), Some("hq/task-7-work"));
+        assert_eq!(run(&out.path, &["status", "--porcelain"]), "");
+        assert_eq!(
+            run(&out.path, &["log", "-1", "--format=%s"]),
+            IN_PROGRESS_MESSAGE
+        );
+        let (_, head) = bundle(&work, "hq/task-7-work").unwrap();
+        assert!(
+            run(&out.path, &["log", "-1", "--format=%B"]).contains(TRAILER),
+            "stamped with its trailer when bundled"
+        );
+        assert_eq!(run(&out.path, &["rev-parse", "HEAD"]), head);
+        // On the task's own branch with a commit and more edits: kept on it.
+        run(
+            &out.path,
+            &["checkout", "-q", "-b", "hq/task-7-secret-defaults"],
+        );
+        std::fs::write(out.path.join("test_rule.py"), "def test(): ...\n").unwrap();
+        assert_eq!(
+            work_in_progress(&work, 7).unwrap().as_deref(),
+            Some("hq/task-7-secret-defaults")
+        );
+        // Another task's branch is not this task's: the work goes on one of its own.
+        run(&out.path, &["checkout", "-q", "-b", "hq/task-8-other"]);
+        std::fs::write(out.path.join("more.py"), "x = 1\n").unwrap();
+        assert!(
+            work_in_progress(&work, 7).is_err(),
+            "hq/task-7-work exists: refused"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Live (task 670): a branch existed only in the turn that made it, so a follow-up turn

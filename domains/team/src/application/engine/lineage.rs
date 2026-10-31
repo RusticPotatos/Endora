@@ -26,20 +26,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Read only the requested tail and record its source tiers before returning text.
-    pub(crate) fn latest_task_posts(
-        &self,
-        run: RunId,
-        task: crate::domain::TaskId,
-        most: usize,
-    ) -> Done<Vec<crate::application::history_ports::PostInput>> {
-        let posts = self.store.latest_authored_posts(task, most)?;
-        for post in &posts {
-            self.inherit_authored_input(run, post.origin)?;
-        }
-        Ok(posts)
-    }
-
     pub(super) fn inherit_authored_input(
         &self,
         run: RunId,

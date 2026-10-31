@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL, WING_NOTE, WING_PROJECT};
 use crate::domain::{
     Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
     MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
@@ -230,6 +230,52 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             document,
             check,
         })
+    }
+
+    /// The node kept a turn's work in progress (ADR 0142, amended 2026-10-31): the worker
+    /// committed what the sandbox had to the item's branch as the turn ran out of room, and the
+    /// node took it by the rules of a submission and keeps it. HQ records the branch as
+    /// [`IN_PROGRESS`], so the next turn on the item may check it out and is told to; it writes
+    /// no document, queues no check and posts nothing, since the work is not offered as done.
+    /// The item's gate is the newest head's, so it is shut until a check of a later head passes.
+    /// Work in review is refused: a new head would void its review. Returns the branch's id.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn on a task, or a branch
+    /// not under `hq/`; [`Refusal::InReview`] for work in review; a store failure.
+    pub fn keep_work_in_progress(&self, token: &str, s: &Submission) -> Done<i64> {
+        let _held = self.held();
+        let Some(id) = self.store.run_of_token(token)? else {
+            return Err(EngineError::Unknown("running turn with that token"));
+        };
+        let run = self
+            .running(id)
+            .map_err(|_| EngineError::Unknown("running turn with that token"))?;
+        let task = run.task.ok_or(EngineError::Unknown("task"))?;
+        if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
+            return Err(EngineError::Unknown("branch under hq/"));
+        }
+        if self.task(task)?.status == TaskStatus::InReview {
+            return Err(EngineError::Refused(Refusal::InReview));
+        }
+        let branch = self.store.add_branch(&Branch {
+            id: 0,
+            task,
+            run: run.id,
+            member: run.member,
+            name: s.branch.clone(),
+            head: s.head.clone(),
+            base: s.base.clone(),
+            files: s.files,
+            plus: s.plus,
+            minus: s.minus,
+            can_push: s.can_push,
+            status: IN_PROGRESS.to_owned(),
+            at: self.clock.now(),
+        })?;
+        self.keep_branch_files(branch, &s.changed, &s.texts)?;
+        self.store.set_gate(task, false)?;
+        Ok(branch)
     }
 
     /// A lead or a developer asks for the newest kept branch of a piece of work to be checked

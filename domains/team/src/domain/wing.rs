@@ -83,11 +83,16 @@ pub struct Branch {
     /// Whether the node can push it (a deploy key is set up).
     pub can_push: bool,
     /// `submitted`, `offered` (on the owner's desk), `approved`, `pushed`, `failed` or
-    /// `declined`.
+    /// `declined`; [`IN_PROGRESS`] for work a turn kept when it ran out of room.
     pub status: String,
     /// When it was submitted.
     pub at: Millis,
 }
+
+/// A branch's status when it is work in progress, kept by the worker as a turn ran out of room
+/// (ADR 0142, amended 2026-10-31): kept on the node for the next turn, never checked, reviewed or
+/// offered for a push.
+pub const IN_PROGRESS: &str = "in_progress";
 
 /// A check of a submitted branch (ADR 0115): the first piece of the lab, run model-free on the
 /// dev node's runner, reported back with its own token.

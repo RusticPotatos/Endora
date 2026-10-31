@@ -393,6 +393,9 @@ pub enum Refusal {
     NotBelow,
     /// The task is over.
     Finished,
+    /// The work is in review, and work in progress kept now would void its review (ADR 0142,
+    /// amended 2026-10-31).
+    InReview,
     /// Asked to review its own work.
     OwnWork,
     /// The gate has not passed.
@@ -596,6 +599,10 @@ impl fmt::Display for Refusal {
             Self::Finished => f.write_str("this task is over"),
             Self::OwnWork => f.write_str("work is reviewed by a different member"),
             Self::GateNotPassed => f.write_str("the gate has not passed"),
+            Self::InReview => f.write_str(
+                "the work is in review: work in progress is not kept, since a new head would \
+                 void its review",
+            ),
             Self::HandBack => {
                 f.write_str("a member does not drop work; hand it back to your lead with a reason")
             }

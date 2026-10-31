@@ -898,8 +898,10 @@ fn tool_my_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
 ) -> Result<String, String> {
     let mut out = run.told.clone();
     if let Some(task) = run.task {
-        let thread = engine
-            .latest_task_posts(run.id, task, 12)
+        // The thread a turn reads: the newest handover, not every one (ADR 0142, amended
+        // 2026-10-31), and not again the one its briefing tells it.
+        let (thread, left_out) = engine
+            .thread_for_turn(run, run.member, task, 12)
             .map_err(|e| e.to_string())?;
         let members = engine.store().members().map_err(|e| e.to_string())?;
         if !thread.is_empty() {
@@ -910,6 +912,9 @@ fn tool_my_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     Engine::<S, W, C>::post_line(&members, &p.author, &p.text, p.unsupported);
                 out.push_str(&format!("- {line}\n"));
             }
+        }
+        if let Some(left_out) = left_out {
+            out.push_str(&left_out);
         }
     }
     Ok(out)

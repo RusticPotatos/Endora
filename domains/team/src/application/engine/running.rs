@@ -3,6 +3,7 @@
 use super::{COLLEAGUE_HELP, Done, Engine, EngineError, STANDARDS};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::effort::{self, Effort};
+use crate::domain::handover;
 use crate::domain::mac;
 use crate::domain::review;
 use crate::domain::runs;
@@ -400,10 +401,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let members = self.store.members()?;
         // The handover this briefing carries is told in its own section, not again here.
         let handover = self.handover_kept_for(member.id, task.id)?;
+        // Only the newest handover says where the work stands: older ones, and the last words
+        // of turns that ran out of room before it, stay in the record and out of the briefing
+        // (ADR 0142, amended 2026-10-31).
+        let seen = Self::thread_seen(thread);
+        let since_seen: Vec<handover::Seen> = thread
+            .iter()
+            .zip(&seen)
+            .filter(|(p, _)| p.post.at > since)
+            .map(|(_, s)| *s)
+            .collect();
         let mut new = Vec::new();
         for input in thread
             .iter()
-            .filter(|p| p.post.at > since)
+            .zip(&seen)
+            .filter(|(p, s)| p.post.at > since && **s == handover::Seen::Shown)
+            .map(|(p, _)| p)
             .filter(|p| handover.as_deref() != Some(p.post.text.as_str()))
         {
             self.inherit_authored_input(run.id, input.origin)?;
@@ -418,7 +431,56 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 said.push_str(&format!("- {line}\n"));
             }
         }
+        if let Some(left_out) = handover::left_out_said(&since_seen) {
+            said.push_str(&left_out);
+        }
         Ok(said)
+    }
+
+    /// How a turn reads each post of a thread ([`handover::thread_view`]).
+    pub(crate) fn thread_seen(
+        thread: &[crate::application::history_ports::PostInput],
+    ) -> Vec<handover::Seen> {
+        let posts: Vec<(&str, &str)> = thread
+            .iter()
+            .map(|p| (p.post.author.as_str(), p.post.text.as_str()))
+            .collect();
+        handover::thread_view(&posts)
+    }
+
+    /// The thread as `my_turn` shows it: its newest `most` posts a turn reads, each read with
+    /// its lineage, without older handovers and the out-of-room words before the newest (ADR
+    /// 0142, amended 2026-10-31) and without the handover the briefing already tells `member`;
+    /// and the line saying what was left out, if anything was.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub(crate) fn thread_for_turn(
+        &self,
+        run: &Run,
+        member: crate::domain::MemberId,
+        task: TaskId,
+        most: usize,
+    ) -> Done<(
+        Vec<crate::application::history_ports::PostInput>,
+        Option<String>,
+    )> {
+        let thread = self.all_authored_posts(task)?;
+        let seen = Self::thread_seen(&thread);
+        let told = self.handover_kept_for(member, task)?;
+        let left_out = handover::left_out_said(&seen);
+        let mut shown: Vec<crate::application::history_ports::PostInput> = thread
+            .into_iter()
+            .zip(seen)
+            .filter(|(_, s)| *s == handover::Seen::Shown)
+            .map(|(p, _)| p)
+            .filter(|p| told.as_deref() != Some(p.post.text.as_str()))
+            .collect();
+        let shown = shown.split_off(shown.len().saturating_sub(most));
+        for input in &shown {
+            self.inherit_authored_input(run.id, input.origin)?;
+        }
+        Ok((shown, left_out))
     }
 
     /// A reviewer's briefing (ADR 0142, amended 2026-10-30): who it is, the item and its

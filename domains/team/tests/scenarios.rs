@@ -93,6 +93,11 @@ mod setup;
 #[path = "scenarios/loops.rs"]
 mod loops;
 
+/// A long item makes progress across turns (ADR 0142, amended 2026-10-31, D12), in its own
+/// file.
+#[path = "scenarios/long_items.rs"]
+mod long_items;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
