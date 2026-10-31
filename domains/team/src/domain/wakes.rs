@@ -123,6 +123,22 @@ impl WakeReason {
         )
     }
 
+    /// Whether the wake reaches a blocked item in the loops (ADR 0142, amended 2026-10-31): only
+    /// the owner's word (a reply, or an answer) and the end of what it waits on do. Anything else
+    /// (a recovery nudge, a check-back, a mention) would be a turn on work that waits for the
+    /// owner, and item 938 took one about every eleven minutes.
+    #[must_use]
+    pub const fn reaches_a_blocked_item(self) -> bool {
+        matches!(
+            self,
+            Self::OwnerReplied
+                | Self::ProposalDecided
+                | Self::WaitFinished
+                | Self::SubtasksFinished
+                | Self::WaitDropped
+        )
+    }
+
     /// Whether the wake reaches the CEO (ADR 0111), who wakes only for escalations, the
     /// board's word, its own work (its daily review, what it handed on) and the continuations
     /// of its own turns: never to be named in a thread, for an alarm, for a look round, or for
@@ -207,6 +223,9 @@ pub enum Refused {
     Redundant,
     /// The check after a deploy has had its one turn and its verdict (ADR 0115, amended).
     Checked,
+    /// The item is blocked in the loops and waits for the owner: their answer in words, or
+    /// their move of it back to work (ADR 0142, amended 2026-10-31).
+    Blocked,
 }
 
 impl Refused {
@@ -225,6 +244,7 @@ impl Refused {
             Self::Furloughed => "furloughed",
             Self::Redundant => "redundant",
             Self::Checked => "checked",
+            Self::Blocked => "blocked",
         }
     }
 
@@ -243,6 +263,7 @@ impl Refused {
             Self::Furloughed => "the member is on furlough",
             Self::Redundant => "it was woken on this again and again for nothing",
             Self::Checked => "the check after the deploy has had its one turn",
+            Self::Blocked => "the item is blocked and waits for the owner",
         }
     }
 
@@ -261,6 +282,7 @@ impl Refused {
             Self::Furloughed,
             Self::Redundant,
             Self::Checked,
+            Self::Blocked,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -342,6 +364,10 @@ pub struct WakeSituation {
     /// Whether the wake brings nothing new, to a member whose last turns on the task showed
     /// nothing, again and again (ADR 0124): it is not woken for nothing once more.
     pub woken_for_nothing: bool,
+    /// Whether the wake's task is blocked in the loops and waits for the owner, and the wake is
+    /// neither the owner's asking nor one that [reaches a blocked
+    /// item](WakeReason::reaches_a_blocked_item).
+    pub blocked_for_the_owner: bool,
 }
 
 /// What to do with a wake.
@@ -387,6 +413,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.woken_for_nothing {
         return WakeDecision::Refuse(Refused::Redundant);
     }
+    if situation.blocked_for_the_owner {
+        return WakeDecision::Refuse(Refused::Blocked);
+    }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         if own.foldable {
             return WakeDecision::Fold(own.run);
@@ -428,6 +457,7 @@ mod tests {
             project_paused: false,
             furloughed: false,
             woken_for_nothing: false,
+            blocked_for_the_owner: false,
         }
     }
 
@@ -443,6 +473,35 @@ mod tests {
         assert_eq!(Refused::from_name("redundant"), Some(Refused::Redundant));
     }
     const OTHER: MemberId = MemberId(2);
+
+    #[test]
+    fn a_blocked_item_waiting_for_the_owner_wakes_nobody() {
+        let s = WakeSituation {
+            blocked_for_the_owner: true,
+            ..quiet()
+        };
+        assert_eq!(decide(ME, &s), WakeDecision::Refuse(Refused::Blocked));
+        assert_eq!(Refused::from_name("blocked"), Some(Refused::Blocked));
+    }
+
+    #[test]
+    fn only_the_owners_word_and_the_end_of_a_wait_reach_a_blocked_item() {
+        let reach: Vec<&str> = WakeReason::all()
+            .into_iter()
+            .filter(|r| r.reaches_a_blocked_item())
+            .map(WakeReason::name)
+            .collect();
+        assert_eq!(
+            reach,
+            [
+                "wait_finished",
+                "subtasks_finished",
+                "proposal_decided",
+                "owner_replied",
+                "wait_dropped"
+            ]
+        );
+    }
 
     #[test]
     fn a_wake_on_a_free_task_is_queued() {

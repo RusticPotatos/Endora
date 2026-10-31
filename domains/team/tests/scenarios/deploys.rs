@@ -12,7 +12,7 @@ use super::Office;
 
 impl Office {
     /// `member`'s newest turn on the task titled `title`, as the HQ screen lists it.
-    fn newest_turn_of(&self, member: &str, title: &str) -> Run {
+    pub(super) fn newest_turn_of(&self, member: &str, title: &str) -> Run {
         let (id, task) = (self.member(member), self.task(title));
         self.hq
             .store()

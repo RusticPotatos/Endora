@@ -1533,6 +1533,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.set_task_status(task, to)?;
         if to == TaskStatus::Blocked {
             self.mark_turn(member, task, &|run| run.blocked = true)?;
+            self.loop_blocked(task, member, reason)?;
         } else {
             self.mark_progress(member, task)?;
         }
@@ -2065,6 +2066,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
         report.nudged += stranded_nudged;
         report.stuck += stranded_stuck;
+        // 5b'. Work whose last turn never started (the runner could not start it) is woken
+        //      again for the same member after a wait: nobody's failure (ADR 0142, amended
+        //      2026-10-31).
+        self.wake_after_failed_starts(&tasks, &live, now)?;
         // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
         //     few minutes each project's process health is looked at.
         self.guards_tick()?;
@@ -2198,7 +2203,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // Whose it was: a container the runner found gone, or killed from outside
                 // before its full time, was cut short by the platform (ADR 0124, amended).
                 let ran = run.started_at.map_or(0, |started| now - started);
-                let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
+                let exit = self.runner.exit_of(run.id);
+                let fault = runs::fault_of(exit, ran);
+                // A container that never started ran nothing: it says so, so the record knows
+                // it is nobody's failure (ADR 0142, amended 2026-10-31).
+                let why = if runs::never_started(exit) {
+                    runs::never_started_said(&why)
+                } else {
+                    why
+                };
                 self.fail(run, &why, fault)?
             }
             // HQ lost the turn: it restarted, and with it the memory of what the runner was
@@ -2490,7 +2503,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             effort: self.effort_of(&on),
         };
         if let Err(why) = self.runner.start(&context) {
-            self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
+            let why = runs::never_started_said(&format!("could not start: {}", why.0));
+            self.fail(run, &why, Fault::Worker)?;
             return Ok(false);
         }
         self.store
@@ -2654,6 +2668,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.waiting_question(member.id, task)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
+        // One question about an item waits at a time, whoever asked it (ADR 0142, amended
+        // 2026-10-31): round 1 put the same item's question on the desk five times.
+        if kind == "question" {
+            if let Some(waiting) = self.question_waiting_on(task)? {
+                return Err(EngineError::Refused(Refusal::QuestionWaits {
+                    item: waiting.id.0,
+                }));
+            }
+        }
         // The same question from another task, already waiting, is one card (ADR 0124). An
         // approval never is: each runs exactly the one action it stored.
         let desk = if kind == "question" {
@@ -2701,7 +2724,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.kind == "out_for_day" {
             return self.owner_decides_the_day(&found, decision, "");
         }
-        self.decide_held_lock(&found, decision)?;
+        self.decide_held_lock(&found, decision, "")?;
         self.answer_the_same_asks(item, decision, "")
     }
 
@@ -2721,7 +2744,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let task = found.task.ok_or(EngineError::Unknown("task"))?;
         self.post_held_lock(Author::Owner, task, text)?;
-        self.decide_held_lock(&found, "seen")?;
+        self.decide_held_lock(&found, "seen", text)?;
         // One answer to the same ask from other tasks reaches each of them (ADR 0124).
         self.answer_the_same_asks(item, "seen", text)
     }
@@ -2757,7 +2780,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let task = found.task.ok_or(EngineError::Unknown("task"))?;
             self.post_held_lock(Author::Owner, task, &words)?;
         }
-        self.decide_held_lock(&found, decision)?;
+        self.decide_held_lock(&found, decision, &words)?;
         self.answer_the_same_asks(item, decision, &words)
     }
 
@@ -2802,7 +2825,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(found)
     }
 
-    fn decide_held_lock(&self, found: &DeskItem, decision: &str) -> Done<()> {
+    fn decide_held_lock(&self, found: &DeskItem, decision: &str, words: &str) -> Done<()> {
         let item = found.id;
         match (found.kind.as_str(), decision) {
             ("goal", "approve" | "decline") => {
@@ -2856,8 +2879,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("question", "seen") => {
                 // The member who asked carries on, reading the thread for any answer. A
                 // question from before the desk knew who asked goes to whoever has the task.
+                // In the loops the card is the item's: whoever holds it now reads the answer,
+                // and a blocked item is woken only by the owner's words (ADR 0142, amended
+                // 2026-10-31).
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                if let Some(member) = found.member.or(task.owner).or(task.assignee) {
+                let holder = task.owner.or(task.assignee);
+                let to = if self.loop_holds(&task)? {
+                    holder.or(found.member)
+                } else {
+                    found.member.or(holder)
+                };
+                let wordless = words.trim().is_empty() && self.blocked_in_the_loops(task.id)?;
+                if let (Some(member), false) = (to, wordless) {
                     self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
                 }
             }
@@ -2964,6 +2997,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             };
             if members.iter().any(|m| m.id == member && !m.at_work()) {
+                continue;
+            }
+            // A blocked item in the loops waits for the owner, not for a nudge: item 938 woke
+            // Kit about every eleven minutes this way (ADR 0142, amended 2026-10-31).
+            if task.status == TaskStatus::Blocked && self.blocked_in_the_loops(task.id)? {
                 continue;
             }
             let on_the_desk = desk

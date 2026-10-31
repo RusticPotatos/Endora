@@ -238,6 +238,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(to) = member.or(self.task(task)?.owner) else {
                 continue;
             };
+            // A blocked item in the loops is woken only by the owner's words.
+            if words.trim().is_empty() && self.blocked_in_the_loops(task)? {
+                continue;
+            }
             self.wake_held_lock(to, Some(task), WakeReason::ProposalDecided)?;
         }
         Ok(())
