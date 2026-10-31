@@ -185,6 +185,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .find(|g| g.live() && g.plays(member)))
     }
 
+    /// A game of chess played in the office, written out in PGN under the members' names and
+    /// dated the day it began.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a game there is not; a store failure.
+    pub fn chess_pgn(&self, id: i64) -> Done<String> {
+        let game = self
+            .store
+            .chess_games()?
+            .into_iter()
+            .find(|g| g.id == id)
+            .ok_or(EngineError::Unknown("chess game"))?;
+        let names = self.names()?;
+        let name = |m: MemberId| names.get(&m).cloned().unwrap_or_else(|| "?".to_owned());
+        let (white, black) = (name(game.white), name(game.black));
+        Ok(crate::domain::pgn::pgn(&crate::domain::pgn::Record {
+            event: crate::domain::pgn::OFFICE,
+            date: Some(game.started_at),
+            round: None,
+            white: &white,
+            black: &black,
+            moves: &game.moves,
+            status: game.status,
+            reason: &game.reason,
+            abandoned: false,
+        }))
+    }
+
     pub(super) fn names(&self) -> Done<HashMap<MemberId, String>> {
         Ok(self
             .store

@@ -14,8 +14,10 @@ use serde_json::{Value, json};
 
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, NewTask, ScenarioAction, TeamStore, WorkerAdapter};
+use crate::domain::chess::Status;
 use crate::domain::chess_match::{self, Match, Side};
 use crate::domain::closure::{Closure, DoneWhy, DropWhy};
+use crate::domain::pgn;
 use crate::domain::{
     EventKind, MemberId, Priority, ProjectId, Refusal, RunId, TaskId, TaskStatus, WakeReason,
 };
@@ -469,6 +471,59 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         shown["by_role"] = json!(self.by_role(&place, &roles)?);
         Ok(shown)
+    }
+
+    /// A match written out in PGN: a league game under the league, its sides the brains'
+    /// labels; any other under the Holodeck, its sides the members playing. Dated by its first
+    /// action; a match stopped with no result is abandoned.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a task that is no match; a store failure.
+    pub fn scenario_pgn(&self, task: TaskId) -> Done<String> {
+        let place = self
+            .place_of(task)?
+            .ok_or(EngineError::Unknown("scenario"))?;
+        let game = self.world_at(&place)?;
+        let first = self
+            .store
+            .scenario_actions(place.world)?
+            .first()
+            .map(|a| a.at);
+        let (event, round, white, black) = match self.league_game_of(place.world)? {
+            Some((round, white, black)) => (
+                pgn::LEAGUE,
+                Some(round),
+                white.label().to_owned(),
+                black.label().to_owned(),
+            ),
+            None => {
+                let names = self.names()?;
+                let roles = self.roles_in(&place)?;
+                let playing = |side: &str| {
+                    roles
+                        .iter()
+                        .find(|(_, r)| **r == side)
+                        .and_then(|(m, _)| names.get(m).cloned())
+                        .unwrap_or_else(|| "?".to_owned())
+                };
+                (pgn::HOLODECK, None, playing("white"), playing("black"))
+            }
+        };
+        let (status, reason) = game.outcome().map_or((Status::InProgress, ""), |(r, why)| {
+            (Status::from_name(r).unwrap_or(Status::InProgress), why)
+        });
+        let abandoned = status == Status::InProgress && self.task(place.world)?.status.finished();
+        Ok(pgn::pgn(&pgn::Record {
+            event,
+            date: first,
+            round,
+            white: &white,
+            black: &black,
+            moves: game.moves(),
+            status,
+            reason,
+            abandoned,
+        }))
     }
 
     /// Each side's moves in a match, legal and illegal, and who played it, for the owner and

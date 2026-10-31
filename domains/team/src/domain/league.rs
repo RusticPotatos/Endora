@@ -36,6 +36,9 @@ pub struct Row {
     pub drawn: u32,
     /// Games lost.
     pub lost: u32,
+    /// Its rating at the start and after each of its finished games, in the order played: the
+    /// last is [`Row::rating`].
+    pub history: Vec<i64>,
 }
 
 /// The next game: a pair of different brains that has not played yet (finished or not), the
@@ -90,6 +93,12 @@ pub fn pairs_left(brains: &[Brain], games: &[Played]) -> usize {
     left
 }
 
+/// A rating as the table shows it: whole points.
+#[allow(clippy::cast_possible_truncation)]
+fn rounded(rating: f64) -> i64 {
+    rating.round() as i64
+}
+
 /// The table: every brain in `brains`, rated from the finished games in the order played, best
 /// first (the earlier brain in `brains` on a tie).
 #[must_use]
@@ -103,6 +112,7 @@ pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
             won: 0,
             drawn: 0,
             lost: 0,
+            history: vec![START],
         })
         .collect();
     let at = |b: Brain| brains.iter().position(|x| *x == b);
@@ -128,11 +138,11 @@ pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
                 rows[b].drawn += 1;
             }
         }
+        rows[w].history.push(rounded(rating[w]));
+        rows[b].history.push(rounded(rating[b]));
     }
     for (row, r) in rows.iter_mut().zip(&rating) {
-        #[allow(clippy::cast_possible_truncation)]
-        let rounded = r.round() as i64;
-        row.rating = rounded;
+        row.rating = rounded(*r);
     }
     rows.sort_by_key(|r| std::cmp::Reverse(r.rating));
     rows
@@ -207,6 +217,28 @@ mod tests {
         let draw = table(&ALL, &[game(Brain::Local, Brain::Mac, Some(50))]);
         assert!(draw.iter().all(|r| r.rating == START));
         assert_eq!(draw[0].drawn + draw[1].drawn, 2);
+    }
+
+    #[test]
+    fn each_brain_keeps_its_rating_after_every_finished_game_it_played() {
+        let games = vec![
+            game(Brain::Local, Brain::Mac, Some(100)),
+            game(Brain::Mac, Brain::Haiku, None),
+            game(Brain::Haiku, Brain::Local, Some(50)),
+        ];
+        let rows = table(&ALL, &games);
+        let of = |b: Brain| rows.iter().find(|r| r.brain == b).unwrap().history.clone();
+        assert_eq!(of(Brain::Local), [START, START + 16, START + 15]);
+        assert_eq!(
+            of(Brain::Mac),
+            [START, START - 16],
+            "the live game is not in it"
+        );
+        assert_eq!(of(Brain::Haiku), [START, START + 1]);
+        for row in &rows {
+            assert_eq!(row.history.last(), Some(&row.rating), "{row:?}");
+        }
+        assert!(table(&ALL, &[]).iter().all(|r| r.history == [START]));
     }
 
     #[test]

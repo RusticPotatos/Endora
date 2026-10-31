@@ -46,7 +46,7 @@ function hqHolodeck(s) {
 function hqLeague(l) {
   if (!l || !(l.table || []).length) return "";
   const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
-  const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
+  const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} ${hqSpark(r.history, r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
   const games = (l.games || []).slice().reverse().map((g) => hqLine(`hq:holo:open:${Number(g.task)}`,
     `White: ${label(g.white)} · Black: ${label(g.black)}`, g.end ? hqChessEnd(g.end, label(g.white), label(g.black)) : "playing"));
   const list = hqMore("league", games, 3);
@@ -54,6 +54,20 @@ function hqLeague(l) {
   return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
     <p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
     ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
+}
+
+// A brain's rating after each game it finished, as a small line (no library): the start alone,
+// before any game, is a flat line. The label is the screen reader's, escaped.
+function hqSpark(history, label) {
+  const seen = (Array.isArray(history) ? history : []).map(Number).filter((n) => Number.isFinite(n));
+  const points = seen.length ? seen : [1200];
+  const w = 60, h = 16, pad = 2;
+  const lo = Math.min(...points), hi = Math.max(...points), span = hi - lo || 1;
+  const x = (i) => points.length === 1 ? (i ? w : 0) : (i * w) / (points.length - 1);
+  const y = (v) => hi === lo ? h / 2 : pad + ((hi - v) * (h - 2 * pad)) / span;
+  const line = (points.length === 1 ? [points[0], points[0]] : points).map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const said = `${esc(label || "")} rating ${points.join(", ")}`;
+  return `<svg class="hq-spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="${said}"><polyline points="${line}"/></svg>`;
 }
 
 // Whatever is open: a match, with a way to close it.
@@ -67,6 +81,8 @@ function hqHoloDetail() {
 // A match move by move: where it stands, and every action tried, refused ones too.
 function hqScenarioView(d) {
   const head = `<div class="hq-sel">Chess · task ${Number(d.task)}${d.end ? ` · ${hqHoloEnd(d.end)}` : ""}</div>`;
+  // The game in standard notation, for any chess program: copied, or saved as a file.
+  const pgn = `<div class="hq-row"><button class="hq-btn" data-act="hq:holo:copy:${Number(d.task)}">Copy PGN</button><button class="hq-btn" data-act="hq:holo:save:${Number(d.task)}">Download PGN</button></div>`;
   const sides = d.sides || {};
   // Black's side above the board and white's below, as the board is drawn, each with its brain in a league game.
   const side = (colour) => { const brain = hqLeagueBrain(d.task, colour); return `${esc(sides[colour] || "")}${brain ? ` · ${esc(brain)}` : ""}`; };
@@ -79,7 +95,7 @@ function hqScenarioView(d) {
   const state = d.result && d.result !== "in_progress" ? `${hqChessEnd(d.result, who("white"), who("black"))}${d.reason ? `, ${esc(d.reason)}` : ""}` : `${who(d.to_move === "black" ? "black" : "white")} to move`;
   const moves = seen.length > 1 ? hqChessSteps(d, ply, last) : `<p class="hq-note">${d.moves ? esc(d.moves) : "No moves yet."}</p>`;
   const body = `<p class="hq-side black">♚\uFE0E Black: ${side("black")}</p>${board}<p class="hq-side white">♔\uFE0E White: ${side("white")}</p>
-    <p>${state}</p>${moves}`;
+    <p>${state}</p>${moves}${pgn}`;
   const roles = (d.by_role || []).map((r) => `<li>${esc(r.role)}: ${esc(r.by)}, ${Number(r.accepted)} legal, ${Number(r.refused)} illegal</li>`).join("");
   const steps = (d.log || []).map((a) => `<li${a.ok ? "" : ` class="hq-refused"`}>${a.ok ? "" : "refused: "}${esc(a.by)}${a.role ? ` (${esc(a.role)})` : ""}: ${esc(a.action)} → ${esc(a.said)}</li>`).join("");
   return `${head}${body}${roles ? `<ul class="hq-team">${roles}</ul>` : ""}
@@ -128,9 +144,35 @@ async function hqHoloRefresh() {
   return moved;
 }
 
-// The taps: open a match, step through it, close what is open.
+// A match's PGN as HQ writes it, fetched with this device's token.
+async function hqHoloPgn(task) {
+  const res = await fetch(`/v1/hq/scenarios/${Number(task)}/pgn`, { headers: signed({}) });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.text();
+}
+
+// The taps: open a match, step through it, copy or save its PGN, close what is open.
 async function hqHoloAct(what, arg) {
   if (what === "close") { HQ.holo = null; render(); return true; }
+  if (what === "copy") {
+    try {
+      const text = await hqHoloPgn(arg);
+      if (!navigator.clipboard) throw new Error("this page cannot reach the clipboard; download it instead");
+      await navigator.clipboard.writeText(text);
+      flash("The game's PGN is copied.", "ok");
+    } catch (e) { flash("Couldn't copy the PGN: " + e.message, "err"); }
+    return true;
+  }
+  if (what === "save") {
+    try {
+      const name = `endora-match-${Number(arg)}.pgn`;
+      const url = URL.createObjectURL(new Blob([await hqHoloPgn(arg)], { type: "application/x-chess-pgn" }));
+      const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      flash(`The game is saved as ${name}.`, "ok");
+    } catch (e) { flash("Couldn't download the PGN: " + e.message, "err"); }
+    return true;
+  }
   // A step through the game: past the last move, or "live", follows it again.
   if (what === "ply") {
     const last = ((HQ.holo && HQ.holo.data && HQ.holo.data.positions) || []).length - 1;

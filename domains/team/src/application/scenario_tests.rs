@@ -634,6 +634,23 @@ fn a_side_may_resign_and_the_other_wins() {
             &json!("done")
         )
     );
+    // Outside the league its PGN names the members, and says who resigned.
+    let pgn = hq.scenario_pgn(game).unwrap();
+    for tag in [
+        "[Event \"Endora Holodeck\"]",
+        "[Date \"2026.10.17\"]",
+        "[White \"Linus\"]",
+        "[Black \"Zed\"]",
+        "[Result \"1-0\"]",
+        "[Termination \"normal\"]",
+    ] {
+        assert!(pgn.contains(tag), "{tag}: {pgn}");
+    }
+    assert!(pgn.ends_with("\n1. e4 {black resigned} 1-0\n"), "{pgn}");
+    assert!(matches!(
+        hq.scenario_pgn(TaskId(9999)),
+        Err(EngineError::Unknown(_))
+    ));
 }
 
 // A move resets it: a player who acts is never counted idle for its earlier silences.
@@ -742,6 +759,24 @@ fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
     assert_eq!(league["table"][1]["rating"], 1184);
     assert_eq!(league["pairs_left"], 0);
     assert_eq!(league["games"][0]["end"], "black_won");
+    // Each brain's rating after every game it finished, for the card's sparkline.
+    assert_eq!(league["table"][0]["history"], json!([1200, 1216]));
+    assert_eq!(league["table"][1]["history"], json!([1200, 1184]));
+    // A league game's PGN is under the league, its sides the brains' labels.
+    let pgn = hq.scenario_pgn(game).unwrap();
+    for tag in [
+        "[Event \"Endora model league\"]".to_owned(),
+        "[Round \"1\"]".to_owned(),
+        format!("[White \"{}\"]", crate::domain::Brain::Haiku.label()),
+        format!("[Black \"{}\"]", crate::domain::Brain::Local.label()),
+        "[Result \"0-1\"]".to_owned(),
+    ] {
+        assert!(pgn.contains(&tag), "{tag}: {pgn}");
+    }
+    assert!(
+        pgn.ends_with("1. f3 e5 2. g4 Qh4# {checkmate} 0-1\n"),
+        "{pgn}"
+    );
     hq.tick().unwrap();
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
     // One game a pair (the owner, 2026-10-30): the league is over, and no rematch starts.

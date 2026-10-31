@@ -391,6 +391,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/league", post(hq_start_league))
         .route("/v1/hq/league/reset", post(hq_reset_league))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
+        // A game in PGN, to copy or keep: a Holodeck match, or the office's chess.
+        .route("/v1/hq/scenarios/{task}/pgn", get(hq_scenario_pgn))
+        .route("/v1/hq/chess/{id}/pgn", get(hq_chess_pgn))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.

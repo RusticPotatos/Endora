@@ -100,6 +100,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/league", post(start_league))
         .route("/v1/league/reset", post(reset_league))
         .route("/v1/scenarios/{task}", get(scenario_shown))
+        // A game written out in PGN, to copy or keep: a Holodeck match, or the office's chess.
+        .route("/v1/scenarios/{task}/pgn", get(scenario_pgn))
+        .route("/v1/chess/{id}/pgn", get(chess_pgn))
         // A match of ping-pong or pool played again, step by step.
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
@@ -883,6 +886,38 @@ async fn scenario_shown(
     ))
 }
 
+/// PGN as plain text.
+fn pgn_text(pgn: String) -> Response {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        pgn,
+    )
+        .into_response()
+}
+
+/// A Holodeck match in PGN: a league game under the league, its sides the brains.
+async fn scenario_pgn(
+    Extract(state): Extract<State>,
+    Path(task): Path<i64>,
+) -> Result<Response, Failed> {
+    let hq = state.hq.clone();
+    Ok(pgn_text(
+        blocking(move || hq.scenario_pgn(TaskId(task))).await?,
+    ))
+}
+
+/// A game of the office's chess in PGN.
+async fn chess_pgn(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Response, Failed> {
+    let hq = state.hq.clone();
+    Ok(pgn_text(blocking(move || hq.chess_pgn(id)).await?))
+}
+
 #[derive(Deserialize)]
 struct ProjectTools {
     #[serde(default)]
@@ -1248,6 +1283,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "health needs no token");
+    }
+
+    /// A game of chess, a Holodeck match or the office's, is read as PGN in plain text, to copy
+    /// or keep; one there is not is not found.
+    #[tokio::test]
+    async fn a_game_is_read_as_pgn() {
+        let st = state(false);
+        let white = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 4).unwrap();
+        let black = st.hq.hire("John Doe", Role::Developer, 40, 2, 4).unwrap();
+        let goal = st.hq.set_goal("Holodeck", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Chess", "", white, None).unwrap();
+        st.hq
+            .set_project_tools(project, Some(vec!["scenario".to_owned()]))
+            .unwrap();
+        let task = st.hq.start_chess(project, [white, black], 1).unwrap();
+        st.hq.store().add_chess_game(black, white, 0).unwrap();
+        let office = st.hq.store().chess_games().unwrap()[0].id;
+        let app = app(st);
+        for (path, has) in [
+            (
+                format!("/v1/scenarios/{}/pgn", task.0),
+                "[Event \"Endora Holodeck\"]\n",
+            ),
+            (format!("/v1/chess/{office}/pgn"), "[White \"John Doe\"]\n"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert!(
+                res.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/plain"),
+                "{path}"
+            );
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(text.contains(has), "{path}: {text}");
+            assert!(text.contains("[Result \"*\"]"), "{path}: {text}");
+        }
+        for path in ["/v1/scenarios/9999/pgn", "/v1/chess/9999/pgn"] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     /// The owner retired the Holodeck's other worlds (ADR 0135, amended 2026-10-30): nothing

@@ -3065,6 +3065,18 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   // Which side each brain played, and who won, in words rather than "black_won" (owner, 2026-10-26).
   const gameLine = league.replace(/<[^>]+>/g, "");
   if (!gameLine.includes("White: &lt;b&gt;Haiku&lt;/b&gt;") || !gameLine.includes("Black: Local") || !gameLine.includes("Local won") || gameLine.includes("black_won")) fail("holodeck: a league game does not say who played which colour and who won: " + league);
+  // Each brain's rating game by game, a small inline line beside its name (no library): one a
+  // brain, its label escaped, and a flat line before any game, or with no history sent at all.
+  if ((league.match(/<svg class="hq-spark"/g) || []).length !== 2 || /NaN|undefined/.test(league)) fail("holodeck: the league has no sparkline a brain: " + league);
+  if (league.includes('aria-label="<b>Haiku') || !league.includes('aria-label="&lt;b&gt;Haiku&lt;/b&gt; rating 1200"')) fail("holodeck: a sparkline's label is not escaped: " + league);
+  runInContext(`__keepLeague = HQ.snap.holodeck.league; HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { league: {
+      table: [{ brain: "local", label: "Local", rating: 1200, won: 0, drawn: 0, lost: 0, history: [1200] }, { brain: "mac", label: "Mac", rating: 1200, won: 0, drawn: 0, lost: 0 }],
+      games: [], pairs_left: 1 } }) });`, context);
+  const fresh = html("hqHolodeck(HQ.snap)");
+  if ((fresh.match(/<svg class="hq-spark"[^>]*><polyline points="0\.0,8\.0 60\.0,8\.0"\/><\/svg>/g) || []).length !== 2) fail("holodeck: a league with no games does not draw a flat sparkline a brain: " + fresh);
+  runInContext(`HQ.snap.holodeck.league = { table: [{ brain: "local", label: "Local", rating: 1216, won: 1, drawn: 0, lost: 0, history: [1200, 1216, 1190] }], games: [], pairs_left: 0 };`, context);
+  if (!html("hqHolodeck(HQ.snap)").includes('points="0.0,9.4 30.0,2.0 60.0,14.0"')) fail("holodeck: a sparkline does not follow the rating game by game: " + html("hqHolodeck(HQ.snap)"));
+  runInContext(`HQ.snap.holodeck.league = __keepLeague;`, context);
   const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
   const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",
     fen: "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", rows: ["rnb.kbnr", "pppp.ppp", "........", "....p...", "......Pq", ".....P..", "PPPPP..P", "RNBQKBNR"],
@@ -3080,6 +3092,20 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (chess.includes("black_won")) fail("holodeck: a match's heading shows the stored result name: " + chess);
   // The steps fill the card's width: the activity log's time column is not for them (narrow phones).
   if (!chess.includes('class="hq-log hq-steps"')) fail("holodeck: the steps are laid out in the activity log's narrow columns: " + chess);
+  // A game's PGN, for any chess program: copied, or saved as a file, fetched from the node.
+  if (!chess.includes('data-act="hq:holo:copy:708">Copy PGN</button>') || !chess.includes('data-act="hq:holo:save:708">Download PGN</button>')) fail("holodeck: a match offers no Copy PGN and Download PGN: " + chess);
+  {
+    const realFetch = context.fetch, fetched = [], copied = [];
+    context.fetch = (path) => { fetched.push(String(path)); return Promise.resolve({ ok: true, status: 200, text: async () => "[Event \"Endora model league\"]\n\n1. f3 *\n" }); };
+    runInContext(`__keepNav = navigator.clipboard; navigator.clipboard = { writeText: async (t) => { __copied.push(t); } }; __copied = [];`, context);
+    await runInContext(`hqDispatch("hq", "holo", "copy", "708")`, context);
+    copied.push(...JSON.parse(runInContext("JSON.stringify(__copied)", context)));
+    runInContext(`navigator.clipboard = undefined;`, context);
+    await runInContext(`hqDispatch("hq", "holo", "copy", "708")`, context);
+    runInContext(`navigator.clipboard = __keepNav;`, context);
+    context.fetch = realFetch;
+    if (fetched[0] !== "/v1/hq/scenarios/708/pgn" || copied.length !== 1 || !copied[0].startsWith("[Event \"Endora model league\"]")) fail("holodeck: Copy PGN does not fetch the match's PGN and copy it: " + JSON.stringify([fetched, copied]));
+  }
   // A game to watch (owner, 2026-10-27): every move listed and tappable, the board stepped
   // through, the last move lit, and live until the owner steps back.
   const start = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"];
@@ -3131,7 +3157,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
   if (asked.join("|") !== "GET /v1/hq/scenarios/708") fail("holodeck: the taps do not fetch what they open, or a retired one still asks: " + asked.join("|"));
   runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
-  console.log("holodeck: matches and the league are listed and opened, escaped; nothing retired is offered");
+  console.log("holodeck: matches and the league (with sparklines) are listed and opened, escaped; a match copies and saves its PGN; nothing retired is offered");
 }
 
 // Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own

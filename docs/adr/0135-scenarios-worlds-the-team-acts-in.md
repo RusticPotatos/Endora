@@ -210,6 +210,22 @@ move by move. The office chess board
 - **One game at a time** now means only that no match is being played (and the league's project
   is not paused); the card's note that the league waits on queued scenarios goes with the queue.
 
+## Amendment (2026-10-30): PGN export and rating history
+
+- **Any game reads as PGN** (`domain/pgn.rs`, pure): the seven tags, a `Termination` in the
+  standard's words (a resignation or a rule's end `normal`, a side that stopped moving `time
+  forfeit`, an office game adjourned after a week `adjudication`, a match stopped with no result
+  `abandoned`), the numbered moves under 80 columns, the house's reason as a comment, and the
+  result. A league game is under "Endora model league", its sides the brains' labels and its
+  round its place among the league's games; another match is under "Endora Holodeck", and an
+  office game (0121) under "Endora office chess", their sides the members. `GET
+  /v1/scenarios/{task}/pgn` and `GET /v1/chess/{id}/pgn` answer in plain text; the node passes
+  them on at `/v1/hq/...`, and an open match on the Holodeck card offers Copy PGN and Download
+  PGN.
+- **Each brain's rating history** is its rating at the start and after each of its finished
+  games, derived by the same Elo pass as the table (no new table); the league card draws it as a
+  small inline line beside the brain.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.

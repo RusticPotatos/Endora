@@ -140,6 +140,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(played)
     }
 
+    /// A league game's round (its place among the games kept, from 1) and the brains that
+    /// played white and black, if the match on `world` is one.
+    pub(super) fn league_game_of(&self, world: TaskId) -> Done<Option<(usize, Brain, Brain)>> {
+        Ok(self
+            .league_kept()?
+            .into_iter()
+            .enumerate()
+            .find(|(_, (task, _, _))| *task == world)
+            .map(|(i, (_, white, black))| (i + 1, white, black)))
+    }
+
     /// The brain a turn on `task` is pinned to, if the task is a side of a league game.
     pub(super) fn league_brain_of(&self, task: Option<TaskId>) -> Done<Option<Brain>> {
         let Some(task) = task else {
@@ -295,7 +306,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .map(|r| {
                 json!({ "brain": r.brain.name(), "label": r.brain.label(), "rating": r.rating,
-                        "won": r.won, "drawn": r.drawn, "lost": r.lost })
+                        "won": r.won, "drawn": r.drawn, "lost": r.lost, "history": r.history })
             })
             .collect();
         let games: Vec<Value> = played
