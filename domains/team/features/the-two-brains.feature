@@ -27,6 +27,16 @@ Feature: Two brains per member
     And the owner sets Ada's brain to "local"
     Then Ada works with "Local" and judges with "Claude Sonnet"
 
+  # Since one team (ADR 0142) a title is a name only: Opus is no longer the CEO's alone.
+  Scenario: The owner may give Opus to any member but a researcher
+    Given Bo is the developer
+    And Cy is the researcher
+    And the goal "Keep the home lab healthy"
+    When the owner sets Bo's brain to "claude-opus-5-5"
+    Then it is not refused
+    When the owner sets Cy's brain to "claude-opus-5-5"
+    Then it is refused
+
   # --- Judgment runs only on Claude --------------------------------------------------------
 
   Scenario: A decision for a member out of budget waits, and runs after the reset

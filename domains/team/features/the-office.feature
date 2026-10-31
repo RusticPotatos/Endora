@@ -53,3 +53,32 @@ Feature: The open office
     And the chess game is over
     When Ada plays "a3" at chess
     Then it is refused for "no game of chess"
+
+  # Office chess turns averaged 27,760 prompt tokens in the week to 30 October, the largest
+  # cost line, for a move that needs only the board.
+  Scenario: A chess move is offered its turn and the board alone
+    Given downtime is on
+    When a tick passes
+    And Ada's turn starts
+    Then Ada's turn is offered "chess, my_turn" alone
+    And Ada's turn is offered none of the node's tools
+    And Ada's briefing does not say "Your map of the team's world"
+
+  Scenario: A game of chess is written out in PGN
+    Given downtime is on
+    And Ada and Bo are in a game of chess after "e4 e5 Bc4 Nc6 Qh5 Nf6"
+    When a tick passes
+    And Ada plays "Qxf7" at chess
+    Then the chess game written out in PGN reads
+      """
+      [Event "Endora office chess"]
+      [Site "Endora HQ"]
+      [Date "2026.10.17"]
+      [Round "-"]
+      [White "Ada"]
+      [Black "Bo"]
+      [Result "1-0"]
+      [Termination "normal"]
+
+      1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# {checkmate} 1-0
+      """

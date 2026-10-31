@@ -220,6 +220,7 @@ fn asks_the_owner(w: &mut Office, name: String, text: String) {
     );
 }
 
+#[given(expr = "the owner pauses {word}")]
 #[when(expr = "the owner pauses {word}")]
 fn owner_pauses(w: &mut Office, name: String) {
     let member = w.member(&name);
