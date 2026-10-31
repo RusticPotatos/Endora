@@ -728,6 +728,13 @@ done. Defects are numbered so the next round's changes can name them.
   checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
   it in 10 turns for $0.94 (22:02–22:20 UTC), of the task's $1.38. The cap on results a turn
   reads, or a smaller `image_tags` answer, would keep it at Haiku's price. Related to D12 and D17.
+- [ ] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
+  Round 3, 31 Oct: Ada had today's $0.50 allowance (card 5025, approved) and reached her limit
+  ($0.89 of $0.88: twice her $0.19 share plus the allowance) at about 22:42 UTC. HQ asks about a
+  member once a day, so no card came; her turns on 949 (a review) and 951 stayed queued with
+  $3.78 left in the pool, until the owner's next day. The owner's top-ups raise the pool, but a
+  share of $0.19 a day is small beside a $0.50 allowance. Either size the allowance from what
+  the pool has left, or ask again when the pool has money and work waits.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
