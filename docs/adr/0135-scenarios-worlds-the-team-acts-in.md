@@ -226,6 +226,27 @@ move by move. The office chess board
   games, derived by the same Elo pass as the table (no new table); the league card draws it as a
   small inline line beside the brain.
 
+## Amendment (2026-10-31): the Chess tab
+
+The owner's notes of 31 Oct asked for a dedicated Chess area: every league game, live boards
+for those in play, and the month's bracket with each game's PGN. The league is not monthly: it
+is a round robin, one game a pair, and a round runs from one reset to the next. The owner
+accepted showing "Round N, since <reset day>" rather than a month that the code does not keep.
+
+- **HQ's console gains a fourth tab, Chess** (`47e-hq-chess.js`). Live: each league game in play,
+  its board with the last move lit, whose move it is and the last move. This round: the
+  bracket, brains against brains (won, lost, drawn, playing, not yet), and the standings. All
+  games: every finished game, newest first, ten to a page with Newer and Older, each with its
+  result, its moves, round and day, and its PGN. The Work tab's Holodeck card keeps the matches
+  and points to the Chess tab for the league.
+- **The standings rank by points (a win one, a draw a half), then rating** (`domain/league.rs`).
+- **The snapshot's league** says its round (`{number, since}`, the owner's day of the last
+  reset) and, for a game in play, its board, the board before the last move, its FEN, whose
+  move it is and the last move, so the console's existing refresh moves it.
+- **`GET /v1/league/games?page=N`** (the node's `/v1/hq/league/games`) lists every finished
+  league game of every round, the games each reset set aside included, newest first, ten to a
+  page. A game in play is not listed; one stopped with no result is listed as abandoned.
+
 ## Consequences
 
 - A scenario costs nothing on the house's models, and its project may be capped at $0.
