@@ -209,7 +209,7 @@ mod tests {
         for lesson in [
             "Set DB_PASSWORD=hunter2 before the migration.",
             "Send Authorization: Bearer abc123def456 to the API.",
-            "Clone from https://jane:hunter2@git.example.com/repo.",
+            "Clone from https://jane:hunter2@example.com/repo.",
         ] {
             assert!(
                 matches!(checked(lesson), Err(Unkept::Secret(_))),
