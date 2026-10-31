@@ -16,9 +16,14 @@ pub const LOOP_LESSONS_MOST: usize = 10;
 pub const LOOP_LESSONS_CHARS: usize = 1_200;
 
 /// How a member leaves its loop a lesson: told in every work and review turn's fixed opening.
-pub const HOW: &str = "A lesson for the loop, which every later work turn on it reads: a line of \
-                       its own starting `Lesson:` in your last word or a review's notes, at most \
-                       160 characters. HQ keeps it when the item is accepted or sent back.\n";
+#[must_use]
+pub fn how() -> String {
+    format!(
+        "A lesson for the loop, which every later work turn on it reads: a line of its own \
+         starting `Lesson:` in your last word or a review's notes, at most {LOOP_LESSON_MOST} \
+         characters. HQ keeps it when the item is accepted or sent back.\n"
+    )
+}
 
 /// Why a lesson is not kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,13 +49,9 @@ impl std::fmt::Display for Unkept {
     }
 }
 
-/// A lesson's words on one line: spaces made single, control characters gone.
+/// A lesson's words on one line, cleaned as another member's words are ([`super::record::clean`]).
 fn one_line(text: &str) -> String {
-    let text: String = text
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    super::record::clean(text)
 }
 
 /// The lines of `text` marked as lessons, each without its mark, on one line.

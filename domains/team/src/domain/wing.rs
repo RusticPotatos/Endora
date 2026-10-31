@@ -65,6 +65,9 @@ pub struct Branch {
     pub at: Millis,
 }
 
+/// A branch's status when a turn submitted it: checked, then reviewed.
+pub const SUBMITTED: &str = "submitted";
+
 /// A branch's status when it is work in progress, kept by the worker as a turn ran out of room
 /// (ADR 0142, amended 2026-10-31): kept on the node for the next turn, never checked, reviewed or
 /// offered for a push.

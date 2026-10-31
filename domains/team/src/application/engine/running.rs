@@ -342,7 +342,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         format!(
             "{}{STANDARDS}{}",
             Self::tools_said(),
-            crate::domain::lessons::HOW
+            crate::domain::lessons::how()
         )
     }
 

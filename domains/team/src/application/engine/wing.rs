@@ -6,7 +6,7 @@
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
-use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
+use crate::application::ports::{Clock, DeskItem, Run, TeamStore, WorkerAdapter};
 use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
     Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role, RunId,
@@ -103,15 +103,8 @@ fn held_to(text: &str, most: usize) -> String {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    /// Records a branch the node took from a turn (ADR 0115): the branch, a document with its
-    /// stat and diff, a line in the task's thread, and a check job queued for the dev node's
-    /// runner. Named by the turn's own token, while it runs.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a token that opens no running turn, a turn on no task, or a
-    /// branch not under `hq/`; a store failure.
-    pub fn record_branch(&self, token: &str, s: &Submission) -> Done<Recorded> {
-        let _held = self.held();
+    /// The running turn whose `token` submits `s`, and its task, for a branch under `hq/`.
+    fn submitting(&self, token: &str, s: &Submission) -> Done<(Run, TaskId)> {
         let Some(id) = self.store.run_of_token(token)? else {
             return Err(EngineError::Unknown("running turn with that token"));
         };
@@ -122,6 +115,47 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
             return Err(EngineError::Unknown("branch under hq/"));
         }
+        Ok((run, task))
+    }
+
+    /// Keeps the branch `s` of `run`'s on `task` as `status`, with its files.
+    fn keep_branch(
+        &self,
+        run: &Run,
+        task: TaskId,
+        s: &Submission,
+        status: &str,
+        at: crate::domain::Millis,
+    ) -> Done<i64> {
+        let branch = self.store.add_branch(&Branch {
+            id: 0,
+            task,
+            run: run.id,
+            member: run.member,
+            name: s.branch.clone(),
+            head: s.head.clone(),
+            base: s.base.clone(),
+            files: s.files,
+            plus: s.plus,
+            minus: s.minus,
+            can_push: s.can_push,
+            status: status.to_owned(),
+            at,
+        })?;
+        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
+        Ok(branch)
+    }
+
+    /// Records a branch the node took from a turn (ADR 0115): the branch, a document with its
+    /// stat and diff, a line in the task's thread, and a check job queued for the dev node's
+    /// runner. Named by the turn's own token, while it runs.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn, a turn on no task, or a
+    /// branch not under `hq/`; a store failure.
+    pub fn record_branch(&self, token: &str, s: &Submission) -> Done<Recorded> {
+        let _held = self.held();
+        let (run, task) = self.submitting(token, s)?;
         let now = self.clock.now();
         let title = format!(
             "branch {} ({} file{}, +{} −{})",
@@ -139,22 +173,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             text: held_to(&format!("{}\n\n{}", s.stat.trim(), s.diff), DOCUMENT_MOST),
             at: now,
         })?;
-        let branch = self.store.add_branch(&Branch {
-            id: 0,
-            task,
-            run: run.id,
-            member: run.member,
-            name: s.branch.clone(),
-            head: s.head.clone(),
-            base: s.base.clone(),
-            files: s.files,
-            plus: s.plus,
-            minus: s.minus,
-            can_push: s.can_push,
-            status: "submitted".to_owned(),
-            at: now,
-        })?;
-        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
+        let branch = self.keep_branch(&run, task, s, wing::SUBMITTED, now)?;
         let (check, _) = self.store.add_check(&Check {
             id: 0,
             task,
@@ -225,35 +244,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// not under `hq/`; [`Refusal::InReview`] for work in review; a store failure.
     pub fn keep_work_in_progress(&self, token: &str, s: &Submission) -> Done<i64> {
         let _held = self.held();
-        let Some(id) = self.store.run_of_token(token)? else {
-            return Err(EngineError::Unknown("running turn with that token"));
-        };
-        let run = self
-            .running(id)
-            .map_err(|_| EngineError::Unknown("running turn with that token"))?;
-        let task = run.task.ok_or(EngineError::Unknown("task"))?;
-        if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
-            return Err(EngineError::Unknown("branch under hq/"));
-        }
+        let (run, task) = self.submitting(token, s)?;
         if self.task(task)?.status == TaskStatus::InReview {
             return Err(EngineError::Refused(Refusal::InReview));
         }
-        let branch = self.store.add_branch(&Branch {
-            id: 0,
-            task,
-            run: run.id,
-            member: run.member,
-            name: s.branch.clone(),
-            head: s.head.clone(),
-            base: s.base.clone(),
-            files: s.files,
-            plus: s.plus,
-            minus: s.minus,
-            can_push: s.can_push,
-            status: IN_PROGRESS.to_owned(),
-            at: self.clock.now(),
-        })?;
-        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
+        let branch = self.keep_branch(&run, task, s, IN_PROGRESS, self.clock.now())?;
         self.store.set_gate(task, false)?;
         Ok(branch)
     }
@@ -283,7 +278,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .branches()?
             .into_iter()
-            .filter(|b| work.contains(&b.task) && b.status == "submitted")
+            .filter(|b| work.contains(&b.task) && b.status == wing::SUBMITTED)
             .max_by_key(|b| b.id)
         else {
             return Err(EngineError::Unknown("submitted branch on that work"));
@@ -641,7 +636,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .branches()?
             .into_iter()
-            .filter(|b| b.task == task && b.status == "submitted")
+            .filter(|b| b.task == task && b.status == wing::SUBMITTED)
             .max_by_key(|b| b.id)
         else {
             return Ok(());
