@@ -2663,7 +2663,7 @@ async function hqDispatch(verb, noun, id, arg) {
   // The owner adds to today's pool, for today only (ADR 0113 rule 6). HQ holds the limit.
   if (noun === "pool") {
     // Prefilled with one floor day, the unit HQ counts top-ups in (at most three).
-    const day = (((HQ.snap || {}).scorecard || {}).pool || {}), base = day.floor || day.base || 0;
+    const base = ((((HQ.snap || {}).scorecard || {}).pool || {}).floor) || 0;
     const said = prompt("Dollars to add to today's pool (gone tomorrow; at most three pool days in all):", (base / 1e6).toFixed(2));
     if (said === null) return true;
     const micros = Math.round(parseFloat(said) * 1e6);

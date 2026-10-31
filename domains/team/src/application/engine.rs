@@ -3433,16 +3433,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| !downtime.contains(&r.wake))
             .cloned()
             .collect();
-        let scorecard = self.scorecard(&worked, &every_run, &tasks, day)?;
+        // Today's pool, sized once for the snapshot and its scorecard alike.
+        let sized = self.pool_sized_today()?;
+        let topped_up = self.topup_of(day)?;
+        let scorecard = self.scorecard(&worked, &every_run, &tasks, day, sized.base, topped_up)?;
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
         }
-        let pool_day = self.pool_day_today()?;
-        let sized = self.pool_sized_today()?;
-        let topped_up = self.topup_of(day)?;
+        let pool_day = sized.base + topped_up;
         let all_members = self.store.members()?;
         let members = self.members_shown(&all_members, &runs, day, pool_day)?;
         let routine_list = self.store.routines()?;
@@ -3610,13 +3611,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// owner's day boundaries, over every run, task, desk item and event the store keeps. The
     /// feed is pruned by the node, so each window says where the record starts when that is
     /// later than the window does. `every_run` is every turn, downtime's too: what each model
-    /// cost counts every turn that ran, work or not.
+    /// cost counts every turn that ran, work or not. `pool_base` and `topped_up` are today's
+    /// pool as the snapshot sized it.
     fn scorecard(
         &self,
         runs: &[Run],
         every_run: &[Run],
         tasks: &[Task],
         day: i64,
+        pool_base: Micros,
+        topped_up: Micros,
     ) -> Done<serde_json::Value> {
         let desk = self.store.desk()?;
         // A lead's report and patterns turns are not work on the scorecard (ADR 0120).
@@ -3648,9 +3652,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "outcomes": self.outcomes_shown(runs, &events, kept_from)?,
             // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6). The base is
             // sized from the Claude credit (amended 2026-10-31); a top-up is counted in floors.
-            "pool": { "base": self.pool_sized_today()?.base,
+            "pool": { "base": pool_base,
                       "floor": money::pool_a_day(self.settings.pool_per_month),
-                      "topped_up": self.topup_of(day)? },
+                      "topped_up": topped_up },
             // What each model cost, the owner's last seven days against the seven before (the
             // owner, 2026-10-31): shown on the Money card.
             "by_model": scorecard::by_model_shown(every_run, day, offset),
