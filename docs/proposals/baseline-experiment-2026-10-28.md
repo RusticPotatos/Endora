@@ -617,6 +617,13 @@ done. Defects are numbered so the next round's changes can name them.
   owner whether to go on. The shell's "command not found" could say which Endora tool has that
   name and how to call it.
 
+- [ ] **D15. The house's own model is held to 60 turns a day.** Round 3, 31 Oct 15:0x: Bo (the
+  NAS's model, which costs nothing) reached "60 turns a day is the most a member takes" and
+  stopped until tomorrow, partly from looping on 953's questions. The cap guards against a
+  runaway; for a free model a loop that keeps failing is what should stop it, not the count.
+- [ ] **D16. The top-up refusal names a figure it then refuses.** HQ said "$2.84 may still be
+  added today" and refused $2.84; $2.83 went through. The room is rounded up when said.
+
 ### From the review of round 2's code (31 Oct), not yet fixed
 
 Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
