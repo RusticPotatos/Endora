@@ -291,7 +291,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )?;
         self.loop_failed(task)?;
         let now = self.task(task)?;
-        if now.owner.or(now.assignee) != Some(run.member) {
+        if now.owner.or(now.assignee) != Some(run.member) || self.held_above(task)? {
             return Ok(());
         }
         self.hand_over(task, run.member, "its turns kept running out of room")?;

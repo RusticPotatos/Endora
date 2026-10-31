@@ -9,7 +9,7 @@ use serde_json::json;
 
 use endora_team::application::run_ports::RunStore;
 use endora_team::application::{Author, NewTask, TeamStore};
-use endora_team::domain::{Brain, DeskId, Priority, Receipt, Role, RunStatus};
+use endora_team::domain::{Brain, DeskId, Priority, Receipt, Role, RunStatus, TaskStatus};
 use endora_team::infrastructure::Script;
 
 use super::Office;
@@ -225,4 +225,27 @@ fn owner_pauses(w: &mut Office, name: String) {
     let member = w.member(&name);
     w.hq.pause(member, true).expect("paused");
     w.tick();
+}
+
+#[then(expr = "{string} waits at {word}'s rank, not blocked, with nothing on the owner's desk")]
+fn waits_at_rank(w: &mut Office, title: String, name: String) {
+    let task = w.task(&title);
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    assert_ne!(found.status, TaskStatus::Blocked, "{found:?}");
+    assert_eq!(found.owner.or(found.assignee), Some(w.member(&name)));
+    let desk: Vec<_> = w
+        .waiting_on_desk("")
+        .into_iter()
+        .filter(|d| d.task == Some(task))
+        .collect();
+    assert!(desk.is_empty(), "{desk:#?}");
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    assert!(
+        thread.iter().any(|p| p.text.contains("waits for Rae")),
+        "it failed and was held: {thread:#?}"
+    );
 }

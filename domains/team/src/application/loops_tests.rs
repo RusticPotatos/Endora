@@ -861,6 +861,72 @@ fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
     assert_eq!(notices, 1, "told once");
 }
 
+/// Review of 31 Oct: with the Mac's member the only one ranked above, a Mac away for a while
+/// blocked the item for good, "failed at every rank". It is held where it is instead, neither
+/// climbing nor blocked, and goes up once the Mac is back.
+///
+/// Given Bo's item, with Mara, Kit and Ada paused and the Mac away,
+/// when it fails three times at Bo's rank,
+/// then it stays Bo's, not blocked, with nothing on the owner's desk, and nobody is woken on it;
+/// further failures change nothing; and when the Mac is free again it goes to Rae.
+#[test]
+fn an_item_waits_for_an_away_mac_above_rather_than_blocking() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let ids: Vec<MemberId> = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .filter(|m| ["Mara", "Kit", "Ada"].contains(&m.name.as_str()))
+        .map(|m| m.id)
+        .collect();
+    for id in ids {
+        hq.pause(id, true).unwrap();
+    }
+    let hard = item(&hq, &f, "Find what stops gluetun", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    hq.tell_mac(false, "in use");
+    let wakes_before = hq.wakes().unwrap().len();
+    for _ in 0..6 {
+        hq.loop_failed(hard).unwrap();
+    }
+    let found = hq.store().task(hard).unwrap().unwrap();
+    assert_ne!(found.status, TaskStatus::Blocked);
+    assert_eq!(found.assignee, Some(f.bo), "held at Bo's rank");
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.task != Some(hard)),
+        "nothing for the owner"
+    );
+    assert_eq!(
+        hq.wakes().unwrap().len(),
+        wakes_before,
+        "nobody woken to fail it again"
+    );
+    let thread = hq.store().thread(hard).unwrap();
+    let held: Vec<_> = thread
+        .iter()
+        .filter(|p| p.text.contains("waits for Rae"))
+        .collect();
+    assert_eq!(held.len(), 1, "said once: {thread:?}");
+    // The Mac is free again: the item climbs to Rae.
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.rae));
+    assert!(woken(&hq, f.rae, hard, WakeReason::Assigned));
+    assert_eq!(
+        hq.loop_failures(hard).unwrap(),
+        0,
+        "counted afresh at Rae's rank"
+    );
+}
+
 /// Today's team of eight, with roles, routines and work, as production has it.
 fn the_old_team(hq: &Hq<'_>) -> (GoalId, TaskId) {
     let g = goal(hq);
