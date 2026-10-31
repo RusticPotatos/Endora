@@ -45,6 +45,11 @@ Settings.
   models with no roles, and each loop is a project with a plan, checks, a starting rank and how many items it has in hand at once. A
   loop's plan and progress go in Work; its notes and the map go with what the team knows, in
   Team. Nothing new goes in for roles, reporting lines, conversations or office votes.
+- A loop's lessons (ADR 0142, amended 2026-10-31) are kept with the loop in HQ's settings
+  (`loop_lessons:<project>`), and their rules (the `Lesson:` mark that starts a line of a
+  worker's last word or a reviewer's notes, and the limits) in the team's domain,
+  `domains/team/src/domain/lessons.rs`. The owner edits them whole through
+  `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
 - Inside HQ, use its three tabs (2026-10-30, after the density audit of 2026-10-25), split by
   what the owner is doing, and add no fourth without a reason none of them can hold: **Work**
   (where every device opens: giving work, your desk, the digest of what happened while you were
