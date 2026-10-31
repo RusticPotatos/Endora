@@ -587,6 +587,29 @@ and a review of round 3's code for duplicated patterns is acted on. Merging roun
 three duplicates made by work done in parallel: two `Brain::claude()`, two `ends_turn` scenario
 helpers and two "woken to review" steps.
 
+### Round 3's code: what to consolidate before release (review of 31 Oct)
+
+A read-only review of `7c195ac6..round3-local` found work done in parallel doing one job several
+ways. To fix after the one-team clean-up lands, in this order:
+- [ ] **Secret scanning:** two scanners; the loop lessons use the narrow one, so `NAME=value` or
+  a `Bearer` token would be kept. One scanner, in `shared/kernel/src/secrets.rs`.
+- [ ] **Out of room:** recorded by a flag, by matching the worker's wording, and by a handover kept
+  both as a setting and as a post. One record, read by the briefing and the thread view.
+- [ ] **The prompt budget:** bytes in the worker, tokens in HQ, and `ENDORA_PROMPT_BUDGET` moves
+  only the worker's. One figure by `Brain`, in the team domain, passed to the worker.
+- [ ] **Verdicts:** `review_in` and `test_in` repeat the reviewer, own-work, CI and lessons checks,
+  and both still say "one rank up". One gate and one after-verdict step.
+- [ ] **Scenario steps:** ending a turn, running out of room, asking for review, sending back and
+  setting up a loop are each written two to five times. One step each, on `Office`.
+- [ ] **Continuation and failed-start rules** sit in the engine; move them to pure domain code.
+- [ ] **Smaller:** lessons cleaned by a weaker copy of `record::clean`; work in progress repeats
+  `record_branch`; three desk de-duplications; a blocked item checked in four places; YAML and
+  glob helpers twice in `mechanical.rs` (one shared with the node's `forbidden_path`); the node's
+  background loop written a third time; `task.owner.or(task.assignee)` 28 times (`Task::holder`);
+  the pool sent twice per snapshot; two `dollars()` that can differ by a cent; the per-item
+  `loop_*` settings overlapping.
+- [ ] **A likely bug:** the runner counts an exit code it cannot read as "never started" (-1).
+
 ### The owner's
 
 - [ ] Decide on round 3's changes once round 2 is judged.
