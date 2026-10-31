@@ -521,9 +521,15 @@ done. Defects are numbered so the next round's changes can name them.
   18th cannot be spent without daily top-ups (see Next steps).
 - [ ] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
   times, 920 four).
-- [ ] **D11. Lab: sonarr and nzbget restarted together at 03:24 EDT on 31 Oct** (07:24:54Z and
-  07:24:55Z), not by HQ (no restart in its record); two at once points to something scheduled on
-  the NAS, such as an image update or a maintenance job. Cause not found yet.
+- [ ] **D11. Lab: containers are recreated every night by Watchtower.** Diagnosed 31 Oct (read-only):
+  Watchtower runs at 03:00 (`--schedule 0 0 3 * * * --cleanup`) and recreates every container on a
+  `:latest` tag with a newer image; on 31 Oct it recreated six, sonarr and nzbget among them, at
+  03:24. It also recreated gluetun on 19, 20 and 30 Oct, and on 15 and 16 Oct failed with "joining
+  network namespace of container: No such container": prowlarr, deluge and nzbget share gluetun's
+  network by container id. Likely the cause of the VPN stalls the 2-hourly restart works around,
+  and it puts restarts into task 8's window. Proposed: the VPN stack out of Watchtower (label,
+  pinned tags, updated together by the playbook, gluetun first), `endora-docker-observer` out of
+  it too, task 8's window restarted after that, and HQ's lab status showing last night's updates.
 - [ ] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
