@@ -2,7 +2,8 @@
 
 ## Status
 
-Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops. Amended
+2026-10-31, below: the day's pool follows the Claude credit.
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
 [0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): only a lead proposes a project, and the
@@ -249,6 +250,56 @@ The owner can also move a routine into a project under its goal, or out of one
 (`POST /v1/routines/{id}/project`, through the node's `/v1/hq/routines/{id}/project`): what it
 fires from then on is the project's. A lead's standing reviews go to the lead's area project;
 the CEO's stay unscoped, paid from the pool.
+
+## Amendment (2026-10-31): the day's pool follows the Claude credit
+
+Decided by the owner on 2026-10-31 (D9 of the baseline experiment's open issues). The owner's
+plan grants $100 of Claude API credit a month, renewing on the 18th, and what is left of it on
+that day is lost. The pool was a constant ($95 a month, one thirtieth a day), so the grant could
+be spent only by topping the pool up by hand every morning: on 31 Oct, with $70.23 of the grant
+left and 18 days to go, the constant gave $3.17 a day and the grant needed $3.90.
+
+1. **Today's base pool.** With the floor `F` (the pool a month over 30 days, $3.17 today, as
+   before) and `D` the floor's part for members whose brain is not a Claude (their claims' part
+   of `F`; DeepSeek, which the grant does not pay for):
+   `base = min(3F, max(F, grant_left / days_to_renewal + D))`, where `days_to_renewal` counts
+   today (renewing tomorrow leaves one day). Equivalently, the Claude part of the day is the
+   larger of the floor's Claude part and the grant spread over the days left, and the rest of
+   the floor stays as it was. `credit_pool::sized`, in the team's domain, holds the arithmetic;
+   example: 31 Oct, $70.23 of the grant left, renewing on 18 Nov, no member on DeepSeek:
+   $70.23 / 18 = $3.90 a day.
+2. **Only grant credit counts.** Bought credit does not expire, so it never raises the pool: the
+   node sends HQ the grant's pot alone (`claude_pots`, grant spent first, as on 2026-10-30).
+3. **The ceiling is three floors**, $9.50 a day: the bound the owner already set on a day's
+   top-ups (rule 6), so a day can never reach more from the credit than the owner could already
+   give it by hand. It matters only near the renewal, when much is left (on the last day $60 left
+   would otherwise be $60 in one day).
+4. **Where the figures come from.** HQ never reaches out: the node is its only client, as for the
+   Mac's state (ADR 0130). Every five minutes the node posts `POST /v1/pool/credit`
+   `{grant_left, renews}` to HQ, signed with HQ's token (`renews` the next renewal, `YYYY-MM-DD`
+   on the owner's calendar, after any renewal due; both `null` with no plan grant). HQ keeps the
+   first grant it hears in each owner's day (`pool_credit:<day>`) and ignores later words that
+   day, so what the team spends today does not shrink today's pool under it; a day heard to have
+   no grant takes a grant heard later in it. A renewal that is not after today is out of date and
+   is not kept.
+5. **The floor otherwise.** With no word today (the node down, HQ not set up on it, or before the
+   first word of the day), or no plan grant set, today's base is the floor, as before.
+6. **Everything else stands.** Shares are their claims' part of today's pool (base plus top-up),
+   so they and the borrowing cap of rule 4 scale with it, as with a top-up. The per-turn caps,
+   rule 4's limit, project caps (the model league's $10 a month, ADR 0135, among them) and their
+   sum against the pool's month (`CapsOverPool`, still counted on the $95 month) are unchanged.
+   The owner's top-up adds on top of the sized base and is still at most three floors a day.
+7. **Shown.** The snapshot's `pool` carries `base_per_day`, and `sized` with `by` (`credit`,
+   `floor`, `ceiling`, `no_grant`, `unread`), `why`, `floor` and `ceiling`; the Money card on
+   HQ's Manage tab ([where things go](../where-things-go.md): "the money and credits") says it
+   under today's pool, for example "Sized from the Claude credit: $70.23 left, 18 days to the
+   18th." The top-up prompt is prefilled with one floor day, the unit top-ups are counted in.
+
+Scenarios: `features/the-pool-follows-the-credit.feature`. Considered and rejected: sizing the
+pool afresh on every reading (the day's own spend would shrink the day's pool under the team,
+and with it every share); counting bought credit (it does not expire, so spending it early only
+moves spending forward); a ceiling of its own (a new figure for the owner to keep, when the top-up
+bound already says how much one day may be).
 
 ## Consequences
 

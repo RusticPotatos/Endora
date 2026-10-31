@@ -481,8 +481,10 @@ done. Defects are numbered so the next round's changes can name them.
   Opus reviewing; Kit spent $3.00 of a day's pool by 08:15.
 - [ ] **D8. The house model's turns end at the budget with little to show.** Bo's 929 turns hit
   the 240 KB budget in 7 or 8 calls each; after three such passes the item climbed.
-- [ ] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the
-  18th cannot be spent without daily top-ups (see Next steps).
+- [x] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the
+  18th cannot be spent without daily top-ups (see Next steps). Built on the `r3-credit-pool`
+  branch (31 Oct): the day's pool is sized from the grant left and the days to its renewal,
+  between the floor and three floors (ADR 0113, amended 2026-10-31); not yet merged or released.
 - [ ] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
   times, 920 four).
 - [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
@@ -506,8 +508,8 @@ branch when finished:
 1. [ ] Finish round 2 (936 and 937 open) and judge them.
 2. [ ] Each morning while work is queued, top up the day's pool by about $4 (owner, 31 Oct),
    until the pool follows the credit.
-3. [ ] Build HQ's daily pool from the Claude credit left and the days to its renewal (owner,
-   31 Oct; D9).
+3. [x] Build HQ's daily pool from the Claude credit left and the days to its renewal (owner,
+   31 Oct; D9): on the `r3-credit-pool` branch, to merge and release with step 4.
 4. [ ] Merge, gate and release the waiting local work: the rest of the review fixes; a stable
    prompt opening and a lessons list per loop; the owner's scenarios for round 2's changes; the
    one-team clean-up (ADR 0142's "What goes").

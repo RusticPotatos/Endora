@@ -33,6 +33,13 @@ tagged release.
 
 ### Changed
 
+- **HQ's daily pool follows the Claude credit** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md),
+  amended 2026-10-31). Today's base pool is what is left of the plan's grant spread over the days
+  until it renews, counting today, never less than the floor ($95 a month over 30 days) nor more
+  than three floors; bought credit never raises it. The node tells HQ the grant left and the next
+  renewal every five minutes (`POST /v1/pool/credit` on HQ, signed), and HQ keeps the first word
+  of each owner's day. Without it, or with no grant, the floor as before. The Money card says which
+  figure was used and why. Caps and the owner's top-ups are unchanged.
 - **Compiled Python is no longer tracked.** Four `__pycache__/*.pyc` files had been committed
   under the `endora.homelab` collection's roles, and the repository ignored none. They are
   untracked, `__pycache__/` and `*.pyc` are ignored, and the collection's own `build_ignore`
