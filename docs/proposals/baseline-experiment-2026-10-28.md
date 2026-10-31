@@ -510,8 +510,13 @@ done. Defects are numbered so the next round's changes can name them.
   it unchecked for the next turn, which the handover tells to check it out; a turn that kept new
   work is no failure, so 937 would not have climbed. Not yet merged or released.*
 - [ ] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
+- [x] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
   `repo_checkout` refuses `main`, so 936 (what upstream changed) cannot be done. A read-only
-  upstream checkout, or a mirror of upstream on the node, would let it.
+  upstream checkout, or a mirror of upstream on the node, would let it. *Built on `r3-upstream`
+  (ADR 0106, amended 2026-10-31): the node's mirror fetches upstream's default branch on the
+  fork's schedule, every checkout carries it as `upstream/<branch>` to read offline
+  (`git log --oneline develop..upstream/master`), and `repo_submit` and the push refuse anything
+  named for upstream or carrying its commits; not yet merged or released.*
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 

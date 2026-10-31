@@ -2,7 +2,11 @@
 //! against the bridge's policy as the node composes it (`app/node/src/api/bridge.rs`): each
 //! capability or tool server's tool is a candidate, the node asks the policy which are offered,
 //! and a call is resolved against that same list. The team's lookup of an image's tags and
-//! Claude's monthly credit have their own files.
+//! Claude's monthly credit have their own files. The node's mirror of the fork and of upstream
+//! has its own world, in `scenarios/mirror.rs`, for the features tagged `@mirror`.
+
+#[path = "scenarios/mirror.rs"]
+mod mirror;
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
@@ -219,11 +223,22 @@ fn options() -> cucumber::cli::Opts<
     cucumber::cli::Opts::try_parse_from(kept).expect("cucumber's own options")
 }
 
+/// Whether a feature is the node's mirror's (tagged `@mirror`), run by [`mirror::Node`].
+fn of_the_mirror(feature: &cucumber::gherkin::Feature) -> bool {
+    feature.tags.iter().any(|t| t == "mirror")
+}
+
 fn main() {
-    futures::executor::block_on(
+    futures::executor::block_on(async {
         Bridge::cucumber()
             .with_cli(options())
             .fail_on_skipped()
-            .run_and_exit("features"),
-    );
+            .filter_run_and_exit("features", |feature, _, _| !of_the_mirror(feature))
+            .await;
+        mirror::Node::cucumber()
+            .with_cli(options())
+            .fail_on_skipped()
+            .filter_run_and_exit("features", |feature, _, _| of_the_mirror(feature))
+            .await;
+    });
 }

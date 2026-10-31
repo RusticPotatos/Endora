@@ -52,6 +52,38 @@ link), and no credential is sent. HTTPS only, ten seconds and 2 MB an answer, at
 pages of Docker Hub and ten of an OCI list. It is not one of the post-deploy check's lab reads.
 Code: `domains/capabilities/src/registry.rs`.
 
+Amended 2026-10-31 (round 3, D13: the team reads upstream ansible-nas): `repo_checkout` carries
+upstream ansible-nas, read-only. In round 2 task 936 ("List what upstream ansible-nas changed
+that this fork lacks") was blocked: the sandbox is offline, and `repo_checkout` hands out only the
+fork's base (`develop`) and the team's `hq/` branches. Claude Code did it by fetching upstream from
+GitHub. The node may reach GitHub; the sandbox may not. So the node's mirror of the fork
+(`/data/team-repo/mirror.git`, [0115](0115-the-engineering-wing-and-the-git-flow.md)) now fetches
+upstream's default branch too, asked of upstream each time (`git ls-remote --symref`), into
+`refs/upstream/<branch>`, over plain HTTPS with no credential, on the fork's schedule (at most
+every five minutes, on a checkout or a submission). Upstream is `davestephens/ansible-nas`, a
+public address kept in code (`ansible_nas::UPSTREAM_REPO`) as the fork's GitHub address is built
+in code; no new setting, volume or compose change. An upstream that cannot be reached leaves what
+was last fetched, or nothing, and never fails the fork's refresh. Every checkout's bundle, of the
+base, of a team branch or of a kept submission, carries that ref; the worker unpacks it as
+`refs/remotes/upstream/<branch>`, so `git log --oneline develop..upstream/master` and
+`git diff develop upstream/master -- roles/x` work offline in the sandbox, and the checkout's
+answer says so.
+
+Chosen over a separate `upstream: true` checkout because the task is a comparison: upstream on
+its own in `/work/repo` cannot be compared with the fork without a second checkout replacing the
+first. One more ref in the bundle is the smallest change that makes the comparison one command;
+upstream shares the fork's history, so the bundle grows by what upstream has beyond the fork's
+base, which should stay well inside the 32 MB a checkout may be (the fork is about 6 MB).
+
+Upstream is never written to, by rules in code: no remote is configured for it, in the mirror or
+in the sandbox; `repo_checkout` of `upstream/…` alone is refused with where to find it;
+`repo_submit` refuses a branch named for upstream (`upstream`, `upstream/…`, under `refs/`), and a
+branch that carries any of upstream's commits (a merge of it, a branch cut from it), since
+upstream is never a base: a change read from upstream is taken only as HQ's own commit on top of
+the base, under the usual rules. The node's push refuses upstream's address in any of its GitHub
+forms. Scenarios: `domains/capabilities/features/the-team-reads-upstream.feature`. Code:
+`domains/capabilities/src/repo.rs`, `app/node/src/api/contracts.rs`, `app/worker/src/repo.rs`.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the

@@ -701,7 +701,11 @@ impl LabKnowledge {
         }
         let fork = self.docs.fork()?;
         let branch = self.docs.branch(now)?;
-        let mirror = Arc::new(Mirror::new(&self.repo_dir, &fork.https_url(), &branch));
+        // Upstream is kept beside the fork, read-only (ADR 0106, amended 2026-10-31).
+        let mirror = Arc::new(
+            Mirror::new(&self.repo_dir, &fork.https_url(), &branch)
+                .with_upstream(&ansible_nas::upstream_https_url()),
+        );
         *kept = Some(mirror.clone());
         Some(mirror)
     }
@@ -739,21 +743,51 @@ fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Res
             return kept_checkout(state, &mirror, turn, named, now);
         }
     }
-    let bundle = mirror
-        .bundle(branch, now)
-        .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+    // Upstream alone is the member's mistake, not the fork's failing: it is said so.
+    let status = if branch.is_some_and(repo::names_upstream) {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    let bundle = mirror.bundle(branch, now).map_err(|why| (status, why))?;
     let said = format!(
-        "checked out {} at {} ({} KB)",
+        "checked out {} at {} ({} KB){}",
         bundle.branch,
         &bundle.head[..12.min(bundle.head.len())],
-        bundle.bytes.len() >> 10
+        bundle.bytes.len() >> 10,
+        upstream_said(&bundle)
     );
-    let text = json!({
-        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(),
-        "bundle": repo::to_base64(&bundle.bytes),
-    })
-    .to_string();
+    let text = handed(&bundle, mirror.base(), false);
     Ok(Done { text, said })
+}
+
+/// What a checkout says of upstream, after the rest: where it is and that it is only read.
+fn upstream_said(bundle: &repo::Bundle) -> String {
+    bundle.upstream.as_ref().map_or_else(String::new, |up| {
+        format!(
+            "; upstream ansible-nas's {} at {} as {}, read-only",
+            up.branch,
+            &up.head[..12.min(up.head.len())],
+            up.named()
+        )
+    })
+}
+
+/// The checkout as the worker reads it: the branch, its head, the base, whether it is the team's
+/// kept branch, upstream's name in the sandbox (`upstream/<branch>`) when it came with it, and
+/// the bundle as base64.
+fn handed(bundle: &repo::Bundle, base: &str, kept: bool) -> String {
+    let mut text = json!({
+        "branch": bundle.branch, "head": bundle.head, "base": base,
+        "bundle": repo::to_base64(&bundle.bytes),
+    });
+    if kept {
+        text["kept"] = json!(true);
+    }
+    if let Some(up) = &bundle.upstream {
+        text["upstream"] = json!(up.named());
+    }
+    text.to_string()
 }
 
 /// HQ's no to a kept checkout of `branch`, as the turn is told it. HQ answers 404 both for a
@@ -813,18 +847,15 @@ fn kept_checkout(
         .kept_bundle(branch, head, now)
         .map_err(|why| (StatusCode::CONFLICT, why))?;
     let said = format!(
-        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB)",
+        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB){}",
         bundle.branch,
         &bundle.head[..12.min(bundle.head.len())],
         kept["task"].as_i64().unwrap_or(0),
         mirror.base(),
-        bundle.bytes.len() >> 10
+        bundle.bytes.len() >> 10,
+        upstream_said(&bundle)
     );
-    let text = json!({
-        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(), "kept": true,
-        "bundle": repo::to_base64(&bundle.bytes),
-    })
-    .to_string();
+    let text = handed(&bundle, mirror.base(), true);
     Ok(Done { text, said })
 }
 
@@ -1574,6 +1605,39 @@ mod tests {
     use http_body_util::BodyExt as _;
     use std::sync::Mutex;
     use tower::ServiceExt as _;
+
+    /// D13 (ADR 0106, amended 2026-10-31): a checkout that carries upstream names it for the
+    /// worker, as the sandbox will call it, and says so to the turn; one without says nothing.
+    #[test]
+    fn a_checkout_names_upstream_for_the_worker_when_it_carries_it() {
+        let mut bundle = repo::Bundle {
+            branch: "develop".to_owned(),
+            head: "ee878f7".repeat(5),
+            bytes: b"bundle".to_vec(),
+            upstream: None,
+        };
+        let plain: serde_json::Value =
+            serde_json::from_str(&handed(&bundle, "develop", false)).unwrap();
+        assert_eq!(plain["upstream"], serde_json::Value::Null);
+        assert_eq!(plain["kept"], serde_json::Value::Null);
+        assert_eq!(upstream_said(&bundle), "");
+        bundle.upstream = Some(repo::Upstream {
+            branch: "master".to_owned(),
+            head: "0123456789abcdef".to_owned(),
+        });
+        let with: serde_json::Value =
+            serde_json::from_str(&handed(&bundle, "develop", true)).unwrap();
+        assert_eq!(with["upstream"], "upstream/master");
+        assert_eq!(with["kept"], true);
+        assert_eq!(
+            upstream_said(&bundle),
+            "; upstream ansible-nas's master at 0123456789ab as upstream/master, read-only"
+        );
+        assert_eq!(
+            ansible_nas::upstream_https_url(),
+            "https://github.com/davestephens/ansible-nas.git"
+        );
+    }
 
     #[test]
     fn hqs_no_to_a_kept_checkout_says_whether_the_turn_or_the_branch_is_missing() {

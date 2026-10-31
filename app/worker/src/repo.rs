@@ -31,6 +31,9 @@ pub struct CheckedOut {
     pub head: String,
     /// How many files it holds.
     pub files: usize,
+    /// Upstream ansible-nas as the sandbox names it (`upstream/master`), when the node's
+    /// bundle carried it: read-only, for comparing with the fork offline.
+    pub upstream: Option<String>,
 }
 
 /// One `git` run: its stdout, or its stderr's last line as the error.
@@ -95,13 +98,7 @@ fn git_stdin(dir: &Path, args: &[&str], input: &str) -> Result<String, String> {
 /// Whether `branch` is a plain name under `hq/`, safe to hand to git as a ref: nothing that
 /// climbs (`..`), nothing that git would read as an option, only the characters a slug has.
 fn is_team_branch(branch: &str) -> bool {
-    branch.starts_with(BRANCH_PREFIX)
-        && branch.len() > BRANCH_PREFIX.len()
-        && !branch.contains("..")
-        && !branch.starts_with('-')
-        && branch
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+    branch.starts_with(BRANCH_PREFIX) && branch.len() > BRANCH_PREFIX.len() && is_plain(branch)
 }
 
 /// A word in a shell single-quoted string.
@@ -183,6 +180,7 @@ pub fn checkout(
         .map_err(|_| format!("the bundle holds no kept {branch}"))?;
         git(&repo, &["checkout", "-q", branch])?;
     }
+    let upstream = unpack_upstream(&repo, &file)?;
     // No remote: there is nowhere to push from the sandbox, and nothing to push with.
     git(&repo, &["remote", "remove", "origin"])?;
     git(&repo, &["config", "user.name", AUTHOR_NAME])?;
@@ -217,7 +215,46 @@ pub fn checkout(
         branch: branch.to_owned(),
         head,
         files,
+        upstream,
     })
+}
+
+/// Upstream's branch from the bundle (`refs/upstream/<branch>`, ADR 0106, amended 2026-10-31),
+/// fetched as `refs/remotes/upstream/<branch>` so `git log upstream/<branch>` reads it. No
+/// remote is made for it: it is read, never pushed to. `None` when the bundle has none.
+fn unpack_upstream(repo: &Path, file: &Path) -> Result<Option<String>, String> {
+    let file = file.to_string_lossy();
+    let heads = git(repo, &["bundle", "list-heads", &file])?;
+    let Some(branch) = heads
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .find_map(|r| r.strip_prefix("refs/upstream/"))
+        .filter(|b| is_plain(b))
+        .map(str::to_owned)
+    else {
+        return Ok(None);
+    };
+    git(
+        repo,
+        &[
+            "fetch",
+            "-q",
+            &file,
+            &format!("refs/upstream/{branch}:refs/remotes/upstream/{branch}"),
+        ],
+    )?;
+    Ok(Some(format!("upstream/{branch}")))
+}
+
+/// Whether `name` is a plain branch name, safe to hand to git: nothing that climbs, nothing git
+/// reads as an option, only the characters a branch name has.
+fn is_plain(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("..")
+        && !name.starts_with('-')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
 }
 
 /// The default branch the checkout was made against, as noted then.
@@ -543,6 +580,64 @@ mod tests {
             "hq/task-7-work exists: refused"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D13 (task 936): the sandbox is offline, so upstream ansible-nas comes in the node's
+    /// bundle as `refs/upstream/<branch>`. It is unpacked as `upstream/<branch>`, to read with
+    /// git and nothing else: no remote, no branch of the member's, and never in a submission
+    /// bundled from the base.
+    #[test]
+    fn upstream_in_the_bundle_is_read_as_upstream_slash_its_branch() {
+        let (root, _) = a_bundle("upstream");
+        let seed = root.join("seed");
+        run(&seed, &["checkout", "-q", "-b", "up"]);
+        std::fs::write(seed.join("jellyfin.yml"), "image: jellyfin:10\n").unwrap();
+        run(&seed, &["add", "."]);
+        run(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "add jellyfin",
+            ],
+        );
+        let up = run(&seed, &["rev-parse", "HEAD"]);
+        run(&seed, &["update-ref", "refs/upstream/master", &up]);
+        let file = root.join("with-upstream.bundle");
+        run(
+            &seed,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                file.to_str().unwrap(),
+                "refs/heads/main",
+                "refs/upstream/master",
+            ],
+        );
+        let work = root.join("work");
+        let bytes = std::fs::read(&file).unwrap();
+        let out = checkout(&work, &bytes, "main", "main", false, "Ada", Some(936)).unwrap();
+        assert_eq!(out.upstream.as_deref(), Some("upstream/master"));
+        assert_eq!(run(&out.path, &["rev-parse", "upstream/master"]), up);
+        assert_eq!(
+            run(&out.path, &["log", "--format=%s", "main..upstream/master"]),
+            "add jellyfin"
+        );
+        assert_eq!(run(&out.path, &["remote"]), "", "no remote to push to");
+        assert_eq!(
+            run(&out.path, &["branch", "--format=%(refname:short)"]),
+            "main"
+        );
+        // A plain checkout carries none, and says so.
+        let (_, plain) = a_bundle("no-upstream");
+        let out = checkout(&work, &plain, "main", "main", false, "Ada", Some(936)).unwrap();
+        assert_eq!(out.upstream, None);
     }
 
     /// Live (task 670): a branch existed only in the turn that made it, so a follow-up turn
