@@ -213,6 +213,9 @@ pub struct Turn {
     /// Whether it may have the workbench's shell where the runner has one: not the check after
     /// a deploy, as HQ says (ADR 0115, amended). An older HQ says nothing: it may.
     shell: bool,
+    /// What the turn may read in all, in bytes, as HQ judges it (by the member's brain). An
+    /// older HQ says nothing: the worker's own.
+    prompt_budget: Option<u64>,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -317,6 +320,7 @@ impl Turn {
             effort,
             claude_code,
             shell: handed["shell"].as_bool().unwrap_or(true),
+            prompt_budget: handed["prompt_budget"].as_u64().filter(|n| *n > 0),
         })
     }
 }
@@ -339,6 +343,9 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
                 env.push(format!("ENDORA_EFFORT={effort}"));
             }
         }
+    }
+    if let Some(budget) = turn.prompt_budget {
+        env.push(format!("ENDORA_PROMPT_BUDGET={budget}"));
     }
     // 256 MB, one CPU, 128 processes; a workbench a gigabyte (its `/work` is memory too),
     // two CPUs and 256 processes, for a shell, git and a build.
@@ -1198,6 +1205,33 @@ mod tests {
             "asked again with the place left, and HQ had nothing more"
         );
         assert!(hq.told().is_empty(), "nothing has ended");
+    }
+
+    /// The prompt budget is HQ's, by the member's brain (review of 31 Oct): it reaches the worker
+    /// as `ENDORA_PROMPT_BUDGET`, so the worker ends a turn at the figure HQ judges it by. An
+    /// older HQ says nothing: the worker's own.
+    #[test]
+    fn hqs_prompt_budget_reaches_the_worker() {
+        let mut handed = turn(12);
+        handed["prompt_budget"] = json!(480_000);
+        let mut unsaid = turn(13);
+        unsaid["prompt_budget"] = json!("lots");
+        let hq = FakeHq::new(vec![handed, unsaid]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("budget", &hq, &docker, 2);
+        runner.step(T0);
+        let envs: Vec<Value> = docker.specs().iter().map(|s| s["Env"].clone()).collect();
+        assert!(
+            envs[0]
+                .as_array()
+                .unwrap()
+                .contains(&json!("ENDORA_PROMPT_BUDGET=480000")),
+            "{envs:?}"
+        );
+        assert!(
+            !envs[1].to_string().contains("ENDORA_PROMPT_BUDGET"),
+            "{envs:?}"
+        );
     }
 
     /// The check after a deploy (ADR 0115, amended): HQ says its turn has no shell, and the

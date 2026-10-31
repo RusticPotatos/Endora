@@ -117,7 +117,8 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     if claude_code && (workbench.is_none() || api != Api::Anthropic) {
         return Err("Claude Code takes a turn only in the workbench, on a Claude model".to_owned());
     }
-    // What the turn may read in all before it goes on fresh: its kind's, unless told.
+    // What the turn may read in all before it goes on fresh: HQ's figure by the member's brain,
+    // given by the runner; its kind's from an older runner.
     let prompt_budget = match given("ENDORA_PROMPT_BUDGET") {
         None => turn::prompt_budget_for(api),
         Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {

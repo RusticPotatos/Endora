@@ -139,20 +139,11 @@ pub enum Taken {
     OutOfRoom,
 }
 
-/// What a house turn (the NAS's model, the Mac, DeepSeek) may read in all, in bytes: about
-/// 60,000 tokens at four bytes a token. The Mac reads about 100 tokens a second, so that is
-/// about ten minutes of reading in a turn; measured, a ten-call task turn read about 74,600
-/// tokens with old results stubbed and work turns 110,000 to 200,000 (ADR 0142, amended
-/// 2026-10-30).
-pub const HOUSE_PROMPT_BUDGET: usize = 240_000;
+pub use endora_kernel::prompt_budget::{CLAUDE_PROMPT_BUDGET, HOUSE_PROMPT_BUDGET};
 
-/// What a Claude turn may read in all, in bytes: about 120,000 tokens, the measured ten-call
-/// task turn with every result whole (about 119,500), so a turn of that length still ends on
-/// its own and only the long ones (110,000 to 200,000 and more) go on fresh.
-pub const CLAUDE_PROMPT_BUDGET: usize = 480_000;
-
-/// A turn's budget by its kind, which is all the worker knows of its brain: the API its relay
-/// speaks.
+/// A turn's budget when the runner gives none (`ENDORA_PROMPT_BUDGET`, HQ's figure by the
+/// member's brain, from an older runner): by its kind, which is all the worker knows of its
+/// brain, the API its relay speaks.
 #[must_use]
 pub const fn prompt_budget_for(api: Api) -> usize {
     match api {

@@ -2676,6 +2676,11 @@ mod tests {
         );
         assert_eq!(turn["effort"], json!(null), "the house's model takes none");
         assert_eq!(
+            turn["prompt_budget"],
+            json!(240_000),
+            "the house's budget, as HQ judges the turn by"
+        );
+        assert_eq!(
             turn["shell"], true,
             "a turn has a shell where the runner gives one"
         );

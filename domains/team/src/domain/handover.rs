@@ -29,15 +29,25 @@ pub const fn chars_for(brain: Brain) -> usize {
     }
 }
 
-/// About how many prompt tokens a work turn on `brain` reads before the worker ends it at its
-/// prompt's budget (ADR 0142, amended 2026-10-30): the worker's 240,000 bytes on the house's
-/// models and DeepSeek, 480,000 on Claude, at about four bytes a token.
+/// What a work turn on `brain` may read in all, in bytes, before the worker ends it at its
+/// prompt's budget (ADR 0142, amended 2026-10-30): the one figure, handed to the runner with
+/// the turn and given to the worker, and the one HQ judges the turn by.
+#[must_use]
+pub const fn prompt_budget(brain: Brain) -> usize {
+    if brain.claude() {
+        endora_kernel::prompt_budget::CLAUDE_PROMPT_BUDGET
+    } else {
+        endora_kernel::prompt_budget::HOUSE_PROMPT_BUDGET
+    }
+}
+
+/// About how many prompt tokens [`prompt_budget`] comes to.
 #[must_use]
 pub const fn prompt_budget_tokens(brain: Brain) -> i64 {
-    match brain {
-        Brain::Local | Brain::Mac | Brain::DeepSeek => 60_000,
-        Brain::Sonnet | Brain::Haiku | Brain::Opus => 120_000,
-    }
+    // Both figures are far below i64's range.
+    #[allow(clippy::cast_possible_wrap)]
+    let tokens = (prompt_budget(brain) / endora_kernel::prompt_budget::BYTES_A_TOKEN) as i64;
+    tokens
 }
 
 /// Whether HQ takes a turn's last word, marked as going on, for a turn that ran out of room:
@@ -322,6 +332,15 @@ pub fn compose(h: &Handover, most: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turns_prompt_budget_is_one_figure_by_whether_it_thinks_on_claude() {
+        assert_eq!(prompt_budget(Brain::Local), 240_000);
+        assert_eq!(prompt_budget(Brain::DeepSeek), 240_000);
+        assert_eq!(prompt_budget(Brain::Haiku), 480_000);
+        assert_eq!(prompt_budget_tokens(Brain::Opus), 120_000);
+        assert_eq!(prompt_budget_tokens(Brain::Mac), 60_000);
+    }
 
     #[test]
     fn only_a_worker_turn_that_read_near_its_budget_ran_out_of_room() {
