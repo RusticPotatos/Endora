@@ -102,7 +102,8 @@ Settings.
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
-| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`) |
+| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand |
+| `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, and the workflow `workflows/end-of-round.js`. Nothing personal: the repository is public |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |
