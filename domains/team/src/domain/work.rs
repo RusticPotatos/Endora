@@ -654,7 +654,7 @@ impl fmt::Display for Refusal {
             ),
             Self::TopUpOutOfRange { room } => write!(
                 f,
-                "a top-up is more than nothing, and a day's top-ups together are at most three \
+                "a top-up is more than nothing, and a day's top-ups together are at most five \
                  times the pool's day; {} may still be added today",
                 super::projects::dollars(*room)
             ),

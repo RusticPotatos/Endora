@@ -37,6 +37,12 @@ Feature: The pool follows the Claude credit
     And the owner tops up the pool by $1.00
     Then today's pool is $4.90
 
+  Scenario: A day's top-ups stop at five times the floor's day
+    When the owner tops up the pool by $10.00
+    And the owner tops up the pool by $5.00
+    Then a top-up of $1.00 is refused: "$0.83 may still be added today"
+    And today's pool is $18.17
+
   Scenario: Without word of the credit, or without a grant, the floor
     Then today's pool is $3.17
     And the pool says "Sized from the floor, $95.00 a month over 30 days: the Claude credit has not been heard today."

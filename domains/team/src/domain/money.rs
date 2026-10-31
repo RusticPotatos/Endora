@@ -76,11 +76,12 @@ pub const fn share_of_day(pool_day: Micros, claim: i64, paid: i64) -> Micros {
     pool_day * claim / paid
 }
 
-/// The most the owner may top the pool up in one owner's day, in all: three times the base
-/// pool day (ADR 0113 rule 6).
+/// The most the owner may top the pool up in one owner's day, in all: five times the base
+/// pool day (ADR 0113 rule 6, amended 2026-10-31). A limit that still catches a leak or a
+/// run-away spend, set by the owner.
 #[must_use]
 pub const fn most_top_up(pool_per_month: Micros) -> Micros {
-    pool_a_day(pool_per_month) * 3
+    pool_a_day(pool_per_month) * 5
 }
 
 /// The most one turn of a member thinking with `brain` may spend: since one team (ADR 0142)
@@ -337,7 +338,7 @@ mod tests {
             "doubled pool, doubled share"
         );
         assert_eq!(share_of_day(day, 25, 0), 0);
-        assert_eq!(most_top_up(POOL_PER_MONTH), 3 * day);
+        assert_eq!(most_top_up(POOL_PER_MONTH), 5 * day);
     }
 
     #[test]

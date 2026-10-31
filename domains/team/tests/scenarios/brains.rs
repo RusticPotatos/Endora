@@ -161,6 +161,14 @@ fn tops_up_the_pool(w: &mut Office, dollars: f64) {
     w.tick();
 }
 
+#[then(regex = r#"^a top-up of \$(\d+(?:\.\d+)?) is refused: "(.+)"$"#)]
+fn top_up_refused(w: &mut Office, dollars: f64, said: String) {
+    let refused =
+        w.hq.top_up_pool((dollars * DOLLAR as f64).round() as i64)
+            .expect_err("the top-up is past the day's limit");
+    assert!(refused.to_string().contains(&said), "{refused}");
+}
+
 /// Time goes by with the team left alone: a tick every five minutes, and any turn that started
 /// is ended, as a worker that finished.
 #[when(regex = r"^the team is left alone for (\d+) hours$")]

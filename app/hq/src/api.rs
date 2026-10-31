@@ -3688,7 +3688,7 @@ mod tests {
         );
         let (status, said) = send(json!({ "amount_micros": 99_000_000 }), Some(TOKEN)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(said.to_string().contains("three"), "{said}");
+        assert!(said.to_string().contains("five"), "{said}");
         assert_eq!(st.hq.snapshot().unwrap()["pool"]["topped_up"], 1_000_000);
     }
 

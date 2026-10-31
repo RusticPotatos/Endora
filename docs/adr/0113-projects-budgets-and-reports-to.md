@@ -198,8 +198,10 @@ offered. Borrowing is now limited, and the item is built.
    {amount_micros}` on HQ (the node's `/v1/hq/pool/top-up`, signed and audited; only the node's
    token reaches it) stores the setting `pool_topup:<owner-day>`, summed if the owner tops up
    twice, so it is gone when the owner's next day begins, like an allowance. The amount is
-   above nothing, and a day's top-ups together are at most three times the base pool day
-   (`money::most_top_up`); beyond that HQ refuses and says what room is left
+   above nothing, and a day's top-ups together are at most five times the base pool day
+   (`money::most_top_up`; three times until the owner raised it on 2026-10-31: the limit is
+   there to catch a leak or a run-away spend, not to hold back a round that is using its
+   credit); beyond that HQ refuses and says what room is left
    (`Refusal::TopUpOutOfRange`). HQ records a `pool.topped_up` event (`amount`, `total`,
    `by: "owner"`, `day`); the ledger is untouched. Today's pool is the base day plus the
    top-up, and that is the pool wherever the pool's day is used: the hard ceiling in
@@ -258,7 +260,7 @@ The owner raised the team's pool from $70 to $95 a month, about $3.17 a day: $10
 model league's cap (ADR 0135, amended), and the rest the agents'. The league's project draws on
 the same pool, so its cap bounds its part rather than adding to the total. The service sets it
 (`app/hq`); the engine's own default stays $70, the figure its tests and the scripted demo are
-written around. Shares, top-ups (at most three times a pool day) and the per-turn limits scale
+written around. Shares, top-ups (at most five times a pool day) and the per-turn limits scale
 with it unchanged.
 
 The owner can also move a routine into a project under its goal, or out of one

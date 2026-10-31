@@ -1986,15 +1986,15 @@ fn a_member_out_for_the_day_takes_a_turn_after_a_top_up() {
 }
 
 #[test]
-fn a_top_up_is_above_nothing_and_at_most_three_pool_days_in_all_and_is_recorded() {
+fn a_top_up_is_above_nothing_and_at_most_five_pool_days_in_all_and_is_recorded() {
     let clock = hands();
     let hq = dollar_a_day(&clock);
-    for bad in [0, -5, 3_000_001] {
+    for bad in [0, -5, 5_000_001] {
         assert!(
             matches!(
                 hq.top_up_pool(bad),
                 Err(EngineError::Refused(Refusal::TopUpOutOfRange {
-                    room: 3_000_000
+                    room: 5_000_000
                 }))
             ),
             "{bad}"
@@ -2002,11 +2002,11 @@ fn a_top_up_is_above_nothing_and_at_most_three_pool_days_in_all_and_is_recorded(
     }
     assert_eq!(hq.top_up_pool(2_000_000).unwrap(), 2_000_000);
     assert_eq!(hq.top_up_pool(500_000).unwrap(), 2_500_000, "two add up");
-    let Err(EngineError::Refused(refusal)) = hq.top_up_pool(600_000) else {
+    let Err(EngineError::Refused(refusal)) = hq.top_up_pool(2_600_000) else {
         panic!("over the limit");
     };
-    assert_eq!(refusal, Refusal::TopUpOutOfRange { room: 500_000 });
-    assert!(refusal.to_string().contains("$0.50"), "{refusal}");
+    assert_eq!(refusal, Refusal::TopUpOutOfRange { room: 2_500_000 });
+    assert!(refusal.to_string().contains("$2.50"), "{refusal}");
     let events: Vec<_> = hq
         .store()
         .events_after(0)

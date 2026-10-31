@@ -117,7 +117,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The owner adds `amount` to today's pool, and only today's: the setting is keyed by the
-    /// owner's day. Two top-ups in a day add up, and together they are at most three times the
+    /// owner's day. Two top-ups in a day add up, and together they are at most five times the
     /// base pool day.
     ///
     /// # Errors
