@@ -450,6 +450,9 @@
   .hq-moves { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0; margin: 6px 0; list-style: none; font-variant-numeric: tabular-nums; }
   .hq-move { background: none; border: 0; padding: 2px 4px; border-radius: 4px; font: inherit; color: inherit; cursor: pointer; }
   .hq-move.on { background: var(--hq-line); font-weight: 600; }
+  /* A brain's rating game by game in the model league: a small line beside its name. */
+  .hq-spark { display: inline-block; vertical-align: middle; overflow: visible; }
+  .hq-spark polyline { fill: none; stroke: var(--hq-blue); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
   .hq-board { width: 100%; border-collapse: collapse; }
   .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
   .hq-board td.n { text-align: right; }
