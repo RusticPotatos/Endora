@@ -7,42 +7,9 @@ use serde_json::json;
 
 use endora_team::application::engine::Called;
 use endora_team::application::{Author, NewTask, Submission, TeamStore};
-use endora_team::domain::{Criterion, Priority, Receipt, WakeReason};
+use endora_team::domain::{Criterion, Priority};
 
 use super::Office;
-
-impl Office {
-    /// Whether `name` was woken to review the item titled `title`.
-    fn woken_to_review(&self, name: &str, title: &str) -> bool {
-        let (member, task) = (self.member(name), self.task(title));
-        self.hq
-            .wakes()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|w| !matches!(w.receipt, Receipt::Refused(_)))
-            .any(|w| {
-                w.member == member
-                    && w.task == Some(task)
-                    && w.reason == WakeReason::ReviewRequested
-            })
-    }
-}
-
-#[then(expr = "{word} is woken to review {string}")]
-fn woken_to_review(w: &mut Office, name: String, title: String) {
-    assert!(
-        w.woken_to_review(&name, &title),
-        "{name} was not woken to review {title:?}"
-    );
-}
-
-#[then(expr = "{word} is not woken to review {string}")]
-fn not_woken_to_review(w: &mut Office, name: String, title: String) {
-    assert!(
-        !w.woken_to_review(&name, &title),
-        "{name} was woken to review {title:?}"
-    );
-}
 
 #[given(expr = "the loop {string} has the item {string}, with the criteria")]
 fn loop_has_item_with_criteria(
