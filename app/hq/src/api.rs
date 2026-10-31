@@ -1141,7 +1141,6 @@ mod tests {
     use endora_team::application::ports::TeamStore as _;
     use endora_team::application::receipt_ports::ReceiptStore;
     use endora_team::application::run_ports::RunStore;
-    use endora_team::application::schedule_ports::ScheduleStore;
     use endora_team::application::wing_ports::WingStore;
     use endora_team::domain::{Role, RunId, RunStatus, TaskId};
     use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore};
@@ -3291,9 +3290,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let none = json_of(app.clone().oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(none["fired"], "nobody", "{none}");
-        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
-        crate::seed_routine(&st.hq).unwrap();
+        lab_routine(&st);
         let took = json_of(app.oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(took["fired"], "created", "{took}");
         let task = st
@@ -3306,6 +3303,29 @@ mod tests {
             task.description
                 .contains("sonarr became unhealthy at 14:02")
         );
+    }
+
+    /// The home lab's routine, which takes its alarms: a member's, under the lab's goal.
+    fn lab_routine(st: &State) {
+        let member = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_routine(
+                Author::Owner,
+                endora_team::application::ports::NewRoutine {
+                    title: "Check the home lab".to_owned(),
+                    description: String::new(),
+                    goal,
+                    project: None,
+                    assignee: member,
+                    every_ms: 6 * 60 * 60 * 1000,
+                    on_lab_trouble: true,
+                },
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3323,9 +3343,7 @@ mod tests {
         let app = app(st.clone());
         let res = app.clone().oneshot(back(None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
-        crate::seed_routine(&st.hq).unwrap();
+        lab_routine(&st);
         let none = json_of(app.clone().oneshot(back(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(
             none["posted"],
@@ -3442,45 +3460,6 @@ mod tests {
         let res = app.oneshot(said(Some(TOKEN), none)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(st.hq.snapshot().unwrap()["pool"]["sized"]["by"], "ceiling");
-    }
-
-    #[test]
-    fn with_the_demo_off_the_home_labs_routine_is_made_once_when_its_goal_is_there() {
-        let st = state(false);
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "no goal yet");
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq
-            .set_goal("Ship the tracker", "", Author::Owner)
-            .unwrap();
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "not that goal");
-        let goal = st
-            .hq
-            .set_goal("keep the home lab healthy ", "", Author::Owner)
-            .unwrap();
-        let made = crate::seed_routine(&st.hq).unwrap().unwrap();
-        let routines = st.hq.store().routines().unwrap();
-        assert_eq!(routines.len(), 1);
-        let r = &routines[0];
-        assert_eq!(r.id, made);
-        assert_eq!(r.title, "Check the home lab");
-        assert_eq!((r.goal, r.assignee), (goal, lead));
-        assert_eq!(r.every_ms, 6 * 3_600_000);
-        assert!(r.on_lab_trouble && r.enabled);
-        assert!(
-            r.description
-                .starts_with("Look at the home lab with homelab_status")
-        );
-        let changed = st
-            .hq
-            .events_after(0)
-            .unwrap()
-            .into_iter()
-            .rfind(|e| e.kind == "routine.changed")
-            .unwrap();
-        assert_eq!(changed.data["by"], "endora", "recorded, as Endora's");
-        st.hq.switch_routine(made, false).unwrap();
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "once");
-        assert_eq!(st.hq.store().routines().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -31,58 +31,10 @@ const SHORTEST_TOKEN: usize = 32;
 /// How many events the feed keeps, not counting the ticks.
 const KEEP_EVENTS: i64 = 20_000;
 
-/// The owner's goal for the home lab, as they set it.
-pub(crate) const LAB_GOAL: &str = "Keep the home lab healthy";
-
 /// What the home lab's routine asks of its member each time.
 const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of anything \
     unhealthy, fix what a restart can fix, check back after a fix, and put anything else to the \
     owner as a plan.";
-
-/// The owner's routine for the home lab (ADR 0107), made once: with no routine yet but the
-/// CEO's, an active goal called "Keep the home lab healthy" and a lead, the lead checks the
-/// home lab every 6 hours, and takes its alarms. It is the owner's to switch off or run, like
-/// any other; nothing about it is in the schema. Returns the routine, if it made one.
-pub(crate) fn seed_routine(
-    hq: &Hq,
-) -> Result<Option<endora_team::domain::RoutineId>, endora_team::application::EngineError> {
-    use endora_team::application::ports::{NewRoutine, TeamStore as _};
-    use endora_team::application::schedule_ports::ScheduleStore;
-    use endora_team::domain::{GoalStatus, Role};
-    let store = hq.store();
-    let members = store.members()?;
-    let the_ceos = |assignee| {
-        members
-            .iter()
-            .any(|m| m.id == assignee && m.role == Role::Ceo)
-    };
-    if store.routines()?.iter().any(|r| !the_ceos(r.assignee)) {
-        return Ok(None);
-    }
-    let Some(goal) = store
-        .goals()?
-        .into_iter()
-        .find(|g| g.status == GoalStatus::Active && g.title.trim().eq_ignore_ascii_case(LAB_GOAL))
-    else {
-        return Ok(None);
-    };
-    let Some(lead) = store.members()?.into_iter().find(|m| m.role == Role::Lead) else {
-        return Ok(None);
-    };
-    let made = hq.add_routine(
-        endora_team::application::Author::Endora,
-        NewRoutine {
-            title: "Check the home lab".to_owned(),
-            description: LAB_CHECK.to_owned(),
-            goal: goal.id,
-            project: None,
-            assignee: lead.id,
-            every_ms: 6 * 60 * 60 * 1000,
-            on_lab_trouble: true,
-        },
-    )?;
-    Ok(Some(made))
-}
 
 /// The owner's distance from UTC in minutes, for where their day starts: the zone the node is
 /// given (`ENDORA_TIME_ZONE`, e.g. `America/New_York`), else the fixed
@@ -247,13 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // repeats the bounded cleanup and settles only still-live legacy turns.
     hq.retire_legacy_peer_work()?;
     {
-        match seed_routine(&hq) {
-            Ok(None) => {}
-            Ok(Some(id)) => {
-                println!("hq: made the home lab's routine ({id}): the lead checks it every 6 hours")
-            }
-            Err(e) => eprintln!("hq: could not make the home lab's routine: {e}"),
-        }
         match hq.migrate_projects() {
             Ok(None) => {}
             Ok(Some(id)) => {
