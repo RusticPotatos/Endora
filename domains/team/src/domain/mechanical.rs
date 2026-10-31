@@ -12,6 +12,9 @@
 //! - **Defaults coverage** ([`coverage`]): when the criteria ask for a README listing every
 //!   default, each role README in the branch names every top-level key of the role's
 //!   `defaults/main.yml` with its value.
+//! - **A CI run** ([`ci`], amended 2026-10-31): when the criteria ask for a CI run, whether any
+//!   GitHub Actions workflow at the branch's head runs on a push of it, by its `on.push`
+//!   filter ([`push_filter`]); when none does, the criterion cannot be met.
 
 use super::cut::CUT;
 use super::record;

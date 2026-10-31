@@ -460,3 +460,53 @@ Round 2 of the baseline experiment found three ways an item was woken wrongly
   item now, not to a member it has since left. Round 1's repeats (915 five times) each followed an
   answer, which the member did not find enough; one card at a time caps the desk, it does not
   stop a member asking again after an answer.
+
+## Amended 2026-10-31: reviews capped at Haiku, and a CI run HQ cannot get (D6, D7)
+
+Round 2 of the baseline experiment (`docs/proposals/baseline-experiment-2026-10-28.md`, open
+issues) found the paid reviews were most of the cost, and a criterion no push could meet passed
+unnoticed. The owner approved both changes on 31 Oct.
+
+- **D7. Reviews are capped at Haiku's rank.** Sonnet's and Opus's reviews were $1.90 of round 2's
+  first $2.97, and Kit spent $3.00 of a day's pool by 08:15. The reviewer is still the member one
+  rank up, but never above Haiku's rank unless the work itself was done at Haiku's rank or above
+  (`domains/team/src/domain/review.rs`, `reviewer_among`; the loops ask it, so the review tool's
+  gate follows it):
+  - work done at Haiku's rank or above (Ada's, Kit's, Mara's) is reviewed one rank up as before,
+    the top rank's by the member just below it;
+  - work done below Haiku's rank is reviewed by the nearest member above it at Haiku's rank or
+    below; with none, by the nearest member below it, as the top rank's work already is; only
+    when no member but the worker is at Haiku's rank or below does it go to the next member up;
+  - a member never reviews its own work, and a second member at the worker's own rank is not
+    one rank up. Ties go to the member hired first.
+  HQ's mechanical checks carry what the cheaper review does not. In round 2's line-up (Opus,
+  Sonnet, Haiku, DeepSeek, the house's model, every rank between filled) the member one rank up
+  from work below Haiku is already at Haiku's rank or below, so the cap changes no reviewer
+  there: the paid reviews round 2's run log names were of work done at Haiku's rank or above
+  (Ada's by Kit, Kit's by Mara), which the owner's rule keeps. The cap bites when a rank at or below Haiku's is
+  empty (no member on Haiku, or none between the worker and it), where Sonnet or Opus reviewed
+  before.
+- **D6. HQ says when a CI criterion cannot be met.** Task 932's criterion "A CI run on the branch
+  passes" was never met: the fork's workflow runs on a push only for main and develop, so a
+  branch HQ pushes (`hq/task-N-…`) never gets a run, and HQ finished without noticing. Until the
+  workflow also runs on `hq/` branches (a fork change, made when the rounds end), HQ says so:
+  - on `repo_submit`, the node hands HQ every GitHub Actions workflow at the branch's head
+    (`.github/workflows/*.yml` and `*.yaml`, at most 12, never a forbidden path); one it cannot
+    hand over whole (unreadable, or over 32 KB) is handed over empty;
+  - when an item's criteria ask for a CI run (they name CI as a word, continuous integration,
+    GitHub Actions or a workflow run), HQ's mechanical checks at review read each workflow's
+    `on.push` by rule (`domains/team/src/domain/mechanical.rs`): `on` as an event, a list or a
+    mapping; `branches` (`*` within a path segment, `**` across them, a `!` pattern excluding
+    what came before), `branches-ignore`, and `tags` with no `branches` (no branch push);
+  - when no workflow runs on a push of the branch, or there is none, the report says that no CI
+    run can be had, which workflows run on what, and that the criterion cannot be met as the fork
+    stands; the reviewer's briefing carries it, and HQ refuses a pass of the item (on the review
+    tool and the reviewer's own path) while that holds, checked again from the newest branch at
+    the pass. A send-back is not refused: the worker, and through a block the owner, decide;
+  - when a workflow runs on a push of the branch, the report says a run comes only once the
+    branch is pushed, and fails nothing; a filter HQ does not read (a flow mapping, `?`, `+`,
+    `[`), a workflow handed over empty, or a node that does not tell, is reported as not known
+    and fails nothing.
+  Narrow by design: a GitHub Actions push filter only. Path filters are not read (they make a run
+  the branch filter allows conditional, never possible where it was not), nor schedules, manual
+  dispatch or pull requests, which HQ does not open.
