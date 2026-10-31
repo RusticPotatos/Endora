@@ -20,6 +20,7 @@
 
 mod check;
 mod claude_code;
+mod gist;
 mod repo;
 mod shell;
 mod transcript;
@@ -123,6 +124,15 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             format!("ENDORA_PROMPT_BUDGET must be a whole number of bytes above zero, not {n}")
         })?,
     };
+    // Past what size a long result is read through a gist: its kind's, unless told; `off`
+    // reads every result whole.
+    let gist_past = match given("ENDORA_GIST_PAST").as_deref() {
+        None => turn::gist_past_for(api),
+        Some("off") => None,
+        Some(n) => Some(n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+            format!("ENDORA_GIST_PAST must be off or a whole number of bytes above zero, not {n}")
+        })?),
+    };
     let mcp = given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned());
     endora_protocol::team::canonical_endpoint(&mcp).map_err(str::to_owned)?;
     Ok(Setup {
@@ -137,6 +147,7 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         workbench,
         effort,
         claude_code,
+        gist_past,
     })
 }
 
@@ -334,6 +345,24 @@ mod tests {
         assert_eq!(at(&[("ENDORA_PROMPT_BUDGET", "5000")]), Ok(5_000));
         for odd in ["0", "-1", "lots"] {
             assert!(at(&[("ENDORA_PROMPT_BUDGET", odd)]).is_err(), "{odd}");
+        }
+    }
+
+    /// A house turn reads a long log, diff or listing through a gist (ADR 0142, amended
+    /// 2026-10-30); a Claude turn reads it whole; the runner may say otherwise.
+    #[test]
+    fn a_house_turn_gists_long_results_unless_told() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).map(|s| s.gist_past)
+        };
+        assert_eq!(at(&[]), Ok(Some(gist::GIST_PAST)), "a house turn");
+        assert_eq!(at(&[("ENDORA_MODEL", "claude-haiku-5-5")]), Ok(None));
+        assert_eq!(at(&[("ENDORA_GIST_PAST", "off")]), Ok(None));
+        assert_eq!(at(&[("ENDORA_GIST_PAST", "4096")]), Ok(Some(4_096)));
+        for odd in ["0", "-1", "lots"] {
+            assert!(at(&[("ENDORA_GIST_PAST", odd)]).is_err(), "{odd}");
         }
     }
 

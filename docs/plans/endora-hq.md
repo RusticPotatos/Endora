@@ -635,6 +635,8 @@ team pool stays $70 a month. The pieces and their contracts:
    (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
    `ENDORA_PROMPT_BUDGET` (the bytes its calls may send in all before the turn goes on fresh;
    default 240,000 on the house's models, 480,000 on Claude; ADR 0142, amended 2026-10-30), and
+   `ENDORA_GIST_PAST` (the bytes past which a long log, diff or listing is read through a gist
+   call; default 10,240 on the house's models, `off` on Claude; ADR 0142, amended 2026-10-30), and
    `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay), and
    `ENDORA_MODEL` (the model it names, default `local`; the local relay uses its own whatever
    the name). A model named `claude-…` is a cloud brain (ADR 0109): the worker speaks

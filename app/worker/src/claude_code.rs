@@ -908,6 +908,7 @@ mod tests {
             workbench: Some("/work".into()),
             effort: Some("low".to_owned()),
             claude_code: true,
+            gist_past: None,
         }
     }
 
