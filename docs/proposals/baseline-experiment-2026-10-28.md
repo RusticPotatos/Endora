@@ -612,6 +612,11 @@ done. Defects are numbered so the next round's changes can name them.
   (`git log --oneline develop..upstream/master`), and `repo_submit` and the push refuse anything
   named for upstream or carrying its commits; not yet merged or released.*
 
+- [ ] **D14. The house model calls Endora's tools from the shell.** Round 3, 947: Bo ran
+  `repo_checkout develop` in the shell (exit 127) instead of calling the tool, then asked the
+  owner whether to go on. The shell's "command not found" could say which Endora tool has that
+  name and how to call it.
+
 ### From the review of round 2's code (31 Oct), not yet fixed
 
 Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
