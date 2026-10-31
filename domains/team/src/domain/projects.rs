@@ -353,7 +353,7 @@ pub fn read_dollars(text: &str) -> Option<Micros> {
 
 /// The tools a project's work is given, when the owner narrows them (the Holodeck plan's phase
 /// 4): kept as one setting a project, a JSON list of tool names, or `null` for none. A turn on
-/// the project's work is given these and its own four ([`super::deploy::HQ_TOOLS`]) alone;
+/// the project's work is given these and its own four ([`super::lab_tools::HQ_TOOLS`]) alone;
 /// with no list, what its role and brain give it, as before.
 #[must_use]
 pub fn tools_key(id: ProjectId) -> String {
@@ -428,7 +428,7 @@ mod tests {
         // Only reads come with a tool: never one of the lab's acts, nor a submission.
         for (_, with) in COMES_WITH {
             for read in with {
-                assert!(!super::super::deploy::LAB_ACTS.contains(read), "{read}");
+                assert!(!super::super::lab_tools::LAB_ACTS.contains(read), "{read}");
                 assert_ne!(*read, "repo_submit");
             }
         }

@@ -2603,42 +2603,6 @@ mod tests {
         }
     }
 
-    /// Explicit assistance and its result verification do not inherit execution capabilities.
-    #[tokio::test]
-    async fn a_deploy_checks_turn_is_handed_without_a_shell_and_with_the_lab_reads_alone() {
-        let st = state(false);
-        let (run, task) = a_turn_starts(&st);
-        let app = app(st.clone());
-        let next = || call("POST", "/v1/runner/next", Some(RUNNER), r#"{"free":2}"#);
-        let whose = |token: &str| {
-            call(
-                "POST",
-                "/v1/team/turn",
-                Some(TOKEN),
-                &json!({ "token": token }).to_string(),
-            )
-        };
-        // An ordinary turn first: a shell where the runner has one, and no list.
-        let other = st.hq.store().runs().unwrap()[0].clone();
-        assert_eq!(other.id, run);
-        st.hq
-            .store()
-            .set_setting(&format!("deploy_check:{}", task.0), "1")
-            .unwrap();
-        let handed = json_of(app.clone().oneshot(next()).await.unwrap()).await;
-        assert_eq!(handed["run"], run.0);
-        assert_eq!(handed["shell"], false, "{handed}");
-        let token = handed["token"].as_str().unwrap().to_owned();
-        let found = json_of(app.clone().oneshot(whose(&token)).await.unwrap()).await;
-        assert_eq!(
-            found["only"],
-            json!(["homelab_status", "container_logs", "nas_status"]),
-            "{found}"
-        );
-        // Its task does not say to leave the lab alone: nothing is refused beside the list.
-        assert_eq!(found["never"], json!([]), "{found}");
-    }
-
     #[tokio::test]
     async fn the_runner_is_handed_a_started_turn_once_and_its_end_ends_the_run() {
         let st = state(false);

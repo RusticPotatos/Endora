@@ -34,7 +34,6 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
-mod deploy;
 mod digest;
 mod discipline;
 mod drain;
@@ -45,6 +44,7 @@ mod guards;
 mod handover;
 mod health;
 mod history;
+mod lab_tools;
 mod league;
 mod lessons;
 mod lineage;
@@ -2787,10 +2787,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             // The wing (ADR 0115): a branch to push.
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
-            // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
-            ("deploy", "deployed" | "not_deploying") => {
-                self.decide_deploy(found, decision == "deployed")?;
-            }
             // The runaway tripwire's card (ADR 0133): resume the team, which answers the card
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
@@ -3050,10 +3046,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- routines, alarms and check-backs (ADR 0107) -------------------------------------
 
     /// The routine whose last task this is, if any: the one task a routine has open.
-    /// Whether a task is a check its member closes itself: a routine's, or the check after a
-    /// deploy (ADR 0107; 0115, amended). A check changes no code.
+    /// Whether a task is a check its member closes itself: a routine's (ADR 0107). A check
+    /// changes no code.
     fn is_a_check(&self, task: TaskId) -> Done<bool> {
-        Ok(self.routine_of(task)?.is_some() || self.deploy_check_of(task)?.is_some())
+        Ok(self.routine_of(task)?.is_some())
     }
 
     fn routine_of(&self, task: TaskId) -> Done<Option<Routine>> {

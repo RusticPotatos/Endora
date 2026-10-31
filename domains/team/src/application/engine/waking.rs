@@ -133,15 +133,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.bring_forward(task)?;
         }
         let situation = self.situation(&who, task, reason)?;
-        let decision = match task {
-            // The check after a deploy has one turn (ADR 0115, amended): once its verdict is
-            // given, nothing wakes it again.
-            Some(task) if self.deploy_check_given(task)? => {
-                WakeDecision::Refuse(wakes::Refused::Checked)
-            }
-            _ => wakes::decide(member, &situation),
-        };
-        Ok(decision)
+        Ok(wakes::decide(member, &situation))
     }
 
     pub(super) fn wake_held_lock(

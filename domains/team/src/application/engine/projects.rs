@@ -479,7 +479,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         // HQ's own tools only come here; with `team` listed, the member keeps them all.
-        if crate::domain::deploy::HQ_TOOLS.contains(&tool)
+        if crate::domain::lab_tools::HQ_TOOLS.contains(&tool)
             || tools
                 .iter()
                 .any(|t| t == tool || t == crate::domain::projects::TEAM)
@@ -489,7 +489,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some(format!(
             "{tool} is not among the tools of project \"{}\": its work is given {} and nothing else",
             project.title,
-            crate::domain::deploy::HQ_TOOLS
+            crate::domain::lab_tools::HQ_TOOLS
                 .iter()
                 .map(|t| (*t).to_owned())
                 .chain(tools)

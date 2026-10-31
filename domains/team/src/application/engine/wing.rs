@@ -826,10 +826,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "receipt": receipt, "member": branch.member.0 }),
         )?;
         self.wake_held_lock(branch.member, Some(task), WakeReason::ProposalDecided)?;
-        // Pushed: the owner says when it is deployed, and the lab is checked (ADR 0115, amended).
-        if ok {
-            self.offer_deploy(task, &branch)?;
-        }
         Ok(())
     }
 
