@@ -693,11 +693,10 @@ if (failures.length) {
     hqTell({ id: 60, at: 0, kind: "task.criteria", data: { task: 7, by: 1, before: ["a"], after: ["The plan names three backups"], why: "too wide" } }, false);
     hqTell({ id: 61, at: 0, kind: "stopped", data: { by: "tripwire", why: "stopped by the runaway tripwire", turns: 40, window_ms: 600000, members: [{ member: 1, name: "Ada", turns: 22 }, { member: 2, name: "Bo", turns: 18 }] } }, false);
     hqTell({ id: 62, at: 0, kind: "stopped", data: { by: "owner", why: "trying it" } }, false);`, context);
-  // The activity log shows ten lines at first (the Work tab is not the place for a wall of
-  // them); this block reads all of them.
-  // Activity is the screen the owner watches most (2026-10-25): it opens on sixty lines.
-  if (runInContext("HQ.logShown", context) !== 60) fail("hq: the activity log does not start at sixty lines");
-  runInContext("HQ.logShown = 30;", context);
+  // The Activity tab shows the latest twenty (the owner, 31 Oct); this block reads every line
+  // the log was told, drawn as the tab draws one.
+  if (runInContext("HQ_LOG_SHOWN", context) !== 20) fail("hq: the Activity tab does not show the latest twenty");
+  const told = runInContext("HQ.log.map(hqLogLine).join('')", context);
   // The world's sections and their buttons are read with the house page open (Knowledge lists
   // its pages first since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house";', context);
@@ -729,10 +728,10 @@ if (failures.length) {
     "Ada narrowed what done means for EL-7: The plan names three backups (too wide)",
     "The runaway tripwire stopped the team: 40 turns started in 10 minutes (Ada 22, Bo 18); nothing new starts until you resume",
     "You pulled the kill switch: every run stopped, nothing new starts"]) {
-    if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
+    if (!told.includes(line)) fail(`hq: the activity log does not say "${line}"`);
   }
-  if (office.includes("R9 Bo finished · $0.12 spent · cached")) fail("hq: a run that cached nothing claims a cache");
-  if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
+  if (told.includes("R9 Bo finished · $0.12 spent · cached")) fail("hq: a run that cached nothing claims a cache");
+  if (!told.includes('class="k-done"') || !told.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
   for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Today <b>$0.00 spent · $0.40 held · $2.33 a day</b>", "$0.00 spent · $0.00 held of $1.36 a day", "Open tasks <b>4</b>"]) {
     if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
   }
@@ -821,8 +820,6 @@ if (failures.length) {
   }
   if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
-  // A live update redraws the screen; the activity log keeps its scroll through it.
-  if (!office.includes('class="hq-log" data-keep-scroll="hq-log"')) fail("hq: the activity log loses its place on every update");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
     "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now",
     "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:decide:16:seen", "hq:decide:16:dismiss", "hq:stop",
@@ -923,14 +920,16 @@ if (failures.length) {
     if (!refusedCard.includes("Couldn&#39;t decide: it was not tried again: the kill switch is on") && !refusedCard.includes("Couldn't decide: it was not tried again: the kill switch is on")) fail("hq: a refused desk decision is not said on its card");
     runInContext("HQ.deskNote = {}; clearInterval(HQ.polling); HQ.polling = null; HQ_ART_READY = null;", context);
   }
-  // The activity log: a post is told whole (long ones folded behind "more", opened in place),
-  // thirty lines show, and "Show older" first reveals what is kept, then asks HQ for earlier events.
+  // The activity log: a post is told whole (long ones folded behind "more", opened in place).
+  // Activity is a tab of its own (the owner, 31 Oct): the latest twenty and "Show more", which
+  // opens a full-screen view a page at a time, Newer and Older; never an endless scroll.
   {
-    runInContext(`HQ.log = []; HQ.logShown = 30; HQ.logOpen = {}; HQ.oldest = 0; HQ.logDone = false;
+    runInContext(`HQ.log = []; HQ.logOpen = {}; HQ.feed = null;
       HQ.snap.tasks[0].thread.push({ author: "Bo", text: "start " + "word ".repeat(80) + "THE-END", at: 9 });`, context);
     runInContext(`hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "start word word…", cut: true, post: HQ.snap.tasks[0].thread.length - 1 } }, false);`, context);
-    // Only the activity card: the selected task's card shows its own thread too.
-    const logOf = () => runInContext("viewHQ()", context).split('class="hq-log"')[1].split("</ul>")[0];
+    // Only the Activity tab: the selected task's card shows its own thread too.
+    const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
+    const logOf = () => activityOf(runInContext("viewHQ()", context)).split('class="hq-log')[1].split("</ul>")[0];
     const folded = logOf();
     if (folded.includes("THE-END")) fail("hq: a long post in the log is not folded");
     if (!folded.includes('data-act="hq:logmore:70:toggle"') || !folded.includes("start word word word")) fail("hq: a long post in the log has no way to be opened");
@@ -955,45 +954,88 @@ if (failures.length) {
       runInContext(`HQ.snap.tasks[0].thread = ${saved};`, context);
     }
 
-    runInContext(`HQ.log = []; HQ.oldest = 0; HQ.logOpen = {};
-      for (let i = 100; i > 60; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);
-    const page = runInContext("viewHQ()", context);
-    const lines = (page.match(/<li><time>/g) || []).length;
-    if (lines !== 30) fail(`hq: the log shows ${lines} lines, not thirty`);
-    if (!page.includes('data-act="hq:logolder:0:more"') || !page.includes("Show older")) fail("hq: the log cannot show older lines");
-    // The kept ones first, with no request.
+    // The tab: the latest twenty, newest first, whole (no box of its own to scroll), and "Show
+    // more"; nothing loads older lines as the page scrolls.
+    runInContext(`HQ.log = []; HQ.logOpen = {}; HQ.tab = "activity";
+      for (let i = 61; i <= 100; i++) hqTell({ id: i, at: 0, kind: "routine.changed", data: { title: "R" + i, enabled: true } }, false);`, context);
+    const tab = activityOf(runInContext("viewHQ()", context));
+    const tabLines = (tab.match(/<li><time>/g) || []).length;
+    if (tabLines !== 20) fail(`hq: the Activity tab shows ${tabLines} lines, not twenty`);
+    if (!tab.includes("<h2>Activity</h2>") || tab.indexOf("Routine R100") < 0 || tab.indexOf("Routine R100") > tab.indexOf("Routine R99")) fail("hq: the Activity tab does not put the newest first");
+    if (tab.includes("Routine R80:")) fail("hq: the Activity tab shows more than the latest twenty");
+    if (!tab.includes('class="hq-log hq-log-whole"')) fail("hq: the Activity tab's lines sit in a box that scrolls");
+    if (!/<button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more<\/button>/.test(tab)) fail("hq: the Activity tab has no Show more");
+    for (const gone of ["hq:logolder", 'id="hq-log-end"', "Show older"]) if (runInContext("viewHQ()", context).includes(gone)) fail(`hq: the old endless log is still on screen (${gone})`);
+    if (runInContext("typeof hqLogScrolled !== 'undefined' || typeof HQ_LOG_SCROLL !== 'undefined' || typeof hqListenForLogEnd !== 'undefined'", context)) fail("hq: the log still loads older lines as the page scrolls");
+    const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+    if (!/\.hq-log\.hq-log-whole \{ max-height: none; overflow-y: visible; \}/.test(css)) fail("styles: the Activity tab's lines are a box that scrolls");
+
+    // HQ serves the past through the events route, before an id: a store of 130 events, every
+    // third a tick that takes no line, so a page asks more than once to fill its fifty.
     const asked = [];
     const realFetch = context.fetch;
-    context.fetch = (path, opts = {}) => {
+    const store = Array.from({ length: 130 }, (_, i) => i + 1).map((id) => (id % 3 === 0
+      ? { id, at: 0, kind: "tick", data: {} }
+      : { id, at: 0, kind: "routine.changed", data: { title: "E" + id, enabled: true } }));
+    context.fetch = (path) => {
       asked.push(String(path));
-      const events = [60, 59].map((id) => ({ id, at: 0, kind: "resumed", data: {} }));
+      const q = new URL(String(path), "https://node.test").searchParams;
+      const before = Number(q.get("before")), limit = Number(q.get("limit"));
+      const events = store.filter((e) => e.id < before).slice(-limit);
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ events }) });
     };
-    await runInContext('dispatch("hq:logolder:0:more")', context);
-    if (asked.length) fail(`hq: "Show older" asked HQ while it still had kept lines: ${asked}`);
-    if ((runInContext("viewHQ()", context).match(/<li><time>/g) || []).length !== 40) fail("hq: \"Show older\" did not reveal the kept lines");
-    // Then HQ: events before the oldest this screen has, added after the rest.
-    await runInContext('dispatch("hq:logolder:0:more")', context);
-    context.fetch = realFetch;
-    if (asked.length !== 1 || asked[0] !== "/v1/hq/events?before=61&limit=50") fail(`hq: "Show older" asked for ${asked}`);
-    if (runInContext("HQ.log.length", context) !== 42 || runInContext("HQ.oldest", context) !== 59) fail("hq: older events were not added after the newer ones");
-    runInContext("HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;", context);
-    // Reading back loads one page per scroll down near the end, never because a redraw put the
-    // end in view (2026-10-25: an observer kept loading until the whole history was on screen).
-    {
-      runInContext(`HQ_LOG_SCROLL.y = 0; HQ_LOG_SCROLL.at = 0; HQ.logBusy = false;
-        HQ.log = []; HQ.logShown = 30; HQ.oldest = 0; HQ.logDone = false;
-        for (let i = 140; i > 100; i--) hqTell({ id: i, at: 0, kind: "resumed", data: {} }, false);`, context);
-      const decide = (y, near, now) => runInContext(`hqLogScrolled(${y}, ${near}, ${now})`, context);
-      if (decide(0, true, 10000)) fail("hq: a log at rest loaded older lines with no scroll");
-      if (!decide(400, true, 10000)) fail("hq: scrolling down to the end of the log did not load older lines");
-      if (decide(450, true, 10500)) fail("hq: older lines loaded again within the cooldown");
-      if (decide(450, true, 20000)) fail("hq: older lines loaded with no new scroll (a redraw, not the owner)");
-      if (decide(300, true, 30000)) fail("hq: scrolling up loaded older lines");
-      if (decide(900, false, 40000)) fail("hq: older lines loaded far from the end");
-      if (!decide(950, true, 50000)) fail("hq: a later scroll down to the end did not load the next page");
-      if (runInContext("typeof IntersectionObserver === 'function' && typeof HQ_LOG_WATCH !== 'undefined'", context)) fail("hq: the end of the log is still watched for visibility");
-      runInContext("HQ.log = []; HQ.logShown = 60; HQ.oldest = 0; HQ.logDone = false; HQ_LOG_SCROLL.y = 0; HQ_LOG_SCROLL.at = 0;", context);
+    try {
+      // A page read back: the lines just below an id, newest first, and where the next starts.
+      const page = runInContext("hqLogPage(131, 20)", context);
+      const got = await page;
+      if (got.lines.length !== 20 || got.lines[0].key !== 130 || got.next !== 101) fail(`hq: a page of the log reads ${got.lines.length} lines from ${got.lines[0] && got.lines[0].key}, next ${got.next}`);
+      // Two hundred ticks above the last lines: the page asks again, below the oldest it read.
+      const saved = store.splice(0);
+      for (let id = 1; id <= 300; id++) store.push(id > 100 ? { id, at: 0, kind: "tick", data: {} } : { id, at: 0, kind: "routine.changed", data: { title: "E" + id, enabled: true } });
+      asked.length = 0;
+      const deep = await runInContext("hqLogPage(301, 5)", context);
+      if (deep.lines.map((l) => l.key).join() !== "100,99,98,97,96" || asked.join() !== "/v1/hq/events?before=301&limit=200,/v1/hq/events?before=101&limit=200") fail(`hq: a page under many ticks read ${deep.lines.map((l) => l.key)} asking ${asked}`);
+      store.splice(0, store.length, ...saved);
+      asked.length = 0;
+      runInContext("HQ.last = 130;", context);
+      await runInContext('dispatch("hq:feed:open:go")', context);
+      if (!asked.length || !asked.every((p) => /^\/v1\/hq\/events\?before=\d+&limit=\d+$/.test(p)) || asked[0] !== "/v1/hq/events?before=131&limit=200") fail(`hq: Show more asked ${asked}`);
+      const feed = () => runInContext("viewHQ()", context);
+      const first = feed();
+      const lineKeys = (html) => [...html.matchAll(/Routine E(\d+): on/g)].map((m) => Number(m[1]));
+      // Full screen: the page, with a way back, and nothing of the tabs or the office.
+      if (first.includes('id="hq-office"') || first.includes('role="tablist"')) fail("hq: the paged activity is not full screen");
+      if (!first.includes('<h1 id="hq-feed-title" tabindex="-1">Activity</h1>')) fail("hq: the paged activity has no heading");
+      if (!first.includes('data-act="hq:feed:close:go">◀ Back to HQ</button>')) fail("hq: the paged activity has no way back");
+      const firstKeys = lineKeys(first);
+      if (firstKeys.length !== 50 || firstKeys[0] !== 130 || firstKeys[49] !== 56) fail(`hq: the first page is not the newest fifty: ${firstKeys[0]}…${firstKeys[49]} (${firstKeys.length})`);
+      if (!first.includes("Page 1") || !first.includes('data-act="hq:feed:newer:go" disabled') || first.includes('data-act="hq:feed:older:go" disabled')) fail("hq: the first page offers Newer, or no Older");
+      await runInContext('dispatch("hq:feed:older:go")', context);
+      const second = feed(), secondKeys = lineKeys(second);
+      if (secondKeys.length !== 37 || secondKeys[0] !== 55 || secondKeys[36] !== 1) fail(`hq: the second page is not the rest: ${secondKeys[0]}…${secondKeys[36]} (${secondKeys.length})`);
+      if (!second.includes("Page 2") || second.includes('data-act="hq:feed:newer:go" disabled') || !second.includes('data-act="hq:feed:older:go" disabled')) fail("hq: the last page offers no Newer, or an Older");
+      await runInContext('dispatch("hq:feed:older:go")', context);
+      if (!feed().includes("Page 2")) fail("hq: Older went past the oldest page");
+      await runInContext('dispatch("hq:feed:newer:go")', context);
+      if (lineKeys(feed()).join() !== firstKeys.join() || !feed().includes("Page 1")) fail("hq: Newer does not go back to the page before");
+      // HQ not answering is said on the page, which keeps its way back.
+      context.fetch = () => Promise.reject(new Error("HQ is away"));
+      await runInContext('dispatch("hq:feed:older:go")', context);
+      if (!feed().includes("Couldn&#39;t load the activity: HQ is away") && !feed().includes("Couldn't load the activity: HQ is away")) fail("hq: a page HQ did not serve says nothing");
+      if (!feed().includes("hq:feed:close:go")) fail("hq: a page that failed has no way back");
+      // Back, by the button or by Escape, lands on the Activity tab.
+      await runInContext('dispatch("hq:feed:close:go")', context);
+      if (runInContext("HQ.feed", context) !== null || !/id="hq-tab-activity"[^>]*aria-selected="true"/.test(feed())) fail("hq: back does not return to the Activity tab");
+      context.fetch = realFetch;
+      runInContext("HQ.feed = { at: 0, starts: [1], lines: [], next: 0, busy: false, error: '' };", context);
+      runInContext("hqFeedKey({ key: 'Enter', preventDefault() {} })", context);
+      if (runInContext("HQ.feed", context) === null) fail("hq: a key other than Escape closed the paged activity");
+      runInContext("hqFeedKey({ key: 'Escape', preventDefault() {} })", context);
+      await new Promise((r) => setTimeout(r, 0));
+      if (runInContext("HQ.feed", context) !== null) fail("hq: Escape does not close the paged activity");
+    } finally {
+      context.fetch = realFetch;
+      runInContext("HQ.feed = null; HQ.log = []; HQ.last = 0; HQ.tab = null;", context);
     }
   }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
@@ -1712,18 +1754,20 @@ if (failures.length) {
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
     // Three places, by what the owner is doing (the density audit of 2026-10-25, done 2026-10-30):
-    // Work, Manage and Health, Work first and where every screen opens.
-    for (const id of ["work", "manage", "health"]) {
+    // Work, Manage and Health, Work first and where every screen opens; and Activity on a tab of
+    // its own (the owner, 31 Oct), last.
+    for (const id of ["work", "manage", "health", "activity"]) {
       if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
       if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
     }
-    if ((tabs.match(/role="tab" class="hq-tab"/g) || []).length !== 3) fail("hq: not three tabs");
+    const tabOrder = [...tabs.matchAll(/role="tab" class="hq-tab" id="hq-tab-(\w+)"/g)].map((m) => m[1]).join();
+    if (tabOrder !== "work,manage,health,activity") fail(`hq: the tabs are ${tabOrder}, not Work, Manage, Health, Activity`);
     if (!tabs.includes('role="tablist"')) fail("hq: the tabs are not a tablist");
     const selected = (html) => [...html.matchAll(/id="hq-tab-(\w+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
     const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
     if (selected(tabs).join() !== "work") fail(`hq: the default tab is ${selected(tabs)}, not work`);
     if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-work"/.test(tabs)) fail("hq: Work is not the first tab");
-    if (hiddenPanels(tabs) !== "health,manage") fail(`hq: with Work showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    if (hiddenPanels(tabs) !== "activity,health,manage") fail(`hq: with Work showing, these panels are hidden: ${hiddenPanels(tabs)}`);
     // What is on which tab: Work the desk, what can wait, the work in flight and finding a task;
     // Manage the projects, routines, goals, the team, the money and the switches, with what the
     // team knows and the office folded; Health the Mac, the scorecard, what failed and the live
@@ -1739,10 +1783,11 @@ if (failures.length) {
         rows: count(/<li[\s>]|<p[\s>]|<h2|<h3|<tr[\s>]|<div class="hq-row"|<textarea|<dt>|<summary/g), sections: count(/<h3/g) };
     };
     const above = density(tabs.split('role="tablist"')[0] + tabs.split('class="hq-stage"')[1].split('role="tabpanel"')[0]);
-    console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
+    console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health", "activity"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
     // Before the regrouping (2026-10-29, this snapshot): Now 51 buttons and 97 rows, Team 15 and
-    // 29, Work 15 and 22, Manage 13 and 25.
-    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 15, rows: 37 } };
+    // 29, Work 15 and 22, Manage 13 and 25. Activity at most its twenty lines, its heading and
+    // Show more (the owner, 31 Oct), with Health lighter for its leaving.
+    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 14, rows: 22 }, activity: { buttons: 3, rows: 23 } };
     for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
       const d = density(panelOf(tabs, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
@@ -1753,7 +1798,8 @@ if (failures.length) {
         "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
         // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
         "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
-      health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"', "<h2>Activity</h2>", 'id="hq-log-end"'] };
+      health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"'],
+      activity: ["<h2>Activity</h2>", 'data-act="hq:feed:open:go"'] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
@@ -1762,11 +1808,12 @@ if (failures.length) {
     if (work.includes("<h2>Looking at</h2>")) fail("hq: Looking at shows with nothing looked at");
     // Rare actions and big cards wait behind a fold until asked for.
     for (const [id, folded] of [["manage", "<details"], ["manage", "hq:hire:new:add"], ["manage", "hq:project:new:add"], ["manage", "hq:routine:new:add"],
-      ["manage", "<h2>World</h2>"], ["manage", "<h2>Office"], ["work", "<h2>Projects</h2>"], ["work", "<h2>Activity</h2>"], ["health", "What the team may do"]]) {
+      ["manage", "<h2>World</h2>"], ["manage", "<h2>Office"], ["work", "<h2>Projects</h2>"], ["work", "<h2>Activity</h2>"], ["health", "<h2>Activity</h2>"], ["health", "What the team may do"]]) {
       if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab at rest`);
     }
     // No action was lost to the regrouping: every act the four tabs offered (2026-10-29, the
-    // same snapshot) is on one of the three, at rest or once its fold is opened.
+    // same snapshot) is on one of the tabs, at rest or once its fold is opened. "Show older" became
+    // Activity's "Show more" (the owner, 31 Oct).
     {
       const before = ["go:models", "hq:bundle:9:task-9-other", "hq:contracts:all:off", "hq:contracts:restart_container:on", "hq:decide:11:approve", "hq:decide:11:decline",
         "hq:decide:12:drop", "hq:decide:12:retry", "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:not_now", "hq:decide:14:read", "hq:decide:15:dismiss",
@@ -1774,7 +1821,7 @@ if (failures.length) {
         "hq:decide:18:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
         "hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline", "hq:decide:24:dismiss", "hq:decide:24:seen", "hq:decide:27:approve",
         "hq:decide:27:decline", "hq:decide:40:deployed", "hq:decide:40:not_deploying", "hq:decide:41:deployed", "hq:decide:41:not_deploying", "hq:find:task:go", "hq:goal",
-        "hq:hire:new:add", "hq:house:save", "hq:logolder:0:more", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
+        "hq:hire:new:add", "hq:house:save", "hq:feed:open:go", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
         "hq:more:outcome0:toggle", "hq:more:outcome4:toggle", "hq:more:proj1:toggle", "hq:more:proj2:toggle", "hq:more:proj3:toggle", "hq:more:routine3:toggle",
         "hq:more:routine4:toggle", "hq:pick:task:7", "hq:pick:task:9", "hq:pool:topup:go", "hq:project:new:add", "hq:roster:1:toggle", "hq:roster:8:toggle",
         "hq:routine:new:add", "hq:stop", "hq:work", "hq:world:edit:open-0", "hq:world:edit:open-1", "hq:world:export:md", "hq:world:page:all", "hq:world:paste:show",
@@ -1792,7 +1839,7 @@ if (failures.length) {
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "work")) !== deskCount) fail(`hq: the Work badge is ${badge(tabs, "work")}, not ${deskCount}`);
-    if (badge(tabs, "manage") !== undefined || badge(tabs, "health") !== undefined) fail("hq: a tab with nothing to count has a badge");
+    if (badge(tabs, "manage") !== undefined || badge(tabs, "health") !== undefined || badge(tabs, "activity") !== undefined) fail("hq: a tab with nothing to count has a badge");
     // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac block, no Mac chip.
     if (!tabs.includes(`data-act="hq:tab:work:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Work");
     if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
@@ -1849,11 +1896,11 @@ if (failures.length) {
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
     await runInContext('dispatch("hq:tab:manage:go")', context);
     if (selected(shown()).join() !== "manage" || kept["endora.hq.tab.v4"] !== "manage") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "health,work") fail("hq: the other panels stay showing");
+    if (hiddenPanels(shown()) !== "activity,health,work") fail("hq: the other panels stay showing");
     await runInContext('dispatch("hq:tab:bogus:go")', context);
     if (selected(shown()).join() !== "manage") fail("hq: a tab that does not exist was chosen");
-    // The older tabs still land where each now lives.
-    for (const [old, home] of [["now", "work"], ["desk", "work"], ["activity", "health"], ["team", "manage"], ["office", "manage"], ["knowledge", "manage"], ["health", "health"]]) {
+    // The older tabs still land where each now lives; Activity is its own again (31 Oct).
+    for (const [old, home] of [["now", "work"], ["desk", "work"], ["activity", "activity"], ["team", "manage"], ["office", "manage"], ["knowledge", "manage"], ["health", "health"]]) {
       await runInContext(`dispatch("hq:tab:${old}:go")`, context);
       if (selected(shown()).join() !== home) fail(`hq: the old ${old} tab does not land on ${home}`);
     }
@@ -1863,7 +1910,7 @@ if (failures.length) {
     kept["endora.hq.tab.v4"] = "nonsense"; runInContext("HQ.tab = null;", context);
     if (selected(shown()).join() !== "work") fail("hq: a bad remembered tab does not fall back to Work");
     // A tab kept from the four tabs (tab.v3) lands where it now lives; older ones are not restored.
-    for (const [v3, home] of [["team", "manage"], ["now", "work"], ["manage", "manage"], ["work", "work"]]) {
+    for (const [v3, home] of [["team", "manage"], ["now", "work"], ["manage", "manage"], ["work", "work"], ["activity", "activity"]]) {
       delete kept["endora.hq.tab.v4"]; kept["endora.hq.tab.v3"] = v3; runInContext("HQ.tab = null;", context);
       if (selected(shown()).join() !== home) fail(`hq: a tab kept as ${v3} before the three tabs does not open ${home}`);
     }
@@ -1884,12 +1931,12 @@ if (failures.length) {
     runInContext("HQ.selected = null;", context);
     // Arrow keys move between tabs (Home and End to the ends), wrapping round.
     runInContext("HQ.tab = 'work';", context);
-    for (const [key, then] of [["ArrowRight", "manage"], ["ArrowLeft", "work"], ["ArrowLeft", "health"], ["Home", "work"], ["End", "health"]]) {
+    for (const [key, then] of [["ArrowRight", "manage"], ["ArrowLeft", "work"], ["ArrowLeft", "activity"], ["ArrowLeft", "health"], ["Home", "work"], ["End", "activity"]]) {
       runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
       if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
     }
     runInContext("hqTabKey({ key: 'ArrowRight', target: { closest: () => null }, preventDefault() {} })", context);
-    if (runInContext("HQ.tab", context) !== "health") fail("hq: arrow keys outside the tabs move them");
+    if (runInContext("HQ.tab", context) !== "activity") fail("hq: arrow keys outside the tabs move them");
     runInContext("HQ.tab = null;", context);
   }
   // Every kind of desk item says in a line what its choices do.
@@ -2059,7 +2106,7 @@ if (failures.length) {
     if (!/\.hq-tabs \{ order: -2;/.test(phone)) fail("hq: the tabs do not sit first on a phone");
     if (/\.hq-stage \{[^}]*display: none/.test(phone) || /canvas-wrap \{ height: 120px/.test(phone)) fail("hq: the office is hidden or cut to a strip on a phone");
     if (!/:not\(\[data-tab="health"\]\) \.hq-stats/.test(phone)) fail("hq: the office's counters are not the Health tab's on a phone");
-    for (const tab of ["work", "manage", "health"]) {
+    for (const tab of ["work", "manage", "health", "activity"]) {
       runInContext(`hqSetTab(${JSON.stringify(tab)})`, context);
       const html = runInContext("viewHQ()", context);
       if (!html.includes('<canvas id="hq-office"') || html.includes("hq:stage:toggle")) fail(`hq: the office does not play on ${tab}, or can be hidden`);

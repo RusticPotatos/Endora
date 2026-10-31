@@ -19,14 +19,11 @@ const HQ = {
   roster: {},          // member id → its controls are open on the Team card
   deskNote: {},
   more: {},            // list key → the owner asked to see all of it        // desk item id → why the owner's last decision on it was refused
-  logShown: 60,        // how many lines of the activity log are on screen
-  tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
+  feed: null,          // the paged activity, full screen: { at, starts, lines, next, busy, error }
+  tab: null,           // the screen's tab: work, manage, health or activity (read from storage)
   working: false,      // the "Give work" form is open
   workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
-  oldest: 0,           // the oldest event id the log has been told of
-  logDone: false,      // HQ has nothing older to give
-  logBusy: false,      // older lines are being fetched
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   whole: {},           // task id → a finished task opened whole (the snapshot has it in brief), or "asking"
   pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
@@ -133,12 +130,9 @@ async function loadHQ() {
     await hqLoadMac();
     await hqLoadCredits();
     if (first) {
-      // The recent past, in words, without replaying it on screen.
-      const from = Math.max(0, (snap.last_event || 0) - 60);
-      try {
-        const back = await api("GET", `/v1/hq/events?after=${from}`);
-        for (const e of back.events || []) hqTell(e, false);
-      } catch (_) { /* the log starts empty */ }
+      // The recent past, in words, without replaying it on screen: the Activity tab's twenty.
+      try { HQ.log = (await hqLogPage((snap.last_event || 0) + 1, HQ_LOG_SHOWN)).lines; }
+      catch (_) { /* the log starts empty */ }
       HQ.last = snap.last_event || 0;
     }
     hqPlacePeople();
@@ -415,10 +409,9 @@ function hqLogLine(l) {
   return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(shown)}${toggle}</span></li>`;
 }
 
-// One event, in words for the activity log, and on screen if it is live.
-function hqTell(e, live, older) {
+// One event as a line of the activity log, or null for one it does not tell (a tick).
+function hqLogEntry(e) {
   const d = e.data || {}, key = hqKey(d.task), on = key ? ` (${key})` : "";
-  if (e.id && (!HQ.oldest || e.id < HQ.oldest)) HQ.oldest = e.id;
   const name = hqName(d.member), reason = String(d.reason || "").replace(/_/g, " ");
   const result = String(d.result || "").replace(/_/g, " ");
   const said = {
@@ -506,16 +499,20 @@ function hqTell(e, live, older) {
     "chess.ended": ["done", d.text || ""],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
   }[e.kind];
-  if (said) {
-    const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    // A post in a thread is told whole in the feed: the line names its place in the task's
-    // thread, and the words are read from there when the line is drawn (the snapshot that has
-    // them may arrive just after the event does). The preview stands in until then.
-    const line = { key: e.id, at, kind: said[0], text: said[1],
-      whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
-    if (older) HQ.log.push(line); else HQ.log.unshift(line);
-    HQ.log.length = Math.min(HQ.log.length, 500);
-  }
+  if (!said) return null;
+  // A post in a thread is told whole in the feed: the line names its place in the task's
+  // thread, and the words are read from there when the line is drawn (the snapshot that has
+  // them may arrive just after the event does). The preview stands in until then.
+  return { key: e.id, at: hqClock(e.at), kind: said[0], text: said[1],
+    whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
+}
+
+// One event, in words for the activity log, and on screen if it is live.
+function hqTell(e, live) {
+  const d = e.data || {}, key = hqKey(d.task);
+  const result = String(d.result || "").replace(/_/g, " ");
+  const line = hqLogEntry(e);
+  if (line) { HQ.log.unshift(line); HQ.log.length = Math.min(HQ.log.length, 500); }
   if (e.kind === "tick") HQ.spark = 1;
   if (!live) return;
   const p = HQ.people[d.member];
@@ -1532,11 +1529,12 @@ function hqFonts() {
 // was 6.8 phone screens with 216 buttons): Work, where they give work, answer the desk and
 // follow what is in flight, and where every screen opens; Manage, what they own and set (the
 // projects and their loops, the team, the money, the knowledge, the office); and Health, how the
-// team and the lab are doing (the Mac, the turns, what failed, the live activity). Each shows
-// one line per thing, and rare actions and big cards wait behind a fold.
-const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"]];
+// team and the lab are doing (the Mac, the turns, what failed). Each shows one line per thing,
+// and rare actions and big cards wait behind a fold. Activity, the record of what happened, is a
+// tab of its own (the owner, 31 Oct): the latest twenty, and the rest a page at a time.
+const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"], ["activity", "Activity"]];
 // Where each older tab now lives, for links and choices kept from before.
-const HQ_TAB_MOVED = { now: "work", desk: "work", activity: "health", team: "manage", office: "manage", knowledge: "manage" };
+const HQ_TAB_MOVED = { now: "work", desk: "work", team: "manage", office: "manage", knowledge: "manage" };
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1767,49 +1765,105 @@ function hqDigest(s) {
     <ul class="hq-team">${list.shown}</ul>${list.more}</section>`;
 }
 
-// Older activity loads when the owner scrolls down near the end of the log: one page per
-// scroll, at most one every one and a half seconds. A redraw never moves the page, so it can
-// never load more on its own (an observer of the end did, until all history was on screen).
-const HQ_LOG_SCROLL = { y: 0, at: 0, listening: false };
-function hqLogScrolled(y, nearEnd, now) {
-  const down = y > HQ_LOG_SCROLL.y;
-  HQ_LOG_SCROLL.y = y;
-  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
-  if (!down || !nearEnd || !olderLeft || HQ.logBusy || now - HQ_LOG_SCROLL.at < 1500) return false;
-  HQ_LOG_SCROLL.at = now;
+// Activity, a tab of its own (the owner, 31 Oct): the latest twenty, live, and "Show more" for
+// a full-screen view of the past a page at a time, Newer and Older. Nothing loads as the page
+// scrolls: every page is asked for by a button.
+const HQ_LOG_SHOWN = 20, HQ_FEED_PAGE = 50;
+// HQ serves the past before an id, at most 200 events at a time; a tick takes no line, so a page
+// may ask again below the oldest it read, a few times at most.
+const HQ_LOG_BATCH = 200, HQ_LOG_ASKS = 5;
+
+// Up to `want` lines of the events just below the id `before`, newest first, and where the next
+// page starts (0 when HQ has nothing older).
+async function hqLogPage(before, want) {
+  const lines = [];
+  let next = before;
+  for (let ask = 0; ask < HQ_LOG_ASKS && next > 1; ask++) {
+    const got = await api("GET", `/v1/hq/events?before=${Number(next)}&limit=${HQ_LOG_BATCH}`);
+    const events = (got.events || []).slice().reverse();
+    for (const e of events) {
+      next = e.id;
+      const line = hqLogEntry(e);
+      if (line) lines.push(line);
+      if (lines.length >= want) return { lines, next: next > 1 ? next : 0 };
+    }
+    if (events.length < HQ_LOG_BATCH) return { lines, next: 0 };
+  }
+  return { lines, next: next > 1 ? next : 0 };
+}
+
+// The Activity tab: the latest twenty, newest first, each line whole.
+function hqActivity() {
+  const log = HQ.log.slice(0, HQ_LOG_SHOWN).map(hqLogLine).join("");
+  return `<section class="hq-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
+    <div class="hq-row"><button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more</button></div></section>`;
+}
+
+// The past, full screen, a page at a time; Newer and Older step through it, as Replay steps
+// through a task's turns, and Back (or Escape) returns to the Activity tab.
+function hqFeedView() {
+  const f = HQ.feed;
+  const lines = (f.lines || []).map(hqLogLine).join("");
+  const body = f.error ? `<p class="hq-empty">${esc(f.error)}</p>`
+    : !f.lines ? `<p class="hq-empty">Loading…</p>`
+    : `<ul class="hq-log hq-log-whole">${lines || `<li class="hq-empty">Nothing older.</li>`}</ul>`;
+  const pager = `<div class="hq-replay-steps">
+      <button class="hq-btn" data-act="hq:feed:newer:go"${!f.at || f.busy ? " disabled" : ""}>◀ Newer</button>
+      <span class="hq-replay-progress">Page ${f.at + 1}</span>
+      <button class="hq-btn" data-act="hq:feed:older:go"${!f.next || f.busy ? " disabled" : ""}>Older ▶</button></div>`;
+  return `<div class="hq hq-feed"><div class="hq-bar"><h1 id="hq-feed-title" tabindex="-1">Activity</h1><span class="hq-grow"></span>
+      <div class="hq-row"><button class="hq-btn" data-act="hq:feed:close:go">◀ Back to HQ</button></div></div>
+    ${pager}<section class="hq-card" aria-live="polite">${body}</section>${pager}</div>`;
+}
+
+// Open the paged view on the newest page, step a page, or close it. Each page is read afresh.
+async function hqFeedAct(what) {
+  const focus = (id) => { const el = document.getElementById(id); if (el && el.focus) el.focus(); };
+  if (what === "close") {
+    HQ.feed = null; hqSetTab("activity"); render(); window.scrollTo(0, 0); focus("hq-feed-more");
+    return true;
+  }
+  if (what === "open") HQ.feed = { at: 0, starts: [HQ.last + 1], lines: null, next: 0, busy: false, error: "" };
+  const f = HQ.feed;
+  if (!f || f.busy) return true;
+  if (what === "older") { if (!f.next) return true; f.starts[f.at + 1] = f.next; f.at += 1; }
+  else if (what === "newer") { if (!f.at) return true; f.at -= 1; }
+  else if (what !== "open") return true;
+  Object.assign(f, { busy: true, lines: null, next: 0, error: "" });
+  render(); window.scrollTo(0, 0);
+  try {
+    const page = await hqLogPage(f.starts[f.at], HQ_FEED_PAGE);
+    Object.assign(f, { lines: page.lines, next: page.next });
+  } catch (e) { f.error = "Couldn't load the activity: " + e.message; }
+  f.busy = false;
+  if (HQ.feed !== f) return true;
+  render(); focus("hq-feed-title");
   return true;
 }
-function hqListenForLogEnd() {
-  if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
-  HQ_LOG_SCROLL.listening = true;
-  window.addEventListener("scroll", () => {
-    if (NAV.v !== "hq" || hqTab() !== "health") return;
-    const end = document.getElementById("hq-log-end");
-    const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
-    if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
-  }, { passive: true });
+
+// Escape closes the paged view, as its Back button does.
+function hqFeedKey(ev) {
+  if (ev.key !== "Escape" || !HQ.feed) return;
+  ev.preventDefault();
+  dispatch("hq:feed:close:go");
 }
+document.body.addEventListener("keydown", hqFeedKey);
 
 function viewHQ() {
   if (HQ.error) return `<div class="hq"><h1>Endora HQ</h1><section class="hq-card"><p class="hq-empty">${esc(HQ.error)}</p></section></div>`;
   const s = HQ.snap;
   if (!s) return `<div class="hq"><h1>Endora HQ</h1><p class="hq-empty">Loading…</p></div>`;
+  if (HQ.feed) return hqFeedView();
   setTimeout(() => {
     hqFonts(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
-    hqListenForLogEnd();
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = hqDesk(s);
-  // The latest sixty, newest first, live; older lines load as the owner scrolls to the end, and
-  // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
-  const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
-  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
-  const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
   const team = hqRoster(s);
   return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
@@ -1850,8 +1904,8 @@ function viewHQ() {
       ${hqPanel("health", `
         ${hqMacCard(s)}
         ${hqScorecard(s)}
-        ${hqFailures()}
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
+        ${hqFailures()}`)}
+      ${hqPanel("activity", hqActivity())}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -2562,20 +2616,8 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "more") { HQ.more[id] = !HQ.more[id]; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
   if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
-  if (noun === "logolder") {
-    if (HQ.logBusy) return true;
-    // More of what is kept here first; only when that runs out, ask HQ for what is older.
-    if (HQ.log.length > HQ.logShown) { HQ.logShown += 30; render(); return true; }
-    HQ.logBusy = true; render();
-    try {
-      const got = await api("GET", `/v1/hq/events?before=${HQ.oldest}&limit=50`);
-      const events = got.events || [];
-      if (!events.length) HQ.logDone = true;
-      for (const e of events.slice().reverse()) hqTell(e, false, true);
-      HQ.logShown += 30;
-    } catch (e) { flash("Couldn't load older events: " + e.message, "err"); }
-    HQ.logBusy = false; render(); return true;
-  }
+  // Activity's paged view (the owner, 31 Oct).
+  if (noun === "feed") return hqFeedAct(id);
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member
     // wakes; so do the board's words on the CEO's decision.
