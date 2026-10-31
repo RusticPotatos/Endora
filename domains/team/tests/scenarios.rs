@@ -886,14 +886,8 @@ fn the_wing(w: &mut Office) {
         w.hq.set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
             .expect("the wing's goal is set");
     let project =
-        w.hq.add_project(
-            goal,
-            endora_team::domain::wing::WING_PROJECT,
-            "",
-            kit,
-            None,
-        )
-        .expect("the wing's project is made");
+        w.hq.add_project(goal, endora_team::domain::wing::WING_PROJECT, "", kit, None)
+            .expect("the wing's project is made");
     let task =
         w.hq.add_task_with(
             Author::Owner,

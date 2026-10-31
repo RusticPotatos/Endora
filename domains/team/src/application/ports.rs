@@ -304,14 +304,8 @@ pub trait TeamStore:
     fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()>;
     /// Ends a member's furlough at `at`.
     fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
-    /// Sets a brain of a member's (ADR 0131), the one named going to the slot it belongs to: a
-    /// Claude is the brain it judges with, a house model the brain it works with. The other
-    /// slot is left as it is.
+    /// Sets a member's model (ADR 0142): every turn of its runs on it.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
-    /// Sets a member's model (ADR 0142): both its brains, so every turn runs on it.
-    fn set_model(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
-    /// Sets what a member does its work with (ADR 0131): the Mac or the house's own model.
-    fn set_work_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// What runs a member's turns, as the owner set it (ADR 0117): the worker for a member
     /// never set, or one the store does not know.
     fn runtime_of(&self, member: MemberId) -> Stored<crate::domain::Runtime>;

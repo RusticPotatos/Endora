@@ -165,7 +165,7 @@ fn a_goals_notes_from_the_owner_reach_every_briefing_under_it() {
 }
 
 #[test]
-fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
+fn the_owner_sets_what_a_member_thinks_with() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, dev, _, _) = office(&clock);
     let lead = MemberId(1);
@@ -180,8 +180,8 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
     };
     assert_eq!(
         brain(lead),
-        crate::domain::Brain::Haiku,
-        "Haiku unless set (ADR 0131)"
+        crate::domain::Brain::Local,
+        "the house's model unless set"
     );
     assert_eq!(
         hq.set_brain(lead, "claude-sonnet-5-5").unwrap(),
@@ -200,12 +200,12 @@ fn the_owner_sets_what_a_member_thinks_with_within_its_roles_brains() {
     }
     assert_eq!(
         brain(dev),
-        crate::domain::Brain::Haiku,
+        crate::domain::Brain::Local,
         "a refusal changes nothing"
     );
+    // A title is a name only (ADR 0142): a researcher may think with Sonnet.
     let researcher = hq.hire("Marie", Role::Researcher, 15, 1, 2).unwrap();
-    assert!(hq.set_brain(researcher, "claude-sonnet-5-5").is_err());
-    hq.set_brain(researcher, "claude-haiku-5-5").unwrap();
+    hq.set_brain(researcher, "claude-sonnet-5-5").unwrap();
     assert!(matches!(
         hq.set_brain(MemberId(99), "local"),
         Err(EngineError::Unknown(_))

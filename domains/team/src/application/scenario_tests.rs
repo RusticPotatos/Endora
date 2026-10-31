@@ -816,8 +816,8 @@ fn a_player_is_never_told_what_other_turns_in_its_league_said() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let ([_, white, black], project) = crew(&hq);
-    hq.set_model(white, "mac").unwrap();
-    hq.set_model(black, "local").unwrap();
+    hq.set_brain(white, "mac").unwrap();
+    hq.set_brain(black, "local").unwrap();
     let game = hq.start_chess(project, [white, black], 1).unwrap();
     // White's words in its own task's thread, where black's briefing used to find them.
     hq.post_as(

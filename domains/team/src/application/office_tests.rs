@@ -11,7 +11,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::office;
-use crate::domain::{GoalId, MemberId, Priority, Receipt, Refused, Role, WakeReason, money};
+use crate::domain::{GoalId, MemberId, Priority, Receipt, Refused, Role, WakeReason};
 use crate::infrastructure::simulated::Script;
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -225,37 +225,6 @@ fn never_two_downtime_turns_back_to_back_across_midnight() {
     );
     end_all(&hq);
     assert_eq!(downtime_turns(&hq).len(), 2);
-}
-
-#[test]
-fn downtime_is_work_on_the_nas_for_nothing_whatever_the_member_judges_with() {
-    let clock = Hands(AtomicI64::new(START));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    // Bo and Cy judge with Haiku and work with the Mac; the Mac is free; Ada and Dee are away.
-    // The office is not quality work, so it never uses the Mac (ADR 0131), and it is not paid
-    // for, so there is no allowance to ask the owner for (it was ADR 0119's, when Claude did
-    // it).
-    hq.set_brain(t.bo, "claude-haiku-5-5").unwrap();
-    hq.set_brain(t.bo, "mac").unwrap();
-    hq.set_brain(t.cy, "claude-haiku-5-5").unwrap();
-    hq.tell_mac(true, "ready");
-    for away in [t.ada, t.dee] {
-        hq.pause(away, true).unwrap();
-    }
-    end_all(&hq);
-    let turns = downtime_turns(&hq);
-    assert_eq!(turns.len(), 1, "one at a time, once a day each");
-    let run = run_of(&hq, &turns[0]);
-    assert_eq!(run.reserved, 0, "it costs nothing");
-    assert_eq!(run.brain, Some(crate::domain::Brain::Local));
-    assert!(!run.asked_by_owner, "nobody's money, nobody's share");
-    let day = money::day_of(START, 0);
-    assert_eq!(hq.store().committed(None, day).unwrap(), 0);
-    assert!(
-        hq.snapshot().unwrap()["office"]["downtime_paid_cents_per_day"].is_null(),
-        "there is no allowance to show"
-    );
 }
 
 #[test]

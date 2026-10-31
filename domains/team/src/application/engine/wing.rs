@@ -9,8 +9,8 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
 use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
-    Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role,
-    RunId, TaskId, TaskStatus, WakeReason,
+    Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role, RunId,
+    TaskId, TaskStatus, WakeReason,
 };
 
 /// The most a document holds: the diff shown (64 KB) and its stat.
@@ -851,44 +851,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         brain: &str,
         reports_to: Option<MemberId>,
     ) -> Done<MemberId> {
-        self.hire_by_owner_with(name, role, Some(brain), None, None, reports_to)
+        self.hire_by_owner_with(name, role, Some(brain), reports_to)
     }
 
-    /// As [`Self::hire_by_owner`], naming each brain apart as well (ADR 0131): the one it works
-    /// with, the Mac or the house's model, and the Claude it judges with. Each slot not named is
-    /// its default.
+    /// As [`Self::hire_by_owner`], the brain named or not: one not named is the house's model.
     ///
     /// # Errors
-    /// As [`Self::hire_by_owner`]; [`Refusal::NotABrain`] for a work brain that is not a house
-    /// model, or a judgment brain that is not a Claude the role may use.
+    /// As [`Self::hire_by_owner`].
     pub fn hire_by_owner_with(
         &self,
         name: &str,
         role: Role,
         brain: Option<&str>,
-        work: Option<&str>,
-        judgment: Option<&str>,
         reports_to: Option<MemberId>,
     ) -> Done<MemberId> {
         let _held = self.held();
-        // Each is checked for the slot it is named for, then set like any brain named.
-        if let Some(w) = work {
-            Brain::for_work(role, w).map_err(EngineError::Refused)?;
-        }
-        if let Some(j) = judgment {
-            Brain::for_judgment(role, j).map_err(EngineError::Refused)?;
-        }
-        let named: Vec<&str> = [brain, work, judgment].into_iter().flatten().collect();
-        self.hire_held_lock(name, role, &named, reports_to, "owner")
+        self.hire_held_lock(name, role, brain, reports_to, "owner")
     }
 
-    /// Hires a member (the lock held), with the brains named: each goes to the slot it belongs
-    /// to, and the slot not named has its default. A blank name is none.
+    /// Hires a member (the lock held), on the brain named. A blank name or brain is none.
     fn hire_held_lock(
         &self,
         name: &str,
         role: Role,
-        brains: &[&str],
+        brain: Option<&str>,
         reports_to: Option<MemberId>,
         by: &str,
     ) -> Done<MemberId> {
@@ -901,11 +887,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if name.is_empty() || name.chars().count() > 40 || taken {
             return Err(EngineError::Refused(Refusal::NotAName));
         }
-        let named = brains
-            .iter()
+        let named = brain
             .filter(|b| !b.trim().is_empty())
             .map(|b| Brain::for_role(role, b))
-            .collect::<Result<Vec<Brain>, _>>()
+            .transpose()
             .map_err(EngineError::Refused)?;
         if let Some(to) = reports_to {
             if role == Role::Ceo || !members.iter().any(|m| m.id == to) {
@@ -915,7 +900,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let manager = reports_to;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
         let id = self.store.add_member(&name, role, role.share(), 2, look)?;
-        for brain in named {
+        if let Some(brain) = named {
             self.store.set_brain(id, brain)?;
         }
         self.store.set_reports_to(id, manager)?;
@@ -923,7 +908,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::MemberHired,
             json!({ "member": id.0, "name": name, "role": role.name(),
-                    "brain": hired.brain.name(), "work_brain": hired.work_brain.name(),
+                    "brain": hired.brain.name(),
                     "reports_to": manager.map(|m| m.0), "by": by }),
         )?;
         Ok(id)

@@ -15,7 +15,7 @@ use super::ports::{Run, TeamStore};
 use crate::application::desk_ports::DeskStore;
 use crate::domain::guards::{Stopped, THRESHOLDS};
 use crate::domain::turns;
-use crate::domain::{Brain, MemberId, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
+use crate::domain::{MemberId, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 const MINUTE: i64 = 60_000;
@@ -148,7 +148,7 @@ fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when
 }
 
 #[test]
-fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
+fn one_members_day_is_its_own() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
     let dee = hq.hire("Dee", Role::Developer, 40, 2, 4).unwrap();
@@ -167,20 +167,6 @@ fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
     let waiting = capped(&hq);
     assert_eq!(waiting.len(), 1, "{waiting:?}");
     assert_eq!(waiting[0].task, Some(second));
-    // A decision asked of him is judgment, on his Claude, and is not held by the day's count: the
-    // wake joins his waiting turn and makes it one of judgment.
-    hq.wake(linus, Some(second), WakeReason::Decide).unwrap();
-    hq.tick().unwrap();
-    assert!(capped(&hq).is_empty(), "{:?}", capped(&hq));
-    let run = hq
-        .store()
-        .runs()
-        .unwrap()
-        .into_iter()
-        .rfind(|r| r.member == linus && r.task == Some(second))
-        .unwrap();
-    assert_eq!(run.status, RunStatus::Running);
-    assert_eq!(run.brain, Some(Brain::Haiku));
 }
 
 #[test]

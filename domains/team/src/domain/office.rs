@@ -192,7 +192,10 @@ mod tests {
         assert_eq!(layout.len(), 20);
         for (kind, x, y) in layout {
             let spec = kind.spec();
-            assert!(x >= 0 && x + spec.w <= COLS && y >= 0 && y + spec.h <= ROWS, "{kind:?}");
+            assert!(
+                x >= 0 && x + spec.w <= COLS && y >= 0 && y + spec.h <= ROWS,
+                "{kind:?}"
+            );
             assert_eq!(spec.wall, y < WALL_ROWS, "{kind:?}");
         }
     }

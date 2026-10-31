@@ -1,22 +1,23 @@
-Feature: The Mac as a work brain
-  A member may work with the owner's Mac (ADR 0130): a strong model on a laptop the owner
-  uses all day. Every member has two brains (ADR 0131), and the Mac is one of the two it may
-  work with. The node tells HQ whether the Mac is free. Work that needs the Mac, such as a
-  tester reading a diff, waits until it is: it never falls back to the house's own model, and
-  its wake is not lost. Only one turn runs on the Mac at a time.
+Feature: The Mac as a member's model
+  A member may be the owner's Mac (ADR 0130, 0142): a strong model on a laptop the owner uses
+  all day. The node tells HQ whether the Mac is free. A turn on the Mac waits until it is: it
+  never falls back to the house's own model, and its wake is not lost. Only one turn runs on
+  the Mac at a time.
 
   Background:
     Given Mara is the CEO
     And Ada is the lead
     And Zed is the tester
+    And Zed thinks with "Mac"
     And Rae is the tester
+    And Rae thinks with "Mac"
     And the goal "Keep the home lab healthy"
 
-  Scenario: The Mac is one of the two brains the owner may choose to work with
+  Scenario: The Mac is one of the models the owner may give a member
     When the owner sets Zed's brain to "local"
-    Then Zed works with "Local" and judges with "Claude Haiku"
+    Then Zed's model is "Local"
     When the owner sets Zed's brain to "mac"
-    Then Zed works with "Mac" and judges with "Claude Haiku"
+    Then Zed's model is "Mac"
 
   Scenario: A turn on the Mac costs nothing
     Given the node says the Mac is ready
@@ -70,7 +71,7 @@ Feature: The Mac as a work brain
     And an hour passes
     And the node says the Mac is not ready: "owner active"
     And a tick passes
-    Then Zed works with "Mac" and judges with "Claude Haiku"
+    Then Zed's model is "Mac"
     And Zed has no turn running
     And the pool has paid nothing
 
@@ -86,6 +87,7 @@ Feature: The Mac as a work brain
   # one, and less than a lead has on Claude (ADR 0130, amended).
   Scenario: A briefing on the Mac carries more of the world than one on the NAS's model
     Given the node says the Mac is ready
+    And Ada thinks with "Mac"
     And Ada has the task "Read the lab's disk use"
     When Ada's turn starts
     Then Ada's turn runs on "mac"

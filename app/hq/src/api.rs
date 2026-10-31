@@ -74,8 +74,6 @@ pub fn app(state: State) -> Router {
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
         .route("/v1/members/{id}/model", post(set_model))
-        .route("/v1/members/{id}/work-brain", post(set_work_brain))
-        .route("/v1/members/{id}/judgment-brain", post(set_judgment_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
         .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
@@ -447,15 +445,9 @@ async fn decide(
 struct HireRequest {
     name: String,
     role: String,
-    /// One brain, to the slot it belongs to (ADR 0131): the way a hire was always asked.
+    /// Its model; the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
-    /// What it works with, the Mac or the house's model; the Mac if not said.
-    #[serde(default)]
-    work_brain: Option<String>,
-    /// The Claude it judges with; Haiku if not said (the CEO's, Sonnet).
-    #[serde(default)]
-    judgment_brain: Option<String>,
     #[serde(default)]
     reports_to: Option<i64>,
 }
@@ -472,8 +464,6 @@ async fn hire(
             &req.name,
             role,
             req.brain.as_deref(),
-            req.work_brain.as_deref(),
-            req.judgment_brain.as_deref(),
             req.reports_to.map(MemberId),
         )
     })
@@ -605,7 +595,7 @@ struct BrainAsked {
     brain: String,
 }
 
-/// The owner sets what a member thinks with: `local`, or a Claude its role may use.
+/// The owner sets what a member thinks with: its one model (ADR 0142).
 async fn set_brain(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
@@ -632,40 +622,6 @@ async fn set_model(
     let set = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
     Ok(Json(
         json!({ "member": id, "model": set.brain.name(), "said": set.said }),
-    ))
-}
-
-#[derive(Deserialize)]
-struct WorkBrainAsked {
-    work_brain: String,
-}
-
-/// The owner sets what a member does its work with (ADR 0131): `mac` or `local`.
-async fn set_work_brain(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<WorkBrainAsked>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_work_brain(MemberId(id), &req.work_brain)).await?;
-    Ok(Json(json!({ "member": id, "work_brain": brain.name() })))
-}
-
-#[derive(Deserialize)]
-struct JudgmentBrainAsked {
-    judgment_brain: String,
-}
-
-/// The owner sets the Claude a member judges with (ADR 0131).
-async fn set_judgment_brain(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<JudgmentBrainAsked>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_judgment_brain(MemberId(id), &req.judgment_brain)).await?;
-    Ok(Json(
-        json!({ "member": id, "judgment_brain": brain.name() }),
     ))
 }
 
@@ -2253,7 +2209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_in_the_digest() {
+    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_that_never_waits() {
         let st = state(true);
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -2285,35 +2241,32 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        // A notice needs no decision, so it waits in the digest and does not interrupt (ADR 0132).
-        assert!(
-            snap["desk"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|d| d["id"] != item),
-            "a notice is not on the desk: {}",
-            snap["desk"]
-        );
-        let shown = snap["digest"]
-            .as_array()
+        // A notice needs no decision: in the loops it is told and never waits, on the desk or
+        // in the digest (ADR 0132, 0142).
+        for waiting in ["desk", "digest"] {
+            assert!(
+                snap[waiting]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|d| d["id"] != item),
+                "a notice does not wait in the {waiting}: {}",
+                snap[waiting]
+            );
+        }
+        let kept = st
+            .hq
+            .store()
+            .desk()
             .unwrap()
-            .iter()
-            .find(|d| d["id"] == item)
-            .cloned()
+            .into_iter()
+            .find(|d| d.id.0 == item)
             .unwrap();
-        assert_eq!(shown["kind"], "notice", "{shown}");
-        assert!(shown["text"].as_str().unwrap().contains("restarted sonarr"));
-        let seen = app
-            .oneshot(call(
-                "POST",
-                &format!("/v1/desk/{item}"),
-                Some(TOKEN),
-                r#"{"decision":"seen"}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(seen.status(), StatusCode::OK);
+        assert_eq!(
+            (kept.kind.as_str(), kept.status.as_str()),
+            ("notice", "seen")
+        );
+        assert!(kept.text.contains("restarted sonarr"));
     }
 
     #[tokio::test]
@@ -3083,154 +3036,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_sets_both_brains_and_a_turn_of_work_is_handed_out_on_the_work_brain() {
-        let engine = endora_team::application::engine::Engine::new(
-            SqliteTeamStore::in_memory().unwrap(),
-            Runner::Remote(RemoteRunner::default()),
-            SystemClock,
-            Settings::default(),
-        );
-        let st = State {
-            hq: Arc::new(engine),
-            token: Arc::new(TOKEN.to_owned()),
-            runner_token: Some(Arc::new(RUNNER.to_owned())),
-            tick_seconds: 30,
-            last_tick: Arc::default(),
-        };
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let app = app(st.clone());
-        let set = |path: &str, token: Option<&str>, body: serde_json::Value| {
-            call(
-                "POST",
-                &format!("/v1/members/{}/{path}", lead.0),
-                token,
-                &body.to_string(),
-            )
-        };
-        let stranger = app
-            .clone()
-            .oneshot(set(
-                "work-brain",
-                Some(RUNNER),
-                json!({ "work_brain": "mac" }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            stranger.status(),
-            StatusCode::UNAUTHORIZED,
-            "the node's alone"
-        );
-        // Claude never does the work; the house's models do.
-        let claude = app
-            .clone()
-            .oneshot(set(
-                "work-brain",
-                Some(TOKEN),
-                json!({ "work_brain": "claude-sonnet-5-5" }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(claude.status(), StatusCode::BAD_REQUEST);
-        let mac = json_of(
-            app.clone()
-                .oneshot(set(
-                    "work-brain",
-                    Some(TOKEN),
-                    json!({ "work_brain": "mac" }),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(mac["work_brain"], "mac");
-        // Judgment is a cloud model's, and a member cannot be left with none.
-        for refused in ["gpt-5", "local", "none"] {
-            let res = app
-                .clone()
-                .oneshot(set(
-                    "judgment-brain",
-                    Some(TOKEN),
-                    json!({ "judgment_brain": refused }),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{refused}");
-        }
-        let sonnet = json_of(
-            app.clone()
-                .oneshot(set(
-                    "judgment-brain",
-                    Some(TOKEN),
-                    json!({ "judgment_brain": "claude-sonnet-5-5" }),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(sonnet["judgment_brain"], "claude-sonnet-5-5");
-
-        // A task handed to the lead is work, and the Mac has not said it is free: the house's
-        // own model does it, on the worker, and the node's relay is told so.
-        let goal = st
-            .hq
-            .set_goal("Keep the lab tidy", "a test", Author::Owner)
-            .unwrap();
-        st.hq
-            .add_task(
-                Author::Owner,
-                NewTask {
-                    goal,
-                    project: None,
-                    parent: None,
-                    title: "Look round".to_owned(),
-                    description: String::new(),
-                    assignee: Some(lead),
-                    priority: Priority::Normal,
-                    waits_on: Vec::new(),
-                },
-            )
-            .unwrap();
-        st.hq.tick().unwrap();
-        let handed = json_of(
-            app.clone()
-                .oneshot(call(
-                    "POST",
-                    "/v1/runner/next",
-                    Some(RUNNER),
-                    &json!({ "free": 1 }).to_string(),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(handed["brain"], "local", "work, and the Mac is not free");
-        assert_eq!(handed["runtime"], "worker");
-        let token = handed["token"].as_str().unwrap();
-        let found = json_of(
-            app.clone()
-                .oneshot(call(
-                    "POST",
-                    "/v1/team/turn",
-                    Some(TOKEN),
-                    &json!({ "token": token }).to_string(),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(
-            found["cloud"], false,
-            "nothing of a work turn reaches Anthropic"
-        );
-        assert_eq!(found["brain"], "local");
-        let shown = st.hq.snapshot().unwrap();
-        let jane = &shown["members"][0];
-        assert_eq!(jane["work_brain"], "mac");
-        assert_eq!(jane["judgment_brain"], "claude-sonnet-5-5");
-    }
-
-    #[tokio::test]
     async fn a_model_claude_code_cannot_run_answers_that_the_member_runs_on_the_worker() {
         // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
         // turn of hers until the runtime was set by hand.
@@ -3274,6 +3079,7 @@ mod tests {
     async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
         let st = state(false);
         let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
         let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
         st.hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
         let app = app(st.clone());
@@ -3295,8 +3101,7 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        // Every member judges with a Claude (ADR 0131), so a developer may be given Claude Code
-        // to do that judging with; a lead keeps Endora's worker.
+        // A developer on Claude may be given Claude Code; a lead keeps Endora's worker.
         let refused = app
             .clone()
             .oneshot(set(Some(TOKEN), lead.0, "claude-code"))

@@ -45,7 +45,6 @@ mod guards;
 mod handover;
 mod health;
 mod history;
-mod kinds;
 mod league;
 mod lessons;
 mod lineage;
@@ -311,7 +310,6 @@ struct Placement {
     brain: Brain,
     amount: Micros,
     kind: turns::TurnKind,
-    fell_back: bool,
 }
 
 /// What the screen's task rows are read against; see [`Engine::board`].
@@ -490,23 +488,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// The Claude a turn's judgment is paid on (its pinned brain if that is a Claude, or the
-    /// member's), and what it may reserve there ([`Self::reservable`]).
-    fn paid_on(
-        &self,
-        run: &Run,
-        member: &Member,
-        (kind, pinned): (turns::TurnKind, Option<Brain>),
-        league: bool,
-        project: Option<ProjectId>,
-    ) -> Done<(Brain, Option<Micros>)> {
-        let brain = pinned
-            .filter(|b| b.cloud())
-            .unwrap_or_else(|| member.judgment_brain());
-        let asked = self.reservable(run, member, (kind, brain), league, project)?;
-        Ok((brain, asked))
-    }
-
     /// What a member could have reserved for a turn of judgment now, on work in `project` if
     /// any, if anything. Only a turn of judgment is asked (ADR 0131): work runs on the house's
     /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
@@ -626,88 +607,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.set_paused(member, paused)?)
     }
 
-    /// The owner sets a brain of a member's (ADR 0109, 0131), by its name, to the slot it belongs
-    /// to: a Claude its role may use is the brain it judges with, the house's model (`local`) or
-    /// the Mac (`mac`) the brain it works with. The other is left as it is. The next turn starts
-    /// with it. The node asks HQ on every call, so a turn already running is held to it at
-    /// once. Returns the brain set.
+    /// The owner sets a member's model (ADR 0109, 0142), by its name: every turn of the member's
+    /// runs on it, whatever woke it. The node asks HQ on every call, so a turn already running is
+    /// held to it at once. Returns the brain set.
     ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// one its role may not think with; a store failure.
-    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// The owner sets a member's model (ADR 0142), by its name: every turn of the member's runs
-    /// on it, whatever woke it. Any member may be any model; a title is a name only. A member
-    /// whose runtime cannot run the new model is put back on Endora's worker, and the answer
-    /// says so (ADR 0117, amended 2026-10-31).
+    /// Any member may be any model; a title is a name only.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
     /// a name that is not a model Endora has; a store failure.
+    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        self.brain_set_held_lock(&found, brain)
+    }
+
+    /// The owner sets a member's model from the console (ADR 0142), as [`Self::set_brain`] does.
+    /// A member whose runtime cannot run the new model is put back on Endora's worker, and the
+    /// answer says so (ADR 0117, amended 2026-10-31).
+    ///
+    /// # Errors
+    /// As [`Self::set_brain`].
     pub fn set_model(&self, member: MemberId, brain: &str) -> Done<ModelSet> {
         let _held = self.held();
         let found = self.member(member)?;
-        let brain = Brain::from_name(brain).ok_or_else(|| {
+        let brain = self.brain_set_held_lock(&found, brain)?;
+        let said = self.runtime_after_model(&found, brain)?;
+        Ok(ModelSet { brain, said })
+    }
+
+    /// Records a model set (the lock held), and says it in the feed.
+    fn brain_set_held_lock(&self, found: &Member, brain: &str) -> Done<Brain> {
+        let brain = Brain::from_name(brain.trim()).ok_or_else(|| {
             EngineError::Refused(Refusal::NotABrain {
                 role: found.role,
-                asked: brain.to_owned(),
+                asked: brain.chars().take(60).collect(),
             })
         })?;
-        self.store.set_model(found.id, brain)?;
+        self.store.set_brain(found.id, brain)?;
         self.emit(
             EventKind::BrainSet,
             json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
                     "slot": "model" }),
         )?;
-        let said = self.runtime_after_model(&found, brain)?;
-        Ok(ModelSet { brain, said })
-    }
-
-    /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or
-    /// `local`, the house's own models. Claude never does the work. The next turn of work
-    /// starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not one of the house's models; a store failure.
-    pub fn set_work_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_work(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
         Ok(brain)
-    }
-
-    /// The owner sets the Claude a member judges with (ADR 0131), by its name. Every member
-    /// has one: Haiku until the owner says otherwise (the CEO, Sonnet). The next turn of
-    /// judgment starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not a Claude its role may use; a store failure.
-    pub fn set_judgment_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_judgment(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// Records a brain set (the lock held): in the slot it belongs to, and said in the feed.
-    fn brain_set_held_lock(&self, found: &Member, brain: Brain) -> Done<()> {
-        self.store.set_brain(found.id, brain)?;
-        self.emit(
-            EventKind::BrainSet,
-            json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
-                    "slot": if brain.house() { "work" } else { "judgment" } }),
-        )
     }
 
     /// The owner renames a member: one to 40 characters on one line, and no other member's
@@ -2341,9 +2284,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
-        // What deciding a turn's kind reads, once for the tick (ADR 0131).
-        let wakes = self.store.wakes()?;
-        let known = self.known_for_kinds()?;
         // What the caps on a runaway read, once for the tick and kept up as turns start (ADR
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
@@ -2373,37 +2313,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            // What the turn needs is decided here, from why it was asked for (ADR 0131), and
-            // never by the member: judgment runs only on the member's Claude, work on the best
-            // free work brain it is allowed on. A turn that has nowhere it may run waits where
-            // it is, and says why. It is never given another brain; an alarm out of budget is
-            // the one exception, and acts at once.
-            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
-            // side is paid from the league's capped project alone.
-            let league = self.league_brain_of(run.task)?;
             // A member is its model (ADR 0142): every turn of its runs there, whatever woke it.
-            // A member still split between a Claude and a house model is placed as before.
-            let pinned = league.or((member.brain == member.work_brain).then_some(member.brain));
+            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
+            // side is paid from the league's capped project alone. A turn that cannot run there
+            // now waits where it is, and says why; it is never given another brain.
+            let league = self.league_brain_of(run.task)?;
+            let brain = league.unwrap_or(member.brain);
+            let kind = turns::TurnKind::on(brain);
             // A scenario's turn is bounded by its world, not its player's day (ADR 0133, amended).
             let in_a_world = match run.task {
                 Some(task) => self.in_a_scenario(task)?,
                 None => false,
             };
-            let need = match pinned {
-                Some(brain) => turns::Need::pinned(brain),
-                None => self.need_of_run(&run, &member, &wakes, &known),
-            };
-            let (judgment_brain, asked) = self.paid_on(
-                &run,
-                &member,
-                (need.kind, pinned),
-                league.is_some(),
-                project,
-            )?;
+            let asked = self.reservable(&run, &member, (kind, brain), league.is_some(), project)?;
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
-                work_brain: member.work_brain,
-                judgment_brain,
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
                 free_turns_today: if in_a_world {
@@ -2412,9 +2336,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     starts.free_turns_of(&run)
                 },
             };
-            let (brain, amount, fell_back) = match turns::place(need, &facts) {
-                turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
-                turns::Placed::Fallback(brain) => (brain, 0, true),
+            let (brain, amount) = match turns::place(brain, &facts) {
+                turns::Placed::On(brain) => (brain, asked.unwrap_or(0)),
                 turns::Placed::Waits(wait) => {
                     self.say_why_it_waits(&mut run, wait.words())?;
                     continue;
@@ -2431,8 +2354,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let placed = Placement {
                 brain,
                 amount,
-                kind: need.kind,
-                fell_back,
+                kind,
             };
             if self.launch(run, &member, &placed, now)? {
                 started += 1;
@@ -2477,7 +2399,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             brain,
             amount,
             kind,
-            fell_back,
         } = *placed;
         let on = Member {
             brain,
@@ -2516,9 +2437,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "reserved": amount, "reason": self.reason_for(&run)?,
                     "kind": kind.label(), "brain": brain.name() }),
         )?;
-        if fell_back {
-            self.alarm_on_the_house(&run, member, brain)?;
-        }
         Ok(true)
     }
 
@@ -2600,9 +2518,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         for d in self.store.desk()? {
-            if !matches!(d.kind.as_str(), "question" | "approval")
-                || d.status != "waiting"
-            {
+            if !matches!(d.kind.as_str(), "question" | "approval") || d.status != "waiting" {
                 continue;
             }
             if d.member == Some(member) && d.task == Some(task) {
@@ -3780,18 +3696,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "brains": Brain::choices(m.role).into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
-                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
-                // model), and the Claude it judges with, each with what the owner may choose.
-                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
                 "rank": m.brain.rank(),
-                "work_brains": Brain::work_choices().into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                "judgment_brain": m.judgment_brain().name(),
-                "judgment_brain_label": m.judgment_brain().label(),
-                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
                 // What runs its turns (ADR 0117), and whether Claude Code may.
                 "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
                 "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
@@ -3900,9 +3805,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 }
 
-/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus in either
-/// seat (ADR 0142), its role's cap otherwise.
+/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus (ADR 0142),
+/// its role's cap otherwise.
 fn most_a_turn_for(member: &Member) -> Micros {
     money::most_a_turn_of(member.role, member.brain)
-        .max(money::most_a_turn_of(member.role, member.work_brain))
 }

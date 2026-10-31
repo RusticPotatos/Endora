@@ -160,9 +160,9 @@ fn a_turn_on_claude_is_given_what_a_turn_that_read_confidential_data_said() {
     let hq = engine(&clock);
     let t = team(&hq);
     linus_capped_sonarr(&hq, &t, true);
-    // What a turn is given depends on the brain it runs on (ADR 0131). Rae is asked to decide
-    // the proxy, so her turn is one of judgment, on Claude; Ada's turn is work, on the house's
-    // own model.
+    // What a turn is given depends on the brain it runs on (ADR 0131): Rae thinks with Claude,
+    // Ada with the house's own model.
+    hq.set_brain(t.rae, "claude-haiku-5-5").unwrap();
     let proxy = task_for(&hq, t.goal, t.rae, "Check the proxy");
     hq.wake(t.rae, Some(proxy), WakeReason::Decide).unwrap();
     let (_, ada) = ada_asks_in_a_turn(&hq, &t);

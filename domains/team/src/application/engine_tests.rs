@@ -927,7 +927,7 @@ fn nobody_gets_a_turn_once_the_pools_day_is_gone_not_even_for_the_owner() {
         assert!(waits_for_budget(&hq, member, on), "{member:?}");
     }
     // The owner's own request is the pool's, and the pool is spent: a decision it asks for
-    // waits like the rest. What it hands over to be done is work, which costs nothing.
+    // waits like the rest.
     let asked = paid_task_for(&hq, t.goal, t.lead, "Look at it now");
     hq.tick().unwrap();
     let waiting = hq
@@ -939,16 +939,6 @@ fn nobody_gets_a_turn_once_the_pools_day_is_gone_not_even_for_the_owner() {
         .unwrap();
     assert_eq!(waiting.status, RunStatus::Queued);
     assert!(waiting.end_reason.starts_with("waiting for budget"));
-    let free = task_for(&hq, t.goal, Some(t.dev), "Read it now");
-    hq.tick().unwrap();
-    let reading = hq
-        .store()
-        .runs()
-        .unwrap()
-        .into_iter()
-        .rfind(|r| r.task == Some(free))
-        .unwrap();
-    assert_eq!((reading.status, reading.reserved), (RunStatus::Running, 0));
     // Tomorrow is a new day, and the decisions that waited start.
     clock.forward(24 * 60 * 60 * 1000);
     hq.tick().unwrap();
@@ -1299,6 +1289,7 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
+    all_paid(&hq);
     let parent = task_for(&hq, t.goal, Some(t.lead), "Plan the tracker");
     let child = hq
         .add_task(
@@ -1319,7 +1310,7 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["stopped"], false);
     assert_eq!(snap["members"].as_array().unwrap().len(), 3);
-    // Every member judges with a Claude, so every member has a share of the pool; the shares
+    // Every member thinks with a Claude, so every member has a share of the pool; the shares
     // are the pool's day between them (ADR 0131).
     let shares: Vec<i64> = snap["members"]
         .as_array()
@@ -1426,7 +1417,7 @@ fn the_snapshot_counts_what_the_office_shows_and_old_events_can_go() {
 }
 
 #[test]
-fn a_notice_lands_on_the_desk_from_the_turns_member_and_is_only_seen_or_dismissed() {
+fn a_notice_lands_on_the_desk_from_the_turns_member_and_never_waits_on_it() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
@@ -1449,16 +1440,10 @@ fn a_notice_lands_on_the_desk_from_the_turns_member_and_is_only_seen_or_dismisse
             found.task,
             found.status.as_str()
         ),
-        ("notice", Some(t.dev), Some(task), "waiting")
+        ("notice", Some(t.dev), Some(task), "seen")
     );
-    assert_eq!(
-        hq.decide(item, "approve"),
-        Err(EngineError::Unknown("decision for this item"))
-    );
-    hq.decide(item, "seen").unwrap();
-    // A notice from no turn, and a dismissal.
-    let other = hq.notice(None, "The demo is off.").unwrap();
-    hq.decide(other, "dismiss").unwrap();
+    // A notice from no turn.
+    hq.notice(None, "The demo is off.").unwrap();
     assert!(kinds(&hq).iter().any(|k| k == "desk.added"));
     assert!(
         hq.wakes()
@@ -1684,7 +1669,7 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
     on("Cy", Role::Researcher, "claude-haiku-5-5");
     let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
     on("Zed", Role::Developer, "claude-haiku-5-5");
-    // Dee is hired as she is, so she judges with the cheapest Claude (ADR 0131).
+    // Dee is hired as she is, so she is the house's own model.
     let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
     let snap = hq.snapshot().unwrap();
     let share = |id: MemberId| {
@@ -1703,12 +1688,7 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
         share(ada),
         share(rae)
     );
-    assert!(
-        0 < share(local) && share(local) < share(rae),
-        "the tester's {} on Haiku is a claim, smaller than a developer's {} on Haiku",
-        share(local),
-        share(rae)
-    );
+    assert_eq!(share(local), 0, "the house's model claims nothing");
 }
 
 /// A pool of $1.00 a day, three paid members: Linus's share is about $0.47, and the others

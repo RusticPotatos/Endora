@@ -156,15 +156,11 @@ pub struct Member {
     pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
-    /// What it judges with (ADR 0109, 0131): a Claude its role may use, Haiku until the owner
-    /// says otherwise. It is the brain the pool's shares are reckoned on. The brain a turn runs
-    /// on is decided per turn (see [`super::turns`]); for the member of a running turn, as the
-    /// engine returns it to the team protocol and the node, this is that brain instead, so the
-    /// data tier and the relays see what the turn is.
+    /// Its model (ADR 0109, 0142): every turn of its runs on it, and the pool's shares are
+    /// reckoned on it. For the member of a running turn, as the engine returns it to the team
+    /// protocol and the node, this is the brain the turn runs on (a league side's may differ),
+    /// so the data tier and the relays see what the turn is.
     pub brain: super::brain::Brain,
-    /// What it does its work with (ADR 0131): the owner's Mac or the house's own model, never
-    /// Claude. Its turns of work run here, and cost nothing; its turns of judgment never do.
-    pub work_brain: super::brain::Brain,
     /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
     /// and for a member hired before anyone was there to report to.
     pub reports_to: Option<MemberId>,
@@ -177,13 +173,6 @@ pub struct Member {
 }
 
 impl Member {
-    /// The Claude the member judges with (ADR 0131). Its turns of judgment run on it and
-    /// nowhere else.
-    #[must_use]
-    pub const fn judgment_brain(&self) -> super::brain::Brain {
-        self.brain
-    }
-
     /// Whether the member is on furlough now (ADR 0118): furloughed and not yet recalled.
     #[must_use]
     pub const fn furloughed(&self) -> bool {
@@ -926,7 +915,6 @@ mod tests {
             look: 0,
             paused: false,
             brain: crate::domain::brain::Brain::Haiku,
-            work_brain: crate::domain::brain::Brain::Mac,
             reports_to: None,
             furloughed_at: None,
             recalled_at: None,

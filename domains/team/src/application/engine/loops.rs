@@ -2,8 +2,7 @@
 //! working its plan (its tasks, by priority then age), up to its items at once (two unless the
 //! owner says) in hand together. A loop with room gives its top item to the member at its
 //! starting rank, or the nearest one above it who is free to take work and holds none of its
-//! items. Only members who are one model take part: until the owner sets the members' models,
-//! the team works as before.
+//! items. Every member at work takes part: a member is its model.
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
@@ -73,9 +72,9 @@ fn in_hand(task: &Task) -> bool {
         && matches!(task.status, TaskStatus::Todo | TaskStatus::Doing)
 }
 
-/// Whether a member takes part in the loops: it is one model, and free to take work.
+/// Whether a member takes part in the loops: it is free to take work.
 fn in_the_loops(member: &Member) -> bool {
-    member.brain == member.work_brain && member.at_work()
+    member.at_work()
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -111,7 +110,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
             {
-                self.store.set_model(member.id, *model)?;
+                self.store.set_brain(member.id, *model)?;
                 self.store.set_role(member.id, Role::Developer)?;
                 self.store.set_reports_to(member.id, None)?;
                 seated.push(member.name.clone());
@@ -463,9 +462,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .into_iter()
-            .filter(|m| {
-                m.brain == m.work_brain && !m.furloughed() && (m.paused || self.mac_away_for(m))
-            })
+            .filter(|m| !m.furloughed() && (m.paused || self.mac_away_for(m)))
             .collect();
         if paused.is_empty() {
             return Ok(());

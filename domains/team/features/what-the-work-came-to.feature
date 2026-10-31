@@ -24,6 +24,7 @@ Feature: What the team's work came to
   Scenario: Turns that wait are counted by what they wait for, with the oldest wait
     Given a pool of $0.50 a day
     And Ada is the lead
+    And Ada thinks with "Claude Haiku"
     And the goal "Keep the home lab healthy"
     And the pool's day is spent on Ada's decisions
     When Ada is woken to decide "Cap sonarr's memory"

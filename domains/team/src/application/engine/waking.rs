@@ -100,7 +100,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             live: self.live_turns(
                 member.id,
                 task,
-                self.need_of_wake(member, reason)?.kind == turns::TurnKind::Judgment,
+                turns::TurnKind::on(member.brain) == turns::TurnKind::Judgment,
             )?,
             already_held,
             nothing_to_do,

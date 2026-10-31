@@ -1,6 +1,5 @@
-//! The steps of `features/the-two-brains.feature` (ADR 0131): a member works with the Mac or the
-//! house's model and judges with a Claude, and HQ decides from why a turn was asked for which of
-//! them it runs on.
+//! The steps of `features/a-member-is-its-model.feature` (ADR 0131, amended by 0142): a member is its
+//! model, and a turn that cannot run on it now waits.
 
 use std::sync::atomic::Ordering;
 
@@ -12,7 +11,6 @@ use endora_team::domain::guards::Stopped;
 use endora_team::domain::money::{DAY_MS, DOLLAR, LEAST_A_TURN};
 use endora_team::domain::{Brain, Priority, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
-use serde_json::json;
 
 use super::Office;
 use endora_team::application::desk_ports::DeskStore;
@@ -63,17 +61,6 @@ impl Office {
         .expect("the owner may make a task")
     }
 
-    fn the_member(&self, name: &str) -> endora_team::domain::Member {
-        let id = self.member(name);
-        self.hq
-            .store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired")
-    }
-
     /// The turns of `name`'s that wait.
     fn waiting_turns(&self, name: &str) -> Vec<endora_team::application::ports::Run> {
         let id = self.member(name);
@@ -93,7 +80,7 @@ fn a_pool_of(w: &mut Office, dollars: f64) {
     w.restart_with_settings();
 }
 
-/// A member hired on the house's model, as owners hired before members had two brains.
+/// A member the owner hires on the house's model.
 #[given(expr = "{word} is hired as a {word} on the house's model")]
 fn hired_on_the_house_model(w: &mut Office, name: String, role: String) {
     let role = if role == "tester" {
@@ -107,24 +94,17 @@ fn hired_on_the_house_model(w: &mut Office, name: String, role: String) {
     }
 }
 
-#[given(expr = "{word} judges with {string}")]
-#[when(expr = "the owner gives {word} {string} to judge with")]
-fn judges_with(w: &mut Office, name: String, label: String) {
+/// The owner sets `name`'s model (ADR 0142), by its label.
+#[given(expr = "{word} thinks with {string}")]
+#[when(expr = "the owner gives {word} {string} to think with")]
+fn thinks_with(w: &mut Office, name: String, label: String) {
     let id = w.member(&name);
-    let role = w.the_member(&name).role;
-    let brain = Brain::judgment_choices(role)
+    let brain = Brain::all()
         .into_iter()
         .find(|b| b.label() == label)
-        .unwrap_or_else(|| panic!("{label} is not a Claude a {role:?} may judge with"));
-    w.hq.set_judgment_brain(id, brain.name())
-        .expect("the owner may choose a judgment brain");
-}
-
-#[given(expr = "{word} works with the Mac")]
-fn works_with_the_mac(w: &mut Office, name: String) {
-    let id = w.member(&name);
-    w.hq.set_work_brain(id, "mac")
-        .expect("the Mac may be worked with");
+        .unwrap_or_else(|| panic!("{label} is not a model Endora has"));
+    w.hq.set_brain(id, brain.name())
+        .expect("the owner may set a member's model");
 }
 
 /// Wakes `name` to decide `title`, as a lead's ladder or the CEO's direction does.
@@ -134,33 +114,6 @@ fn woken_to_decide(w: &mut Office, name: String, title: String) {
     let id = w.member(&name);
     let task = w.a_task_nobody_has(&title);
     w.hq.wake(id, Some(task), WakeReason::Decide)
-        .expect("a wake has a receipt");
-}
-
-/// `name` is asked to review `title`, as the engine asks a tester when work is handed in.
-#[when(expr = "{word} is asked to review {string}")]
-fn asked_to_review(w: &mut Office, name: String, title: String) {
-    let id = w.member(&name);
-    let task = w.a_task_nobody_has(&title);
-    w.hq.wake(id, Some(task), WakeReason::ReviewRequested)
-        .expect("a wake has a receipt");
-}
-
-/// `name`'s work on `title` is sent back: mending it is code work, whoever does it.
-#[when(expr = "{word} is sent back {string}")]
-fn is_sent_back(w: &mut Office, name: String, title: String) {
-    let id = w.member(&name);
-    let task = w.task(&title);
-    w.hq.wake(id, Some(task), WakeReason::SentBack)
-        .expect("a wake has a receipt");
-}
-
-/// The alarm goes off for `name`, about a task of its own, as Endora raises it into a routine.
-#[when(expr = "an alarm {string} goes off for {word}")]
-fn an_alarm_goes_off(w: &mut Office, title: String, name: String) {
-    let id = w.member(&name);
-    let task = w.a_task_nobody_has(&title);
-    w.hq.wake(id, Some(task), WakeReason::Alarm)
         .expect("a wake has a receipt");
 }
 
@@ -206,14 +159,6 @@ fn tops_up_the_pool(w: &mut Office, dollars: f64) {
     w.hq.top_up_pool((dollars * DOLLAR as f64).round() as i64)
         .expect("the owner may top up the pool");
     w.tick();
-}
-
-/// `name` takes the task it was handed, as its turn would with the claim tool.
-#[when(expr = "{word} takes {string}")]
-fn takes(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
-        .expect("the member takes its own task");
 }
 
 /// Time goes by with the team left alone: a tick every five minutes, and any turn that started
@@ -310,8 +255,8 @@ fn reserved_nothing(w: &mut Office, name: String) {
     assert_eq!((run.reserved, run.spent), (0, 0));
 }
 
-#[then(expr = "{word} works with {string} and judges with {string}")]
-fn works_and_judges_with(w: &mut Office, name: String, works: String, judges: String) {
+#[then(expr = "{word}'s model is {string}")]
+fn model_is(w: &mut Office, name: String, model: String) {
     let id = w.member(&name);
     let shown = w.hq.snapshot().expect("the snapshot is built");
     let on_screen = shown["members"]
@@ -320,14 +265,11 @@ fn works_and_judges_with(w: &mut Office, name: String, works: String, judges: St
         .iter()
         .find(|m| m["id"] == id.0)
         .expect("on the roster");
-    assert_eq!(on_screen["work_brain_label"], works.as_str());
-    assert_eq!(on_screen["judgment_brain_label"], judges.as_str());
-}
-
-#[then("nothing is running on the Mac")]
-fn nothing_runs_on_the_mac(w: &mut Office) {
-    let shown = w.hq.snapshot().expect("the snapshot is built");
-    assert_eq!(shown["mac"]["running"], 0);
+    let brain = on_screen["brain"].as_str().expect("a brain");
+    assert_eq!(
+        Brain::from_name(brain).map(Brain::label),
+        Some(model.as_str())
+    );
 }
 
 #[then("no wake was refused for budget")]
@@ -339,47 +281,6 @@ fn no_wake_refused_for_budget(w: &mut Office) {
             .filter(|wake| wake.receipt == Receipt::Refused(Refused::OutOfBudget))
             .count();
     assert_eq!(refused, 0, "a wake was thrown away for money");
-}
-
-#[then(expr = "the decision waits for {word}'s work turn to end")]
-fn the_decision_is_held(w: &mut Office, name: String) {
-    let wake = w.last_wake();
-    assert_eq!(wake.member, w.member(&name));
-    assert_eq!(wake.reason, WakeReason::Decide);
-    assert_eq!(
-        wake.receipt,
-        Receipt::Held,
-        "the decision joined the work turn"
-    );
-}
-
-#[then(expr = "the owner's desk has a notice saying {string}")]
-fn the_desk_has_a_notice(w: &mut Office, part: String) {
-    let said: Vec<String> =
-        w.hq.store()
-            .desk()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|d| d.kind == "notice" && d.status == "waiting")
-            .map(|d| d.text)
-            .collect();
-    assert!(
-        said.iter().any(|text| text.contains(&part)),
-        "no notice says {part:?}: {said:?}"
-    );
-}
-
-#[then(regex = r"^the owner's desk has (\d+) notices? saying (.+)$")]
-fn the_desk_has_n_notices(w: &mut Office, count: usize, part: String) {
-    let part = part.trim_matches('"').to_owned();
-    let said =
-        w.hq.store()
-            .desk()
-            .expect("the store answers")
-            .into_iter()
-            .filter(|d| d.kind == "notice" && d.text.contains(&part))
-            .count();
-    assert_eq!(said, count, "notices saying {part:?}");
 }
 
 #[then(expr = "the work on {string} is held, not stuck")]

@@ -88,5 +88,4 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let set = self.store.runtime_of(member.id)?;
         Ok(set.effective(member.role, found.brain.unwrap_or(member.brain)))
     }
-
 }
