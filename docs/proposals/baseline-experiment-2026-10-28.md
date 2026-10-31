@@ -514,6 +514,14 @@ the worker with a model it can run, `image_tags` in the ansible-nas loop's tools
 from $67.75 of credit. Started 31 Oct 12:58 EDT as HQ tasks 947 to 955. **Task 8 is not in it
 yet**: its window starts when the owner runs the fork's playbook (D11), and it joins then.
 
+**One release mid-round, by the owner's word (31 Oct 17:47 EDT, `9ed87cb2`).** The day's top-ups
+had reached the limit of three pool days ($9.49 of $9.50) with four turns queued on live tasks.
+The owner raised the limit to five pool days ($15.83): it is there to catch a leak or a
+run-away spend, not to hold back credit that expires on the 18th (ADR 0113 rule 6, amended). The
+release changed that one number, its refusal's words and their tests; nothing in how HQ works.
+No turn was running or cut. Then $3 was topped up (the day's total $12.49), after checking the
+queued turns were on live tasks and none on a judged item.
+
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
 | 1 | 947 | | | | | |
