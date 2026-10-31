@@ -2462,15 +2462,12 @@ mod tests {
         let (worked, _) = first_call_of(&hq, work);
         said("task turn", &worked);
 
-        // A move starts with HQ's core, its game and the way to the rest, and is not told the
-        // lab's rules it has no tool for yet.
+        // A move is offered its turn and its game (HQ narrows a downtime turn to those, 30 Oct),
+        // and the way to anything else, and is not told the lab's rules it has no tool for.
         assert_eq!(
             moved.offered,
             [
                 "my_turn",
-                "claim",
-                "post",
-                "set_status",
                 "chess",
                 FIND_TOOLS
             ]
