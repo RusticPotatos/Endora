@@ -569,8 +569,6 @@ pub enum Refusal {
     CheckPending(i64),
     /// Work is not handed to a member on furlough.
     Furloughed(String),
-    /// The rules of the office refuse a change (ADR 0119).
-    Office(super::office::Refused),
     /// A game of chess refuses a move or a challenge (ADR 0121).
     Chess(super::chess::Refused),
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
@@ -770,7 +768,6 @@ impl fmt::Display for Refusal {
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")
             }
-            Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
             Self::Scenario(why) => f.write_str(why),
             Self::InDowntime => f.write_str(

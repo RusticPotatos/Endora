@@ -58,23 +58,6 @@ impl OfficeStore for SqliteTeamStore {
         Ok(conn.last_insert_rowid())
     }
 
-    fn move_office_item(&self, id: i64, x: i64, y: i64) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE office_items SET x = ?2, y = ?3 WHERE id = ?1",
-                params![id, x, y],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn remove_office_item(&self, id: i64) -> Stored<()> {
-        self.conn()?
-            .execute("DELETE FROM office_items WHERE id = ?1", [id])
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn replace_office_items(&self, items: &[office::Item]) -> Stored<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction().map_err(backend)?;

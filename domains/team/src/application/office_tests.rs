@@ -97,16 +97,10 @@ fn the_office_is_seeded_once_from_the_default_layout() {
     let seeded = items(&hq);
     assert_eq!(seeded.len(), office::default_layout().len());
     assert!(seeded.iter().all(|i| i.placed_by == "endora"));
-    // Again: nothing is added, and what the team removed does not come back.
+    // Again: nothing is added.
     assert!(!hq.seed_office().unwrap());
-    hq.store().remove_office_item(seeded[0].id).unwrap();
-    assert!(!hq.seed_office().unwrap());
-    assert_eq!(items(&hq).len(), seeded.len() - 1);
+    assert_eq!(items(&hq).len(), seeded.len());
 }
-
-// ---- deciding together ---------------------------------------------------------------------
-
-// ---- the owner is the landlord ---------------------------------------------------------------
 
 // ---- downtime --------------------------------------------------------------------------------
 
