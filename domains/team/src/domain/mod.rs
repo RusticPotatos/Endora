@@ -27,6 +27,7 @@ pub mod mechanical;
 pub mod money;
 pub mod names;
 pub mod office;
+pub mod pgn;
 pub mod projects;
 pub mod record;
 pub mod retraction;

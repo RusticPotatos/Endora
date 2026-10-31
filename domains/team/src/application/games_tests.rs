@@ -10,7 +10,7 @@ use crate::application::run_ports::RunStore;
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, Settings};
+use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::application::event_ports::EventStore;
@@ -574,6 +574,24 @@ fn a_game_nobody_moves_in_for_a_week_is_adjourned_as_a_draw() {
     );
     hq.tick().unwrap();
     assert_eq!(events(&hq, "chess.ended").len(), 1, "once");
+    // Its PGN says the house adjourned it, a draw by adjudication, under the members' names.
+    let id = kept.id;
+    let pgn = hq.chess_pgn(id).unwrap();
+    for tag in [
+        "[Event \"Endora office chess\"]",
+        "[Date \"2026.10.16\"]",
+        "[White \"Ada\"]",
+        "[Black \"Bo\"]",
+        "[Result \"1/2-1/2\"]",
+        "[Termination \"adjudication\"]",
+    ] {
+        assert!(pgn.contains(tag), "{tag}: {pgn}");
+    }
+    assert!(
+        pgn.ends_with("{adjourned after a week without a move} 1/2-1/2\n"),
+        "{pgn}"
+    );
+    assert!(matches!(hq.chess_pgn(id + 1), Err(EngineError::Unknown(_))));
 }
 
 #[test]

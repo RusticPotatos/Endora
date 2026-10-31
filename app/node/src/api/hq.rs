@@ -737,6 +737,60 @@ pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<
     ask(&state, format!("/v1/scenarios/{task}"), None).await
 }
 
+/// A game in PGN as HQ wrote it, passed on as plain text named `file`, to copy or keep.
+async fn pgn_passed(state: &AppState, path: String, file: String) -> Response {
+    let hq = match client(state) {
+        Ok(hq) => hq,
+        Err(failed) => return failed.into_response(),
+    };
+    let answer = tokio::task::spawn_blocking(move || hq.get_text(&path))
+        .await
+        .map_err(|_| HqError::Unreachable("a worker thread failed".to_owned()))
+        .and_then(|got| got);
+    let pgn = match answer {
+        Ok(pgn) => pgn,
+        Err(error) => return failed(error).into_response(),
+    };
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_owned(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{file}\""),
+            ),
+        ],
+        pgn,
+    )
+        .into_response()
+}
+
+/// A Holodeck match in PGN: the league's games under the league, their sides the brains.
+pub(super) async fn hq_scenario_pgn(
+    State(state): State<AppState>,
+    Path(task): Path<i64>,
+) -> Response {
+    pgn_passed(
+        &state,
+        format!("/v1/scenarios/{task}/pgn"),
+        format!("endora-match-{task}.pgn"),
+    )
+    .await
+}
+
+/// A game of the office's chess in PGN.
+pub(super) async fn hq_chess_pgn(State(state): State<AppState>, Path(id): Path<i64>) -> Response {
+    pgn_passed(
+        &state,
+        format!("/v1/chess/{id}/pgn"),
+        format!("endora-office-chess-{id}.pgn"),
+    )
+    .await
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqProjectTools {
     #[serde(default)]
@@ -1393,6 +1447,55 @@ mod tests {
         let line =
             "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41";
         assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+    }
+
+    #[tokio::test]
+    async fn a_game_is_passed_on_as_pgn_in_plain_text() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            if path == "/v1/chess/9/pgn" {
+                return (
+                    404,
+                    "application/json",
+                    json!({ "error": "no such chess game" }).to_string(),
+                );
+            }
+            (
+                200,
+                "text/plain; charset=utf-8",
+                "[Event \"Endora model league\"]\n\n1. e4 *\n".to_owned(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let res = hq_scenario_pgn(State(state.clone()), Path(41)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        assert!(
+            res.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .contains("endora-match-41.pgn")
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            &bytes[..],
+            b"[Event \"Endora model league\"]\n\n1. e4 *\n".as_slice()
+        );
+        let missing = hq_chess_pgn(State(state.clone()), Path(9)).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/scenarios/41/pgn", "/v1/chess/9/pgn"]);
     }
 
     #[tokio::test]
