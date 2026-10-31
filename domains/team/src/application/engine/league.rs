@@ -371,6 +371,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 let mut seen = now.positions();
                 let rows = seen.pop();
                 game["rows"] = json!(rows);
+                if let Some((fen, _)) = now.board() {
+                    game["fen"] = json!(fen);
+                }
                 game["before"] = json!(seen.pop().or_else(|| rows.clone()));
                 game["to_move"] = json!(now.to_move().name());
                 game["last"] = json!(now.moves().last());

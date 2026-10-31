@@ -1712,18 +1712,19 @@ if (failures.length) {
     const shown = () => runInContext("viewHQ()", context);
     const tabs = shown();
     // Three places, by what the owner is doing (the density audit of 2026-10-25, done 2026-10-30):
-    // Work, Manage and Health, Work first and where every screen opens.
-    for (const id of ["work", "manage", "health"]) {
+    // Work, Manage and Health, Work first and where every screen opens; and Chess, the model
+    // league's own (the owner's notes of 31 Oct).
+    for (const id of ["work", "manage", "health", "chess"]) {
       if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
       if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
     }
-    if ((tabs.match(/role="tab" class="hq-tab"/g) || []).length !== 3) fail("hq: not three tabs");
+    if ((tabs.match(/role="tab" class="hq-tab"/g) || []).length !== 4) fail("hq: not four tabs");
     if (!tabs.includes('role="tablist"')) fail("hq: the tabs are not a tablist");
     const selected = (html) => [...html.matchAll(/id="hq-tab-(\w+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
     const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
     if (selected(tabs).join() !== "work") fail(`hq: the default tab is ${selected(tabs)}, not work`);
     if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-work"/.test(tabs)) fail("hq: Work is not the first tab");
-    if (hiddenPanels(tabs) !== "health,manage") fail(`hq: with Work showing, these panels are hidden: ${hiddenPanels(tabs)}`);
+    if (hiddenPanels(tabs) !== "chess,health,manage") fail(`hq: with Work showing, these panels are hidden: ${hiddenPanels(tabs)}`);
     // What is on which tab: Work the desk, what can wait, the work in flight and finding a task;
     // Manage the projects, routines, goals, the team, the money and the switches, with what the
     // team knows and the office folded; Health the Mac, the scorecard, what failed and the live
@@ -1739,10 +1740,10 @@ if (failures.length) {
         rows: count(/<li[\s>]|<p[\s>]|<h2|<h3|<tr[\s>]|<div class="hq-row"|<textarea|<dt>|<summary/g), sections: count(/<h3/g) };
     };
     const above = density(tabs.split('role="tablist"')[0] + tabs.split('class="hq-stage"')[1].split('role="tabpanel"')[0]);
-    console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
+    console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health", "chess"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
     // Before the regrouping (2026-10-29, this snapshot): Now 51 buttons and 97 rows, Team 15 and
     // 29, Work 15 and 22, Manage 13 and 25.
-    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 15, rows: 37 } };
+    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 15, rows: 37 }, chess: { buttons: 12, rows: 30 } };
     for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
       const d = density(panelOf(tabs, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
@@ -1753,7 +1754,9 @@ if (failures.length) {
         "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
         // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
         "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
-      health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"', "<h2>Activity</h2>", 'id="hq-log-end"'] };
+      health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"', "<h2>Activity</h2>", 'id="hq-log-end"'],
+      // Before the owner starts the league, the Chess tab says so rather than standing empty.
+      chess: ["<h2>Chess</h2>", "No model league yet"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
     }
@@ -1792,7 +1795,7 @@ if (failures.length) {
     const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "work")) !== deskCount) fail(`hq: the Work badge is ${badge(tabs, "work")}, not ${deskCount}`);
-    if (badge(tabs, "manage") !== undefined || badge(tabs, "health") !== undefined) fail("hq: a tab with nothing to count has a badge");
+    if (["manage", "health", "chess"].some((id) => badge(tabs, id) !== undefined)) fail("hq: a tab with nothing to count has a badge");
     // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac block, no Mac chip.
     if (!tabs.includes(`data-act="hq:tab:work:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Work");
     if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
@@ -1849,7 +1852,10 @@ if (failures.length) {
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
     await runInContext('dispatch("hq:tab:manage:go")', context);
     if (selected(shown()).join() !== "manage" || kept["endora.hq.tab.v4"] !== "manage") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "health,work") fail("hq: the other panels stay showing");
+    if (hiddenPanels(shown()) !== "chess,health,work") fail("hq: the other panels stay showing");
+    await runInContext('dispatch("hq:tab:chess:go")', context);
+    if (selected(shown()).join() !== "chess" || kept["endora.hq.tab.v4"] !== "chess" || hiddenPanels(shown()) !== "health,manage,work") fail("hq: the Chess tab is not chosen and remembered");
+    await runInContext('dispatch("hq:tab:manage:go")', context);
     await runInContext('dispatch("hq:tab:bogus:go")', context);
     if (selected(shown()).join() !== "manage") fail("hq: a tab that does not exist was chosen");
     // The older tabs still land where each now lives.
@@ -1884,12 +1890,12 @@ if (failures.length) {
     runInContext("HQ.selected = null;", context);
     // Arrow keys move between tabs (Home and End to the ends), wrapping round.
     runInContext("HQ.tab = 'work';", context);
-    for (const [key, then] of [["ArrowRight", "manage"], ["ArrowLeft", "work"], ["ArrowLeft", "health"], ["Home", "work"], ["End", "health"]]) {
+    for (const [key, then] of [["ArrowRight", "manage"], ["ArrowLeft", "work"], ["ArrowLeft", "chess"], ["ArrowLeft", "health"], ["Home", "work"], ["End", "chess"]]) {
       runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
       if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
     }
     runInContext("hqTabKey({ key: 'ArrowRight', target: { closest: () => null }, preventDefault() {} })", context);
-    if (runInContext("HQ.tab", context) !== "health") fail("hq: arrow keys outside the tabs move them");
+    if (runInContext("HQ.tab", context) !== "chess") fail("hq: arrow keys outside the tabs move them");
     runInContext("HQ.tab = null;", context);
   }
   // Every kind of desk item says in a line what its choices do.
@@ -3181,27 +3187,29 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (!card.includes('<button class="hq-line" data-act="hq:holo:open:708">') || card.includes(">Open</button>")) fail("holodeck: a match is not a one-line row: " + card);
   if (/hq:holo:(rerun|restart|trial)/.test(card) || /Trials|Lighthouse|Silent Station/.test(card)) fail("holodeck: a retired world, trial or re-run is still offered: " + card);
   if (card.includes("<b>(game 0)</b>")) fail("holodeck: a title is not escaped");
-  // The model league (ADR 0135, amended 2026-10-25): the brains ranked, one line each, and its games open.
+  // The model league has its own tab (the owner's notes of 31 Oct): the Work card says so in
+  // one line with a way there, and shows none of the league itself (one thing, one home).
   runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { league: {
-      table: [{ brain: "local", label: "Local", rating: 1216, won: 1, drawn: 0, lost: 0 }, { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, won: 0, drawn: 0, lost: 1 }],
-      games: [{ task: 812, white: "claude-haiku-5-5", black: "local", end: "black_won" }], pairs_left: 2 } }) });`, context);
-  const league = html("hqHolodeck(HQ.snap)");
-  if (!league.includes("Model league") || !/1\. Local[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("holodeck: the league table is not shown: " + league);
-  if (!league.includes('data-act="hq:holo:open:812"') || league.includes("<b>Haiku</b>")) fail("holodeck: a league game does not open, or a label is not escaped: " + league);
-  // Which side each brain played, and who won, in words rather than "black_won" (owner, 2026-10-26).
-  const gameLine = league.replace(/<[^>]+>/g, "");
-  if (!gameLine.includes("White: &lt;b&gt;Haiku&lt;/b&gt;") || !gameLine.includes("Black: Local") || !gameLine.includes("Local won") || gameLine.includes("black_won")) fail("holodeck: a league game does not say who played which colour and who won: " + league);
+      table: [{ brain: "local", label: "Local", rating: 1216, points: 1, won: 1, drawn: 0, lost: 0 }, { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, points: 0, won: 0, drawn: 0, lost: 1 }],
+      games: [{ task: 812, white: "claude-haiku-5-5", black: "local", end: "black_won", half_moves: 4, live: false }], pairs_left: 2, round: { number: 1, since: null } } }) });`, context);
+  const pointer = html("hqHolodeck(HQ.snap)");
+  if (!pointer.includes('data-act="hq:tab:chess:go"') || pointer.includes("Model league") || pointer.includes("hq-spark")) fail("holodeck: the Work card does not point to the Chess tab, or still shows the league: " + pointer);
+  // The league's standings on the Chess tab: one line a brain, its points, rating and record,
+  // its rating game by game as a small line, and its games, each opening its board.
+  const league = html("hqChessTab(HQ.snap)");
+  if (!/1\. Local[\s\S]*1 pt[\s\S]*1216[\s\S]*1 won/.test(league) || !league.includes("2 pairs still to meet")) fail("chess: the standings are not shown: " + league);
+  if (league.includes("<b>Haiku</b>")) fail("chess: a brain's label is not escaped: " + league);
   // Each brain's rating game by game, a small inline line beside its name (no library): one a
   // brain, its label escaped, and a flat line before any game, or with no history sent at all.
-  if ((league.match(/<svg class="hq-spark"/g) || []).length !== 2 || /NaN|undefined/.test(league)) fail("holodeck: the league has no sparkline a brain: " + league);
-  if (league.includes('aria-label="<b>Haiku') || !league.includes('aria-label="&lt;b&gt;Haiku&lt;/b&gt; rating 1200"')) fail("holodeck: a sparkline's label is not escaped: " + league);
+  if ((league.match(/<svg class="hq-spark"/g) || []).length !== 2 || /NaN|undefined/.test(league)) fail("chess: the standings have no sparkline a brain: " + league);
+  if (league.includes('aria-label="<b>Haiku') || !league.includes('aria-label="&lt;b&gt;Haiku&lt;/b&gt; rating 1200"')) fail("chess: a sparkline's label is not escaped: " + league);
   runInContext(`__keepLeague = HQ.snap.holodeck.league; HQ.snap = Object.assign({}, HQ.snap, { holodeck: Object.assign({}, HQ.snap.holodeck, { league: {
       table: [{ brain: "local", label: "Local", rating: 1200, won: 0, drawn: 0, lost: 0, history: [1200] }, { brain: "mac", label: "Mac", rating: 1200, won: 0, drawn: 0, lost: 0 }],
       games: [], pairs_left: 1 } }) });`, context);
-  const fresh = html("hqHolodeck(HQ.snap)");
-  if ((fresh.match(/<svg class="hq-spark"[^>]*><polyline points="0\.0,8\.0 60\.0,8\.0"\/><\/svg>/g) || []).length !== 2) fail("holodeck: a league with no games does not draw a flat sparkline a brain: " + fresh);
+  const fresh = html("hqChessTab(HQ.snap)");
+  if ((fresh.match(/<svg class="hq-spark"[^>]*><polyline points="0\.0,8\.0 60\.0,8\.0"\/><\/svg>/g) || []).length !== 2) fail("chess: a league with no games does not draw a flat sparkline a brain: " + fresh);
   runInContext(`HQ.snap.holodeck.league = { table: [{ brain: "local", label: "Local", rating: 1216, won: 1, drawn: 0, lost: 0, history: [1200, 1216, 1190] }], games: [], pairs_left: 0 };`, context);
-  if (!html("hqHolodeck(HQ.snap)").includes('points="0.0,9.4 30.0,2.0 60.0,14.0"')) fail("holodeck: a sparkline does not follow the rating game by game: " + html("hqHolodeck(HQ.snap)"));
+  if (!html("hqChessTab(HQ.snap)").includes('points="0.0,9.4 30.0,2.0 60.0,14.0"')) fail("chess: a sparkline does not follow the rating game by game: " + html("hqChessTab(HQ.snap)"));
   runInContext(`HQ.snap.holodeck.league = __keepLeague;`, context);
   const shown = (data) => { runInContext(`HQ.holo = ${JSON.stringify(data)};`, context); return html("hqHoloDetail()"); };
   const chess = shown({ what: "scenario", data: { task: 708, kind: "chess", end: "black_won", result: "black_won", reason: "checkmate", moves: "1. f3 e5 2. g4 Qh4#",
@@ -3272,9 +3280,9 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     LAST_VIEW = NAV.v; __keepHolo[3]();
     [setTimeout, setInterval, requestAnimationFrame] = __timers; document.querySelectorAll = __keepQs;`, context);
   if (!runInContext("__same.open", context) || runInContext("__other.open", context)) fail("render: a fold-out the owner opened closes on a live update, or another one opens");
-  // The league alone, before any match is listed, still shows the card.
+  // The league alone, before any match is listed, still shows the card, with its way to Chess.
   runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: { scenarios: [], league: HQ.snap.holodeck.league } });`, context);
-  if (!html("hqHolodeck(HQ.snap)").includes("Model league")) fail("holodeck: the league alone does not show the card");
+  if (!html("hqHolodeck(HQ.snap)").includes('data-act="hq:tab:chess:go"')) fail("holodeck: the league alone does not show the card");
   // Tapping a match fetches it and shows it; an old trial or re-run tap fetches nothing.
   runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
   await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
@@ -3284,6 +3292,114 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (asked.join("|") !== "GET /v1/hq/scenarios/708") fail("holodeck: the taps do not fetch what they open, or a retired one still asks: " + asked.join("|"));
   runInContext(`[HQ.snap, HQ.holo, api, render, flash] = __keepHolo;`, context);
   console.log("holodeck: matches and the league (with sparklines) are listed and opened, escaped; a match copies and saves its PGN; nothing retired is offered");
+}
+
+// The Chess tab (the owner's notes of 31 Oct): the league's games in play, each with its board,
+// whose move it is and the last move, from the snapshot the console already refreshes; this
+// round's bracket (the league is a round robin, a round running from one reset to the next,
+// not a month), brains against brains with each pair's result, and the standings; and every
+// finished game, newest first, a page at a time, each with its result, its moves and its PGN.
+// On a phone the bracket scrolls inside itself and the page never sideways.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const html = (code) => String(runInContext(code, context));
+  const words = (h) => h.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  runInContext(`__keepChess = [HQ.snap, HQ.holo, HQ.chessGames, HQ.tab, api, render, flash]; render = () => {}; flash = () => {}; HQ.tab = "chess";`, context);
+  const start = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"];
+  const afterE4 = ["rnbqkbnr", "pppppppp", "........", "........", "....P...", "........", "PPPP.PPP", "RNBQKBNR"];
+  const league = {
+    table: [
+      { brain: "local", label: "Local", rating: 1216, points: 1.5, won: 1, drawn: 1, lost: 0, history: [1200, 1216, 1216] },
+      { brain: "mac", label: "Mac", rating: 1200, points: 0.5, won: 0, drawn: 1, lost: 0, history: [1200, 1200] },
+      { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, points: 0, won: 0, drawn: 0, lost: 1, history: [1200, 1184] }],
+    games: [
+      { task: 812, white: "claude-haiku-5-5", black: "local", end: "black_won", half_moves: 4, live: false },
+      { task: 815, white: "local", black: "mac", end: "draw", half_moves: 60, live: false },
+      { task: 820, white: "mac", black: "claude-haiku-5-5", end: null, half_moves: 1, live: true,
+        rows: afterE4, before: start, fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", to_move: "black", last: "e4" }],
+    pairs_left: 1, round: { number: 2, since: "28 Oct" } };
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: { scenarios: [], league: ${JSON.stringify(league)} } });
+    HQ.holo = null; HQ.chessGames = { page: 1, busy: false, seen: 2, data: { page: 1, pages: 1, total: 0, games: [] } };`, context);
+  const tab = html("hqChessTab(HQ.snap)");
+  // Live: the game in play, its board with the last move lit, whose move it is and the last move.
+  const live = tab.split("<h2>Live")[1] || "";
+  if (!live || (live.split("<h2>")[0].match(/class="hq-chess"/g) || []).length !== 1) fail("chess: the game in play is not shown with its board: " + tab);
+  if ((live.split("<h2>")[0].match(/class="[^"]*\blit\b/g) || []).length !== 2) fail("chess: the live board does not light the last move: " + live);
+  if (!words(live).includes("Black, &lt;b&gt;Haiku&lt;/b&gt;, to move") || !words(live).includes("Last move: 1. e4")) fail("chess: the live game does not say whose move it is and the last move: " + words(live));
+  if (!live.includes('data-act="hq:holo:watch:820"')) fail("chess: the live game does not open move by move: " + live);
+  // The round: the league's own words, not a month.
+  if (!words(tab).includes("Round 2, since the reset on 28 Oct") || !words(tab).includes("round robin") || /month/i.test(words(tab))) fail("chess: the round is not said as the league keeps it: " + words(tab));
+  // The bracket: brains against brains, each cell the row's result against the column, in a box
+  // that scrolls on its own.
+  const cross = (tab.match(/<div class="hq-scroll"[^>]*>\s*<table class="hq-cross">[\s\S]*?<\/table>\s*<\/div>/) || [""])[0];
+  if (!cross) fail("chess: no bracket table inside its own scrolling box: " + tab);
+  const cell = (row, col) => {
+    const tr = (cross.match(new RegExp(`<tr><th scope="row">${row}</th>([\\s\\S]*?)</tr>`)) || [])[1] || "";
+    return words([...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1])[col] || "").trim();
+  };
+  const want = [["Local", 0, "—"], ["Local", 1, "drawn"], ["Local", 2, "won"], ["Mac", 0, "drawn"], ["Mac", 2, "playing"],
+    ["&lt;b&gt;Haiku&lt;/b&gt;", 0, "lost"], ["&lt;b&gt;Haiku&lt;/b&gt;", 1, "playing"]];
+  for (const [row, col, said] of want) if (cell(row, col) !== said) fail(`chess: the bracket's ${row} against column ${col} says "${cell(row, col)}", not "${said}": ${cross}`);
+  runInContext(`HQ.snap.holodeck.league.games = HQ.snap.holodeck.league.games.slice(0, 2);`, context);
+  if (!words(html("hqChessTab(HQ.snap)")).includes("not yet")) fail("chess: a pair that has not played does not say so");
+  runInContext(`HQ.snap.holodeck.league = ${JSON.stringify(league)};`, context);
+  // The standings: points, then rating, in the order HQ ranks them.
+  const standings = words(tab.split("Standings")[1] || "");
+  if (!/1\. Local 1½ pts [^]*1216[^]*2\. Mac ½ pt [^]*1200[^]*3\. &lt;b&gt;Haiku&lt;\/b&gt; 0 pts/.test(standings)) fail("chess: the standings are not by points then rating: " + standings);
+  // With nothing in play, Live says so and what comes next.
+  runInContext(`HQ.snap.holodeck.league.games = HQ.snap.holodeck.league.games.slice(0, 2);`, context);
+  if (!words(html("hqChessTab(HQ.snap)")).includes("No league game is being played now")) fail("chess: an idle league does not say nothing is being played");
+  runInContext(`HQ.snap.holodeck.league = ${JSON.stringify(league)};`, context);
+  // All games: fetched from the node a page at a time, newest first; a page with Older and
+  // Newer, never an endless scroll; each with its result in words, its moves and its PGN.
+  runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path);
+      const page = Number(path.split("page=")[1]);
+      return { page, pages: 3, per_page: 10, total: 21, games: page === 2 ? [
+        { task: 812, round: 2, white: "claude-haiku-5-5", white_label: "<b>Haiku</b>", black: "local", black_label: "Local", result: "black_won", half_moves: 4, day: "28 Oct" },
+        { task: 640, round: 1, white: "local", white_label: "Local", black: "mac", black_label: "Mac", result: "abandoned", half_moves: 0, day: "20 Oct" }] : [] }; };`, context);
+  await runInContext(`hqDispatch("hq", "holo", "page", "2")`, context);
+  const asked = JSON.parse(runInContext("JSON.stringify(__asked)", context));
+  if (asked.join("|") !== "GET /v1/hq/league/games?page=2") fail("chess: a page of games is not asked of the node: " + asked.join("|"));
+  const all = html("hqChessTab(HQ.snap)");
+  const list = all.split("<h2>All games")[1] || "";
+  if (!list) fail("chess: no list of every game: " + all);
+  const listed = words(list);
+  if (!listed.includes("White: &lt;b&gt;Haiku&lt;/b&gt; · Black: Local") || !listed.includes("Local won") || !listed.includes("2 moves") || !listed.includes("round 2") || !listed.includes("28 Oct")) fail("chess: a finished game does not say who played, who won, its moves, round and day: " + listed);
+  if (!listed.includes("stopped with no result") || /black_won|abandoned/.test(listed)) fail("chess: a result is shown as the stored name: " + listed);
+  if (!list.includes('data-act="hq:holo:save:812"') || !list.includes('data-act="hq:holo:watch:812"')) fail("chess: a finished game does not offer its PGN and its moves: " + list);
+  if (!list.includes('data-act="hq:holo:page:1"') || !list.includes('data-act="hq:holo:page:3"') || !listed.includes("Page 2 of 3")) fail("chess: the list does not page both ways: " + list);
+  if (/IntersectionObserver|addEventListener\("scroll"/.test(source.split("// ---- the Chess tab")[1] || "x")) fail("chess: the list loads on scroll");
+  if (!source.includes("// ---- the Chess tab")) fail("chess: the tab's code is not marked where it starts");
+  // The list is fetched again when a game finishes (the snapshot counts one more), while the
+  // tab is showing, not on a timer of its own.
+  runInContext(`__asked = []; HQ.chessGames.busy = false;`, context);
+  html("hqChessTab(HQ.snap)");
+  await new Promise((r) => setTimeout(r, 0));
+  if (JSON.parse(runInContext("JSON.stringify(__asked)", context)).length) fail("chess: the list is fetched again with nothing finished since");
+  runInContext(`HQ.snap.holodeck.league.games[2] = Object.assign({}, HQ.snap.holodeck.league.games[2], { end: "white_won", live: false });`, context);
+  html("hqChessTab(HQ.snap)");
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  if (JSON.parse(runInContext("JSON.stringify(__asked)", context)).join("|") !== "GET /v1/hq/league/games?page=1") fail("chess: a game that just finished does not bring the list back to its newest page: " + runInContext("JSON.stringify(__asked)", context));
+  runInContext(`HQ.snap.holodeck.league = ${JSON.stringify(league)};`, context);
+  // A game opened from the Chess tab shows there, move by move, and not on the Work card.
+  runInContext(`api = async () => ({ task: 820, kind: "chess", end: null, result: null, moves: "1. e4", move_list: ["e4"], positions: ${JSON.stringify([start, afterE4])}, sides: { white: "Ada", black: "Bo" }, log: [] });`, context);
+  await runInContext(`hqDispatch("hq", "holo", "watch", "820")`, context);
+  const watched = html("hqChessTab(HQ.snap)");
+  if (!watched.includes("Chess · task 820") || !watched.includes('data-act="hq:holo:close:0"')) fail("chess: a game opened here is not shown here: " + watched);
+  if (html("hqHolodeck(HQ.snap)").includes("Chess · task 820")) fail("chess: a game opened on the Chess tab shows on the Work card too");
+  // Before the owner starts the league, the tab says so.
+  runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: { scenarios: [], league: null } }); HQ.holo = null;`, context);
+  if (!html("hqChessTab(HQ.snap)").includes("No model league yet")) fail("chess: an unstarted league leaves the tab empty");
+  // A phone (375 px): the bracket scrolls inside its box, and nothing in the tab is wider than
+  // the screen.
+  const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+  const box = (css.match(/\n\s*\.hq-scroll \{[^}]*\}/) || [""])[0];
+  if (!/overflow-x: auto/.test(box) || !/max-width: 100%/.test(box)) fail("styles: the bracket's box does not scroll inside itself: " + box);
+  const crossCss = (css.match(/\n\s*\.hq-cross \{[^}]*\}/) || [""])[0];
+  if (!crossCss || /width: 100%/.test(crossCss) && !/min-width: max-content/.test(crossCss)) fail("styles: the bracket table is not sized to its cells inside its box: " + crossCss);
+  runInContext(`[HQ.snap, HQ.holo, HQ.chessGames, HQ.tab, api, render, flash] = __keepChess;`, context);
+  console.log("chess tab: live boards, the round's bracket and standings, and every game a page at a time with its PGN; the bracket scrolls in its box on a phone");
 }
 
 // Endora is HQ (ADR 0136): every device opens on HQ, the menu leads to HQ and the house's own

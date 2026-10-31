@@ -842,6 +842,10 @@ fn the_league_shows_its_game_in_play_and_its_round() {
         shown["rows"], shown["before"],
         "the last move changed the board"
     );
+    assert!(
+        shown["fen"].as_str().is_some_and(|f| f.contains(" b ")),
+        "the board's FEN, black to move: {shown}"
+    );
 
     hq.reset_league().unwrap();
     let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();

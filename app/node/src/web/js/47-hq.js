@@ -1534,7 +1534,8 @@ function hqFonts() {
 // projects and their loops, the team, the money, the knowledge, the office); and Health, how the
 // team and the lab are doing (the Mac, the turns, what failed, the live activity). Each shows
 // one line per thing, and rare actions and big cards wait behind a fold.
-const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"]];
+// Chess is the model league's own (the owner's notes of 31 Oct; 47e-hq-chess.js).
+const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"], ["chess", "Chess"]];
 // Where each older tab now lives, for links and choices kept from before.
 const HQ_TAB_MOVED = { now: "work", desk: "work", activity: "health", team: "manage", office: "manage", knowledge: "manage" };
 
@@ -1852,6 +1853,7 @@ function viewHQ() {
         ${hqScorecard(s)}
         ${hqFailures()}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
+      ${hqPanel("chess", hqChessTab(s))}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
