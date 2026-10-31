@@ -332,6 +332,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(said.to_owned())
     }
 
+    /// The map's lines, whole, most confirmed first, as `read_world world:map` gives them. They
+    /// are members' words: the turn's input is marked as of unknown origin.
+    pub(super) fn map_lines_read(&self, run: crate::domain::RunId) -> Done<String> {
+        let lines = self.map_lines(self.clock.now())?;
+        if lines.is_empty() {
+            return Ok("The map (world:map) has no lines yet: add one with add_to_map.".to_owned());
+        }
+        self.unclassified_message_input(run)?;
+        let mut said =
+            String::from("The map, where things are (world:map), most confirmed first:\n");
+        for l in &lines {
+            said.push_str(&format!("- {}\n", l["line"].as_str().unwrap_or("")));
+        }
+        Ok(said)
+    }
+
     /// The map's lines for the owner: each with who found it, when, and how often confirmed.
     pub(super) fn map_lines_shown(&self) -> Done<serde_json::Value> {
         let lines = self.map_lines(self.clock.now())?;
@@ -471,7 +487,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// marked as of unknown origin.
     pub(super) fn loops_said(&self, run: &crate::application::ports::Run) -> Done<String> {
         let mut told = String::new();
+        let relevance = self.item_relevance(run)?;
+        // On an item, the map's lines about it, and where the rest is (amended 2026-10-30).
         let lines = self.map_lines(self.clock.now())?;
+        let (lines, left) = match &relevance {
+            Some(r) => r.keep(lines, |l| l["line"].as_str().unwrap_or("").to_owned()),
+            None => (lines, 0),
+        };
         if !lines.is_empty() {
             self.unclassified_message_input(run.id)?;
             told.push_str(
@@ -480,6 +502,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
             map_lines_within(&mut told, &lines);
         }
+        if left > 0 {
+            told.push_str(&format!(
+                "{left} more lines on the map are about other things: read_world world:map.\n"
+            ));
+        }
         let Some(task) = run.task else {
             return Ok(told);
         };
@@ -487,21 +514,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(told);
         };
         let names: Vec<String> = self.store.members()?.into_iter().map(|m| m.name).collect();
-        let mut lately: Vec<(crate::domain::Millis, String)> = Vec::new();
+        let mut notes: Vec<(TaskId, String, crate::application::ports::Post)> = Vec::new();
         for other in self.store.tasks()? {
             if other.project != Some(project) || other.id == task {
                 continue;
             }
             let theirs = self.store.thread(other.id)?.into_iter();
-            lately.extend(theirs.filter(|p| names.contains(&p.author)).map(|post| {
-                let said = super::one_line(&post.text, 200);
-                (
-                    post.at,
-                    format!("- {} on #{}: {said}\n", post.author, other.id.0),
-                )
-            }));
+            notes.extend(
+                theirs
+                    .filter(|p| names.contains(&p.author))
+                    .map(|p| (other.id, other.title.clone(), p)),
+            );
         }
+        // On an item, the notes of the loop's items that name what it names.
+        let (notes, skipped) = match &relevance {
+            Some(r) => r.keep(notes, |(_, title, p)| format!("{title} {}", p.text)),
+            None => (notes, 0),
+        };
+        let mut lately: Vec<(crate::domain::Millis, String)> = notes
+            .into_iter()
+            .map(|(id, _, post)| {
+                let said = super::one_line(&post.text, 200);
+                (post.at, format!("- {} on #{}: {said}\n", post.author, id.0))
+            })
+            .collect();
+        let pointer = format!(
+            "The loop's notes on its other items: ask_record with project {}.\n",
+            project.0
+        );
         if lately.is_empty() {
+            if skipped > 0 {
+                told.push_str(&pointer);
+            }
             return Ok(told);
         }
         self.unclassified_message_input(run.id)?;
@@ -509,6 +553,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str("What this loop did lately, newest first:\n");
         for (_, said) in lately.into_iter().take(NOTES_MOST) {
             told.push_str(&said);
+        }
+        if skipped > 0 {
+            told.push_str(&pointer);
         }
         Ok(told)
     }

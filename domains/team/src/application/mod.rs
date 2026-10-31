@@ -113,3 +113,6 @@ mod loops_tests;
 
 #[cfg(test)]
 mod mechanical_tests;
+
+#[cfg(test)]
+mod briefing_size_tests;

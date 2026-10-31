@@ -161,6 +161,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn read_world_in(&self, run: RunId, address: &str) -> Done<String> {
         let _held = self.held();
         self.running(run)?;
+        // The loops' map of where things are (ADR 0142), whole: a briefing on an item carries
+        // only its lines about the item (amended 2026-10-30).
+        if Self::slug_said(address) == "map" {
+            return self.map_lines_read(run);
+        }
         let at = Self::address(address)?;
         let now = self.clock.now();
         match &at {
@@ -284,6 +289,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         for line in endora_kernel::lab::LAB_BUILT {
             said.push_str(&format!("- {line}\n"));
         }
+        said
+    }
+
+    /// How the lab is built, for a turn on an item (ADR 0142, amended 2026-10-30): the lines
+    /// that name what it names, and where the rest is. The worker's own instructions carry the
+    /// whole text to a turn offered the lab's tools.
+    pub(super) fn lab_said_about(&self, relevance: &crate::domain::relevance::Relevance) -> String {
+        let (kept, left) =
+            relevance.keep(endora_kernel::lab::LAB_BUILT.to_vec(), |l| (*l).to_owned());
+        if left == 0 {
+            return self.lab_said();
+        }
+        let pointer = format!("{}: read_world world:lab.\n", world::LAB.title);
+        if kept.is_empty() {
+            return pointer;
+        }
+        let mut said = format!(
+            "{} (world:lab), its lines about this item:\n",
+            world::LAB.title
+        );
+        for line in kept {
+            said.push_str(&format!("- {line}\n"));
+        }
+        said.push_str("The rest of it: read_world world:lab.\n");
         said
     }
 

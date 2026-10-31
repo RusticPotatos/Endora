@@ -225,7 +225,8 @@ fn the_owner_writes_a_section_and_a_timeline_entry_that_the_team_reads_and_membe
 
     // It is in the export, and in every member's briefing, first.
     assert!(hq.world_markdown().unwrap().contains("The NAS has 32 GB."));
-    task_for(&hq, t.goal, t.lead, "Look over the lab");
+    // On an item, the sections that name what it names (ADR 0142, amended 2026-10-30).
+    task_for(&hq, t.goal, t.lead, "Look over the NAS");
     let ada = turn(&hq, t.lead);
     assert!(
         ada.told
@@ -233,7 +234,7 @@ fn the_owner_writes_a_section_and_a_timeline_entry_that_the_team_reads_and_membe
         "{}",
         ada.told
     );
-    task_for(&hq, t.goal, t.dev, "Fix it");
+    task_for(&hq, t.goal, t.dev, "Fix the NAS's swap");
     let linus = turn(&hq, t.dev);
     assert!(linus.told.contains("(world:house#nas)"), "{}", linus.told);
     // A member's own section on the same key is refused: it is the owner's.

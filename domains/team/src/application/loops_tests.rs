@@ -1113,7 +1113,8 @@ fn the_map_grows_from_what_members_find_and_fades_what_nobody_confirms() {
     hq.store()
         .set_task_status(first, crate::domain::TaskStatus::Done)
         .unwrap();
-    item(&hq, &f, "Turn the timer off", Priority::Normal);
+    // On an item, the map's lines that name what it names (ADR 0142, amended 2026-10-30).
+    item(&hq, &f, "Turn the backup timer off", Priority::Normal);
     let next = turn_of(&hq, f.bo);
     assert!(
         next.told.contains("roles/backup/defaults/main.yml"),

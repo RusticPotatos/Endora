@@ -303,6 +303,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(kept["text"].as_str().map(str::to_owned))
     }
 
+    /// The item's latest handover, whoever it went to: what HQ handed on of it, for its
+    /// reviewer.
+    pub(super) fn handover_on(&self, task: TaskId) -> Done<Option<String>> {
+        Ok(self
+            .setting_json::<serde_json::Value>(&handover_key(task))?
+            .and_then(|kept| kept["text"].as_str().map(str::to_owned)))
+    }
+
     /// A briefing's handover section: the item's latest handover, when it was to this turn's
     /// member and the item is still theirs. It carries members' words, so the turn's input is
     /// marked as of unknown origin.

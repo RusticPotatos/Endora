@@ -57,10 +57,10 @@ pub fn handover_arg(args: &Value) -> Result<Option<HandoverNote>, String> {
 /// The tool every member reads the team's world with.
 #[must_use]
 pub fn read_world_tool() -> Value {
-    let address = json!({ "type": "string", "description": "world:house, world:lab, world:team, world:project/<n>, world:goal/<n>, any of them with #<section>" });
+    let address = json!({ "type": "string", "description": "world:house, world:lab, world:team, world:map, world:project/<n>, world:goal/<n>, any page with #<section>" });
     tool(
         "read_world",
-        "Read the team's world, by address: the house (world:house), how the lab is built (world:lab), the team (world:team), a project's or a goal's page, or one of a page's sections (world:house#backups). Your briefing opens with your map of the pages that matter to you; read what it left out here.",
+        "Read the team's world, by address: the house (world:house), how the lab is built (world:lab), the team (world:team), where things are (world:map), a project's or a goal's page, or one of a page's sections (world:house#backups). Your briefing tells only what your task names; read what it left out here.",
         json!({ "address": address }),
         &["address"],
     )

@@ -123,25 +123,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .collect();
             report.quotes = mechanical::quotes_checked(&post.text, &kept);
         }
-        let work = self.work_of(task.id)?;
-        let Some(branch) = self
-            .store
-            .branches()?
-            .into_iter()
-            .filter(|b| work.contains(&b.task))
-            .max_by_key(|b| b.id)
-        else {
+        let Some(branch) = self.newest_branch(task.id)? else {
             return Ok(report);
         };
-        let kept: Option<serde_json::Value> =
-            self.setting_json(&format!("{BRANCH_FILES}{}", branch.id))?;
-        let files = match kept {
-            Some(kept) => BranchFiles::read(&kept),
-            None => BranchFiles {
-                changed: self.changed_in_document(branch.task, &branch.name)?,
-                texts: Vec::new(),
-            },
-        };
+        let files = self.branch_files(&branch)?;
         let mut words = format!("{}\n{}", task.title, task.description);
         for c in &task.criteria {
             words.push('\n');
@@ -169,6 +154,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(report)
+    }
+
+    /// The newest branch of an item's work (its own or a sub-task's), if any.
+    pub(super) fn newest_branch(&self, task: TaskId) -> Done<Option<crate::domain::Branch>> {
+        let work = self.work_of(task)?;
+        Ok(self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task))
+            .max_by_key(|b| b.id))
+    }
+
+    /// What the node told HQ of a branch's files, or, for a branch recorded before it told
+    /// them, the names its document's diff shows.
+    pub(super) fn branch_files(&self, branch: &crate::domain::Branch) -> Done<BranchFiles> {
+        let kept: Option<serde_json::Value> =
+            self.setting_json(&format!("{BRANCH_FILES}{}", branch.id))?;
+        Ok(match kept {
+            Some(kept) => BranchFiles::read(&kept),
+            None => BranchFiles {
+                changed: self.changed_in_document(branch.task, &branch.name)?,
+                texts: Vec::new(),
+            },
+        })
     }
 
     /// The files a branch changes, from its document's diff, for a branch recorded before the
@@ -223,10 +233,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
-    /// The item's latest mechanical checks, for its reviewer's briefing; empty when none. When
-    /// the briefing already shows the report among the thread's new posts (`shown`), it is
-    /// pointed to rather than said twice: small models pay for every line.
-    pub(super) fn mechanical_said(&self, task: TaskId, shown: &[&str]) -> Done<String> {
+    /// The item's latest mechanical checks, for its reviewer's briefing, in full; empty when
+    /// none. The review's briefing carries no thread history, so it is said here, once.
+    pub(super) fn mechanical_said(&self, task: TaskId) -> Done<String> {
         let said = self
             .store
             .setting(&format!("{REPORT}{}", task.0))?
@@ -235,13 +244,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if said.is_empty() {
             return Ok(String::new());
         }
-        let weigh = "These are facts HQ measured: weigh them; a failed check is reason to send \
-                     the work back unless the thread shows why it does not apply.";
-        if shown.iter().any(|s| s.trim_end() == said) {
-            return Ok(format!(
-                "HQ's mechanical checks of this work are in the thread above. {weigh}\n"
-            ));
-        }
-        Ok(format!("{said}\n{weigh}\n"))
+        Ok(format!(
+            "{said}\nThese are facts HQ measured: weigh them; a failed check is reason to send \
+             the work back unless the thread shows why it does not apply.\n"
+        ))
     }
 }

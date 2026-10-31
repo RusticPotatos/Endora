@@ -304,3 +304,41 @@ one turn (about 90,700 tokens) became two passes of 235,332 and 100,816 (the lar
 on Claude, every result whole, 644,020 bytes (about 161,000 tokens) became 421,162 and 56,016
 (the larger about 105,300). No pass reads more than its budget, and the two passes together read
 less than the one turn did.
+
+## Amended 2026-10-30: a briefing sized to the item, a review sized to the review
+
+Measured the week of 23 to 30 Oct, work turns read 110,000 to 213,000 prompt tokens, and each
+call resends the briefing. A work turn's briefing carried the whole map and world (the house
+page's sections, the lab's lines, every map line, the loop's other items' notes) whatever its
+item was about; a reviewer's carried the same, and the item's whole thread besides.
+
+- **A work turn is told the world its item names.** The item's words (its title, description
+  and criteria, and its project's title) are compared with each line of the world
+  (`domains/team/src/domain/relevance.rs`): a line is kept when it shares a word with the item
+  that is neither common (the language's own and the lab's every-day words, in one list) nor
+  on more than a third of the lines weighed (three or more), which tells them apart from
+  nothing. Kept: the item's project and goal pages and their sections; the house, lab and team
+  pages a line each; the house's sections, the lab's lines, the map's lines and the loop's
+  other items' notes that name what the item names. Everything else is one line saying which
+  tool reads it: `read_world world:house` for the house's other sections, `read_world
+  world:lab` for the lab's other lines, `read_world world:map` (new: the map's lines, whole,
+  most confirmed first) for the other map lines, `ask_record` with the project for the loop's
+  other notes, and `read_world` with a page's address for other pages. A turn about no task,
+  and downtime, are told as before; the nightly quiz's map is unchanged.
+- **A reviewer is told what the review needs.** A turn woken to review an item is told who it
+  is, the item and its criteria, who asks and how a review is done, the worker's handover (its
+  ask for review, the evidence it cited, and HQ's handover note on the item if there is one),
+  HQ's mechanical checks in full (no longer pointed to in the thread), the owner's last three
+  posts on the item and the goal's notes, and the branch: its check, its stat, the files it
+  changes (at most 20 named) and its diff, cut at a line's end within 2,400 characters on the
+  house's models and 12,000 on Claude, with `read_document` for the whole. Not the thread's
+  history, the map, the house, the lab or the standards: one line says which tool reads each
+  (`my_turn` gives the thread's newest posts). The whole thread's lineage is still inherited,
+  as before, since what the review is told is drawn from it.
+- **Measured** on one scenario (`application/briefing_size_tests.rs`: ten house sections, twelve
+  map lines, four projects, a loop with two earlier items, an item with fifteen posts and a
+  branch with a 7 KB diff), bytes of the briefing, about four a token: Bo's work turn on the
+  NAS's model 6,287 to 3,133 bytes (about 1,570 to 780 tokens), held under 3,400; Rae's review
+  on the Mac 11,967 to 5,557 (about 2,990 to 1,390 tokens), held under 5,800, while now carrying
+  the diff it had none of. A work turn of ten calls saves about 8,000 prompt tokens on this
+  world, more as the world grows: what is cut grows with it, what is kept with the item.
