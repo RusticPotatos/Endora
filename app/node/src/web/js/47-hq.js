@@ -1844,12 +1844,11 @@ function viewHQ() {
         ${hqInFlight(s)}
         ${hqHolodeck(s) ? hqFold("holodeck", "Holodeck", "chess matches and the model league", hqHolodeck(s)) : ""}`)}
       ${hqPanel("manage", `
-        ${hqProjects(s)}
-        ${hqRoutines(s)}
-        ${hqAccepted(s)}
-        ${hqNotes(s)}
-        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm(s))}</section>
         ${hqMoneyCard(s)}
+        ${hqNotes(s)}
+        ${hqProjects(s)}
+        ${hqAccepted(s)}
+        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm(s))}</section>
         ${hqContracts(s.contracts)}
         ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
         ${hqOffice(s) ? hqFold("office", "Office", "the floor and its games", hqOffice(s)) : ""}`)}
@@ -1896,37 +1895,27 @@ function hqLeadOf(m, members) {
   return null;
 }
 
-// One member on the roster: name, role, brain, what it is doing and its money today, all on
-// one line; tapping it opens its controls (the brain, whom it reports to, a new name, a look at
-// it), closed until then.
-function hqRosterLine(m, members) {
+// One member on the team board, on one line (the owner's notes of 31 Oct): its name, the model
+// doing its work, what it is doing now and today's money. Tapping it opens the rest of its card
+// (its role, both brains, its day's allowance, the brain buttons, a new name, a look at it).
+function hqRosterLine(m) {
   const on = (m.running || []).map((r) => r.task ? "#" + r.task : "a look round").join(", ");
   const waits = hqWaitingFor(m);
-  const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
+  const doing = m.furloughed ? "on furlough" : `${m.paused ? "paused · " : ""}${on ? "on " + esc(on) : waits ? esc(waits) : "between turns"}`;
+  const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
+      <p class="hq-who">${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
+      <small>${esc(hqBrainTag(m.work_brain || m.brain))} · ${doing}</small> <span>${money}</span></button>${controls}</li>`;
 }
 
-// The Team card as an org chart (the owner, on a phone: "super cluttered, can't tell the
-// teams"): the board, which is the owner, and the CEO with whoever has no lead above them; then
-// one group per lead, the lead first and then those who work under it. The wing's lead's is
-// Engineering; any other lead's, Ops.
+// The team board: a line a member, no groups (ADR 0142: ranked models, no roles or reporting
+// lines; the owner's notes of 31 Oct).
 function hqRoster(s) {
-  const members = s.members || [], wingLeads = (s.wing && s.wing.leads) || [];
-  const line = (m) => hqRosterLine(m, members);
-  const ceo = members.filter((m) => m.role === "ceo");
-  const leads = members.filter((m) => m.role === "lead");
-  const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
-  const loose = rest.filter((m) => !hqLeadOf(m, members));
-  const group = (title, people) => `<div class="hq-group"><h3>${title}</h3><ul class="hq-team">${people.map(line).join("")}</ul></div>`;
-  return group("Board: you", ceo.concat(loose)) + leads.map((l) =>
-    group(esc(hqTeamLabel(l, wingLeads)),
-      [l].concat(rest.filter((m) => (hqLeadOf(m, members) || {}).id === l.id)))).join("");
+  return `<ul class="hq-team hq-board">${(s.members || []).map(hqRosterLine).join("")}</ul>`;
 }
 
 // Roughly where a thing stands, in words: the same names HQ gives its proposals.
@@ -2137,23 +2126,42 @@ function hqProjects(s) {
       <div class="hq-row">${acts(p)}</div>`);
   // Live projects first; finished ones (done, dropped) wait behind "Show all".
   const finished = (p) => ["done", "dropped"].includes(p.status) ? 1 : 0;
+  // Routines are a kind of project here (the owner's notes of 31 Oct), each after its goal's
+  // projects; they stay their own record (ADR 0107), so this changes only how they show. The
+  // ones that are off wait behind one "Show the N that are off" for the card.
+  const routines = s.routines || [];
+  const off = routines.filter((r) => !r.enabled).length;
+  const showOff = !!HQ.more.routinesoff;
+  const routinesOf = (goal) => routines.filter((r) => r.goal === goal && (r.enabled || showOff)).map(hqRoutineRow).join("");
   const groups = goals.map((g) => {
     const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b));
     const live = mine.filter((p) => !finished(p)).length;
     const list = hqMore(`projects${g.id}`, mine.map(row), Math.max(live, 1));
-    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${list.shown || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
+    const rows = list.shown + routinesOf(g.id);
+    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${rows || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
   }).join("");
+  // A routine whose goal is not listed (dropped, or none) still shows, after the goals.
+  const listed = new Set(goals.map((g) => g.id));
+  const loose = routines.filter((r) => !listed.has(r.goal) && (r.enabled || showOff)).map(hqRoutineRow).join("");
+  const offFold = off ? `<div class="hq-row"><button class="hq-btn hq-more" aria-expanded="${showOff}" data-act="hq:more:routinesoff:toggle">${showOff ? "Hide" : "Show"} the ${off} that ${off === 1 ? "is" : "are"} off</button></div>` : "";
   const goalOpts = (s.goals || []).filter((g) => g.status === "active").map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("");
   const leadOpts = (s.members || []).filter((m) => m.role === "lead" || m.role === "ceo")
     .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
+  const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
+    ${loose ? `<ul class="hq-team hq-projects">${loose}</ul>` : ""}${offFold}
     ${hqFormFold("newproject", "New project", `<h3>New project</h3><div class="hq-row">
       <select id="hq-project-goal" aria-label="The goal it serves">${goalOpts}</select>
       <input id="hq-project-title" placeholder="e.g. Media stack upkeep" aria-label="What it is" />
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
-      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div>`)}</section>`;
+      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div>`)}
+    ${hqFormFold("newroutine", "Add a routine", `<h3>Add a routine</h3><div class="hq-row">
+      <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
+      <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
+      <select id="hq-routine-who" aria-label="Who does it">${who}</select>
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div>`)}</section>`;
 }
 
 // A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
@@ -2488,26 +2496,17 @@ function hqNotes(s) {
   return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Notes for the team: every member working on a goal reads them in its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
 }
 
-// Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
-// its rhythm, when it last ran, and whether it takes the home lab's alarms; each switches the
-// other way and runs now. A small form adds one under the team's first active goal.
-function hqRoutines(s) {
+// A routine (ADR 0107) as a row of the Projects card: work that comes round again, each a task
+// for one member, marked as a routine. Shut, its rhythm, who and on or off; open, when it last
+// ran and whether it takes the home lab's alarms, with on/off and "Run now". The form that adds
+// one is at the foot of the Projects card.
+function hqRoutineRow(r) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
-  const routines = (s.routines || []).map((r) => hqOpenRow(`routine${r.id}`, esc(r.title),
-    `${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
+  return hqOpenRow(`routine${r.id}`, esc(r.title),
+    `routine · ${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
     `<span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
       <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
-        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`));
-  const listed = hqMore("routines", routines, 5);
-  const rows = listed.shown;
-  const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
-  return `<section class="hq-card"><h2>Routines</h2>
-    <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>${listed.more}
-    ${hqFormFold("newroutine", "Add a routine", `<h3>Add a routine</h3><div class="hq-row">
-      <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
-      <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
-      <select id="hq-routine-who" aria-label="Who does it">${who}</select>
-      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div>`)}</section>`;
+        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`);
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.

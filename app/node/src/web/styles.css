@@ -401,10 +401,13 @@
   /* A roster line is a button, and buttons never wrap: on a phone it must, or the page scrolls
      sideways. */
   .hq .hq-line { white-space: normal; }
-  /* The Team card's org chart: one group per team, one tappable line per member. */
-  .hq-group + .hq-group { margin-top: 10px; }
-  .hq-group h3 { font-size: 12px; margin: 0 0 4px; color: var(--hq-fg); }
   .hq .hq-line { display: block; width: 100%; text-align: left; font: 12.5px var(--hq-mono); background: none; border: 0; padding: 4px 0; color: var(--hq-fg); cursor: pointer; box-shadow: none; overflow-wrap: anywhere; }
+  /* The team board (the owner's notes of 31 Oct): one line a member, however narrow. The name
+     and the money keep their place; what the member is doing gives way, cut short. */
+  .hq-board .hq-line { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .hq-board .hq-line b { flex: none; }
+  .hq-board .hq-line small { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: inherit; color: var(--hq-muted); }
+  .hq-board .hq-line span { flex: none; }
   .hq .hq-line[aria-expanded="true"] b { text-decoration: underline; }
   .hq-tag { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
   .hq-controls { padding: 4px 0 8px 10px; display: grid; gap: 4px; }

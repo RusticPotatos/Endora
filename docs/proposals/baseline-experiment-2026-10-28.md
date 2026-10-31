@@ -627,9 +627,15 @@ ways. To fix after the one-team clean-up lands, in this order:
   more" opens a full-screen, paged view; never an endless scroll.
 - [ ] On a task, each turn shows what the model was given: its instructions, tools and briefing,
   secrets redacted (HQ keeps every turn's conversation, ADR 0129).
-- [ ] The team board takes a line a member; the rest on a tap.
-- [ ] Routines join Projects as a kind of project; the ones turned off fold away.
-- [ ] Manage in this order: money first, then goals, then projects.
+- [x] The team board takes a line a member; the rest on a tap. *Done on `r3-ui-manage-layout`:
+  name, model, what it is doing and today's money on one line, no groups; role, brains, allowance
+  and every control on a tap.*
+- [x] Routines join Projects as a kind of project; the ones turned off fold away. *Done on
+  `r3-ui-manage-layout`: rows of the Projects card marked "routine", with on/off, run now and
+  the schedule on a tap; the ones off behind "Show the N that are off". Display only: routines
+  stay their own record (ADR 0107; ADR 0142 does not fold them into loops).*
+- [x] Manage in this order: money first, then goals, then projects. *Done on
+  `r3-ui-manage-layout`.*
 - [x] The Mac's card leaves HQ for Settings, AI, beside the local model: on the
   `r3-ui-mac-to-settings` branch. HQ says only "Mac (busy)" where a member's brain is named.
 - [ ] A Chess tab: every league game, live boards for those in play, and the month's bracket
