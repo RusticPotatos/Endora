@@ -681,6 +681,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         else {
             return Ok(());
         };
+        // No card unless the owner put them back: listed, and pushed by rule (ADR 0115,
+        // amended 2026-10-31).
+        if !self.cards_back()? {
+            return self.accept_branch(branch);
+        }
         let checks = self.checks_said(branch.id)?;
         let files = format!(
             "{} file{}",

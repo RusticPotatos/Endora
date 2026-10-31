@@ -21,9 +21,10 @@ pub mod scorecard;
 pub mod wing_ports;
 pub mod world_ports;
 
+pub use crate::domain::delivery::Found;
 pub use engine::{
-    Asked, Author, Engine, EngineError, Fired, KeptBranch, ModelSet, Proposal, Recorded, Settings,
-    Submission, TickReport, WingSeeded,
+    Asked, Author, Delivered, Deliveries, Due, Engine, EngineError, Fired, KeptBranch, ModelSet,
+    Proposal, Recorded, Settings, Submission, TickReport, WingSeeded,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 

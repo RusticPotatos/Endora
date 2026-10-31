@@ -113,6 +113,11 @@ mod lessons;
 #[path = "scenarios/reviews.rs"]
 mod reviews;
 
+/// Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31), in its own
+/// file.
+#[path = "scenarios/delivery.rs"]
+mod delivery;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
@@ -552,6 +557,7 @@ fn last_post(w: &mut Office, post: String, title: String) {
 
 // --- Turns, tools and the chain of command ----------------------------------------------------
 
+#[given(regex = r"^(\w+)'s turn starts$")]
 #[when(regex = r"^(\w+)'s turn starts$")]
 fn turn_starts(w: &mut Office, name: String) {
     w.turn_of(&name);
@@ -790,6 +796,7 @@ fn turn_ends(w: &mut Office, name: String) {
 
 /// The member takes its task and hands it in, citing the task as what counts (the owner's
 /// work gave no criteria), and its turn ends.
+#[given(expr = "{word} submits {string} for review")]
 #[when(expr = "{word} submits {string} for review")]
 fn submits(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
@@ -944,6 +951,7 @@ const SUBMITTED_BASE: &str = "0123456789abcdef01234567";
 
 /// The node took the member's branch (`repo_submit`) and tells HQ, with the turn's token; and
 /// the receipt of that call, as the node writes one (an act, which the member may cite).
+#[given(expr = "{word} submits the branch {string}")]
 #[when(expr = "{word} submits the branch {string}")]
 fn submits_branch(w: &mut Office, name: String, branch: String) {
     let context = w.turn_of(&name);
@@ -1005,10 +1013,13 @@ fn lab_routine_is(w: &mut Office, name: String, project: String) {
 }
 
 /// The tester and the lead have done their part, and the owner had the branch pushed: the node
-/// says it pushed it.
+/// says it pushed it. On the owner's card, as an owner who put the cards back has it (ADR 0115,
+/// amended 2026-10-31); without the cards, see `accepted-work-reaches-the-fork.feature`.
 #[when(expr = "{string} is accepted and pushed")]
 fn accepted_and_pushed(w: &mut Office, title: String) {
     let task = w.task(&title);
+    w.hq.set_delivery(Some(true), None)
+        .expect("the owner's setting is kept");
     w.hq.store()
         .set_task_status(task, endora_team::domain::TaskStatus::Done)
         .expect("the store answers");
@@ -1160,6 +1171,7 @@ fn desk_card_saying(w: &mut Office, kind: String, text: String) {
 }
 
 /// As above, with the line the check job gives: both counts, and the verdict against develop.
+#[given(expr = "the check passes: {string}")]
 #[when(expr = "the check passes: {string}")]
 fn check_passes_saying(w: &mut Office, summary: String) {
     let check =

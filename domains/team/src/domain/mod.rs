@@ -9,6 +9,7 @@ pub mod closure;
 pub mod consult;
 pub mod credit_pool;
 pub mod cut;
+pub mod delivery;
 pub mod deploy;
 pub mod desk;
 pub mod docs;

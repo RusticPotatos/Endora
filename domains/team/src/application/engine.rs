@@ -35,6 +35,7 @@ use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod delivery;
 mod deploy;
 mod digest;
 mod discipline;
@@ -69,6 +70,7 @@ mod waking;
 mod wing;
 mod world;
 
+pub use delivery::{Delivered, Deliveries, Due};
 pub use evidence::Called;
 pub use gaps::GapReported;
 pub use history::TranscriptKept;
@@ -1811,11 +1813,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
-        if current.parent.is_none() {
-            let researched = match current.owner {
-                Some(worker) => self.member(worker)?.role == Role::Researcher,
-                None => false,
-            };
+        // Accepted work is listed, not carded, unless the owner put the cards back (ADR 0115,
+        // amended 2026-10-31); what a researcher found is still the owner's to read.
+        let researched = match current.owner {
+            Some(worker) => self.member(worker)?.role == Role::Researcher,
+            None => false,
+        };
+        if current.parent.is_none() && (researched || self.cards_back()?) {
             let (kind, says) = if researched {
                 ("ready_to_read", "Ready to read")
             } else {
@@ -2921,7 +2925,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
             ("tripwire", "seen" | "dismiss") => {}
-            ("push" | "notice" | "deploy_check", "seen" | "dismiss")
+            // A branch the privacy scan held (ADR 0115, amended 2026-10-31): back to the team,
+            // or pushed anyway on the owner's word.
+            ("privacy", "send_back" | "push_anyway") => {
+                self.decide_held(found, decision == "push_anyway")?;
+            }
+            (
+                "push" | "notice" | "deploy_check" | "needs_owner" | "privacy",
+                "seen" | "dismiss",
+            )
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss") => {}
@@ -3771,6 +3783,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "routines": routine_list.iter().map(|r| routine_shown(r, &tasks)).collect::<Vec<_>>(),
             // What waits on the owner and needs their word (ADR 0132); the rest waits below.
             "desk": self.desk_shown()?,
+            // Accepted work waiting to merge, and the owner's two settings for it (ADR 0115,
+            // amended 2026-10-31): listed on Manage, never carded unless the cards are back.
+            "accepted": self.accepted_shown()?,
+            "delivery": self.delivery_shown()?,
             // "While you were away": stuck work, findings and notices, newest first (ADR 0132).
             "digest": self.digest_shown()?,
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
