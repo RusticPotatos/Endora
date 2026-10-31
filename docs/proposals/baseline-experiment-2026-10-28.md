@@ -487,6 +487,14 @@ done. Defects are numbered so the next round's changes can name them.
   times, 920 four).
 - [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
   record); cause unknown.
+- [ ] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
+  more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
+  blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
+  submitted. $2.14 spent with no branch kept. A turn should read the newest handover, not every
+  one, and work in progress should be kept (a work branch committed before the turn ends).
+- [ ] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
+  `repo_checkout` refuses `main`, so 936 (what upstream changed) cannot be done. A read-only
+  upstream checkout, or a mirror of upstream on the node, would let it.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
