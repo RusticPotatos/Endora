@@ -504,9 +504,13 @@ done. Defects are numbered so the next round's changes can name them.
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
   submitted. $2.14 spent with no branch kept. A turn should read the newest handover, not every
   one, and work in progress should be kept (a work branch committed before the turn ends).
-- [ ] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
+- [x] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
   `repo_checkout` refuses `main`, so 936 (what upstream changed) cannot be done. A read-only
-  upstream checkout, or a mirror of upstream on the node, would let it.
+  upstream checkout, or a mirror of upstream on the node, would let it. *Built on `r3-upstream`
+  (ADR 0106, amended 2026-10-31): the node's mirror fetches upstream's default branch on the
+  fork's schedule, every checkout carries it as `upstream/<branch>` to read offline
+  (`git log --oneline develop..upstream/master`), and `repo_submit` and the push refuse anything
+  named for upstream or carrying its commits; not yet merged or released.*
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 

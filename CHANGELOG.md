@@ -185,6 +185,12 @@ tagged release.
 
 ### Added
 
+- **The team reads upstream ansible-nas** ([ADR 0106](docs/adr/0106-team-contracts.md), amended
+  2026-10-31; D13 of the baseline experiment). The node's mirror of the fork also fetches
+  upstream's default branch, on the same schedule, and every `repo_checkout` carries it as
+  `upstream/<branch>`, read-only, so an offline sandbox can list what upstream changed that the
+  fork lacks. Upstream is never a base or a push target: a branch named for it or carrying its
+  commits is refused, and the node never pushes to it.
 - **`image_tags`, a read contract for the team** ([ADR 0106](docs/adr/0106-team-contracts.md),
   amended 2026-10-30): the node reads an image's newest tags, and whether a named tag exists,
   from Docker Hub, ghcr.io, quay.io or lscr.io, anonymously, so an offline sandbox can pin an
