@@ -416,8 +416,8 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 | 6 | 934 | Yes (both database passwords' literal defaults gone, read from vault variables; an assert stops the play with a clear message when either is empty; the docs say how to set them in the vault; molecule gets marked test-only values; no new lint findings; pushed as `hq/task-934-nextcloud-no-secret-default`. Reviewed by Mara) | $0.78 | 506 min (about four of them waiting on the day's pool) | 0 | |
 | 7 | 935 | Yes (TheRARBG and The Pirate Bay, quoted from both apps and rechecked in their logs; the 429s are Prowlarr's own disabling after HTTP/2 connection failures to the upstream, also rechecked, with the DNS link labelled a hypothesis; a gluetun DNS change with its expected effect and a check, and disabling the two indexers in Prowlarr as the fallback; nothing changed by HQ, no restart in its record. Bo, Rae, Ada; reviewed by Kit) | $0.44 | 64 min to first ready, passed review at 08:18 | 2 | |
 | 8 | 938 | No (blocked honestly: the window's logs are gone, as expected after round 1; made no lab change) | $0.38 | blocked after ~4 h | 2 | |
-| 9 | 936 | | | | | |
-| 10 | 937 | | | | | |
+| 9 | 936 | No (blocked honestly: the sandbox is offline and `repo_checkout` refuses `main`, so upstream could not be read (D13); nothing pushed or merged) | $0.16 | blocked at 09:31 | 1 | |
+| 10 | 937 | Yes (rule `nas-secret-default` in `tests/lint_rules` with fixtures and tests: a literal fails, a vault reference and an empty default pass; rechecked, 12 tests pass; on `warn_list`, so it reports today's 29 offenders as warnings while ansible-lint's failures stay develop's 14; no new yamllint findings; pushed as `hq/task-937-secret-defaults`. Over twelve turns lost to the budget first (D12); finished by Mara) | $3.34 | 651 min (about four of them waiting on the day's pool) | 1 | |
 
 **Where round 2 stands (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
 and stopped on money.** The day's pool (about $3.33, the $100 a month over 30 days) was spent by
