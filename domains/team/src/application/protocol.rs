@@ -356,7 +356,9 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
     // the work of a project that lists its tools, those four and the list (the Holodeck plan's
     // phase 4).
-    if engine.lab_tools_of(run.id).ok().flatten().is_some() {
+    if woken_for != Some(crate::domain::WakeReason::Downtime)
+        && engine.lab_tools_of(run.id).ok().flatten().is_some()
+    {
         let given = if engine.in_deploy_check(run.id).unwrap_or(true) {
             Vec::new()
         } else {
@@ -373,6 +375,11 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 })
             });
         }
+    }
+    // A downtime turn is a move and nothing else (30 Oct: office chess turns averaged 27,760
+    // prompt tokens, the week's largest cost): it reads its turn and plays.
+    if woken_for == Some(crate::domain::WakeReason::Downtime) {
+        list.retain(|t| t["name"] == "my_turn" || t["name"] == "chess");
     }
     all
 }

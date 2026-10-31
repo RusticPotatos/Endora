@@ -620,6 +620,30 @@ fn a_downtime_briefing_says_whose_move_it_is_in_chess() {
         "{}",
         ada.told
     );
+    // A move is all the turn is (30 Oct: office chess turns averaged 27,760 prompt tokens, the
+    // week's largest cost): HQ offers it my_turn and chess alone, the node none of its tools,
+    // and its briefing carries no map of the world.
+    let run = run_of(&hq, &ada);
+    let member = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == t.ada)
+        .unwrap();
+    let offered: Vec<String> = super::protocol::tools_in_v2(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(offered, ["my_turn", "chess"], "{offered:?}");
+    assert_eq!(hq.lab_tools_of(ada.run).unwrap(), Some(Vec::new()));
+    assert!(
+        !ada.told.contains("Your map of the team's world"),
+        "{}",
+        ada.told
+    );
     hq.runner().finish(ada.run, true);
     let bo = downtime_for(&hq, &clock, t.bo);
     assert!(bo.told.contains("waiting for Ada"), "{}", bo.told);

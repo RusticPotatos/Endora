@@ -183,14 +183,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             member.brain.label(),
             self.said_today()
         );
-        // What it knows, first: its situation's pieces of the world (ADR 0118, 0122).
-        told.push_str(memory);
-        // Downtime has no task to brief: a chess move, or nothing (ADR 0119).
+        // Downtime has no task to brief: a chess move, or nothing (ADR 0119), and no map of the
+        // world either (30 Oct: a move needs the board, not the house).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
             told.push_str(&self.downtime_said(member, run.id)?);
-            told.push_str("Your tools at HQ: my_turn, chess, read_doc, read_world.\n");
+            told.push_str("Your tools at HQ: my_turn, chess.\n");
             return Ok(told);
         }
+        // What it knows, first: its situation's pieces of the world (ADR 0118, 0122).
+        told.push_str(memory);
         told.push_str(STANDARDS);
         told.push_str(self.wing_rules(member)?);
         let Some(task) = run.task else {

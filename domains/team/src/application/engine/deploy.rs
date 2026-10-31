@@ -129,6 +129,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// its own). Explicit assistance and its result verification receive an empty list.
     /// `None` for other turns, which have what their role and brain give them.
     pub fn lab_tools_of(&self, run: RunId) -> Done<Option<Vec<String>>> {
+        // A downtime turn is a chess move: none of the node's tools (30 Oct).
+        if self.in_downtime(run)? {
+            return Ok(Some(Vec::new()));
+        }
         if self.in_deploy_check(run)? {
             return Ok(Some(
                 deploy::LAB_READS.iter().map(|t| (*t).to_owned()).collect(),
