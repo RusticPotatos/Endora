@@ -27,6 +27,45 @@ const TOOL_NAMES: &[&str] = &[
     "read_doc",
 ];
 
+/// The highest rank a review of work done below it is given at (ADR 0142, amended 2026-10-31,
+/// D7): Haiku's. Sonnet's and Opus's reviews were most of round 2's spend.
+pub const REVIEWS_CAPPED_AT: u8 = super::Brain::Haiku.rank();
+
+/// Who reviews the work `worker` did at `rank`, among the loops' `members` (each with its
+/// rank; 1 is the most able), never the worker itself (ADR 0142, amended 2026-10-31, D7).
+///
+/// Work done at Haiku's rank or above is reviewed one rank up, as before: the nearest member
+/// above it, or, for the top rank's, the nearest below. Work done below Haiku's rank is
+/// reviewed one rank up but never above Haiku's: the nearest member above it at Haiku's rank or
+/// below, else the nearest below it. Only when no member but the worker is at Haiku's rank or
+/// below is it the next member up the ranks. Ties go to the member hired first.
+#[must_use]
+pub fn reviewer_among(worker: MemberId, rank: u8, members: &[(MemberId, u8)]) -> Option<MemberId> {
+    let others: Vec<(MemberId, u8)> = members
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != worker)
+        .collect();
+    let nearest_above = |highest: u8| {
+        others
+            .iter()
+            .filter(|(_, r)| *r < rank && *r >= highest)
+            .max_by_key(|(id, r)| (*r, std::cmp::Reverse(id.0)))
+            .map(|(id, _)| *id)
+    };
+    let nearest_below = others
+        .iter()
+        .filter(|(_, r)| *r > rank)
+        .min_by_key(|(id, r)| (*r, id.0))
+        .map(|(id, _)| *id);
+    if rank > REVIEWS_CAPPED_AT {
+        if let Some(within) = nearest_above(REVIEWS_CAPPED_AT).or(nearest_below) {
+            return Some(within);
+        }
+    }
+    nearest_above(0).or(nearest_below)
+}
+
 /// What the reviewer is told when work is put before it.
 pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
@@ -245,6 +284,75 @@ pub fn checked(text: &str, lab: Option<&[String]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mara (Opus), Kit (Sonnet), Ada (Haiku), Rae (DeepSeek), Mo (the Mac), Bo (the house's).
+    const MARA: MemberId = MemberId(1);
+    const KIT: MemberId = MemberId(2);
+    const ADA: MemberId = MemberId(3);
+    const RAE: MemberId = MemberId(4);
+    const MO: MemberId = MemberId(5);
+    const BO: MemberId = MemberId(6);
+
+    fn ranked(members: &[MemberId]) -> Vec<(MemberId, u8)> {
+        let rank = |id: MemberId| match id.0 {
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            _ => 6,
+        };
+        members.iter().map(|m| (*m, rank(*m))).collect()
+    }
+
+    #[test]
+    fn work_at_haiku_s_rank_or_above_is_reviewed_one_rank_up_as_before() {
+        let all = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        assert_eq!(reviewer_among(ADA, 3, &all), Some(KIT));
+        assert_eq!(reviewer_among(KIT, 2, &all), Some(MARA));
+        // The top rank's work, the member just below it.
+        assert_eq!(reviewer_among(MARA, 1, &all), Some(KIT));
+    }
+
+    #[test]
+    fn work_below_haiku_s_rank_is_reviewed_one_rank_up_when_that_is_within_the_cap() {
+        let all = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        assert_eq!(reviewer_among(BO, 6, &all), Some(MO));
+        assert_eq!(reviewer_among(MO, 5, &all), Some(RAE));
+        assert_eq!(reviewer_among(RAE, 4, &all), Some(ADA));
+    }
+
+    #[test]
+    fn work_below_haiku_s_rank_is_never_reviewed_above_it() {
+        // No Haiku on the team: Rae's work goes to the Mac's member below her, not to Kit.
+        let no_haiku = ranked(&[MARA, KIT, RAE, MO, BO]);
+        assert_eq!(reviewer_among(RAE, 4, &no_haiku), Some(MO));
+        // Nobody between Bo and Haiku's rank but the Mac's member: still the Mac's member.
+        assert_eq!(reviewer_among(BO, 6, &no_haiku), Some(MO));
+        // Nobody above the Mac's member within the cap: Bo, below, rather than Kit.
+        let mac_and_bo = ranked(&[MARA, KIT, MO, BO]);
+        assert_eq!(reviewer_among(MO, 5, &mac_and_bo), Some(BO));
+    }
+
+    #[test]
+    fn a_member_never_reviews_its_own_work_and_the_next_one_up_takes_it() {
+        // The only member at Haiku's rank or below is the worker: the next member up the ranks.
+        let rae_alone = ranked(&[MARA, KIT, RAE]);
+        assert_eq!(reviewer_among(RAE, 4, &rae_alone), Some(KIT));
+        // Ada is the only member at Haiku's rank: her work goes up, to Kit.
+        let ada_alone = ranked(&[MARA, KIT, ADA]);
+        assert_eq!(reviewer_among(ADA, 3, &ada_alone), Some(KIT));
+        // Alone on the team, nobody reviews.
+        assert_eq!(reviewer_among(BO, 6, &ranked(&[BO])), None);
+        // A second member at the worker's own rank does not count as one rank up.
+        let two_bos = [(BO, 6), (MemberId(7), 6), (MARA, 1)];
+        assert_eq!(reviewer_among(BO, 6, &two_bos), Some(MARA));
+    }
+
+    #[test]
+    fn reviews_are_capped_at_haiku_s_rank() {
+        assert_eq!(REVIEWS_CAPPED_AT, 3);
+    }
 
     #[test]
     fn a_diff_is_cut_at_a_line_s_end_within_its_size() {
