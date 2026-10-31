@@ -895,7 +895,8 @@ function hqPaintRoom() {
   // The whiteboard: the task board.
   g.fillStyle = C.boardEdge; g.fillRect(P.board.x * T - 2, 3, P.board.w * T + 4, 26); g.fillStyle = C.board; g.fillRect(P.board.x * T, 5, P.board.w * T, 22);
   g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
-  if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, 7 * T - 2, 1);
+  // The hanging plant between the sign and the board, clear of both.
+  if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, P.board.x * T - 22, 1);
   // The CEO's painting, on the wall of its office.
   if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 22.2 * T, 0);
   // Glass rooms: the board room, the CEO's office and the server closet along the wall, the
@@ -997,13 +998,33 @@ function hqPot(g, it, leaf) {
   const x = it.x * HQ_T, y = it.y * HQ_T;
   g.fillStyle = "#b5651d"; g.fillRect(x + 4, y + 10, 8, 6); g.fillStyle = leaf; g.fillRect(x + 3, y + 2, 10, 9);
 }
+// Where a plant's picture goes: its pot on its tile, its leaves above. Leaves never cover the
+// task board on the back wall (a palm by it hid a sticky note), so a plant under the board is
+// drawn smaller, to fit below it; and none reaches through the glass of a room it is not in (the
+// same palm hid the CEO's name). -> { x, y, w, h } in pixels.
+function hqPlantRect(it, w, h) {
+  const T = HQ_T, B = HQ_P.board, bottom = (it.y + 1) * T, boardLow = 29;
+  let x = it.x * T + 8 - w / 2;
+  if (x < (B.x + B.w) * T + 2 && x + w > B.x * T - 2 && bottom - h < boardLow) {
+    const fit = Math.max(16, bottom - boardLow);
+    w = Math.round((w * fit) / h); h = fit; x = it.x * T + 8 - Math.round(w / 2);
+  }
+  for (const r of [HQ_P.boardRoom, HQ_ROOMS.ceo, HQ_P.engine, HQ_ROOMS.meeting]) {
+    const inside = it.x >= r.x && it.x < r.x + r.w && it.y >= r.y && it.y < r.y + r.h;
+    if (inside || bottom - h >= (r.y + r.h) * T || bottom <= r.y * T) continue;
+    if (it.x < r.x) x = Math.min(x, r.x * T - w);
+    else if (it.x >= r.x + r.w) x = Math.max(x, (r.x + r.w) * T);
+  }
+  return { x: Math.round(x), y: bottom - h, w, h };
+}
+function hqPlant(g, key, it, w, h) { const r = hqPlantRect(it, w, h); return hqSprite(g, key, r.x, r.y, r.w, r.h); }
 // How each kind of thing is drawn, at its tile. Plants, the couch and the shelf use the office's
 // art; for the kinds with none, a small pixel shape. Each is given the 2D context and the item.
 const HQ_ITEM_ART = {
-  plant: (g, it) => hqSprite(g, "PLANT", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#3f9b5b"),
-  fern: (g, it) => hqSprite(g, "PLANT_2", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#5fbf7a"),
-  cactus: (g, it) => hqSprite(g, "CACTUS", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#6aa84f"),
-  palm: (g, it) => hqSprite(g, "LARGE_PLANT", it.x * HQ_T - 8, (it.y + 1) * HQ_T - 48) || hqPot(g, it, "#2e8b57"),
+  plant: (g, it) => hqPlant(g, "PLANT", it, 16, 32) || hqPot(g, it, "#3f9b5b"),
+  fern: (g, it) => hqPlant(g, "PLANT_2", it, 16, 32) || hqPot(g, it, "#5fbf7a"),
+  cactus: (g, it) => hqPlant(g, "CACTUS", it, 16, 32) || hqPot(g, it, "#6aa84f"),
+  palm: (g, it) => hqPlant(g, "LARGE_PLANT", it, 32, 48) || hqPot(g, it, "#2e8b57"),
   couch: (g, it) => {
     if (hqSprite(g, "SOFA_FRONT", it.x * HQ_T, it.y * HQ_T)) return;
     g.fillStyle = "#7d6bb0"; g.fillRect(it.x * HQ_T, it.y * HQ_T + 2, it.w * HQ_T, 14); g.fillStyle = "#9a89c9"; g.fillRect(it.x * HQ_T + 2, it.y * HQ_T, it.w * HQ_T - 4, 6);
@@ -1077,8 +1098,12 @@ const HQ_ITEM_ART = {
   },
 };
 // A kind this screen has no picture for yet is drawn as a plain box, so nothing vanishes.
+// A thing against a side wall stands just inside it, not half in the wall nor cut by the edge.
 function hqDrawItem(g, it) {
-  (HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); }))(g, it);
+  const draw = HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); });
+  const by = !it.wall && it.y >= HQ_SIDE.top && it.y < HQ_SIDE.bottom ? (it.x === 0 ? HQ_SIDE.w - 1 : it.x + it.w === HQ_COLS ? 1 - HQ_SIDE.w : 0) : 0;
+  if (!by) { draw(g, it); return; }
+  g.save(); g.translate(by, 0); draw(g, it); g.restore();
 }
 
 function hqFurniture() {

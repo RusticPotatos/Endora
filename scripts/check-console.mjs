@@ -1408,6 +1408,17 @@ if (failures.length) {
       if (!at("rgba(185,140,240,.55)").includes(`${11 * 16 + 1},${4 * 16 + 1}`)) fail("hq: the rug is not drawn flat where the data has it");
       if (!filled.some((f) => f.x === 26 * 16 + 2 && f.y === 5 && f.w === 12 && f.h === 17)) fail("hq: the poster is not drawn on the wall where the data has it");
       if (!at("#b8a68a").includes(`${14 * 16 + 1},${3 * 16 + 1}`)) fail("hq: a kind of thing with no picture is not drawn as a plain box");
+      // No plant covers the task board or reaches through a room's glass (a palm by the board hid
+      // a sticky note and the CEO's name): the default layout's palm, a plant under the board.
+      const plants = runInContext(`(() => {
+        const T = HQ_T, B = HQ_P.board, O = HQ_ROOMS.ceo, board = { x: B.x * T - 2, y: 3, w: B.w * T + 4, h: 26 };
+        const room = { x: O.x * T, y: O.y * T, w: O.w * T, h: O.h * T };
+        const palm = hqPlantRect({ x: 19, y: 3, w: 1, h: 1 }, 32, 48), low = hqPlantRect({ x: 10, y: 2, w: 1, h: 1 }, 16, 32);
+        const free = hqPlantRect({ x: 4, y: 12, w: 1, h: 1 }, 16, 32);
+        return [!hqOverlaps(palm, board), !hqOverlaps(palm, room), palm.y + palm.h === 4 * T, !hqOverlaps(low, board),
+          free.w === 16 && free.h === 32 && free.x === 4 * T];
+      })()`, context);
+      if (plants.some((ok) => !ok)) fail(`hq: a plant covers the task board or reaches into a room: ${plants}`);
       // The front door is set in the right wall, framed, beside the lobby (the owner saw it
       // floating on the floor, away from any wall).
       const door = runInContext(`(() => { const D = hqDoorRect(), lobby = HQ_P.lobby;
