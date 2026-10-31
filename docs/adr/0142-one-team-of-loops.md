@@ -544,3 +544,82 @@ issues; branch `r3-review-fixes`).
 
 Scenarios: `features/an-item-waits-for-the-mac.feature`,
 `features/a-review-that-runs-out-of-room-goes-on.feature`.
+
+## Amended 2026-10-31: the same opening every pass, and a few lessons per loop
+
+Two more of Ralph's habits (Huntley; snarktank/ralph). Every pass reads the same `PROMPT.md`, so
+the start of each pass's prompt is the same. And `progress.txt` keeps a short "Codebase
+Patterns" section at its top that every pass reads first. HQ's turns had neither. A briefing's
+first line said who the member is, its rank, its model and the day. So the bytes two turns
+shared stopped at the end of the worker's instructions and tools, and nothing of the briefing
+could come from a provider's cache. Claude's request had one breakpoint, the top-level
+automatic one, on the prompt's last block. Its cache entries all ended in one turn's own
+words, so a turn never read another turn's entry. And what a turn learned about a loop reached
+the next turn only through the thread, which is now cut to its newest posts (D12, above).
+
+- **The briefing opens with what every turn is told alike.** For a work turn and a review turn,
+  the opening is: the team protocol's line (which `my_turn` used to append at the end), HQ's
+  tools, the standards pointer, and how to leave a lesson. Then come who the member is and the
+  day, then the rest, as before. Nothing in the opening may vary by member, item or time. A
+  downtime turn is unchanged. The worker finds the member on the first line that starts
+  `You are `, not on the first line of the briefing.
+- **Claude's breakpoints cover the opening.** The worker sends Claude's system as one block
+  with a breakpoint at its end, which caches the tools and the system together. It sends the
+  briefing as two blocks: the fixed opening, ending in a breakpoint, then the rest. The
+  top-level automatic breakpoint still caches the conversation as it grows. That is three of
+  Anthropic's four breakpoints, all with the 5-minute lifetime. A turn reads another turn's
+  entry only on the same model, within those 5 minutes, and with the same tool list: a lead on
+  Claude offered the home lab has its own list. House turns need no marks. llama.cpp's server
+  reuses the start a prompt shares with the last one in its slot, and DeepSeek caches by
+  prefix, both on their own.
+- **A loop keeps a few lessons.** A loop keeps at most 10 lines and 1,200 characters, oldest
+  first, in HQ's settings (`loop_lessons:<project>`). Every work turn on one of the loop's items
+  is told them right after the item and its criteria. A turn told them is marked as having read
+  input of unknown origin, since the lessons are members' words. Review turns, turns on no
+  task, games and scenarios are not told them.
+- **How a lesson gets in.** A last word and a send-back are free text, so the mark is a line
+  prefix that any text can carry. A lesson is a line that starts `Lesson:` (in any case, and
+  after a list's `- ` or `* `). It can be a line of a worker's last word, of the reason the
+  worker gave when moving its item on, or of a reviewer's notes. The worker's lines wait for the
+  item until a reviewer or the checks judge it, so only work someone judged teaches the loop.
+  When the item is sent back or accepted, its waiting lines and the reviewer's own go in, in
+  that order.
+- **What HQ keeps.** HQ keeps a line only if all of these hold:
+  - it says something;
+  - it is at most 160 characters, on one line;
+  - it is not a repeat of a line already kept (compared by its words, ignoring case and
+    punctuation);
+  - it holds nothing shaped like a credential. This is the data-loss tripwire's check (ADR
+    0051), moved from the capabilities context to the shared kernel
+    (`endora_kernel::secrets`) so the team's domain can use it too.
+
+  A refused line is dropped without a word. When the list is full, by count or by characters,
+  the oldest line goes.
+- **How a lesson gets out.** It is pushed out by newer lines, or the owner removes it. The owner
+  reads the list and sets it whole with `GET`/`POST /v1/hq/projects/{id}/lessons` (HQ's
+  `/v1/projects/{id}/lessons`), beside the loop's rank and items. Each line is checked the same
+  way; a mark is taken off and repeats are left out. A list that is too long, or holds a line
+  that is refused, is refused whole, with the reason, and changes nothing. The node records the
+  edit in the activity. There is no screen yet.
+
+Measured (the worker's test `two_turns_share_their_prompts_opening`). It builds two first calls
+from the engine's real briefings and HQ's and the node's real tools: Bo's work turn on one loop,
+and Rae's a day and two hours later on another loop's item. It counts the bytes shared before
+the first one that differs, in each provider's render order.
+
+| | Bytes shared before | Bytes shared after |
+|---|---|---|
+| House turn (of 11,731 to 12,181) | 9,760 | 10,466 (about 2,600 tokens) |
+| Claude turn (of 20,869 to 21,319) | 18,898 | 19,604 (about 4,900 tokens) |
+
+- The briefing's fixed opening is 706 bytes.
+- On Claude, the cached prefix is now read across turns, where before no turn read it, at a
+  tenth of the input price: above the largest minimum a prefix needs to be cached (4,096
+  tokens).
+- Briefings grow a little, within the limits set on 30 Oct: Bo's work turn from 3,133 to 3,349
+  bytes (held under 3,400), and Rae's review from 5,557 to 5,768 (held under 5,800).
+- A full list of lessons adds at most about 1,260 bytes (about 315 tokens) to a work turn's
+  briefing.
+
+The tests are the domain's (`domain/lessons.rs`), the engine's (`application/lessons_tests.rs`),
+and the owner's scenarios in `features/what-every-pass-reads-first.feature`.

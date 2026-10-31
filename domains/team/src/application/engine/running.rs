@@ -264,24 +264,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The briefing, around what it carries of the world (`memory`). Every member is told the
     /// same way (ADR 0142): no roles, only its model's rank.
     pub(super) fn briefing_body(&self, member: &Member, run: &Run, memory: &str) -> Done<String> {
-        let mut told = format!(
-            "You are {}, rank {} of {}, thinking with {}. Today is {}.\n",
-            member.name,
-            member.brain.rank(),
-            crate::domain::Brain::BOTTOM,
-            member.brain.label(),
-            self.said_today()
-        );
+        let who = Self::who_said(member, &self.said_today());
         // Downtime has no task to brief: a chess move, or nothing (ADR 0119), and no map of the
         // world either (30 Oct: a move needs the board, not the house).
         if self.reason_for(run)? == WakeReason::Downtime.name() {
+            let mut told = who;
             told.push_str(&self.downtime_said(member, run.id)?);
             told.push_str("Your tools at HQ: my_turn, chess.\n");
             return Ok(told);
         }
+        // What every work turn is told alike comes first, then who the member is and the rest:
+        // a provider's prompt cache reads the same opening for every turn (ADR 0142, amended
+        // 2026-10-31, after Ralph: the same prompt every pass, what changes at its end).
+        let mut told = Self::opening_said();
+        told.push_str(&who);
         // What it knows, first: its situation's pieces of the world (ADR 0118, 0122).
         told.push_str(memory);
-        told.push_str(STANDARDS);
         told.push_str(self.wing_rules(member)?);
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
@@ -308,6 +306,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task.description
         ));
         told.push_str(&self.criteria_said(&task));
+        // The loop's lessons, right after the item (ADR 0142, amended 2026-10-31).
+        told.push_str(&self.lessons_briefed(member, run, &task)?);
         if let Some(nudge) = self.nudge_for(member.id, run)? {
             told.push_str(&format!("{nudge}\n"));
         }
@@ -335,8 +335,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.unclassified_message_input(run.id)?;
         }
         told.push_str(&untraced);
-        told.push_str(&Self::tools_said());
         Ok(told)
+    }
+
+    /// Who the member is, its rank and model, and the day: the first line of a briefing that
+    /// varies from turn to turn.
+    fn who_said(member: &Member, today: &str) -> String {
+        format!(
+            "You are {}, rank {} of {}, thinking with {}. Today is {today}.\n",
+            member.name,
+            member.brain.rank(),
+            crate::domain::Brain::BOTTOM,
+            member.brain.label(),
+        )
+    }
+
+    /// The opening of every work and review turn's briefing, the same bytes in each: HQ's tools,
+    /// the team's standards and how to leave the loop a lesson. Nothing in it may vary by
+    /// member, item or time (`prefix_tests` in the worker holds it to that).
+    fn opening_said() -> String {
+        format!(
+            "{}{STANDARDS}{}",
+            Self::tools_said(),
+            crate::domain::lessons::HOW
+        )
     }
 
     /// HQ's own tools, never as all a member has: live, a lead on Claude offered the home lab's
@@ -490,14 +512,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// diff within the reviewer's size. Not the thread's history, the map or the world: one line
     /// says which tool reads each.
     fn review_briefing(&self, member: &Member, run: &Run, task: TaskId) -> Done<String> {
-        let mut told = format!(
-            "You are {}, rank {} of {}, thinking with {}. Today is {}.\n",
-            member.name,
-            member.brain.rank(),
-            crate::domain::Brain::BOTTOM,
-            member.brain.label(),
-            self.said_today()
-        );
+        // The same fixed opening as a work turn's, then who the member is.
+        let mut told = Self::opening_said();
+        told.push_str(&Self::who_said(member, &self.said_today()));
         let input = self
             .store
             .task_inputs(task)?
@@ -568,9 +585,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(&format!(
             "Left out of this briefing: the thread's other {others} posts (my_turn gives its \
              newest), the map (read_world world:map), the house and the lab (read_world \
-             world:house, world:lab) and the team's standards (read_doc docs/standards.md).\n"
+             world:house, world:lab).\n"
         ));
-        told.push_str(&Self::tools_said());
         Ok(told)
     }
 

@@ -937,9 +937,10 @@ pub(crate) fn is_repo_tool(name: &str) -> bool {
     name == REPO_CHECKOUT || name == REPO_SUBMIT
 }
 
-/// The member a turn is of, from HQ's briefing: its first line, "You are Kit, the team's lead."
+/// The member a turn is of, from HQ's briefing: its first line that says who it is, "You are
+/// Kit, the team's lead." (after the briefing's fixed opening, ADR 0142, amended 2026-10-31).
 pub(crate) fn member_of(briefing: &str) -> Option<String> {
-    let first = briefing.lines().next()?.strip_prefix("You are ")?;
+    let first = briefing.lines().find_map(|l| l.strip_prefix("You are "))?;
     let (name, _) = first.split_once(',')?;
     let name = name.trim();
     (!name.is_empty() && name.chars().count() <= 40).then(|| name.to_owned())
@@ -1328,10 +1329,27 @@ impl Talk {
             return json!({ "model": model, "max_tokens": MOST_A_HOUSE_REPLY,
                            "messages": self.as_read(), "tools": self.tools });
         }
+        // Two breakpoints more, where every turn's prompt is the same (ADR 0142, amended
+        // 2026-10-31): the system (the tools and instructions before it), and the briefing's
+        // fixed opening, before the line saying who the member is. Another turn reads them from
+        // the cache this one wrote; the top-level mark caches the rest as the turn goes.
+        let ephemeral = json!({ "type": "ephemeral" });
+        let mut messages = self.messages.clone();
+        if let Some((opening, rest)) = messages
+            .first()
+            .and_then(|m| m["content"].as_str())
+            .and_then(|b| b.find("\nYou are ").map(|at| b.split_at(at + 1)))
+        {
+            messages[0]["content"] = json!([
+                { "type": "text", "text": opening, "cache_control": ephemeral },
+                { "type": "text", "text": rest },
+            ]);
+        }
         let mut body = json!({
-            "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,
-            "messages": self.messages, "tools": self.tools,
-            "cache_control": { "type": "ephemeral" },
+            "model": model, "max_tokens": MOST_A_REPLY,
+            "system": [{ "type": "text", "text": self.system, "cache_control": ephemeral }],
+            "messages": messages, "tools": self.tools,
+            "cache_control": ephemeral,
         });
         if let Some(effort) = &self.effort {
             body["output_config"] = json!({ "effort": effort });
@@ -2422,6 +2440,9 @@ impl<'a> Model<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod prefix_tests;
 
 #[cfg(test)]
 mod tests {

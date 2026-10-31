@@ -872,6 +872,36 @@ pub(super) async fn hq_loop_items(
     Ok(answer)
 }
 
+/// A loop's lessons (ADR 0142, amended 2026-10-31): the few lines every work turn on it reads.
+pub(super) async fn hq_loop_lessons(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/projects/{id}/lessons"), None).await
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqLoopLessons {
+    lessons: Vec<String>,
+}
+
+/// The owner sets a loop's lessons, the whole list.
+pub(super) async fn hq_set_loop_lessons(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopLessons>,
+) -> Answer {
+    let count = req.lessons.len();
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/lessons"),
+        Some(json!({ "lessons": req.lessons })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id}'s lessons ({count} lines)"),
+    );
+    Ok(answer)
+}
+
 pub(super) async fn hq_project_tools(
     State(state): State<AppState>,
     Path(id): Path<i64>,

@@ -116,3 +116,6 @@ mod mechanical_tests;
 
 #[cfg(test)]
 mod briefing_size_tests;
+
+#[cfg(test)]
+mod lessons_tests;

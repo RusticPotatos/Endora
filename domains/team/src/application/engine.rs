@@ -48,6 +48,7 @@ mod health;
 mod history;
 mod kinds;
 mod league;
+mod lessons;
 mod lineage;
 mod long_waits;
 mod loops;
@@ -1688,8 +1689,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
             // In the loops a send-back is one of the item's failures (ADR 0142); kept at its
-            // rank, it goes back to its worker with a handover (amended 2026-10-30).
+            // rank, it goes back to its worker with a handover (amended 2026-10-30). What the
+            // worker and the reviewer marked as lessons goes in the loop's list first.
             if in_the_loops {
+                self.learn_held_lock(&current, notes)?;
                 self.loop_failed(task)?;
                 let now = self.task(task)?;
                 if let Some(worker) = worker.filter(|w| now.owner.or(now.assignee) == Some(*w)) {
@@ -1702,9 +1705,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // Gated work keeps the gate's rule: done only once the gate has passed.
             self.approve_held_lock(reviewer.id, task)?;
             self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
-            return Ok(());
+            return self.learn_held_lock(&current, notes);
         }
         review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
+        self.learn_held_lock(&current, notes)?;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
         self.emit_status(&current, TaskStatus::Done)?;

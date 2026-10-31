@@ -533,17 +533,19 @@ are seen; quotes count only against the item's own receipts. The other six are f
 2. [ ] Each morning while work is queued, top up the day's pool by about $4 (owner, 31 Oct),
    until the pool follows the credit.
 3. [x] Build HQ's daily pool from the Claude credit left and the days to its renewal (owner,
-   31 Oct; D9): on the `r3-credit-pool` branch, to merge and release with step 4.
-4. [ ] Merge, gate and release the waiting local work: the rest of the review fixes; a stable
+   31 Oct; D9): on the `r3-credit-pool` branch, to merge and release with step 5.
+4. [x] A stable prompt opening and a lessons list per loop, after Ralph (ADR 0142, amended
+   31 Oct): on the `r3-prefix` branch, to merge and release with step 5.
+5. [ ] Merge, gate and release the waiting local work: the rest of the review fixes; a stable
    prompt opening and a lessons list per loop; the owner's scenarios for round 2's changes; the
    one-team clean-up (ADR 0142's "What goes").
-5. [ ] Pick round 3's changes from D1 to D10 by cost and effect (D7, D6, D3 and D2 first), then
+6. [ ] Pick round 3's changes from D1 to D10 by cost and effect (D7, D6, D3 and D2 first), then
    run round 3 with the same ten tasks.
-6. [ ] Re-run Claude Code's ten tasks as ten fresh sessions, as the method says; needs the owner
+7. [ ] Re-run Claude Code's ten tasks as ten fresh sessions, as the method says; needs the owner
    to start them from the desktop app.
-7. [ ] Office scene leftovers: a bubble covers the TEAM label; a name tag floats above its
+8. [ ] Office scene leftovers: a bubble covers the TEAM label; a name tag floats above its
    member; HEADS DOWN overlaps a plant; the chess table's lower seat covers the board.
-8. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
+9. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
    free; switch only if about twice as fast on a large turn.
 
 ### The owner's

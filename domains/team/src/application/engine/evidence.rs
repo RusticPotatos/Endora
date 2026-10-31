@@ -506,6 +506,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &[],
         )?;
         self.mark_progress(tester.id, task)?;
+        // Accepted: what the worker and the reviewer marked as lessons goes in its loop's list.
+        self.learn_held_lock(&current, notes)?;
         self.close_checked(&current, tester.id)
     }
 

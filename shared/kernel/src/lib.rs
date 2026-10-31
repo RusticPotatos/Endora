@@ -21,6 +21,7 @@ pub mod error;
 pub mod ids;
 pub mod lab;
 pub mod reversibility;
+pub mod secrets;
 pub mod tier;
 pub mod traits;
 

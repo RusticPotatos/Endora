@@ -245,7 +245,13 @@ fn every_briefing_opens_with_a_map_of_the_pages_that_matter_to_its_member() {
         "{}",
         linus.told
     );
-    assert!(at < 120, "right after who it is: {}", linus.told);
+    // Who it is comes after the briefing's fixed opening (ADR 0142, amended 2026-10-31).
+    let who = linus.told.find("You are ").unwrap();
+    assert!(
+        who < at && at < who + 120,
+        "right after who it is: {}",
+        linus.told
+    );
     // The run records it was told.
     let briefed = hq.briefed(linus.run).unwrap().unwrap();
     assert_eq!(briefed.briefed.first().map(String::as_str), Some("map"));
