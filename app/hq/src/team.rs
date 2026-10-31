@@ -630,6 +630,101 @@ pub(crate) async fn push_outcome(
     }
 }
 
+/// For the node (ADR 0115, amended 2026-10-31): the accepted branches to push, each with
+/// whether its privacy scan still decides, and the pushed ones to merge into develop while
+/// merging is on.
+pub(crate) async fn deliveries(Extract(state): Extract<State>) -> Response {
+    let hq = state.hq.clone();
+    let due = tokio::task::spawn_blocking(move || hq.deliveries()).await;
+    let due = match due {
+        Ok(Ok(due)) => due,
+        Ok(Err(e)) => return refused(&e),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let branch = |b: &endora_team::domain::Branch| {
+        json!({ "branch": b.id, "task": b.task.0, "name": b.name, "head": b.head,
+                "base": b.base })
+    };
+    let push: Vec<_> = due
+        .push
+        .iter()
+        .map(|d| {
+            let mut row = branch(&d.branch);
+            row["scan"] = json!(d.scan);
+            row
+        })
+        .collect();
+    let merge: Vec<_> = due.merge.iter().map(branch).collect();
+    Json(json!({ "push": push, "merge": merge })).into_response()
+}
+
+/// One thing a scan found, as the node tells it: what and where, never the value.
+#[derive(serde::Deserialize)]
+pub(crate) struct FoundTold {
+    what: String,
+    at: String,
+}
+
+/// What the node says came of a branch: `step` is `push`, `held` or `merge`.
+#[derive(serde::Deserialize)]
+pub(crate) struct DeliveredTold {
+    step: String,
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    found: Vec<FoundTold>,
+    #[serde(default)]
+    needs: Vec<FoundTold>,
+}
+
+/// For the node (ADR 0115, amended 2026-10-31): what came of a branch it was asked about. Told
+/// once a step.
+pub(crate) async fn delivered(
+    Extract(state): Extract<State>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(req): Json<DeliveredTold>,
+) -> Response {
+    use endora_team::application::{Delivered, Found};
+    let found = |list: Vec<FoundTold>| -> Vec<Found> {
+        list.into_iter()
+            .map(|f| Found {
+                what: f.what,
+                at: f.at,
+            })
+            .collect()
+    };
+    let report = match req.step.as_str() {
+        "push" => Delivered::Pushed {
+            ok: req.ok,
+            text: req.text,
+            needs: found(req.needs),
+        },
+        "held" if !req.found.is_empty() => Delivered::Held {
+            found: found(req.found),
+        },
+        "merge" => Delivered::Merged {
+            ok: req.ok,
+            text: req.text,
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "step is push, held (with what was found) or merge" })),
+            )
+                .into_response();
+        }
+    };
+    let hq = state.hq.clone();
+    let told = tokio::task::spawn_blocking(move || hq.delivered(id, &report)).await;
+    match told {
+        Ok(Ok(())) => Json(json!({ "told": true })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// The engine's refusal, with its words, as the node reads it.
 fn refused(e: &endora_team::application::EngineError) -> Response {
     use endora_team::application::EngineError;
