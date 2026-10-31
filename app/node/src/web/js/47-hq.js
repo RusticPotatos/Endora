@@ -234,6 +234,58 @@ function hqOpenRow(key, title, meta, body) {
   return `<li class="hq-open-row${open ? " open" : ""}"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${meta}</small></button>${open ? `<div class="hq-row-body">${body}</div>` : ""}</li>`;
 }
 
+// A big card or a rare part of a tab, folded to one line until tapped (the density audit of
+// 2026-10-25): open, `body` (whole cards) follows the line. What is opened is kept across HQ's
+// redraws in `HQ.more`; `key` has no colon.
+function hqFold(key, title, meta, body) {
+  const open = !!HQ.more[key];
+  return `<section class="hq-card hq-fold"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${open ? "tap to fold" : meta}</small></button></section>${open ? body : ""}`;
+}
+
+// A form inside a card that is used now and then (a new project, a routine, a hire): a button
+// until it is wanted.
+function hqFormFold(key, label, body) {
+  const open = !!HQ.more[key];
+  return `<div class="hq-row"><button class="hq-btn" aria-expanded="${open}" data-act="hq:more:${key}:toggle">${open ? "Close" : label}</button></div>${open ? body : ""}`;
+}
+
+// The work in flight (Work tab): one line for each task that is not finished, newest first,
+// each opening the task and its thread under Looking at; and finding any task, finished too.
+function hqInFlight(s) {
+  const goals = s.goals || [];
+  const dropped = new Set(goals.filter((g) => g.status === "dropped").map((g) => g.id));
+  const open = (s.tasks || []).filter((t) => ["todo", "doing", "in_review", "blocked"].includes(t.status) && !dropped.has(t.goal)).reverse();
+  const rows = open.map((t) => hqLine(`hq:pick:task:${Number(t.id)}`, `${hqKey(t.id)} ${esc(t.title)}`,
+    `${esc(String(t.status).replace(/_/g, " "))}${t.owner ? ` · ${esc(hqName(t.owner))}` : ""}`));
+  const list = hqMore("inflight", rows, 5);
+  return `<section class="hq-card"><h2>In flight <span class="hq-count">${open.length}</span></h2>
+    ${rows.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing in flight.</p>`}
+    <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
+    <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>`;
+}
+
+// The money (Manage tab): today's pool with its top-up, and what is left with each paid
+// provider; the credits and their thresholds are set up in Settings → AI.
+function hqMoneyCard(s) {
+  const pool = s.pool || {}, credits = hqCreditChips();
+  const left = pool.per_day == null ? null : Math.max(0, pool.per_day - (pool.committed || 0));
+  const topUp = s.scorecard && s.scorecard.pool ? `<button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button>` : "";
+  if (left == null && !credits.length && !topUp) return "";
+  return `<section class="hq-card"><h2>Money</h2>
+    ${left == null ? "" : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}</p>`}
+    ${credits.length ? `<div class="hq-chips">${credits.join("")}</div>` : ""}
+    <div class="hq-row">${topUp}<button class="hq-link" data-act="go:models">Credits and thresholds in AI</button></div></section>`;
+}
+
+// What went wrong lately (Health tab): the team's recent turns that did not succeed, each
+// opening its replay.
+function hqFailures() {
+  const failed = (r) => r.status && r.status !== "succeeded" && r.status !== "running" && r.status !== "queued";
+  const turns = hqTurns(failed, "failed");
+  return `<section class="hq-card"><h2>What failed</h2>${turns || `<p class="hq-empty">No recent turn failed.</p>`}
+    <div class="hq-row"><button class="hq-link" data-act="go:lab">The home lab's containers and logs</button></div></section>`;
+}
+
 // A table of numbers by day and by week, as one-line rows (the owner, 2026-10-25: too long to
 // read on a phone): the measure and the first words of its first window; tapped, both in full.
 // `rows` is [label, first, second]; every word is escaped here.
@@ -1255,8 +1307,8 @@ function hqLoop() {
 }
 
 // A tap on the office: a person, a sticky note, or the kill switch.
-// Something chosen on the office floor is looked at on the Desk tab.
-function hqSelect(sel) { HQ.selected = sel; hqSetTab("desk"); render(); }
+// Something chosen on the office floor is looked at on the Work tab.
+function hqSelect(sel) { HQ.selected = sel; hqSetTab("work"); render(); }
 
 function hqTap(ev) {
   const cv = document.getElementById("hq-office"); if (!cv) return;
@@ -1295,18 +1347,18 @@ function hqFonts() {
 
 // ---- the screen ------------------------------------------------------------------------
 
-// The screen is five tabs (the owner, on a phone: "it's all been expanded over time, hard to
-// find stuff"): what needs the owner first, then the team, the work, what the team knows, and
-// the office itself. Every tab is drawn and the others are hidden, so a live update never
-// loses what is typed on a tab that is not showing.
-// Activity first: the screen the owner glances at most, live (2026-10-25).
-// Manage holds every owner setting, shown rather than folded (2026-10-25).
-// Health holds the scorecard: how the team is doing, apart from the work itself.
-// Four places, each for what the owner goes there to do (the owner, 2026-10-25: eight tabs were
-// too many): what needs them and what is going on; the team; the work; and what they set up.
-const HQ_TABS = [["now", "Now"], ["team", "Team"], ["work", "Work"], ["manage", "Manage"]];
-// Where each of the old eight now lives, for links and choices kept from before.
-const HQ_TAB_MOVED = { activity: "now", desk: "now", office: "team", knowledge: "team", health: "work" };
+// The screen is in tabs (the owner, on a phone: "it's all been expanded over time, hard to
+// find stuff"). Every tab is drawn and the others are hidden, so a live update never loses what
+// is typed on a tab that is not showing.
+// Three places, by what the owner is doing (the density audit of 2026-10-25: the old Work tab
+// was 6.8 phone screens with 216 buttons): Work, where they give work, answer the desk and
+// follow what is in flight, and where every screen opens; Manage, what they own and set (the
+// projects and their loops, the team, the money, the knowledge, the office); and Health, how the
+// team and the lab are doing (the Mac, the turns, what failed, the live activity). Each shows
+// one line per thing, and rare actions and big cards wait behind a fold.
+const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"]];
+// Where each older tab now lives, for links and choices kept from before.
+const HQ_TAB_MOVED = { now: "work", desk: "work", activity: "health", team: "manage", office: "manage", knowledge: "manage" };
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1320,16 +1372,17 @@ function hqStored(key, value) {
 
 function hqTab() {
   if (HQ.tab) return HQ.tab;
-  // Kept under a new name, so every screen opens once on Now.
-  const kept = hqStored("tab.v3");
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "now";
+  // A tab kept from the four tabs (tab.v3) lands where it now lives.
+  const v3 = hqStored("tab.v3");
+  const kept = hqStored("tab.v4") || (v3 && (HQ_TAB_MOVED[v3] || v3));
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "work";
   return HQ.tab;
 }
 
 function hqSetTab(id) {
   id = HQ_TAB_MOVED[id] || id;
   if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab.v3", id);
+  HQ.tab = id; hqStored("tab.v4", id);
 }
 
 // What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
@@ -1438,13 +1491,13 @@ function hqChips(s) {
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
-  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:now:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
+  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
-  const badge = { now: (s.desk || []).length };
+  const badge = { work: (s.desk || []).length };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
@@ -1495,8 +1548,22 @@ function hqNeed(s, d) {
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
 }
 
+// The desk: the first few cards whole, so the top of it is answered where it stands; the rest one
+// line each, their kind and first words, opening to the whole card (the density audit,
+// 2026-10-30: fifteen whole cards were three phone screens). Nothing is hidden from the count.
+const HQ_DESK_WHOLE = 5;
+function hqDesk(s) {
+  const short = (text) => { const t = String(text || ""); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
+  // The team stopped by HQ itself is always whole: nothing goes on until the owner answers it.
+  const isWhole = (d, i) => i < HQ_DESK_WHOLE || d.kind === "tripwire";
+  const items = s.desk || [];
+  const whole = items.filter(isWhole).map((d) => hqNeed(s, d)).join("");
+  const rows = items.filter((d, i) => !isWhole(d, i)).map((d) => hqOpenRow(`desk${d.id}`, esc(String(d.kind).replace(/_/g, " ")), esc(short(d.text)), hqNeed(s, d))).join("");
+  return whole + (rows ? `<ul class="hq-team">${rows}</ul>` : "");
+}
+
 // "While you were away" (ADR 0132): stuck work, a guard's finding and a notice, newest first, in
-// one card at the top of the Desk tab. None needs a decision before the team can go on, so none
+// one card under the desk, on the Work tab. None needs a decision before the team can go on, so none
 // interrupts; each is the owner's to act on when they like, with the choices it always had, and
 // acting on one takes it out. Shown only when there is something in it.
 function hqDigest(s) {
@@ -1510,12 +1577,16 @@ function hqDigest(s) {
     if (seen.has(key)) seen.get(key).times += 1;
     else seen.set(key, { d, times: 1 });
   }
-  const cards = [...seen.values()].map(({ d, times }) => times > 1
-    ? hqNeed(s, d).replace("</p>", ` <span class="hq-count">×${times}</span></p>`) : hqNeed(s, d));
-  const list = hqMore("digest", cards, 3);
+  // One line each until tapped (the density audit, 2026-10-30): what kind it is and its first
+  // words; open, the card with the choices it always had.
+  const short = (text) => { const t = String(text || ""); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
+  const rows = [...seen.values()].map(({ d, times }) => hqOpenRow(`digest${d.id}`, esc(String(d.kind).replace(/_/g, " ")),
+    `${esc(short(d.text))}${times > 1 ? ` <span class="hq-count">×${times}</span>` : ""}`,
+    `<div class="hq-needs">${hqNeed(s, d)}</div>`));
+  const list = hqMore("digest", rows, 3);
   return `<section class="hq-card hq-digest" aria-live="polite"><h2>While you were away <span class="hq-count">${items.length}</span></h2>
-    <p class="hq-note">Nothing here needs you before the team can go on. Each is yours to act on when you like, and acting on one takes it out of this list.</p>
-    <div class="hq-needs">${list.shown}</div>${list.more}</section>`;
+    <p class="hq-note">Nothing here needs you before the team can go on: tap one to act on it when you like, and acting on one takes it out of this list.</p>
+    <ul class="hq-team">${list.shown}</ul>${list.more}</section>`;
 }
 
 // Older activity loads when the owner scrolls down near the end of the log: one page per
@@ -1534,7 +1605,7 @@ function hqListenForLogEnd() {
   if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
   HQ_LOG_SCROLL.listening = true;
   window.addEventListener("scroll", () => {
-    if (NAV.v !== "hq" || hqTab() !== "now") return;
+    if (NAV.v !== "hq" || hqTab() !== "health") return;
     const end = document.getElementById("hq-log-end");
     const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
     if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
@@ -1555,7 +1626,7 @@ function viewHQ() {
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
-  const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
+  const desk = hqDesk(s);
   // The latest sixty, newest first, live; older lines load as the owner scrolls to the end, and
   // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
   const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
@@ -1582,30 +1653,27 @@ function viewHQ() {
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
       </div>
-      ${hqPanel("now", `
+      ${hqPanel("work", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         ${HQ.selected ? `<section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>` : ""}
         ${hqDigest(s)}
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
-      ${hqPanel("team", `
-        <section class="hq-card"><h2>Team</h2>${team}</section>
-        ${hqMacCard(s)}
-        ${hqOffice(s)}
-        ${hqWorldCard(s)}
-        ${hqHouse(s)}`)}
-      ${hqPanel("work", `
-        <section class="hq-card"><h2>Find a task</h2>
-          <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
-          <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
-        ${hqHolodeck(s)}
-        ${hqScorecard(s)}`)}
+        ${hqInFlight(s)}
+        ${hqHolodeck(s) ? hqFold("holodeck", "Holodeck", "chess matches and the model league", hqHolodeck(s)) : ""}`)}
       ${hqPanel("manage", `
-        ${hqContracts(s.contracts)}
         ${hqProjects(s)}
         ${hqRoutines(s)}
         ${hqNotes(s)}
-        ${hqHireForm(s)}`)}
+        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm(s))}</section>
+        ${hqMoneyCard(s)}
+        ${hqContracts(s.contracts)}
+        ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
+        ${hqOffice(s) ? hqFold("office", "Office", "the floor and its games", hqOffice(s)) : ""}`)}
+      ${hqPanel("health", `
+        ${hqMacCard(s)}
+        ${hqScorecard(s)}
+        ${hqFailures()}
+        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -1795,13 +1863,13 @@ function hqHireForm(s) {
   const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
-  return `<section class="hq-card"><h2>Hire</h2><div class="hq-row">
+  return `<h3>Hire</h3><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
       <select id="hq-hire-role" aria-label="Role">${roles}</select>
       <label>works with <select id="hq-hire-work" aria-label="What the member works with">${works}</select></label>
       <label>judges with <select id="hq-hire-judgment" aria-label="The Claude the member judges with">${judges}</select></label>
       <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
-      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></section>`;
+      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div>`;
 }
 
 // A task's documents and branches (ADR 0115): a submitted branch's diff and stat, a check's
@@ -1895,12 +1963,12 @@ function hqProjects(s) {
     .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
-    <h3>New project</h3><div class="hq-row">
+    ${hqFormFold("newproject", "New project", `<h3>New project</h3><div class="hq-row">
       <select id="hq-project-goal" aria-label="The goal it serves">${goalOpts}</select>
       <input id="hq-project-title" placeholder="e.g. Media stack upkeep" aria-label="What it is" />
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
-      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></section>`;
+      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div>`)}</section>`;
 }
 
 // A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
@@ -1975,12 +2043,10 @@ function hqScorecard(s) {
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
   if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
-  const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
   return `<section class="hq-card"><h2>How the team is doing</h2>
     ${hqOutcomes(card.outcomes)}
     <h3>The team's turns</h3>
     ${hqScoreRows("measure", measures, "Today", "7 days")}
-    ${topUp}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
       <div><b>7 days</b><ul class="hq-team">${members(card.week)}</ul></div></div></details>
@@ -2137,7 +2203,7 @@ function hqMacSetup() {
   const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
       Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
   return `<div class="card hq-macsetup">
-      <p class="sub">Now: ${esc(hqMacWhy(m.why))}. Its busy switch is on the HQ screen, under Team.</p>
+      <p class="sub">Now: ${esc(hqMacWhy(m.why))}. Its busy switch is on the HQ screen, under Health.</p>
       <div class="row" style="flex-wrap:wrap;margin-top:8px;">
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
@@ -2235,11 +2301,11 @@ function hqRoutines(s) {
   const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Routines</h2>
     <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>${listed.more}
-    <h3>Add a routine</h3><div class="hq-row">
+    ${hqFormFold("newroutine", "Add a routine", `<h3>Add a routine</h3><div class="hq-row">
       <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
       <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
       <select id="hq-routine-who" aria-label="Who does it">${who}</select>
-      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></section>`;
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div>`)}</section>`;
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
@@ -2297,13 +2363,13 @@ function hqTaskProject(t) {
 // The verbs this screen uses. Returns true when it handled one.
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
-  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("desk"); render(); return true; }
+  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("work"); render(); return true; }
   // Find a task by its number or words of its title, and open it.
   if (noun === "find") {
     const asked = (document.getElementById("hq-find") || {}).value || "";
     const found = hqFindTask(asked);
     if (!found) { flash(asked.trim() ? `No task matches "${asked.trim()}".` : "Type a task's number or a few words of its title.", "warn"); return true; }
-    HQ.selected = { type: "task", id: found }; hqSetTab("desk"); render(); return true;
+    HQ.selected = { type: "task", id: found }; hqSetTab("work"); render(); return true;
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);

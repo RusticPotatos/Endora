@@ -24,7 +24,7 @@ function hqLeagueBrain(task, side) {
   return row ? row.label : game[side];
 }
 
-// The Holodeck card, in the Work tab: nothing until there is something in it.
+// The Holodeck card, folded at the foot of the Work tab: nothing until there is something in it.
 function hqHolodeck(s) {
   const h = s && s.holodeck;
   const scenarios = (h && h.scenarios) || [];
