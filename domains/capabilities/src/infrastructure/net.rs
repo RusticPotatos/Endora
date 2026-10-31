@@ -625,9 +625,12 @@ fn runs_of(line: &str) -> Vec<(bool, &str)> {
 fn scrub_pieces(word: &str) -> String {
     let mut out = String::with_capacity(word.len());
     let mut piece = String::new();
+    // A key that ends a sentence is still a key: its full stop is kept, after the mark.
     let flush = |piece: &mut String, out: &mut String| {
-        if classify_secret_token(piece).is_some() {
+        let key = piece.trim_end_matches(['.', '!', '`']);
+        if classify_secret_token(key).is_some() {
             out.push_str("[redacted]");
+            out.push_str(&piece[key.len()..]);
         } else {
             out.push_str(piece);
         }

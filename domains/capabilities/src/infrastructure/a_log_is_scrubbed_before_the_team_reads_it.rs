@@ -103,3 +103,11 @@ fn a_links_credentials_are_replaced_and_its_place_kept() {
         assert_eq!(scrub_secrets(line), line);
     }
 }
+
+#[test]
+fn a_key_that_ends_a_sentence_is_replaced_and_the_full_stop_kept() {
+    assert_eq!(
+        scrub_secrets("The key is sk-ant-abcdefabcdefabcdefabcdef. Use AKIAIOSFODNN7EXAMPLE!"),
+        "The key is [redacted]. Use [redacted]!"
+    );
+}
