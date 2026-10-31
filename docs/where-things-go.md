@@ -54,9 +54,12 @@ Settings.
   what the owner is doing, and add no fourth without a reason none of them can hold: **Work**
   (where every device opens: giving work, your desk, the digest of what happened while you were
   away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
-  **Manage** (what you own and set: projects and their loops, routines, goals and their notes,
-  the team and hiring, the money and credits (with what each model cost by week, a fold on the
-  Money card), what the team may do on the home lab, what the
+  **Manage** (what you own and set, in this order (the owner's notes of 31 Oct): the money and
+  credits first (with what each model cost by week, a fold on the Money card), then goals and
+  their notes, then projects and their loops, with the routines among them as a kind of project
+  (still their own record, ADR 0107; the ones switched off fold away, and adding one is at the
+  foot of the Projects card); after those, the team board (a line a member: name, model, what it
+  is doing, today's money; the rest on a tap) and hiring, what the team may do on the home lab, what the
   team knows — the world's pages and the house — and the office with its games), **Health** (how
   the team and the lab are doing: the Mac and its busy switch, the scorecard and outcomes, the
   turns that failed with a link to the Home lab, and the live activity). The office animation

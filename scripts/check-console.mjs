@@ -662,9 +662,11 @@ if (failures.length) {
             { brain: "claude-haiku-5-5", trend: "down", now: { turns: 88, spent: 530000, per_turn: 6022, share: 6 }, before: { turns: 34, spent: 200000, per_turn: 5882, share: 22 } },
             { brain: "local", trend: "up", now: { turns: 60, spent: 0, per_turn: 0, share: 0 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } },
             { brain: "mac", trend: "down", now: { turns: 0, spent: 0, per_turn: null, share: 0 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } }] } },
-      routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
+      // Routines (ADR 0107): one on, in the lab goal's project; one off, under a goal that is
+      // not listed (it still shows, once the ones that are off are unfolded).
+      routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", goal: 1, assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
-                 { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
+                 { id: 4, title: "<b>Tidy</b>", rhythm: "every day", goal: 99, assignee: 2, enabled: false,
                    on_lab_trouble: false, last_fired_at: 1, last_task: 7, last_task_open: true }] };`, context);
   // The activity log reads like the office's own: who, which task, why, and what it cost.
   runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
@@ -701,6 +703,34 @@ if (failures.length) {
   // The world's sections and their buttons are read with the house page open (Knowledge lists
   // its pages first since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house";', context);
+  // Routines join Projects (the owner's notes of 31 Oct): no card of their own; each is a row of
+  // the Projects card in its goal's group, marked as a routine, after that goal's projects. The
+  // ones that are off fold away behind "Show the N that are off". Routines stay their own
+  // record (ADR 0107; ADR 0142 does not fold them into loops), so only the showing changed.
+  {
+    const manage = () => runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('role="tabpanel"')[0];
+    const projectsCard = (html) => html.split("<h2>Projects</h2>")[1].split("</section>")[0];
+    const shut = manage();
+    if (shut.includes("<h2>Routines</h2>")) fail("hq: routines still have a card of their own");
+    const card = projectsCard(shut);
+    if (!card.includes('data-act="hq:more:routine3:toggle"')) fail("hq: the routine that is on is not in the Projects card");
+    if (!/data-act="hq:more:routine3:toggle"><b>Check the home lab<\/b> <small>routine · /.test(card)) fail("hq: a routine's row is not marked as a routine");
+    if (card.indexOf('hq:more:proj3:toggle') > card.indexOf('hq:more:routine3:toggle')) fail("hq: a routine comes before its goal's projects");
+    if (card.includes("hq:more:routine4:toggle") || card.includes("Tidy")) fail("hq: a routine that is off shows at rest");
+    if (!card.includes('aria-expanded="false" data-act="hq:more:routinesoff:toggle">Show the 1 that is off</button>')) fail("hq: no \"Show the 1 that is off\" for the routines that are off");
+    if (!card.includes('data-act="hq:more:newroutine:toggle"')) fail("hq: adding a routine is not in the Projects card");
+    const keep = runInContext("JSON.stringify(HQ.more)", context);
+    runInContext("HQ.more.routinesoff = true; HQ.more.routine3 = true; HQ.more.routine4 = true;", context);
+    const opened = projectsCard(manage());
+    runInContext(`HQ.more = ${keep};`, context);
+    if (!opened.includes('aria-expanded="true" data-act="hq:more:routinesoff:toggle">Hide the 1 that is off</button>')) fail("hq: the routines that are off do not fold back");
+    if (!opened.includes("&lt;b&gt;Tidy&lt;/b&gt;</b> <small>routine · every day · Bo · off")) fail("hq: a routine that is off does not show once unfolded");
+    // Open, a routine's row keeps its controls: on or off, run now, and its schedule.
+    for (const said of ['data-act="hq:routine:3:off"', 'data-act="hq:routine:3:fire"', 'data-act="hq:routine:4:on"', 'data-act="hq:routine:4:fire"',
+      "every 6 hours · Ada · not run yet", "takes home-lab alarms", "in Upkeep"]) {
+      if (!opened.includes(said)) fail(`hq: an opened routine row does not show ${said}`);
+    }
+  }
   // Manage's projects and routines are one line each until tapped (the owner, 2026-10-25): shut,
   // a row says who, how it stands and its money, with no buttons; open, its buttons as before.
   {
@@ -711,7 +741,7 @@ if (failures.length) {
     if (!shut.includes('data-act="hq:more:goal1:toggle"') || shut.includes('data-act="hq:more:edit1:toggle"')) fail("hq: a goal is not a row to open");
   }
   // Everything opened, the folds of the density change (2026-10-30) included.
-  runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, goal1: true, goal2: true, goal3: true,
+  runInContext(`HQ.more = { proj1: true, proj2: true, proj3: true, routine3: true, routine4: true, routinesoff: true, goal1: true, goal2: true, goal3: true,
       newproject: true, newroutine: true, hire: true, knows: true, office: true, holodeck: true };
     for (let i = 0; i < 8; i++) { HQ.more["measure" + i] = true; HQ.more["outcome" + i] = true; }
     for (const d of (HQ.snap.digest || []).concat(HQ.snap.desk || [])) { HQ.more["digest" + d.id] = true; HQ.more["desk" + d.id] = true; }
@@ -1048,7 +1078,7 @@ if (failures.length) {
   }
   if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
-  if (!office.includes("on furlough · ")) fail("hq: the roster does not say who is on furlough");
+  if (!office.includes("Haiku · on furlough</small>")) fail("hq: the roster does not say who is on furlough");
   // The Office card (ADR 0119, 0142): the floor and its games; the team no longer changes the
   // floor, so there is nothing to veto, undo or reset.
   for (const said of ["<h2>Office</h2>", "7 things on the floor"]) {
@@ -1088,7 +1118,7 @@ if (failures.length) {
   runInContext('HQ.selected = { type: "task", id: 7 };', context);
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
   for (const said of ["every 6 hours", "not run yet", "takes home-lab alarms", 'id="hq-routine-title"', 'id="hq-routine-hours"', 'id="hq-routine-who"']) {
-    if (!office.includes(said)) fail(`hq: the routines card does not show ${said}`);
+    if (!office.includes(said)) fail(`hq: the Projects card's routines do not show ${said}`);
   }
   if (office.includes("<b>Tidy</b>")) fail("hq: a routine's title became markup");
   // What each member thinks with (ADR 0109): only the brains HQ lists for its role, the one it
@@ -1187,25 +1217,40 @@ if (failures.length) {
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.
   if (office.includes("<i>Dee</i>") || !office.includes("&lt;i&gt;Dee&lt;/i&gt;")) fail("hq: a member's name became markup");
-  // The Team card is an org chart (the owner, on a phone: "can't tell the teams"): the board
-  // and the CEO with whoever has no lead above them, then a group per lead, the lead first;
-  // one line per member, its controls closed until the line is tapped.
+  // The team board takes a line a member (the owner's notes of 31 Oct): no groups and no
+  // headings (ADR 0142: no roles, no reporting lines), and each line says only the name, the
+  // model, what it is doing now and today's money, kept to one line by the stylesheet; the
+  // rest of the member's card (its role, both brains, its budget, its controls) on a tap.
   {
     const roster = runInContext("HQ.roster = {}; hqRoster(HQ.snap)", context);
-    const at = (said) => roster.indexOf(said);
-    for (const said of ["<h3>Board: you</h3>", "<h3>Ops · Ada</h3>", "<h3>Engineering · Kit</h3>", "<b>Mara</b>", "<b>&lt;i&gt;Dee&lt;/i&gt;</b>",
-      // One line each: role, what it is doing and its money; its brains are in the opened line.
-      "Tester · between turns · costs nothing", "lead · between turns · $0.00 today of $0.58",
-      "developer · on #9 · $0.00 today of $0.00", "CEO · "]) {
-      if (at(said) < 0) fail(`hq: the roster does not show ${said}`);
+    if (/<h3|hq-group/.test(roster)) fail("hq: the team board still has groups or headings");
+    const lines = roster.match(/<li class="hq-member">[\s\S]*?<\/li>/g) || [];
+    const members = runInContext("HQ.snap.members.length", context);
+    if (lines.length !== members) fail(`hq: the team board has ${lines.length} lines for ${members} members`);
+    for (const l of lines) if ((l.match(/<button/g) || []).length !== 1) fail(`hq: a shut member line is more than one button: ${l}`);
+    const lineOf = (name) => lines.find((l) => l.includes(`<b>${name}</b>`)) || "";
+    for (const [name, said] of [["Ada", ["Sonnet · between turns", "$0.00 today"]], ["Bo", ["Local · on #7", "costs nothing"]],
+      ["Mara", ["Opus · between turns", "$0.00 today"]], ["&lt;i&gt;Dee&lt;/i&gt;", ["Local · between turns", "costs nothing"]],
+      ["Rae", ["Haiku · on #9", "$0.00 today"]], ["Zed", ["Haiku · on furlough", "$0.00 today"]]]) {
+      const l = lineOf(name);
+      if (!l) fail(`hq: the team board has no line for ${name}`);
+      for (const s of said) if (!l.includes(s)) fail(`hq: ${name}'s line does not say ${s}: ${l}`);
+      // Name, model and doing, then the money: in that order.
+      if (!(l.indexOf(`<b>${name}</b>`) < l.indexOf(said[0]) && l.indexOf(said[0]) < l.indexOf(said[1]))) fail(`hq: ${name}'s line is not name, model, doing, money`);
     }
-    if (roster.includes('<span class="hq-tag">Sonnet</span>')) fail("hq: a member's brains are on its shut line");
-    const openedLine = runInContext("HQ.roster = { 6: true }; const html = hqRoster(HQ.snap); HQ.roster = {}; html", context);
+    // The role, the day's allowance and the brains wait for the tap.
+    for (const shut of ["Tester", "CEO", "lead ·", "developer", "of $0.58", '<span class="hq-tag">Sonnet</span>']) {
+      if (roster.includes(shut)) fail(`hq: "${shut}" is on the team board's shut lines`);
+    }
+    const openedLine = runInContext("HQ.roster = { 6: true, 4: true }; const html = hqRoster(HQ.snap); HQ.roster = {}; html", context);
     if (!openedLine.includes('<span class="hq-tag">Sonnet</span>')) fail("hq: a member's brains are not in its opened line");
+    if (!openedLine.includes("Tester")) fail("hq: a member's role is not in its opened line");
     if (roster.includes("<i>Dee</i>")) fail("hq: a member's name became markup on the roster");
-    if (!(at("Board: you") < at("<b>Mara</b>") && at("<b>Mara</b>") < at("<b>Cy</b>") && at("<b>Cy</b>") < at("Ops · Ada"))) fail("hq: the CEO and those with no lead are not under the board");
-    if (!(at("Ops · Ada") < at("<b>Ada</b>") && at("<b>Ada</b>") < at("<b>Bo</b>") && at("<b>Bo</b>") < at("Engineering · Kit"))) fail("hq: Ada's team is not Ada, then Bo");
-    if (!(at("Engineering · Kit") < at("<b>Kit</b>") && at("<b>Kit</b>") < at("<b>Rae</b>"))) fail("hq: the wing's team is not Kit, then Rae");
+    // One line, by the stylesheet: the line does not wrap, and what is doing gives way first.
+    const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+    const rule = (sel) => (css.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{([^}]*)\\}")) || [])[1] || "";
+    if (!/white-space:\s*nowrap/.test(rule(".hq-board .hq-line"))) fail("hq: the team board's line may wrap");
+    if (!/text-overflow:\s*ellipsis/.test(rule(".hq-board .hq-line small"))) fail("hq: the team board's line does not cut what it is doing short");
     for (const id of [1, 2, 3, 4, 5, 6, 7]) {
       if (!roster.includes(`aria-expanded="false" data-act="hq:roster:${id}:toggle"`)) fail(`hq: member ${id}'s line does not open its controls`);
     }
@@ -1269,7 +1314,7 @@ if (failures.length) {
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
-    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("developer · between turns · costs nothing")) fail("mac: a Mac member's roster line is wrong");
+    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("Mac · between turns</small> <span>costs nothing")) fail("mac: a Mac member's roster line is wrong");
     if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac member's opened line does not say Mac");
     // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
     // turn that waits says what for; the top bar counts the turns waiting for budget.
@@ -1741,21 +1786,33 @@ if (failures.length) {
     const above = density(tabs.split('role="tablist"')[0] + tabs.split('class="hq-stage"')[1].split('role="tabpanel"')[0]);
     console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
     // Before the regrouping (2026-10-29, this snapshot): Now 51 buttons and 97 rows, Team 15 and
-    // 29, Work 15 and 22, Manage 13 and 25.
-    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 36 }, health: { buttons: 15, rows: 37 } };
+    // 29, Work 15 and 22, Manage 13 and 25. Manage went from 36 rows to 32 (and its three team
+    // headings to none) with the one-line team board and routines in Projects (31 Oct).
+    const MOST_ON_A_TAB = { work: { buttons: 30, rows: 45 }, manage: { buttons: 26, rows: 32 }, health: { buttons: 15, rows: 37 } };
     for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
       const d = density(panelOf(tabs, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
       if (d.sections > MOST_SECTIONS_ON_ONE_SCREEN) fail(`hq: the ${id} tab stacks ${d.sections} sections (budget ${MOST_SECTIONS_ON_ONE_SCREEN})`);
     }
     const where = { work: ["Your desk", "hq:decide:11:approve", "<h2>While you were away", "<h2>In flight", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
-      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team",
+      manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team",
         "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
         // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
         "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
       health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"', "<h2>Activity</h2>", 'id="hq-log-end"'] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
+    }
+    // Manage's order (the owner's notes of 31 Oct): the money first, then the goals, then the
+    // projects (with their routines); everything else after them.
+    {
+      const manage = panelOf(tabs, "manage");
+      const cards = [...manage.matchAll(/<h2>([^<]*)/g)].map((m) => m[1].trim());
+      if (cards.slice(0, 3).join(" | ") !== "Money | Goals | Projects") fail(`hq: Manage does not open on Money, Goals, Projects: ${cards.join(" | ")}`);
+      const projectsEnd = manage.indexOf("</section>", manage.indexOf("<h2>Projects</h2>"));
+      for (const after of ["<h2>Team</h2>", "<h2>What the team may do on the home lab</h2>", "hq:more:knows:toggle", "hq:more:office:toggle"]) {
+        if (manage.indexOf(after) < projectsEnd) fail(`hq: "${after}" comes before Manage's money, goals and projects`);
+      }
     }
     const work = panelOf(tabs, "work");
     if (work.indexOf("Your desk") > work.indexOf("<h2>In flight")) fail("hq: Work does not put the desk before the work in flight");
@@ -1780,7 +1837,7 @@ if (failures.length) {
         "hq:routine:new:add", "hq:stop", "hq:work", "hq:world:edit:open-0", "hq:world:edit:open-1", "hq:world:export:md", "hq:world:page:all", "hq:world:paste:show",
         "hq:world:writing:toggle"];
       const keep = runInContext("JSON.stringify(HQ.more)", context);
-      runInContext(`Object.assign(HQ.more, { newproject: true, newroutine: true, hire: true, knows: true, office: true, holodeck: true });
+      runInContext(`Object.assign(HQ.more, { newproject: true, newroutine: true, routinesoff: true, hire: true, knows: true, office: true, holodeck: true });
         for (const d of HQ.snap.desk.concat(HQ.snap.digest || [])) { HQ.more["desk" + d.id] = true; HQ.more["digest" + d.id] = true; }`, context);
       const opened = shown();
       runInContext(`HQ.more = ${keep};`, context);
