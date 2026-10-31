@@ -644,6 +644,20 @@ done. Defects are numbered so the next round's changes can name them.
 - [ ] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
   948: Rae's turns ended at the budget without keeping work in progress (D12's fix), and the item
   moved only once it reached Ada. Check why the worker kept no work on these turns.
+- [ ] **D19. A Claude reviewer never had its verdict tool.** Round 3, 947: Mara (Opus) put the
+  work in review at 21:10 UTC; Ada (Haiku) reviewed it four times, approving each, and every
+  verdict went to `set_status`, refused ("this task is not yours", then a `d86` citation). Her
+  turns listed `review` under "held back": the worker loads a fixed list on Claude and left the
+  rest to Anthropic's tool search, honouring HQ's up-front mark only on the house models' path.
+  She never searched. Every review by a member on Claude this round was exposed to it. *Fixed on
+  `codex/agent-collaboration` (`app/worker/src/turn.rs`, test
+  `a_claude_turn_loads_what_hq_marks_for_its_kind`); the worker has no scenario suite, so its
+  end-to-end test stands for one. Not released: a mid-round release is the owner's call.*
+- [ ] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
+  to Sonnet.** Ada read 400–460 KB over 6–7 calls a turn (mostly `image_tags` and the
+  checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
+  it in 10 turns for $0.94 (22:02–22:20 UTC), of the task's $1.38. The cap on results a turn
+  reads, or a smaller `image_tags` answer, would keep it at Haiku's price. Related to D12 and D17.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
