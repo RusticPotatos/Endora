@@ -242,7 +242,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); the member one rank up re-checks it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
+            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); another member re-checks it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done" }, "successor": { "type": "integer", "description": "for superseded: the task carrying the work on" } }),
             &["task", "status", "reason"]
         ),
@@ -288,7 +288,7 @@ fn review_tool() -> Value {
     let task = json!({ "type": "integer", "description": "the task's number" });
     json!({
         "name": "review",
-        "description": "Your verdict on work in review, one rank up, once your own readings confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of yours this turn; send_back returns it with exactly what does not hold, and is a finished review too. Never your own work.",
+        "description": "Your verdict on another member's work in review, once your own readings confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of yours this turn; send_back returns it with exactly what does not hold, and is a finished review too. Never your own work.",
         "inputSchema": { "type": "object", "properties": { "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "reason": reason_schema(), "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }, "required": ["task", "verdict", "notes"] },
     })
 }

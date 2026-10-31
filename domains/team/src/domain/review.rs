@@ -77,7 +77,7 @@ pub fn reviewer_among(worker: MemberId, rank: u8, members: &[(MemberId, u8)]) ->
 }
 
 /// What the reviewer is told when work is put before it.
-pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. Take your own \
+pub const REVIEW_WORK: &str = "You review another member's work: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
     is real and still true. For a branch of the wing's, your own reading is the branch itself: \
     check it out (repo_checkout, with its name, hq/task-N-<slug>, as the thread gives it), look \
@@ -488,7 +488,7 @@ mod tests {
         // What the home lab's reviews already said stays.
         assert!(
             REVIEW_WORK.starts_with(
-                "You review it one rank up: re-check it yourself. Take your own readings \
+                "You review another member's work: re-check it yourself. Take your own readings \
                  (homelab_status, container_logs, the queues)"
             ) && REVIEW_WORK.ends_with("Send back any problem that no tool shows causing harm."),
             "{REVIEW_WORK}"

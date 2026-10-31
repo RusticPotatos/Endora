@@ -700,7 +700,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             &[
                 "in_review",
                 "a reading this turn",
-                "one rank up re-checks it",
+                "another member re-checks it",
                 "close as done yourself",
                 "met_criteria",
                 "superseded",

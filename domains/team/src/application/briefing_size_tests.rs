@@ -467,7 +467,7 @@ fn a_review_turn_is_told_the_criteria_the_branch_the_checks_and_the_handover() {
         "1. gluetun is running and healthy",
         "2. roles/gluetun/README.md lists every default with its value",
         "Bo asks for your review.",
-        "You review it one rank up",
+        "You review another member's work",
         // The worker's handover: what it says it did, on what.
         "Fixed: the provider is set and the health check is on.",
         "r1 container_logs gluetun (ok): AUTH_FAILED from the provider",

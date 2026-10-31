@@ -25,7 +25,7 @@ pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fo
     dev node; the result comes back as a receipt. The fork's develop already has findings, so \
     the check judges your branch against develop: it passes when no check is worse than it \
     is on develop, and the receipt says both. Then submit the task for review (set_status \
-    in_review, citing the receipts): the member one rank up reads the diff and the check, and \
+    in_review, citing the receipts): another member reads the diff and the check, and \
     passes it or sends it back. The owner alone pushes a passed branch to the fork and merges \
     it there: HQ never pushes on its own, never opens a pull request, never merges. One branch \
     per item; read the fork's docs (ansible_nas_doc) before changing a role.";
