@@ -101,6 +101,21 @@ pub struct Setup {
     pub effort: Option<String>,
     /// Whether Claude Code takes the turn (ADR 0117), started by the worker in the workbench.
     pub claude_code: bool,
+    /// A long log, diff or listing past this many bytes is read through a gist (ADR 0142,
+    /// amended 2026-10-30); `None` reads every result whole. See [`gist_past_for`].
+    pub gist_past: Option<usize>,
+}
+
+/// Whether a turn of this kind reads long results through a gist, and past what size: a house
+/// turn does, past [`crate::gist::GIST_PAST`]; a Claude turn reads every result whole, its
+/// prompt cached (a gist would change the prefix every later round reads from the cache) and
+/// read fast.
+#[must_use]
+pub const fn gist_past_for(api: Api) -> Option<usize> {
+    match api {
+        Api::OpenAi => Some(crate::gist::GIST_PAST),
+        Api::Anthropic => None,
+    }
 }
 
 /// The efforts Claude may be asked for, least first.
@@ -243,6 +258,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
+    // The turn's task as a gist call is told it (ADR 0142, amended 2026-10-30).
+    let task_told = crate::gist::task_of_turn(&briefing);
     let Opening {
         mut talk,
         mut deferred,
@@ -329,6 +346,20 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         call,
                     )?,
                 };
+                // A long log, diff or listing is read first in a side call, and the model reads
+                // its gist; the conversation, which HQ keeps, holds the raw result.
+                if !reply.refused && !reply.asked && !reply.moved_on {
+                    let words = said.text.trim();
+                    let looked = Looked {
+                        task: &task_told,
+                        words,
+                        call,
+                        raw: &reply.text,
+                    };
+                    if let Some(gist) = gisted(&model, setup, &looked, &mut read) {
+                        talk.gist(&call.id, gist);
+                    }
+                }
                 let ended = if reply.asked {
                     Some(Taken::AskedTheOwner)
                 } else if reply.moved_on {
@@ -361,6 +392,58 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     // node scrubs it of secrets on the way.
     node.tell_conversation("worker", &talk.as_text());
     taken
+}
+
+/// A result a gist call may read: the turn's task as it is told, what the model said before
+/// its call, the call, and what it came to.
+struct Looked<'a> {
+    task: &'a str,
+    words: &'a str,
+    call: &'a Call,
+    raw: &'a str,
+}
+
+/// What the model reads of a long log, diff or listing on a house turn (ADR 0142, amended
+/// 2026-10-30): its gist, its quotes checked, and how to read it whole; `None` reads the raw
+/// result, as when it is not one, is short, was asked for whole, or the gist call would take
+/// the turn past its prompt budget, fails, times out or keeps nothing. The gist call's body is
+/// counted in what the turn has `read`, as every call's is.
+fn gisted(
+    model: &Model<'_>,
+    setup: &Setup,
+    looked: &Looked<'_>,
+    read: &mut usize,
+) -> Option<String> {
+    let tool = looked.call.name.as_str();
+    let args = arguments(&looked.call.arguments).ok()?;
+    if !crate::gist::qualifies(tool, &args, looked.raw, setup.gist_past) {
+        return None;
+    }
+    let body = crate::gist::ask(
+        &setup.model,
+        looked.task,
+        looked.words,
+        tool,
+        &args,
+        looked.raw,
+    );
+    let size = body.to_string().len();
+    if !has_room(1, *read, size, setup.prompt_budget) {
+        return None;
+    }
+    *read += size;
+    let answer = match model.gist(&body, crate::gist::gist_within(looked.raw.len())) {
+        Ok(answer) => answer,
+        Err(Stopped::Over(why) | Stopped::Failed(why)) => {
+            eprintln!(
+                "worker: {tool} read whole, its gist failed: {}",
+                quiet(&why, &setup.token)
+            );
+            return None;
+        }
+    };
+    let kept = crate::gist::kept(&answer, looked.raw)?;
+    Some(crate::gist::read_as(&kept, tool, &args, looked.raw))
 }
 
 /// The node's container tools, in the order the instructions name them.
@@ -1100,6 +1183,10 @@ struct Talk {
     /// The results cut, by call id: what the model reads in their place from now on. The
     /// conversation itself, which HQ keeps, stays whole.
     cut: std::collections::HashMap<String, String>,
+    /// The results read through a gist, by call id: what the model reads in their place while
+    /// they are read whole, until they are cut. The conversation itself, which HQ keeps, holds
+    /// the raw result.
+    gists: std::collections::HashMap<String, String>,
 }
 
 /// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
@@ -1126,6 +1213,7 @@ impl Talk {
                 effort: None,
                 keep_whole: Some(HOUSE_KEEPS_WHOLE),
                 cut: std::collections::HashMap::new(),
+                gists: std::collections::HashMap::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1135,6 +1223,7 @@ impl Talk {
                 effort: None,
                 keep_whole: None,
                 cut: std::collections::HashMap::new(),
+                gists: std::collections::HashMap::new(),
             },
         }
     }
@@ -1253,20 +1342,30 @@ impl Talk {
         (tool, args)
     }
 
-    /// The conversation as the model reads it next: each result cut read as its stub.
+    /// The result of the call `id` is read through `gist` until it is cut (ADR 0142, amended
+    /// 2026-10-30). The conversation keeps the raw result.
+    fn gist(&mut self, id: &Value, gist: String) {
+        if let Some(id) = id.as_str() {
+            self.gists.insert(id.to_owned(), gist);
+        }
+    }
+
+    /// The conversation as the model reads it next: each result cut read as its stub, and each
+    /// read through a gist, not yet cut, as its gist.
     fn as_read(&self) -> Vec<Value> {
-        if self.cut.is_empty() {
+        if self.cut.is_empty() && self.gists.is_empty() {
             return self.messages.clone();
         }
         self.messages
             .iter()
             .map(|m| {
-                let stub = m["tool_call_id"].as_str().and_then(|id| self.cut.get(id));
-                let Some(stub) = stub else {
+                let id = m["tool_call_id"].as_str();
+                let read = id.and_then(|id| self.cut.get(id).or_else(|| self.gists.get(id)));
+                let Some(read) = read else {
                     return m.clone();
                 };
                 let mut m = m.clone();
-                m["content"] = json!(stub);
+                m["content"] = json!(read);
                 m
             })
             .collect()
@@ -1417,6 +1516,9 @@ pub(crate) fn run(
         args
     };
     let key = format!("{tool} {args}");
+    // Asking for a result whole is the worker's to read, never HQ's or the node's: the call is
+    // its own (`raw` is in its key), and is sent without it.
+    let args = crate::gist::without_raw(tool, args);
     if let Some(said) = answered.given.remove(&key) {
         answered.said.insert(key.clone(), said.clone());
         answered.last = Some(key);
@@ -2154,6 +2256,31 @@ impl<'a> Model<'a> {
         }
     }
 
+    /// The gist call (ADR 0142, amended 2026-10-30): `body` to the same relay, the same brain
+    /// and the same token, so the relay charges it to the turn as it does every call, and its
+    /// words back, within `within`. A reply cut at its limit, or with no words, is a failed one.
+    fn gist(&self, body: &Value, within: Duration) -> Result<String, Stopped> {
+        let request = self
+            .agent
+            .post(&self.url)
+            .header("authorization", &format!("Bearer {}", self.token))
+            .config()
+            .timeout_global(Some(within))
+            .build();
+        let reply = read("the model relay", request.send_json(body))?;
+        let choice = &reply["choices"][0];
+        if choice["finish_reason"] == "length" {
+            return Err(Stopped::Failed(
+                "the gist reached its token limit".to_owned(),
+            ));
+        }
+        choice["message"]["content"]
+            .as_str()
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| Stopped::Failed("the gist call said nothing".to_owned()))
+    }
+
     /// One round: the conversation so far, and what the model said back.
     fn ask(&self, talk: &Talk) -> Result<Said, Stopped> {
         let mut request = self
@@ -2699,8 +2826,14 @@ mod tests {
         whole_results.keep_whole = None;
         let opening_whole = whole_results.clone();
         let opening_stubbed = talk.clone();
-        let before = ten_calls_on_the_lab(whole_results);
-        let after = ten_calls_on_the_lab(talk);
+        let gisted_ten = ten_calls_on_the_lab(talk.clone(), Some(crate::gist::GIST_PAST));
+        let before = ten_calls_on_the_lab(whole_results, None);
+        let after = ten_calls_on_the_lab(talk, None);
+        eprintln!(
+            "task turn, ten calls, long results read through a gist: {gisted_ten} bytes (~{} tokens)",
+            gisted_ten / 4
+        );
+        assert!(gisted_ten < after, "{gisted_ten} of {after}");
         eprintln!(
             "task turn, ten calls: {before} bytes (~{} tokens) with every result whole, {after} \
              (~{} tokens) with old ones stubbed",
@@ -2743,7 +2876,7 @@ mod tests {
             ("house", &opening_stubbed, HOUSE_PROMPT_BUDGET),
             ("Claude", &opening_whole, CLAUDE_PROMPT_BUDGET),
         ] {
-            let (whole, passes) = long_turn_on_the_lab(opening, budget);
+            let Turned { whole, passes, .. } = long_turn_on_the_lab(opening, budget, None);
             let largest = passes.iter().max().copied().unwrap_or(0);
             eprintln!(
                 "long work turn, twelve calls, {kind}: {whole} bytes (~{} tokens) as one turn; \
@@ -2760,6 +2893,55 @@ mod tests {
             );
             assert!(largest < whole, "{kind}");
         }
+
+        // Read in a side context, keep the conclusion (ADR 0142, amended 2026-10-30): the same
+        // twelve-call turn on a house model with long logs, diffs and listings read through a
+        // gist, at sizes past which to gist. The Mac's time, as measured on 28 Oct: prompts read
+        // at about 100 tokens a second, words written at about 14 (11 to 17), four bytes a
+        // token; a gist call's thinking (the team's turns always think, ADR 0105) is unknown,
+        // so reckoned at none and at 300 tokens.
+        let mac =
+            |t: &Turned, thinking: usize| t.whole / 400 + (t.written / 4 + t.gists * thinking) / 14;
+        let plain = long_turn_on_the_lab(&opening_stubbed, usize::MAX, None);
+        eprintln!(
+            "long work turn, twelve calls, house, no gist: {} bytes (~{} tokens), Mac ~{} s",
+            plain.whole,
+            plain.whole / 4,
+            mac(&plain, 0)
+        );
+        for past in [2_048, 4_096, 6_144, 8_192, crate::gist::GIST_PAST, 12_288] {
+            let t = long_turn_on_the_lab(&opening_stubbed, usize::MAX, Some(past));
+            let passes = long_turn_on_the_lab(&opening_stubbed, HOUSE_PROMPT_BUDGET, Some(past));
+            eprintln!(
+                "  gist past {past}: {} bytes (~{} tokens) with {} gist calls writing {} bytes; \
+                 Mac ~{} s (thinking 0) or ~{} s (thinking 300); passes {:?}",
+                t.whole,
+                t.whole / 4,
+                t.gists,
+                t.written,
+                mac(&t, 0),
+                mac(&t, 300),
+                passes.passes
+            );
+        }
+        let gisted =
+            long_turn_on_the_lab(&opening_stubbed, usize::MAX, Some(crate::gist::GIST_PAST));
+        let passes = long_turn_on_the_lab(
+            &opening_stubbed,
+            HOUSE_PROMPT_BUDGET,
+            Some(crate::gist::GIST_PAST),
+        );
+        // At the size chosen, the gist calls save more reading than they cost the Mac, even
+        // thinking 300 tokens each, and the turn reads less in all.
+        assert!(gisted.gists > 0, "the diff and the long log are gisted");
+        assert!(
+            gisted.whole < plain.whole,
+            "{} of {}",
+            gisted.whole,
+            plain.whole
+        );
+        assert!(mac(&gisted, 300) < mac(&plain, 0), "the Mac's time");
+        assert!(passes.passes.iter().all(|p| *p <= HOUSE_PROMPT_BUDGET));
     }
 
     /// The lab's ten calls and then its first two again, each round's arguments its own: a work
@@ -2767,7 +2949,7 @@ mod tests {
     /// Returns what it reads in all as one turn, and what each pass reads when a pass ends once
     /// its next call would take it past `budget` and the next starts from `opening` with a
     /// handover of the largest size (2,000 characters) added to its briefing.
-    fn long_turn_on_the_lab(opening: &Talk, budget: usize) -> (usize, Vec<usize>) {
+    fn long_turn_on_the_lab(opening: &Talk, budget: usize, past: Option<usize>) -> Turned {
         let calls: Vec<(&str, Value, String)> = (0..2)
             .flat_map(|k| {
                 lab_calls().into_iter().map(move |(tool, mut args, text)| {
@@ -2779,8 +2961,16 @@ mod tests {
             .collect();
         let mut talk = opening.clone();
         let mut whole = talk.body("local").to_string().len();
+        let (mut gists, mut written) = (0, 0);
         for (i, (tool, args, text)) in calls.iter().enumerate() {
             round(&mut talk, &format!("c{i}"), tool, args, text);
+            if let Some((asked, wrote)) =
+                gist_of(&mut talk, &format!("c{i}"), tool, args, text, past)
+            {
+                whole += asked;
+                gists += 1;
+                written += wrote;
+            }
             whole += talk.body("local").to_string().len();
         }
         let fresh = || {
@@ -2812,19 +3002,83 @@ mod tests {
                 break;
             };
             round(&mut talk, &format!("c{i}"), tool, args, text);
+            let mut gisted = talk.clone();
+            if let Some((asked, _)) = gist_of(&mut gisted, &format!("c{i}"), tool, args, text, past)
+            {
+                // The worker reads the raw result when the gist call would not fit.
+                if has_room(rounds, read, asked, budget) {
+                    read += asked;
+                    talk = gisted;
+                }
+            }
             i += 1;
         }
         passes.push(read);
-        (whole, passes)
+        Turned {
+            whole,
+            passes,
+            gists,
+            written,
+        }
+    }
+
+    /// What a long turn reads: in all as one turn, and by pass; and how many gist calls it made
+    /// as one turn and how many bytes they wrote.
+    struct Turned {
+        whole: usize,
+        passes: Vec<usize>,
+        gists: usize,
+        written: usize,
+    }
+
+    /// Reads the result of the call `id` through a gist when it qualifies past `past`, as the
+    /// worker does, the gist call answering as a careful model would: a sentence, then the
+    /// first four lines that say something went wrong (or the first four), quoted exactly.
+    /// Returns the gist call's bytes and the bytes it wrote.
+    fn gist_of(
+        talk: &mut Talk,
+        id: &str,
+        tool: &str,
+        args: &Value,
+        raw: &str,
+        past: Option<usize>,
+    ) -> Option<(usize, usize)> {
+        if !crate::gist::qualifies(tool, args, raw, past) {
+            return None;
+        }
+        let briefing = talk.messages[1]["content"].as_str().unwrap_or("");
+        let task = crate::gist::task_of_turn(briefing);
+        let body = crate::gist::ask("local", &task, "Looking into it.", tool, args, raw);
+        let lines: Vec<&str> = raw.lines().skip(1).collect();
+        let telling: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.contains("Error") || l.starts_with('+'))
+            .chain(lines.iter())
+            .take(4)
+            .copied()
+            .collect();
+        let answer = format!(
+            "What this shows for the task: the same thing again and again, the lines below              being the ones to act on.\n{}",
+            telling
+                .iter()
+                .map(|l| format!("> {}", l.trim()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let kept = crate::gist::kept(&answer, raw)?;
+        talk.gist(&json!(id), crate::gist::read_as(&kept, tool, args, raw));
+        Some((body.to_string().len(), answer.len()))
     }
 
     /// The bytes of every call of a ten-call turn on an unhealthy container, after its first:
     /// the lab's status, its logs (a house model's 40 lines, and the 100 asked for), the
     /// standards, the branch's diff, a restart, then a word in the thread.
-    fn ten_calls_on_the_lab(mut talk: Talk) -> usize {
+    /// Results past `past` are read through a gist, its call counted.
+    fn ten_calls_on_the_lab(mut talk: Talk, past: Option<usize>) -> usize {
         let mut read = 0;
         for (i, (tool, args, text)) in lab_calls().iter().enumerate() {
             round(&mut talk, &format!("c{i}"), tool, args, text);
+            read += gist_of(&mut talk, &format!("c{i}"), tool, args, text, past).map_or(0, |g| g.0);
             read += talk.body("local").to_string().len();
         }
         read
@@ -3243,6 +3497,31 @@ mod tests {
         assert_eq!(&what_is_read(&talk)[0], stub);
         // What HQ keeps of the conversation is whole.
         assert!(talk.as_text().contains("12:00:39Z sonarr[Error]"));
+    }
+
+    /// A result read through a gist (ADR 0142, amended 2026-10-30) is read as its gist while it
+    /// is among the newest, then as its stub like any old result; the conversation HQ keeps
+    /// holds it raw throughout.
+    #[test]
+    fn a_gisted_result_is_read_as_its_gist_then_its_stub_and_kept_raw() {
+        let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
+        let logs = a_log("sonarr", 100, 41);
+        let sonarr = json!({ "container": "sonarr" });
+        round(&mut talk, "c0", "container_logs", &sonarr, &logs);
+        talk.gist(&json!("c0"), "[The gist] Sonarr cannot write.".to_owned());
+        assert_eq!(what_is_read(&talk), ["[The gist] Sonarr cannot write."]);
+        for i in 1..4 {
+            round(
+                &mut talk,
+                &format!("c{i}"),
+                "post",
+                &json!({ "i": i }),
+                "Posted.",
+            );
+        }
+        let read = what_is_read(&talk);
+        assert!(read[0].starts_with("[An older result, cut"), "{}", read[0]);
+        assert!(talk.as_text().contains(&logs), "the raw log kept");
     }
 
     #[test]

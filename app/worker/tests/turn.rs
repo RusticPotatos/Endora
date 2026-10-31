@@ -2566,3 +2566,250 @@ fn a_local_turn_with_few_tools_is_offered_them_all() {
     assert!(!tools.contains("find_tools"), "{tools}");
     assert!(tools.contains("restart_container"), "{tools}");
 }
+
+/// A container's long log as the node gives it: 120 lines, then its receipt, about 13 KB.
+fn long_log() -> String {
+    let lines: Vec<String> = (0..120)
+        .map(|i| {
+            format!(
+                "2026-10-30T12:{:02}:{:02}Z sonarr[Error] Import failed for /data/tv/Show {i}/Season 1/episode {i}.mkv: permission denied (uid 1000)",
+                i / 60,
+                i % 60
+            )
+        })
+        .collect();
+    format!("{} (receipt r41)", lines.join("\n"))
+}
+
+/// The node, listing the lab's three contracts and answering `container_logs` with `log`.
+fn node_logging(log: String) -> (String, Seen) {
+    fake(Box::new(move |sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": contracts_that_say_what_they_are() }).to_string(),
+        ),
+        "/team-relay/contracts/container_logs" => (200, json!({ "text": log }).to_string()),
+        _ => (200, json!({}).to_string()),
+    }))
+}
+
+/// The model reading sonarr's log, saying why.
+fn reading_the_log(args: &str) -> Value {
+    let mut said = calls(&[("call_1", "container_logs", args)]);
+    said["choices"][0]["message"]["content"] = json!("Reading sonarr's log for the import error.");
+    said
+}
+
+/// What the model read of the result of its call `call_1`, in the relay call `n`.
+fn tool_result_in(to_model: &Seen, n: usize) -> String {
+    let sent = to_model.lock().unwrap();
+    sent[n].body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool" && m["tool_call_id"] == "call_1")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Read in a side context, keep the conclusion (ADR 0142, amended 2026-10-30): a long log on a
+/// house turn is read first by a one-shot call to the same relay, told the task and the raw
+/// log, and the turn reads its gist, every quote checked to be in the log, and how to read the
+/// log whole. HQ's transcript keeps the raw log.
+#[test]
+fn a_long_log_on_a_house_turn_is_read_through_a_checked_gist() {
+    let log = long_log();
+    let real = "2026-10-30T12:00:07Z sonarr[Error] Import failed for /data/tv/Show 7/Season 1/episode 7.mkv: permission denied (uid 1000)";
+    assert!(log.contains(real));
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node_logging(log.clone());
+    let (model_url, to_model) = model(vec![
+        (200, reading_the_log(r#"{"container": "sonarr"}"#)),
+        (
+            200,
+            says(&format!(
+                "<think>Every line is the same failure.</think>\nSonarr cannot write its imports: \
+                 every line is a permission error for uid 1000.\n> {real}\n\
+                 > 2026-10-30T13:00:00Z sonarr[Error] Disk full"
+            )),
+        ),
+        (200, says("Sonarr cannot write its imports.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent = to_model.lock().unwrap().clone();
+    assert_eq!(
+        sent.len(),
+        3,
+        "the turn's two calls and the gist's between them"
+    );
+    // The gist call: the task, what the model said, the call and the raw log; no tools.
+    let gist = &sent[1].body;
+    assert!(gist.get("tools").is_none(), "{gist}");
+    let asked = gist["messages"][1]["content"].as_str().unwrap();
+    for part in [
+        "Your task: Add a list of watches",
+        "Reading sonarr's log for the import error.",
+        "container_logs",
+        log.as_str(),
+    ] {
+        assert!(asked.contains(part), "{part}");
+    }
+    // The turn reads the gist, its real quote and not its made-up one, and the way back.
+    let read = tool_result_in(&to_model, 2);
+    assert!(read.contains("Sonarr cannot write its imports"), "{read}");
+    assert!(read.contains(&format!("> {real}")), "{read}");
+    assert!(!read.contains("Disk full"), "{read}");
+    assert!(!read.contains("think"), "{read}");
+    assert!(read.contains("(receipt r41)"), "{read}");
+    assert!(read.contains(r#""raw":true"#), "{read}");
+    assert!(
+        read.len() < 1_500,
+        "{} bytes read of {}",
+        read.len(),
+        log.len()
+    );
+    // HQ keeps the raw log.
+    let kept = to_node.lock().unwrap().clone();
+    let transcript = kept
+        .iter()
+        .find(|s| s.path == "/team-relay/transcript")
+        .expect("the conversation told");
+    let text = transcript.body["text"].as_str().unwrap();
+    assert!(
+        text.contains("2026-10-30T12:01:59Z sonarr[Error] Import failed for /data/tv/Show 119"),
+        "the raw log is kept"
+    );
+}
+
+/// A gist call that fails leaves the turn reading the raw result, as before.
+#[test]
+fn a_gist_call_that_fails_leaves_the_raw_result() {
+    let log = long_log();
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node_logging(log.clone());
+    let (model_url, to_model) = model(vec![
+        (200, reading_the_log(r#"{"container": "sonarr"}"#)),
+        (
+            503,
+            json!({ "error": { "message": "the Mac is busy", "type": "api_error" } }),
+        ),
+        (200, says("Sonarr cannot write its imports.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 3);
+    assert_eq!(tool_result_in(&to_model, 2), log);
+}
+
+/// Asked for whole, a result is read whole, with no gist call, and the node is never sent the
+/// worker's own argument.
+#[test]
+fn a_result_asked_for_raw_is_read_whole_without_a_gist() {
+    let log = long_log();
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node_logging(log.clone());
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            reading_the_log(r#"{"container": "sonarr", "raw": true}"#),
+        ),
+        (200, says("Sonarr cannot write its imports.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 2, "no gist call");
+    assert_eq!(tool_result_in(&to_model, 1), log);
+    let asked = to_node
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.path == "/team-relay/contracts/container_logs")
+        .map(|s| s.body.clone())
+        .unwrap();
+    assert_eq!(asked, json!({ "container": "sonarr" }));
+}
+
+/// The gist call is counted in the turn's prompt budget: with room for the first call and the
+/// gist's but not the next, the turn ends there, having read the two.
+#[test]
+fn the_gist_call_counts_in_the_turns_prompt_budget() {
+    let replies = || {
+        vec![
+            (200, reading_the_log(r#"{"container": "sonarr"}"#)),
+            (200, says("Sonarr cannot write its imports: uid 1000.")),
+            (200, says("Done.")),
+        ]
+    };
+    let log = long_log();
+    // Measured first, with room for everything.
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node_logging(log.clone());
+    let (model_url, to_model) = model(replies());
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sizes: Vec<usize> = to_model
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.body.to_string().len())
+        .collect();
+    assert_eq!(sizes.len(), 3, "{sizes:?}");
+    // Room for the first call and the next, but not for the gist's as well.
+    let budget = sizes[0] + sizes[1] + sizes[2] / 2;
+    assert!(
+        sizes[0] + sizes[2] <= budget,
+        "uncounted, it would fit: {sizes:?}"
+    );
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node_logging(log);
+    let (model_url, to_model) = model(replies());
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_PROMPT_BUDGET", budget.to_string()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap().len(),
+        2,
+        "the first call and the gist's"
+    );
+    let last = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(last["continues"], json!(true), "{last}");
+    let text = last["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!("({} bytes read", sizes[0] + sizes[1])),
+        "{text}"
+    );
+}
+
+/// A Claude turn reads every result whole, as before: its prompt is cached, and Claude reads
+/// fast.
+#[test]
+fn a_claude_turn_makes_no_gist_call() {
+    let log = long_log();
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node_logging(log.clone());
+    let (relay, to_relay) = model(vec![
+        (
+            200,
+            claude(
+                "Reading sonarr's log.",
+                &[(
+                    "toolu_1",
+                    "container_logs",
+                    json!({ "container": "sonarr" }),
+                )],
+            ),
+        ),
+        (200, claude("Sonarr cannot write its imports.", &[])),
+    ]);
+    let out = worker(&on_claude(&hq_url, &relay, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent = to_relay.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2, "no gist call");
+    assert!(
+        sent[1].body.to_string().contains("Show 119"),
+        "the log whole"
+    );
+}

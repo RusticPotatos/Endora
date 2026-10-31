@@ -342,3 +342,69 @@ item was about; a reviewer's carried the same, and the item's whole thread besid
   on the Mac 11,967 to 5,557 (about 2,990 to 1,390 tokens), held under 5,800, while now carrying
   the diff it had none of. A work turn of ten calls saves about 8,000 prompt tokens on this
   world, more as the world grows: what is cut grows with it, what is kept with the item.
+
+## Amended 2026-10-30: a long result is read in a side call, and its gist kept
+
+Ralph's other rule (Huntley; snarktank/ralph) is to read in a side context and keep only the
+conclusion. A house turn read a long log, diff or listing whole, and read it again on each of the
+next two calls before it became a stub (above): a 100-line log of 12 KB was read three times, about
+9,300 tokens, for the few lines that mattered to the task.
+
+- **A long result is read first by a side call.** On a house turn, a result of `container_logs`
+  (the lab's logs), `homelab_status` or `homelab_map` (its listings) or `read_document` (a branch's
+  diff, a check's report) longer than 10,240 bytes is sent, by the worker (`app/worker/src/gist.rs`),
+  in a one-shot call to the same relay and the same brain, with the turn's token: told the turn's
+  task (its line and description from the briefing, 600 characters at most), what the model said
+  before the call (300), the call and the raw result, with no tools, and asked for a gist of at
+  most 800 characters, the lines that matter quoted each on a line of its own after `> `. Prose the
+  model must follow whole (`read_doc`, `ansible_nas_doc`) is not gisted.
+- **Quotes are checked by code.** Each quoted line, and each span in backticks, must be an exact
+  part of the raw result; a line that quotes what the result does not hold is dropped, and the turn
+  is told how many were. The model's thinking is left out, and the gist is held to 800 characters
+  by whole lines (a quote is never cut).
+- **The turn reads the gist and the way back.** In the result's place it reads what the result
+  was (the call, its receipt, its size), the gist, and `To read it whole, call <tool> with
+  <its arguments and "raw": true>`. The worker takes `raw` off before the call goes to HQ or the
+  node, and a call asked for raw is never gisted. Once old, a gisted result is cut to its stub as
+  any result is.
+- **Never an enforcement boundary.** Nothing is decided on a gist; it only changes what the model
+  reads, and the model can always read the result whole. The raw result came from a tool the turn
+  was already allowed, so the side call sees nothing the turn could not.
+- **Failure reads the raw result.** A gist call that fails, is refused, times out, reaches its
+  1,024-token limit (thinking included: the team's turns always think, ADR 0105), keeps nothing, or
+  would not be shorter, leaves the turn reading the capped raw result, as before. It may take as
+  long as the reading it spares the Mac (the result read three times less its gist read three
+  times, at 400 bytes a second; 69 s at 10 KB, 115 s at 16 KB), at least 10 s.
+- **Counted.** The gist call's body is added to what the turn has read, against its prompt budget
+  (above); a gist call that would take the turn past it is not made, and the raw result is read.
+  The relay charges it to the turn like every call, so a DeepSeek turn pays for it and the Mac's
+  and the NAS's are logged as their own use.
+- **Kept whole where it is kept.** The conversation HQ keeps (ADR 0129) holds the raw result.
+- **House turns only, on by default.** A Claude turn reads every result whole: its prompt is
+  cached, and a gist in place of a result would change the prefix every later round reads at a
+  tenth of the price. The runner may set `ENDORA_GIST_PAST` to another size or `off`.
+
+Why 10,240 bytes. A gist pays when the reading it spares is more than the call costs. A result of
+R bytes is read whole by three calls; gisted, it is read once by the side call with about 1,000
+bytes of instructions and task, and its gist (620 to 910 bytes, measured) three times: about
+2R − 3,700 bytes less reading. The side call also writes: a gist of about 200 tokens and its
+thinking, on the Mac at about 14 tokens a second against 100 read (measured 28 Oct, 11 to 17
+written, 95 to 108 read), so each token written costs the time of about 29 bytes read. With no
+thinking it pays past about 4.7 KB; with 300 tokens of thinking, past about 9 KB. The house's logs
+are already held to 40 lines and 6 KB, so they stay whole; the 100 lines asked for, a diff and the
+lab's long listings are gisted.
+
+Measured on the engine's real briefing and tools (the worker's test
+`a_house_turns_first_call_is_sized_to_the_turn`, bytes of the relay's bodies, the gist calls' among
+them, with a gist call answering a sentence and four quoted lines): the ten-call task turn read
+298,407 bytes with old results stubbed and 258,368 gisted (about 74,600 to 64,600 tokens; the
+100-line log of 12,432 bytes and the diff of 10,511 are gisted). The twelve-call work turn read
+362,984 bytes as one turn and 323,113 gisted (about 90,700 to 80,800 tokens); held to the house's
+budget its passes read 225,475 and 70,620 bytes instead of 235,332 and 100,816. On the Mac (prompt
+at 400 bytes a second, gists written at 14 tokens a second) that turn takes about 907 s ungisted
+and 824 s gisted, or 867 s if each gist call thinks 300 tokens. Gisting everything past 2 or 4 KB
+(nine gist calls) reads less, 292,825 bytes, but takes about 822 s with no thinking and 1,015 s with
+300 tokens of it, slower than not gisting at all; past 12 KB, only the 100-line log is gisted
+(341,642 bytes, about 864 s). The first call of a turn is unchanged (11,878 bytes for the task
+turn). The thinking a gist call does on the Mac is not measured yet: the first live turns'
+`team-mac` usage records will say, and the size moves with it.
