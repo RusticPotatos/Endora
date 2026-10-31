@@ -98,6 +98,10 @@ mod loops;
 #[path = "scenarios/long_items.rs"]
 mod long_items;
 
+/// What every pass reads first (ADR 0142, amended 2026-10-31, after Ralph), in its own file.
+#[path = "scenarios/lessons.rs"]
+mod lessons;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

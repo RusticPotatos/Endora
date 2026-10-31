@@ -97,6 +97,11 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/projects/{id}/rank", post(loop_rank))
         .route("/v1/projects/{id}/items", post(loop_items))
+        // A loop's lessons (ADR 0142, amended 2026-10-31): read, and set whole by the owner.
+        .route(
+            "/v1/projects/{id}/lessons",
+            get(loop_lessons).post(set_loop_lessons),
+        )
         .route("/v1/one-team", post(one_team))
         // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
@@ -997,6 +1002,32 @@ async fn loop_items(
     let hq = state.hq.clone();
     blocking(move || hq.set_loop_items(ProjectId(id), req.items)).await?;
     Ok(Json(json!({ "project": id, "items": req.items })))
+}
+
+/// A loop's lessons, oldest first (ADR 0142, amended 2026-10-31).
+async fn loop_lessons(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let lessons = blocking(move || hq.loop_lessons(ProjectId(id))).await?;
+    Ok(Json(json!({ "project": id, "lessons": lessons })))
+}
+
+#[derive(Deserialize)]
+struct LoopLessons {
+    lessons: Vec<String>,
+}
+
+/// The owner sets a loop's lessons, the whole list: at most ten short lines, nothing secret.
+async fn set_loop_lessons(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopLessons>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let lessons = blocking(move || hq.set_loop_lessons(ProjectId(id), &req.lessons)).await?;
+    Ok(Json(json!({ "project": id, "lessons": lessons })))
 }
 
 async fn project_tools(

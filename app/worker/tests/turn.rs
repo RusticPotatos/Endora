@@ -1621,11 +1621,16 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
     );
     assert_eq!(body["model"], "claude-sonnet-5-5");
     assert_eq!(body["max_tokens"], 4096);
+    // The system as one block, a cache breakpoint at its end (ADR 0142, amended 2026-10-31).
     assert!(
-        body["system"]
+        body["system"][0]["text"]
             .as_str()
             .unwrap()
             .starts_with("You are one member of a small team")
+    );
+    assert_eq!(
+        body["system"][0]["cache_control"],
+        json!({ "type": "ephemeral" })
     );
     assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     assert_eq!(body["messages"][0]["role"], "user");
@@ -1927,7 +1932,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
         .filter_map(|t| t["name"].as_str())
         .collect();
     assert!(tools.contains(&"homelab_status"), "{tools:?}");
-    let system = first["system"].as_str().unwrap();
+    let system = first["system"][0]["text"].as_str().unwrap();
     assert!(
         system.contains(
             "The home lab tools are Endora's contracts, and this turn they are yours: \

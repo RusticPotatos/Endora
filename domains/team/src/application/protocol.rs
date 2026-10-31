@@ -509,12 +509,13 @@ fn call_for<S: TeamStore, W: WorkerAdapter, C: Clock>(
             .unclassified_message_input(run.id)
             .map_err(|e| e.to_string())?;
     }
-    // Preserve the worker's first-line identity contract. Version guidance follows
-    // the briefing, while the drain notice below remains the final instruction.
+    // The version guidance opens the briefing: the same bytes every turn, so it is part of the
+    // prompt's fixed opening a provider caches (ADR 0142, amended 2026-10-31). The worker finds
+    // who the member is on the line starting "You are ". The drain notice below remains the
+    // final instruction.
     let answer = if tool == "my_turn" {
-        answer.map(|mut text| {
-            text.push_str("\nEndora team protocol v2: one team of loops. Work the task, check it, and ask_owner only for the owner's decisions; three failures take the work a rank up.\n");
-            text
+        answer.map(|text| {
+            format!("Endora team protocol v2: one team of loops. Work the task, check it, and ask_owner only for the owner's decisions; three failures take the work a rank up.\n{text}")
         })
     } else {
         answer
@@ -647,6 +648,8 @@ fn tool_post<S: TeamStore, W: WorkerAdapter, C: Clock>(
         engine
             .last_word_in(run.id, task, text)
             .map_err(|e| said(&e))?;
+        // Lines it marks as lessons wait for the item's verdict (ADR 0142, amended 2026-10-31).
+        engine.offer_lessons(task, text).map_err(|e| said(&e))?;
         // The worker's word that the turn's prompt reached its budget (ADR 0142, amended
         // 2026-10-30): the item goes on with the same member in a fresh turn, when HQ sees the
         // turn did read near its budget. The mark alone authorizes nothing.
@@ -716,6 +719,9 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine
         .set_status_citing(run.id, task, to, reason, &cited)
         .map_err(|e| said(&e))?;
+    // Moving an item on is often a turn's last word: lines it marks as lessons wait for the
+    // item's next verdict (ADR 0142, amended 2026-10-31).
+    engine.offer_lessons(task, reason).map_err(|e| said(&e))?;
     if let Some((closure, successor)) = why {
         engine
             .done_because_in(run.id, task, closure, successor)
