@@ -607,24 +607,64 @@ helpers and two "woken to review" steps.
 
 A read-only review of `7c195ac6..round3-local` found work done in parallel doing one job several
 ways. To fix after the one-team clean-up lands, in this order:
-- [ ] **Secret scanning:** two scanners; the loop lessons use the narrow one, so `NAME=value` or
-  a `Bearer` token would be kept. One scanner, in `shared/kernel/src/secrets.rs`.
-- [ ] **Out of room:** recorded by a flag, by matching the worker's wording, and by a handover kept
-  both as a setting and as a post. One record, read by the briefing and the thread view.
-- [ ] **The prompt budget:** bytes in the worker, tokens in HQ, and `ENDORA_PROMPT_BUDGET` moves
-  only the worker's. One figure by `Brain`, in the team domain, passed to the worker.
-- [ ] **Verdicts:** `review_in` and `test_in` repeat the reviewer, own-work, CI and lessons checks,
-  and both still say "one rank up". One gate and one after-verdict step.
-- [ ] **Scenario steps:** ending a turn, running out of room, asking for review, sending back and
-  setting up a loop are each written two to five times. One step each, on `Office`.
-- [ ] **Continuation and failed-start rules** sit in the engine; move them to pure domain code.
-- [ ] **Smaller:** lessons cleaned by a weaker copy of `record::clean`; work in progress repeats
+- [x] **Secret scanning:** two scanners; the loop lessons use the narrow one, so `NAME=value` or
+  a `Bearer` token would be kept. One scanner, in `shared/kernel/src/secrets.rs`. *Done on
+  `r3-consolidate` (44b3b83b): `scrub_secrets` moved into the kernel beside the shapes, with the
+  link-password and end-of-sentence handling; `secret_in` is what the lessons check, and a
+  lesson holding `DB_PASSWORD=hunter2`, a Bearer token or a link's password is refused.*
+- [x] **Out of room:** recorded by a flag, by matching the worker's wording, and by a handover kept
+  both as a setting and as a post. One record, read by the briefing and the thread view. *Done on
+  `r3-consolidate` (df235928): a post is of a turn out of room by its run being in the item's
+  `loop_continued` runs (set by `out_of_room_in`), never by its words; the newest handover is
+  read from the thread (`loop_handover` is no longer written; old rows are left unread); the
+  kept-work line is said by the handover alone, the worker's last word no longer repeats it.*
+- [x] **The prompt budget:** bytes in the worker, tokens in HQ, and `ENDORA_PROMPT_BUDGET` moves
+  only the worker's. One figure by `Brain`, in the team domain, passed to the worker. *Done on
+  `r3-consolidate` (af4dddca): the byte figures in `shared/kernel/src/prompt_budget.rs`,
+  `handover::prompt_budget(brain)` picks one by `Brain::claude()`, HQ hands it out with the turn
+  and the runner sets `ENDORA_PROMPT_BUDGET` from it, so the worker ends a turn at what HQ judges
+  by. The worker's figure by its API stays only for an older runner.*
+- [x] **Verdicts:** `review_in` and `test_in` repeat the reviewer, own-work, CI and lessons checks,
+  and both still say "one rank up". One gate and one after-verdict step. *Done on `r3-consolidate`
+  (94e697d7): `verdict_gate` and `after_verdict`; `review_in`'s approve path, reached by nothing,
+  went with `review::may_approve`. One order changed: a draft is refused after the own-work
+  check, not before it.*
+- [x] **Scenario steps:** ending a turn, running out of room, asking for review, sending back and
+  setting up a loop are each written two to five times. One step each, on `Office`. *Done on
+  `r3-consolidate` (738d36ea): one helper each on `Office` in `scenarios.rs` (also a reading, a
+  loop item, the team, failures and the holder); the capabilities scenarios read the clock through
+  `Credit::at` and dollars through the kernel's `read_dollars`. Feature wording unchanged.*
+- [x] **Continuation and failed-start rules** sit in the engine; move them to pure domain code.
+  *Done on `r3-consolidate` (36999609): `handover::Continued` (`after_work`, `after_review`,
+  `kept_new_work`) and `runs::woken_again_after_failed_starts`; the engine loads and saves.*
+- [x] **Smaller:** lessons cleaned by a weaker copy of `record::clean`; work in progress repeats
   `record_branch`; three desk de-duplications; a blocked item checked in four places; YAML and
   glob helpers twice in `mechanical.rs` (one shared with the node's `forbidden_path`); the node's
   background loop written a third time; `task.owner.or(task.assignee)` 28 times (`Task::holder`);
   the pool sent twice per snapshot; two `dollars()` that can differ by a cent; the per-item
-  `loop_*` settings overlapping.
-- [ ] **A likely bug:** the runner counts an exit code it cannot read as "never started" (-1).
+  `loop_*` settings overlapping. *Done on `r3-consolidate`: lessons and kept branches (3a568dc0),
+  `desk::placing` and `waits_for_the_owner` (5972362a), mechanical helpers and `forbidden_path`
+  in the kernel's `lab` (ac3cb2a9), `api::every` for credits, the Mac and delivery, and
+  `Task::holder()` in 26 places (c2192cbb), the pool sized once per snapshot (42ead635), one
+  `dollars()`/`read_dollars()` in the kernel's `money` (738d36ea; a negative amount now reads
+  `-$0.50`). Left, and why: the homelab loop keeps its own (it carries state between ticks and
+  runs two steps); `role_readmes` and the node's `read_for_checks` stay apart (two contexts, and
+  the node's also drops forbidden paths); the `loop_*` settings other than `loop_handover` stay
+  as they are, since `loop_held`, `loop_continued.member` and `loop_failures` hold live items'
+  counts and merging them needs a migration of existing rows.*
+- [x] **A likely bug:** the runner counts an exit code it cannot read as "never started" (-1).
+  *Fixed on `r3-consolidate` (bbd81629): `UNREADABLE_EXIT` (-2) beside `NEVER_STARTED_EXIT` in
+  `shared/kernel/src/exit_code.rs`; HQ counts it as the worker's, as a turn with no code.*
+- [x] **The clean-up's leftovers from the retired deploy check.** *Done on `r3-consolidate`
+  (f77df4ee): the `deploy` and `deploy_check` desk kinds, `deploy_check`'s dismissal (a waiting
+  card of that kind, if any is left, can no longer be dismissed), `EventKind::BranchDeployed`
+  (stored events keep their kind as a name, so old rows still read), the console's `hqLeadOf`,
+  and the Deployed card in ADR 0115. The node's test of a narrowed turn is kept and renamed: a
+  project's tool list still narrows turns.*
+
+Code size (`sh scripts/code-size.sh`), product/tests: before 101,110/32,427, after
+101,368/32,313. The kernel grew by what moved into it from capabilities and the team; the team's
+product grew by the domain rules now unit-tested in their own files.
 
 ### HQ console, the owner's notes of 31 Oct (one branch, after the clean-up)
 
