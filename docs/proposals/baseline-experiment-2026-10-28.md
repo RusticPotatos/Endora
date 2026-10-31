@@ -570,6 +570,23 @@ are seen; quotes count only against the item's own receipts. The other six are f
 9. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
    free; switch only if about twice as fast on a large turn.
 
+### Code size (kept current)
+
+The owner asked on 31 Oct to keep the code base manageable: one pattern per job and no growth
+without a reason. `sh scripts/code-size.sh` gives product and test lines per area (cloc's code
+lines, test files apart); the figure is recorded here at each release.
+
+| When | domains/team | app/node | app/hq | The three | All product | Feature files |
+|---|---|---|---|---|---|---|
+| Released 30 Oct (`4b7d5766`) | 32.2k | 24.5k | 5.9k | 62.6k | 114k | 21 |
+| round3-local, 31 Oct (`f8925869`) | 37.1k | 25.8k | 6.2k | 69.1k | 122k | 41 |
+
+Round 3's work added 10% to the three in two days. Before it is released: the one-team clean-up
+(ADR 0142's "What goes", about 7,800 lines out and 1,100 in on its first try) lands on top of it,
+and a review of round 3's code for duplicated patterns is acted on. Merging round 3 already found
+three duplicates made by work done in parallel: two `Brain::claude()`, two `ends_turn` scenario
+helpers and two "woken to review" steps.
+
 ### The owner's
 
 - [ ] Decide on round 3's changes once round 2 is judged.
