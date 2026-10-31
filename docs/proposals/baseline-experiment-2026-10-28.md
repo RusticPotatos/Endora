@@ -491,6 +491,42 @@ needs a decision about task 8 first.
    owner's scenarios for round 2's changes** were left part-done by their agents; they are
    restarted and join `round3-local` before release.
 
+### Round 3 (31 Oct –): the round-2 defects fixed, the long item kept, reviews at Haiku
+
+Released 31 Oct 12:52 EDT as `8f138b2d`. What changed since round 2, each from its evidence:
+- **Setup and wakes:** a model change keeps a member able to start (D1); a released tool reaches
+  the loops that check out the fork (D4); a never-started turn is retried, a blocked item wakes
+  nobody, one question an item (D2, D3, D10).
+- **Long items:** a turn reads the newest handover only and keeps its work in progress on a
+  branch; running out of room while the work moves is no failure (D12).
+- **Reviews and CI:** no review above Haiku's rank (D7); HQ refuses a pass on a CI criterion no
+  run can meet (D6).
+- **Reading upstream:** a read-only mirror of upstream ansible-nas in every checkout (D13).
+- **Money:** the day's pool sized from the Claude credit left and the days to its renewal (D9).
+- **Smaller prompts:** a stable opening for the provider's cache, and a lessons list per loop.
+- **Delivery:** accepted work is listed, pushed after a code privacy scan, and merged into
+  develop only when the owner turns it on after the rounds; no merge or push cards.
+- **Console and code:** Activity and Chess tabs, a cost-by-model table, the Mac in Settings,
+  "what it was given" on each turn; the one-team clean-up; one consolidation pass.
+
+The setup was checked before the start (the playbook `.claude/skills/hq-round`): every member on
+the worker with a model it can run, `image_tags` in the ansible-nas loop's tools, the pool sized
+from $67.75 of credit. Started 31 Oct 12:58 EDT as HQ tasks 947 to 955. **Task 8 is not in it
+yet**: its window starts when the owner runs the fork's playbook (D11), and it joins then.
+
+| # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
+|---|---|---|---|---|---|---|
+| 1 | 947 | | | | | |
+| 2 | 948 | | | | | |
+| 3 | 949 | | | | | |
+| 4 | 950 | | | | | |
+| 5 | 951 | | | | | |
+| 6 | 952 | | | | | |
+| 7 | 953 | | | | | |
+| 8 | (after its window) | | | | | |
+| 9 | 954 | | | | | |
+| 10 | 955 | | | | | |
+
 ## Open issues and next steps (kept current)
 
 The one list of what is open, kept up to date as rounds run. Ticked items say where they were
