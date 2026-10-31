@@ -1063,6 +1063,22 @@ impl Mirror {
                 &stored[..12.min(stored.len())]
             ));
         }
+        let env = self.push_env(remote, key)?;
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // The refspec carries no `+` and the command no `--force`: a branch the fork has moved
+        // is refused by git, and the owner hears why.
+        let refspec = format!("{kept}:refs/heads/{branch}");
+        git(&self.dir, &["push", "--no-tags", remote, &refspec], &env)?;
+        Ok(format!(
+            "pushed {branch} ({}) to {}",
+            &stored[..12.min(stored.len())],
+            remote
+        ))
+    }
+
+    /// What a push to `remote` runs with: over SSH, the deploy key at `key` and GitHub's own host
+    /// keys, nothing else trusted.
+    fn push_env(&self, remote: &str, key: Option<&Path>) -> Result<Vec<(String, String)>, String> {
         let over_ssh = remote.starts_with("git@") || remote.starts_with("ssh://");
         let mut env: Vec<(String, String)> = Vec::new();
         if over_ssh {
@@ -1084,17 +1100,170 @@ impl Mirror {
                 ),
             ));
         }
+        Ok(env)
+    }
+
+    /// The stored submission of `branch`, if it is at `head`.
+    fn stored_at(&self, branch: &str, head: &str) -> Result<String, String> {
+        let kept = format!("refs/submissions/{branch}");
+        let stored = git(
+            &self.dir,
+            &["rev-parse", "--verify", &format!("{kept}^{{commit}}")],
+            &[],
+        )
+        .map(text)
+        .map_err(|_| format!("no submission of {branch} is stored"))?;
+        if !stored.starts_with(head.trim()) || head.trim().len() < 7 {
+            return Err(format!(
+                "the stored submission of {branch} is {}, not {head}",
+                &stored[..12.min(stored.len())]
+            ));
+        }
+        Ok(stored)
+    }
+
+    /// What a stored submission would carry out of the house (ADR 0115, amended 2026-10-31):
+    /// its whole diff against where it left the base (no renames, so both sides of a move are
+    /// read), and each of its commits' messages, for the privacy scan before a push.
+    ///
+    /// # Errors
+    /// No such submission at `head`, or git failing.
+    pub fn outgoing(&self, branch: &str, head: &str) -> Result<Outgoing, String> {
+        let branch = hq_branch(branch)?;
+        let stored = self.stored_at(branch, head)?;
+        let base = format!("refs/heads/{}", self.base);
+        let diff = git(
+            &self.dir,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--no-renames",
+                "--no-color",
+                &format!("{base}...{stored}"),
+            ],
+            &[],
+        )?;
+        let log = git(
+            &self.dir,
+            &["log", "--format=%H%x00%B%x1e", &format!("{base}..{stored}")],
+            &[],
+        )?;
+        let messages = String::from_utf8_lossy(&log)
+            .split('\x1e')
+            .filter_map(|entry| {
+                let (sha, message) = entry.trim_start().split_once('\0')?;
+                Some((sha.to_owned(), message.trim().to_owned()))
+            })
+            .collect();
+        Ok(Outgoing {
+            diff: String::from_utf8_lossy(&diff).into_owned(),
+            messages,
+        })
+    }
+
+    /// Merges a pushed submission into the fork's base branch (its develop) and pushes the base
+    /// (ADR 0115, amended 2026-10-31, behind the owner's setting): a fast-forward when the base
+    /// has not moved past where the branch left it, else one merge commit authored by HQ, never
+    /// a force. A conflict merges nothing. `main` and `master` are never the target, nor is
+    /// upstream. Call after [`Self::refresh`], so the base is the fork's as it stands.
+    ///
+    /// # Errors
+    /// Which rule refused it, a conflict, or what git said.
+    pub fn merge_into_base(
+        &self,
+        branch: &str,
+        head: &str,
+        remote: &str,
+        key: Option<&Path>,
+    ) -> Result<String, String> {
+        if self
+            .upstream
+            .as_deref()
+            .is_some_and(|up| same_repo(up, remote))
+        {
+            return Err("upstream ansible-nas is read-only: HQ never merges into it".to_owned());
+        }
+        if matches!(self.base.as_str(), "main" | "master") {
+            return Err(format!(
+                "{} mirrors upstream: HQ merges into develop only",
+                self.base
+            ));
+        }
+        let branch = hq_branch(branch)?;
+        plain_remote(remote)?;
+        let stored = self.stored_at(branch, head)?;
+        let base_ref = format!("refs/heads/{}", self.base);
+        let tip = git(&self.dir, &["rev-parse", "--verify", &base_ref], &[]).map(text)?;
+        let is_ancestor =
+            |a: &str, b: &str| git(&self.dir, &["merge-base", "--is-ancestor", a, b], &[]).is_ok();
+        if is_ancestor(&stored, &tip) {
+            return Ok(format!(
+                "{branch} is already in {} ({})",
+                self.base,
+                &tip[..12.min(tip.len())]
+            ));
+        }
+        let (target, how) = if is_ancestor(&tip, &stored) {
+            (stored.clone(), "fast-forward")
+        } else {
+            let tree = git(
+                &self.dir,
+                &["merge-tree", "--write-tree", "--no-messages", &tip, &stored],
+                &[],
+            )
+            .map(text)
+            .map_err(|_| {
+                format!(
+                    "{branch} does not merge cleanly into {}: nothing was merged; merge it on GitHub",
+                    self.base
+                )
+            })?;
+            let tree = tree.lines().next().unwrap_or("").to_owned();
+            let message = format!("Merge {branch} into {}\n\n{TRAILER} (merge)", self.base);
+            let identity = [
+                ("GIT_AUTHOR_NAME", AUTHOR_NAME),
+                ("GIT_AUTHOR_EMAIL", AUTHOR_EMAIL),
+                ("GIT_COMMITTER_NAME", AUTHOR_NAME),
+                ("GIT_COMMITTER_EMAIL", AUTHOR_EMAIL),
+            ];
+            let commit = git(
+                &self.dir,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &tip,
+                    "-p",
+                    &stored,
+                    "-m",
+                    &message,
+                ],
+                &identity,
+            )
+            .map(text)?;
+            (commit, "merge commit")
+        };
+        let env = self.push_env(remote, key)?;
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        // The refspec carries no `+` and the command no `--force`: a branch the fork has moved
-        // is refused by git, and the owner hears why.
-        let refspec = format!("{kept}:refs/heads/{branch}");
+        // No `+` and no `--force`: a develop that moved since the refresh is refused by git.
+        let refspec = format!("{target}:{base_ref}");
         git(&self.dir, &["push", "--no-tags", remote, &refspec], &env)?;
         Ok(format!(
-            "pushed {branch} ({}) to {}",
-            &stored[..12.min(stored.len())],
-            remote
+            "merged {branch} into {} ({how}, now {})",
+            self.base,
+            &target[..12.min(target.len())]
         ))
     }
+}
+
+/// What a submission would carry out of the house: its diff and its commits' messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    /// The unified diff against where it left the base.
+    pub diff: String,
+    /// `(sha, message)` of each of its commits.
+    pub messages: Vec<(String, String)>,
 }
 
 /// Bytes as base64, for a bundle carried in JSON.
@@ -1176,9 +1345,15 @@ mod tests {
         fork: PathBuf,
         mirror: Mirror,
         work: PathBuf,
+        base: String,
     }
 
     fn scene(name: &str) -> Scene {
+        scene_on(name, "main")
+    }
+
+    /// As [`scene`], with the fork's line on `base`.
+    fn scene_on(name: &str, base: &str) -> Scene {
         let root = std::env::temp_dir().join(format!(
             "endora-repo-{name}-{}-{}",
             std::process::id(),
@@ -1190,7 +1365,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let fork = root.join("fork.git");
-        run(&root, &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        run(&root, &["init", "-q", "--bare", "-b", base, "fork.git"]);
         let seed = root.join("seed");
         run(&root, &["clone", "-q", fork.to_str().unwrap(), "seed"]);
         std::fs::write(seed.join("nas.yml"), "---\n- hosts: all\n").unwrap();
@@ -1215,15 +1390,15 @@ mod tests {
         .unwrap();
         run(&seed, &["add", "."]);
         commit(&seed, "the lab", "John Doe <john@example.com>");
-        run(&seed, &["push", "-q", "origin", "HEAD:main"]);
-        let mirror = Mirror::new(&root.join("data"), fork.to_str().unwrap(), "main");
+        run(&seed, &["push", "-q", "origin", &format!("HEAD:{base}")]);
+        let mirror = Mirror::new(&root.join("data"), fork.to_str().unwrap(), base);
         let bundle = mirror.bundle(None, 0).unwrap();
-        assert_eq!(bundle.branch, "main");
+        assert_eq!(bundle.branch, base);
         let file = root.join("checkout.bundle");
         std::fs::write(&file, &bundle.bytes).unwrap();
         run(
             &root,
-            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+            &["clone", "-q", "-b", base, file.to_str().unwrap(), "work"],
         );
         let work = root.join("work");
         run(&work, &["remote", "remove", "origin"]);
@@ -1232,13 +1407,14 @@ mod tests {
             fork,
             mirror,
             work,
+            base: base.to_owned(),
         }
     }
 
     impl Scene {
         /// A branch of one commit in the working clone, changing `file`, authored `author`.
         fn branch(&self, name: &str, file: &str, message: &str, author: &str) {
-            run(&self.work, &["checkout", "-q", "-B", name, "main"]);
+            run(&self.work, &["checkout", "-q", "-B", name, &self.base]);
             std::fs::write(self.work.join(file), format!("# {name}\n")).unwrap();
             run(&self.work, &["add", "."]);
             commit(&self.work, message, author);
@@ -1252,7 +1428,7 @@ mod tests {
                     "bundle",
                     "create",
                     out.to_str().unwrap(),
-                    &format!("main..{name}"),
+                    &format!("{}..{name}", self.base),
                 ],
             );
             std::fs::read(out).unwrap()
@@ -1913,6 +2089,105 @@ mod tests {
             .unwrap_err();
         assert!(why.contains("Rebase it on main"), "{why}");
         let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// What a branch would carry out: its diff against where it left develop, and its commits'
+    /// messages, for the privacy scan (ADR 0115, amended 2026-10-31).
+    #[test]
+    fn what_a_branch_carries_out_is_its_diff_and_its_messages() {
+        let s = scene_on("outgoing", "develop");
+        s.branch("hq/task-6-out", "roles/deluge/x.yml", TRAILED, HQ);
+        let taken = s
+            .mirror
+            .submit(&s.delta("hq/task-6-out"), "hq/task-6-out", 6, 0)
+            .unwrap();
+        let out = s.mirror.outgoing("hq/task-6-out", &taken.head).unwrap();
+        assert!(
+            out.diff.contains("+++ b/roles/deluge/x.yml"),
+            "{}",
+            out.diff
+        );
+        assert!(out.diff.contains("+# hq/task-6-out"), "{}", out.diff);
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0].0, taken.head);
+        assert_eq!(out.messages[0].1, TRAILED);
+        assert!(s.mirror.outgoing("hq/task-6-out", "0000000").is_err());
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// Merging into develop (ADR 0115, amended 2026-10-31): a fast-forward when develop has not
+    /// moved, a merge commit by HQ when it has, nothing on a conflict, never main, never a force.
+    #[test]
+    fn a_pushed_branch_is_merged_into_develop_by_fast_forward_or_merge_never_force() {
+        let s = scene_on("merge", "develop");
+        let fork = s.fork.to_str().unwrap();
+        // Two branches cut from the same develop; a third that clashes with the first.
+        let mut taken = Vec::new();
+        for (name, file, task) in [
+            ("hq/task-7-ff", "a.yml", 7),
+            ("hq/task-8-merge", "b.yml", 8),
+            ("hq/task-9-clash", "a.yml", 9),
+        ] {
+            s.branch(name, file, TRAILED, HQ);
+            taken.push(s.mirror.submit(&s.delta(name), name, task, 0).unwrap());
+        }
+        let said = s
+            .mirror
+            .merge_into_base("hq/task-7-ff", &taken[0].head, fork, None)
+            .unwrap();
+        assert!(said.contains("fast-forward"), "{said}");
+        assert_eq!(
+            run(&s.fork, &["rev-parse", "refs/heads/develop"]),
+            taken[0].head
+        );
+        // Develop moved past the second branch's base: one merge commit, by HQ, both parents.
+        s.mirror.refresh(REFRESH_MS * 2).unwrap();
+        let said = s
+            .mirror
+            .merge_into_base("hq/task-8-merge", &taken[1].head, fork, None)
+            .unwrap();
+        assert!(said.contains("merge commit"), "{said}");
+        let parents = run(&s.fork, &["rev-list", "--parents", "-n", "1", "develop"]);
+        assert!(
+            parents.contains(&taken[0].head) && parents.contains(&taken[1].head),
+            "{parents}"
+        );
+        let author = run(&s.fork, &["log", "-1", "--format=%an <%ae>", "develop"]);
+        assert_eq!(author, HQ);
+        // Again: already in develop, nothing pushed.
+        s.mirror.refresh(REFRESH_MS * 3).unwrap();
+        let again = s
+            .mirror
+            .merge_into_base("hq/task-8-merge", &taken[1].head, fork, None)
+            .unwrap();
+        assert!(again.contains("already in develop"), "{again}");
+        // A clash merges nothing.
+        let before = run(&s.fork, &["rev-parse", "refs/heads/develop"]);
+        let why = s
+            .mirror
+            .merge_into_base("hq/task-9-clash", &taken[2].head, fork, None)
+            .unwrap_err();
+        assert!(why.contains("does not merge cleanly"), "{why}");
+        assert_eq!(run(&s.fork, &["rev-parse", "refs/heads/develop"]), before);
+        // The refusals: a head not stored, and main, which mirrors upstream.
+        assert!(
+            s.mirror
+                .merge_into_base("hq/task-7-ff", "0000000", fork, None)
+                .is_err()
+        );
+        let on_main = scene("merge-main");
+        on_main.branch("hq/task-9-m", "c.yml", TRAILED, HQ);
+        let m = on_main
+            .mirror
+            .submit(&on_main.delta("hq/task-9-m"), "hq/task-9-m", 9, 0)
+            .unwrap();
+        let why = on_main
+            .mirror
+            .merge_into_base("hq/task-9-m", &m.head, on_main.fork.to_str().unwrap(), None)
+            .unwrap_err();
+        assert!(why.contains("develop only"), "{why}");
+        let _ = std::fs::remove_dir_all(&s.root);
+        let _ = std::fs::remove_dir_all(&on_main.root);
     }
 
     #[test]
