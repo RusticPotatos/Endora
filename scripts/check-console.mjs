@@ -1219,58 +1219,69 @@ if (failures.length) {
     if (opened.includes('data-act="hq:rename:6"')) fail("hq: tapping one member opened another's controls");
     runInContext("HQ.roster = { 1: true, 2: true, 4: true, 5: true }", context);
   }
-  // The owner's Mac as a brain (ADR 0130): the card on the HQ screen with its state and reason,
-  // the "Mac busy" switch, the address, model, key and idle fields; the Mac on the roster and
-  // the hire form; and what each button asks of the node.
+  // The owner's Mac as a brain (ADR 0130): its card is in Settings → AI, beside the house's
+  // model (the owner, 31 Oct: "i honestly dont know why mac has its own tab"), with its state
+  // and reason, the "Mac busy" switch, the address, model, key and idle fields; HQ keeps only a
+  // word of its state where a member's brain is named; and what each button asks of the node.
   {
     runInContext(`HQ.mac = { ready: false, why: "owner active", busy: false, url: "http://192.168.1.10:8080/v1", model: "coder",
       has_key: true, has_token: true, idle_minutes: 10, plugged: true, idle_s: 42, model_up: true, heard_s_ago: 12 };
-      HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";`, context);
-    const card = runInContext("hqMacCard(HQ.snap)", context);
-    for (const want of ["<h2>The Mac", ">in use<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
-      'data-act="hq:mac:busy:on"', "Mac busy: off", 'aria-pressed="false"', 'data-act="go:models">Set up in AI']) {
-      if (!card.includes(want)) fail(`mac: the card does not show ${want}`);
+      HQ.snap.mac = { ready: false, why: "owner active", running: 0, waiting: 2 }; HQ.macToken = "";
+      MODEL_LISTS = { providers: [], everyday: [] };`, context);
+    const card = runInContext("hqMacSetup()", context);
+    for (const want of ['<div class="model-role">The Mac', ">in use<", "You are using it", "2 turns wait for it", "plugged in · idle 0 min · model up", "heard 12 s ago",
+      'data-act="hq:mac:busy:on"', "Mac busy", 'aria-pressed="false"', ">Off</button>"]) {
+      if (!card.includes(want)) fail(`mac: the AI screen's Mac card does not show ${want}`);
     }
     // No wait for the owner to be idle (0, the default since 2026-10-25) is said plainly.
     runInContext("HQ.mac.idle_minutes = 0;", context);
-    if (!runInContext("hqMacCard(HQ.snap)", context).includes("whenever it is plugged in, whether or not you are using it")) fail("mac: the card does not say it runs whether or not the owner is using it");
+    if (!runInContext("hqMacSetup()", context).includes("whenever it is plugged in, whether or not you are using it")) fail("mac: the card does not say it runs whether or not the owner is using it");
     runInContext("HQ.mac.idle_minutes = 10;", context);
-    // The setup is not on HQ: it is on the AI screen, where every model lives (where-things-go.md).
-    for (const setup of ['id="hq-mac-url"', 'id="hq-mac-model"', 'id="hq-mac-key"', 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"', "Set up the Mac"]) {
-      if (card.includes(setup) || runInContext("viewHQ()", context).includes(setup)) fail(`mac: the HQ screen still has the setup (${setup})`);
-    }
+    // Beside the house's model: after the Everyday card, before the providers; in its style.
     const setup = runInContext("viewModels()", context);
-    for (const want of ["<h2>AI</h2>", "The Mac&#39;s brain", 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
+    for (const want of ["<h2>AI</h2>", 'class="card model-card hq-macsetup"', 'id="hq-mac-url" value="http://192.168.1.10:8080/v1"', 'id="hq-mac-model" value="coder"',
       'id="hq-mac-key" type="password"', "Key kept; type to replace it", 'id="hq-mac-idle"', 'data-act="hq:mac:save:go"', 'data-act="hq:mac:token:make"',
-      "Make a new token for the helper", "never fall back to another model"]) {
+      'data-act="hq:mac:busy:on"', "Make a new token for the helper", "never fall back to another model"]) {
       if (!setup.includes(want) && !setup.includes(want.replace("&#39;", "'"))) fail(`mac: the AI screen does not show ${want}`);
     }
+    const everyday = setup.indexOf('<div class="model-role">Everyday</div>'), mac = setup.indexOf('<div class="model-role">The Mac'), providers = setup.indexOf('<div class="model-role">Providers</div>');
+    if (!(everyday >= 0 && everyday < mac && mac < providers)) fail("mac: the Mac's card is not beside the house's model (after Everyday, before the providers)");
     if (setup.includes("the-macs-key")) fail("mac: the AI screen shows the key");
-    // One thing, one home: no separate Settings entry for the Mac.
+    if (setup.includes("on the HQ screen")) fail("mac: the AI screen still sends the owner to HQ for the busy switch");
+    // One thing, one home: no separate Settings entry for the Mac, and no card or tab on HQ.
     if (runInContext("UNDER_SETTINGS.map((p) => p.view)", context).includes("macbrain") || runInContext("viewSettings()", context).includes("go:macbrain")) fail("mac: the Mac still has its own Settings entry beside AI");
-    if (!runInContext("viewHQ()", context).includes("<h2>The Mac")) fail("mac: the HQ screen has no Mac card");
+    const hq = runInContext("viewHQ()", context);
+    for (const gone of ["<h2>The Mac", "hq:mac:", 'id="hq-mac-', "Set up the Mac", "Set up in AI"]) {
+      if (hq.includes(gone)) fail(`mac: the HQ screen still has the Mac's card (${gone})`);
+    }
+    if (runInContext("HQ_TABS.some(([id, label]) => /mac/i.test(id + label))", context)) fail("mac: HQ has a Mac tab");
+    if (runInContext("typeof hqMacCard", context) !== "undefined") fail("mac: HQ still draws a Mac card");
     const reasons = {
       ready: "Free: the team may use it", "on battery": "On battery: the model is unloaded", busy: "Mac busy is on: the model is unloaded",
       "model loading": "Plugged in; the model is loading", "not heard from": "Not heard from lately" };
     for (const [why, said] of Object.entries(reasons)) {
-      const shown = runInContext(`HQ.mac.why = ${JSON.stringify(why)}; HQ.mac.ready = ${why === "ready"}; hqMacCard(HQ.snap)`, context);
+      const shown = runInContext(`HQ.mac.why = ${JSON.stringify(why)}; HQ.mac.ready = ${why === "ready"}; hqMacSetup()`, context);
       if (!shown.includes(said)) fail(`mac: "${why}" is not said as "${said}"`);
       if (why === "ready" && !shown.includes(">free<")) fail("mac: a free Mac is not tagged free");
     }
-    const busy = runInContext(`HQ.mac.busy = true; hqMacCard(HQ.snap)`, context);
-    if (!busy.includes('data-act="hq:mac:busy:off"') || !busy.includes("Mac busy: on") || !busy.includes('aria-pressed="true"')) fail("mac: the busy switch does not show it is on");
-    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacCard(HQ.snap) + hqMacSetup(); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
+    const busy = runInContext(`HQ.mac.busy = true; hqMacSetup()`, context);
+    if (!busy.includes('data-act="hq:mac:busy:off"') || !busy.includes(">On</button>") || !busy.includes('aria-pressed="true"')) fail("mac: the busy switch does not show it is on");
+    const hostile = runInContext(`HQ.mac.url = '"><b>x</b>'; HQ.mac.model = "<i>m</i>"; const h = hqMacSetup(); HQ.mac.url = "http://192.168.1.10:8080/v1"; HQ.mac.model = "coder"; HQ.mac.busy = false; h`, context);
     if (hostile.includes("<b>x</b>") || hostile.includes("<i>m</i>")) fail("mac: an address or model name became markup");
-    if (runInContext("HQ.mac = null; hqMacCard(HQ.snap)", context) !== "") fail("mac: a node that cannot say shows a card");
+    if (!runInContext("HQ.mac = null; hqMacSetup()", context).includes("could not say about the Mac")) fail("mac: a node that cannot say is not said so");
     runInContext(`HQ.mac = { ready: true, why: "ready", busy: false, url: "", model: "mac", has_key: false, has_token: false, idle_minutes: 10, heard_s_ago: null };`, context);
-    const fresh = runInContext("hqMacCard(HQ.snap) + hqMacSetup()", context);
+    const fresh = runInContext("hqMacSetup()", context);
     if (!fresh.includes("heard never") || !fresh.includes("Make a token for the helper") || !fresh.includes("Key (the server&#39;s --api-key)") && !fresh.includes("Key (the server's --api-key)")) fail("mac: a Mac never set up does not say so");
-    // The Mac is a brain on the roster and on the hire form, and costs nothing.
+    runInContext("MODEL_LISTS = null;", context);
+    // The Mac is a brain on the roster and on the hire form, and costs nothing. Where a member's
+    // brain is named, the Mac's carries one word of its state; what each model cost does not.
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm(HQ.snap)", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
     if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("developer · between turns · costs nothing")) fail("mac: a Mac member's roster line is wrong");
-    if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac member's opened line does not say Mac");
+    if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac (free)</span>')) fail("mac: a Mac member's opened line does not say the Mac's state");
+    if (runInContext('(() => { const keep = HQ.mac; HQ.mac = Object.assign({}, keep, { busy: true }); const t = hqBrainsTag({ brain: "mac" }); HQ.mac = keep; return t; })()', context) !== "Mac (busy)") fail("mac: a busy Mac is not said busy where a member's brain is named");
+    if (runInContext('(() => { const keep = HQ.mac; HQ.mac = null; const t = hqBrainsTag({ brain: "mac" }); HQ.mac = keep; return t; })()', context) !== "Mac") fail("mac: a Mac the node cannot say about is given a state");
     // Two brains per member (ADR 0131): the roster line says both, the controls set each, and a
     // turn that waits says what for; the top bar counts the turns waiting for budget.
     {
@@ -1278,7 +1289,7 @@ if (failures.length) {
         work_brains: [{ name: "mac", label: "Mac" }, { name: "local", label: "Local" }], judgment_brains: [{ name: "claude-haiku-5-5", label: "Claude Haiku" }],
         running: [], spent: 0, held: 0, per_day: 100 }`;
       const line = runInContext(`HQ.roster[9] = true; hqRosterLine(${zed}, [])`, context);
-      if (!line.includes("Work: Mac · Judgment: Haiku")) fail("brains: the roster line does not say both brains");
+      if (!line.includes("Work: Mac (free) · Judgment: Haiku")) fail("brains: the roster line does not say both brains");
       for (const act of ["hq:workbrain:9:mac", "hq:workbrain:9:local", "hq:judge:9:claude-haiku-5-5"]) {
         if (!line.includes(`data-act="${act}"`)) fail(`brains: the controls lack ${act}`);
       }
@@ -1793,21 +1804,15 @@ if (failures.length) {
     const deskCount = runInContext("HQ.snap.desk.length", context);
     if (Number(badge(tabs, "work")) !== deskCount) fail(`hq: the Work badge is ${badge(tabs, "work")}, not ${deskCount}`);
     if (badge(tabs, "manage") !== undefined || badge(tabs, "health") !== undefined) fail("hq: a tab with nothing to count has a badge");
-    // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac block, no Mac chip.
+    // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac chip: the Mac's
+    // state is a word where a member's brain is named, and its card is in Settings → AI.
     if (!tabs.includes(`data-act="hq:tab:work:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Work");
     if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
-    if (/>Mac (free|away|busy)</.test(tabs)) fail("hq: a Mac chip when the node cannot say about the Mac");
-    runInContext('HQ.mac = { ready: false, why: "on battery", busy: false };', context);
-    if (!shown().includes('title="On battery: the model is unloaded">Mac on battery</span>')) fail("hq: the Mac chip does not say the Mac is on battery and why");
-    // Plugged in and only waiting for the owner to be idle is "in use", not "away".
-    runInContext('HQ.mac = { ready: false, why: "owner active", busy: false };', context);
-    if (!shown().includes(">Mac in use</span>") || shown().includes(">Mac away</span>")) fail("hq: the Mac chip calls a Mac in use away");
-    runInContext('HQ.mac = { ready: false, why: "not heard from", busy: false };', context);
-    if (!shown().includes(">Mac away</span>")) fail("hq: a Mac not heard from is not away");
-    runInContext('HQ.mac = { ready: false, why: "on battery", busy: false };', context);
-    runInContext('HQ.mac.busy = true;', context);
-    if (!shown().includes(">Mac busy</span>")) fail("hq: the Mac chip does not say it is busy");
-    if (!panelOf(shown(), "health").includes('data-act="hq:mac:busy:off"')) fail("hq: the Mac busy switch is not on the Health tab");
+    for (const mac of [{ why: "on battery" }, { why: "owner active" }, { why: "not heard from" }, { why: "on battery", busy: true }]) {
+      runInContext(`HQ.mac = Object.assign({ ready: false, busy: false }, ${JSON.stringify(mac)});`, context);
+      if (/class="hq-chip[^"]*"[^>]*>Mac /.test(shown())) fail(`hq: a Mac chip on HQ (${mac.why})`);
+      if (shown().includes("hq:mac:busy:")) fail("hq: the Mac busy switch is still on HQ");
+    }
     runInContext("HQ.mac = null;", context);
     // What is left with each paid provider (the owner, 2026-10-30): DeepSeek's balance, red
     // below its threshold; Claude's asking to be set until the owner enters it; nothing when

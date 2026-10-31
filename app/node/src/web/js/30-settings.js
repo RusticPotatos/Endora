@@ -292,6 +292,7 @@ function modelsSection() {
       ${modelListRows("everyday")}
       ${modelListAdd("everyday")}
     </div>
+    ${hqMacSetup()}
 
     ${providersCard()}
     ${hqCreditsSetup()}`;
@@ -343,8 +344,6 @@ function viewModels() {
     <h2>AI</h2>
     ${aiOverviewSection()}
     ${modelsSection()}
-    <h3>The Mac's brain</h3>
-    ${hqMacSetup()}
     ${worthKnowingSection()}`;
 }
 

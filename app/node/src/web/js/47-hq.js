@@ -1532,7 +1532,7 @@ function hqFonts() {
 // was 6.8 phone screens with 216 buttons): Work, where they give work, answer the desk and
 // follow what is in flight, and where every screen opens; Manage, what they own and set (the
 // projects and their loops, the team, the money, the knowledge, the office); and Health, how the
-// team and the lab are doing (the Mac, the turns, what failed, the live activity). Each shows
+// team and the lab are doing (the turns, what failed, the live activity). Each shows
 // one line per thing, and rare actions and big cards wait behind a fold.
 const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"]];
 // Where each older tab now lives, for links and choices kept from before.
@@ -1652,7 +1652,7 @@ function hqWorkForm(s) {
       <button class="hq-btn tall" data-act="hq:work:cancel:go">Cancel</button></div></div>`;
 }
 
-// The small status chips under the title: today's pool, the Mac, and what waits on the owner.
+// The small status chips under the title: today's pool and what waits on the owner.
 function hqChips(s) {
   const pool = s.pool || {}, waiting = (s.desk || []).length;
   const chips = [];
@@ -1664,7 +1664,6 @@ function hqChips(s) {
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
   if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
-  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${hqMacWord(HQ.mac)}</span>`);
   chips.push(...hqCreditChips());
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
@@ -1848,7 +1847,6 @@ function viewHQ() {
         ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
         ${hqOffice(s) ? hqFold("office", "Office", "the floor and its games", hqOffice(s)) : ""}`)}
       ${hqPanel("health", `
-        ${hqMacCard(s)}
         ${hqScorecard(s)}
         ${hqFailures()}
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
@@ -1863,10 +1861,12 @@ function hqBrainTag(brain) {
   return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b.includes("deepseek") ? "DeepSeek" : b === "mac" ? "Mac" : "Local";
 }
 
-// A member's two brains (ADR 0131), in a few words: "Work: Mac · Judgment: Sonnet".
+// A member's two brains (ADR 0131), in a few words: "Work: Mac (busy) · Judgment: Sonnet". The
+// Mac's word of state is all HQ says of it; its card is in Settings → AI (the owner, 31 Oct).
 function hqBrainsTag(m) {
-  if (!m.work_brain) return hqBrainTag(m.brain);
-  return `Work: ${hqBrainTag(m.work_brain)} · Judgment: ${hqBrainTag(m.judgment_brain || m.brain)}`;
+  const tag = (b) => hqBrainTag(b) + (b === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : "");
+  if (!m.work_brain) return tag(m.brain);
+  return `Work: ${tag(m.work_brain)} · Judgment: ${tag(m.judgment_brain || m.brain)}`;
 }
 
 // What a member's turn waits for, in the owner's words, if one waits (ADR 0131): for budget,
@@ -2354,42 +2354,35 @@ function hqMacWord(m) {
   return { "owner active": "in use", "on battery": "on battery", "model loading": "loading", "not heard from": "away" }[m.why] || "away";
 }
 
-// On HQ: the Mac's state and the busy switch. Setting it up is under Settings.
-function hqMacCard(s) {
+// The Mac's card, in Settings → AI beside the house's model (the owner, 31 Oct: it had its own
+// card on HQ): its state and why, the busy switch, the helper's token, the model's address, key
+// and name, and how long the owner must be idle. The buttons are the same ones the node always had.
+function hqMacSetup() {
   const m = HQ.mac;
-  if (!m) return "";
-  const hq = s.mac || {};
+  if (!m) return `<div class="card"><p class="sub">The node could not say about the Mac.</p></div>`;
+  const hq = (HQ.snap && HQ.snap.mac) || {};
   const heard = m.heard_s_ago == null ? "never" : m.heard_s_ago < 90 ? `${m.heard_s_ago} s ago` : `${Math.round(m.heard_s_ago / 60)} min ago`;
   const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
   const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
   const running = hq.running ? " A turn is running on it." : "";
-  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${hqMacWord(m)}</span></h2>
-    <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
-    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
-      ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
-      : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time. Mac busy holds it.</p>
-    <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
-      data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
-      <button class="hq-link" data-act="go:models">Set up in AI</button></div></section>`;
-}
-
-// The Mac's setup, on the Settings screen: the helper's token, the model's address, key and
-// name, and how long the owner must be idle. The buttons are the same ones the node always had.
-function hqMacSetup() {
-  const m = HQ.mac;
-  if (!m) return `<div class="card"><p class="sub">The node could not say about the Mac.</p></div>`;
   const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
       Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
-  return `<div class="card hq-macsetup">
-      <p class="sub">Now: ${esc(hqMacWhy(m.why))}. Its busy switch is on the HQ screen, under Health.</p>
-      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+  return `<div class="card model-card hq-macsetup" aria-live="polite">
+      <div class="model-role">The Mac <span class="pill">${hqMacWord(m)}</span></div>
+      <div class="sub" style="margin:-4px 0 0;">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}<br>${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
+        ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
+        : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time.</div>
+      <div class="row" style="align-items:flex-start;gap:10px;">
+        <div class="grow"><div class="title" style="font-weight:500;">Mac busy</div><div class="sub">On, the model is unloaded and the team's turns on the Mac wait.</div></div>
+        <button class="${m.busy ? "primary" : "ghost"}" aria-pressed="${m.busy ? "true" : "false"}" data-act="hq:mac:busy:${m.busy ? "off" : "on"}">${m.busy ? "On" : "Off"}</button></div>
+      <div class="row" style="flex-wrap:wrap;">
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
         <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
         <label>wait until I am idle for <input id="hq-mac-idle" type="number" min="0" max="1440" value="${Number(m.idle_minutes) || 0}" aria-label="Minutes the owner must be idle (0: no wait)" /> min (0: no wait)</label>
         <button class="primary" data-act="hq:mac:save:go">Save</button></div>
-      <div class="row" style="margin-top:8px;"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
-      <p class="sub" style="margin-top:8px;">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></div>`;
+      <div class="row"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
+      <div class="sub">Teams on the Mac brain wait for the Mac and never fall back to another model.</div></div>`;
 }
 
 async function hqMacAct(what, arg) {
