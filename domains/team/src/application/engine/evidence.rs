@@ -483,6 +483,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if worker == Some(tester.id) {
             return Err(EngineError::Refused(Refusal::OwnWork));
         }
+        self.ci_can_be_had(&current)?;
         self.judge_work(
             &current,
             cited,

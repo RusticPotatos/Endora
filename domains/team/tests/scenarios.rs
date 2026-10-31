@@ -946,6 +946,7 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
             can_push: true,
             changed: Vec::new(),
             texts: Vec::new(),
+            workflows: None,
         },
     )
     .expect("the node's record is taken");

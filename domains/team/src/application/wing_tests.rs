@@ -174,6 +174,7 @@ fn submission(can_push: bool) -> Submission {
         can_push,
         changed: Vec::new(),
         texts: Vec::new(),
+        workflows: None,
     }
 }
 

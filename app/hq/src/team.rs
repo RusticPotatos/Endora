@@ -505,6 +505,11 @@ pub(crate) struct BranchTold {
     /// `[path, text]` at its head for HQ's mechanical checks; absent from an older node.
     #[serde(default)]
     texts: Vec<(String, String)>,
+    /// `[path, text]` of each GitHub Actions workflow at its head, for the check of a CI
+    /// criterion (ADR 0142, amended 2026-10-31); absent from an older node, which is told apart
+    /// from a branch with none.
+    #[serde(default)]
+    workflows: Option<Vec<(String, String)>>,
 }
 
 /// For the node's `repo_submit` (ADR 0115): a branch it took from a turn, recorded with its
@@ -529,6 +534,7 @@ pub(crate) async fn branch(
                 can_push: req.can_push,
                 changed: req.changed,
                 texts: req.texts,
+                workflows: req.workflows,
             },
         )
     })

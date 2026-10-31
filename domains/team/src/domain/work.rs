@@ -532,6 +532,14 @@ pub enum Refusal {
     RefusedCall(String),
     /// The tester passes work only on readings of her own.
     NoOwnReading,
+    /// A criterion asks for a CI run, and none can be had for the item's branch: no workflow at
+    /// its head runs on a push to it (ADR 0142, amended 2026-10-31, D6).
+    NoCiRun {
+        /// The branch.
+        branch: String,
+        /// The criteria that ask for a CI run.
+        criteria: Vec<String>,
+    },
     /// That is not a step a project takes from where it is.
     NotAProjectStep {
         /// Where it is.
@@ -749,6 +757,13 @@ impl fmt::Display for Refusal {
             Self::NoOwnReading => f.write_str(
                 "a tester passes work on her own readings: take them this turn and cite their \
                  receipts",
+            ),
+            Self::NoCiRun { branch, criteria } => write!(
+                f,
+                "no CI run can be had for {branch}: no workflow at its head runs on a push to it, \
+                 so \"{}\" cannot be met as the fork stands (HQ's checks say which). Send it \
+                 back saying so, for the owner to decide",
+                criteria.join("\", \"")
             ),
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")

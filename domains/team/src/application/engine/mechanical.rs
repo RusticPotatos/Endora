@@ -24,12 +24,17 @@ pub(super) struct BranchFiles {
     pub(super) changed: Vec<String>,
     /// `(path, text)` at its head: each role README it changes and the role's defaults.
     pub(super) texts: Vec<(String, String)>,
+    /// `(path, text)` of each GitHub Actions workflow at its head (ADR 0142, amended
+    /// 2026-10-31); `None` from a node that did not tell them.
+    pub(super) workflows: Option<Vec<(String, String)>>,
 }
 
 impl BranchFiles {
     /// As the setting keeps it.
     pub(super) fn kept(&self) -> String {
-        serde_json::json!({ "changed": self.changed, "texts": self.texts }).to_string()
+        serde_json::json!({ "changed": self.changed, "texts": self.texts,
+                            "workflows": self.workflows })
+        .to_string()
     }
 
     /// From the setting.
@@ -41,17 +46,22 @@ impl BranchFiles {
                 .filter_map(|s| s.as_str().map(str::to_owned))
                 .collect()
         };
-        Self {
-            changed: strings(&kept["changed"]),
-            texts: kept["texts"]
-                .as_array()
+        let pairs = |v: &serde_json::Value| -> Vec<(String, String)> {
+            v.as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|pair| match strings(pair).as_slice() {
                     [path, text] => Some((path.clone(), text.clone())),
                     _ => None,
                 })
-                .collect(),
+                .collect()
+        };
+        Self {
+            changed: strings(&kept["changed"]),
+            texts: pairs(&kept["texts"]),
+            workflows: kept["workflows"]
+                .is_array()
+                .then(|| pairs(&kept["workflows"])),
         }
     }
 }
@@ -64,17 +74,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         branch: i64,
         changed: &[String],
         texts: &[(String, String)],
+        workflows: Option<&[(String, String)]>,
     ) -> Done<()> {
-        if changed.is_empty() && texts.is_empty() {
+        if changed.is_empty() && texts.is_empty() && workflows.is_none() {
             return Ok(());
         }
-        let files = BranchFiles {
-            changed: changed.to_vec(),
-            texts: texts
-                .iter()
+        let short = |t: &[(String, String)]| -> Vec<(String, String)> {
+            t.iter()
                 .filter(|(_, t)| t.chars().count() <= TEXT_MOST)
                 .cloned()
-                .collect(),
+                .collect()
+        };
+        let files = BranchFiles {
+            changed: changed.to_vec(),
+            texts: short(texts),
+            // A workflow the node could not hand over whole (empty) or too long to keep is not
+            // one HQ can say nothing runs: the workflows are kept as untold, so the check
+            // cannot tell rather than misjudge.
+            workflows: workflows
+                .filter(|w| {
+                    w.iter()
+                        .all(|(_, t)| !t.trim().is_empty() && t.chars().count() <= TEXT_MOST)
+                })
+                .map(short),
         };
         self.store
             .set_setting(&format!("{BRANCH_FILES}{branch}"), &files.kept())?;
@@ -138,6 +160,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             mechanical::scope(&files.changed, &words),
         ));
         let criteria: Vec<&str> = task.criteria.iter().map(|c| c.text.as_str()).collect();
+        let asks_for_ci = mechanical::asks_for_ci(&criteria);
+        if !asks_for_ci.is_empty() {
+            report.ci = Some(mechanical::ci(
+                &branch.name,
+                asks_for_ci,
+                files.workflows.as_deref(),
+            ));
+        }
         if !mechanical::asks_for_defaults(&criteria) {
             return Ok(report);
         }
@@ -178,6 +208,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             None => BranchFiles {
                 changed: self.changed_in_document(branch.task, &branch.name)?,
                 texts: Vec::new(),
+                workflows: None,
             },
         })
     }
@@ -232,6 +263,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.loop_failed(task.id)?;
         }
         Ok(true)
+    }
+
+    /// Refuses a pass of an item whose criteria ask for a CI run that no workflow at its
+    /// branch's head runs on a push of (ADR 0142, amended 2026-10-31, D6): HQ decides that by
+    /// rule, from the branch as it stands now, not the reviewer.
+    pub(super) fn ci_can_be_had(&self, task: &Task) -> Done<()> {
+        let report = self.mechanical_checks(task)?;
+        let Some(ci) = report.no_ci_run() else {
+            return Ok(());
+        };
+        Err(super::EngineError::Refused(
+            crate::domain::Refusal::NoCiRun {
+                branch: ci.branch.clone(),
+                criteria: ci.criteria.clone(),
+            },
+        ))
     }
 
     /// The item's latest mechanical checks, for its reviewer's briefing, in full; empty when

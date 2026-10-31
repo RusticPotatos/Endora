@@ -576,6 +576,404 @@ pub fn coverage(readme_path: &str, readme: &str, defaults_yaml: &str) -> Coverag
     }
 }
 
+/// The criteria that ask for a CI run: those that name CI as a word of their own (`CI`,
+/// `ci.yml`), continuous integration, GitHub Actions or a workflow run.
+#[must_use]
+pub fn asks_for_ci(criteria: &[&str]) -> Vec<String> {
+    criteria
+        .iter()
+        .filter(|c| {
+            let c = c.to_ascii_lowercase();
+            names_key(&c, "ci")
+                || c.contains("continuous integration")
+                || c.contains("github actions")
+                || c.contains("workflow run")
+        })
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
+/// What a GitHub Actions workflow's `on.push` says of the branches a push runs it for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushFilter {
+    /// It does not run on a push.
+    NotOnPush,
+    /// A push to any branch runs it.
+    AnyBranch,
+    /// A push runs it only for a branch these patterns match (`branches`).
+    Branches(Vec<String>),
+    /// A push runs it for any branch but those these patterns match (`branches-ignore`).
+    BranchesIgnored(Vec<String>),
+    /// Only a push of tags runs it (`tags` with no `branches`).
+    TagsOnly,
+    /// Written in a form HQ does not read (a flow mapping, a block scalar): it cannot tell.
+    Unread,
+}
+
+/// What a push of one branch does with one workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnPush {
+    /// The push runs it.
+    Runs,
+    /// It runs on a push, but not of this branch.
+    NotForIt,
+    /// It does not run on a push at all.
+    NotOnPush,
+    /// HQ cannot tell.
+    CannotTell,
+}
+
+/// A line of YAML as the push filter reads it: its indent and its text, comment cut.
+struct YamlLine<'a> {
+    indent: usize,
+    text: &'a str,
+}
+
+/// A line without its comment: from a `#` at its start or after whitespace, outside quotes.
+fn uncommented(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut last = ' ';
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '#' && last.is_whitespace() => return &line[..i],
+            None => {}
+        }
+        last = c;
+    }
+    line
+}
+
+/// A YAML document's lines that say something, with their indents.
+fn yaml_lines(yaml: &str) -> Vec<YamlLine<'_>> {
+    yaml.lines()
+        .filter_map(|l| {
+            let text = uncommented(l).trim_end();
+            let trimmed = text.trim_start();
+            if trimmed.is_empty() || trimmed == "---" {
+                return None;
+            }
+            Some(YamlLine {
+                indent: text.len() - trimmed.len(),
+                text: trimmed,
+            })
+        })
+        .collect()
+}
+
+/// A word without the quotes around it.
+fn unquote(word: &str) -> &str {
+    let word = word.trim();
+    ['"', '\'']
+        .iter()
+        .find_map(|q| word.strip_prefix(*q).and_then(|w| w.strip_suffix(*q)))
+        .unwrap_or(word)
+}
+
+/// A mapping line's key, unquoted, and what follows its colon.
+fn key_of(text: &str) -> Option<(&str, &str)> {
+    if text.starts_with('-') {
+        return None;
+    }
+    let colon = text
+        .char_indices()
+        .find(|(i, c)| *c == ':' && text[i + 1..].chars().next().is_none_or(char::is_whitespace))?;
+    Some((unquote(&text[..colon.0]), text[colon.0 + 1..].trim()))
+}
+
+/// The lines under `lines[at]`: those indented deeper than it, up to the next that is not.
+fn children<'l, 'a>(lines: &'l [YamlLine<'a>], at: usize) -> &'l [YamlLine<'a>] {
+    let indent = lines[at].indent;
+    let end = lines[at + 1..]
+        .iter()
+        .position(|l| l.indent <= indent)
+        .map_or(lines.len(), |p| at + 1 + p);
+    &lines[at + 1..end]
+}
+
+/// A list's items: written after its key (`[a, b]`, or one word), or as `- a` lines under it.
+/// `None` for a form HQ does not read.
+fn list_value(rest: &str, under: &[YamlLine<'_>]) -> Option<Vec<String>> {
+    if let Some(inner) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        return Some(
+            inner
+                .split(',')
+                .map(unquote)
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        );
+    }
+    if rest.starts_with(['{', '[', '|', '>', '&', '*']) {
+        return None;
+    }
+    if !rest.is_empty() {
+        return Some(vec![unquote(rest).to_owned()]);
+    }
+    let first = under.first()?;
+    let mut items = Vec::new();
+    for line in under {
+        let item = line.text.strip_prefix('-')?;
+        if line.indent != first.indent || item.trim_start().starts_with(['{', '[', '|', '>']) {
+            return None;
+        }
+        items.push(unquote(item).to_owned());
+    }
+    Some(items)
+}
+
+/// A workflow's push filter (ADR 0142, amended 2026-10-31, D6), read from its YAML by rule:
+/// `on` as an event, a list of events or a mapping; under `push`, `branches`,
+/// `branches-ignore` and `tags`. Paths filters are not read: they make a run on a branch the
+/// filter allows conditional, never possible where it was not.
+#[must_use]
+pub fn push_filter(workflow: &str) -> PushFilter {
+    let lines = yaml_lines(workflow);
+    let Some(at) = lines
+        .iter()
+        .position(|l| l.indent == 0 && key_of(l.text).is_some_and(|(k, _)| k == "on"))
+    else {
+        return PushFilter::NotOnPush;
+    };
+    let events = |listed: Option<Vec<String>>| match listed {
+        Some(events) if events.iter().any(|e| e == "push") => PushFilter::AnyBranch,
+        Some(_) => PushFilter::NotOnPush,
+        None => PushFilter::Unread,
+    };
+    let rest = key_of(lines[at].text).map_or("", |(_, r)| r);
+    let under = children(&lines, at);
+    if !rest.is_empty() {
+        return events(list_value(rest, &[]));
+    }
+    let Some(first) = under.first() else {
+        return PushFilter::Unread;
+    };
+    if first.text.starts_with('-') {
+        return events(list_value("", under));
+    }
+    let Some(push) = under
+        .iter()
+        .position(|l| l.indent == first.indent && key_of(l.text).is_some_and(|(k, _)| k == "push"))
+    else {
+        return PushFilter::NotOnPush;
+    };
+    let rest = key_of(under[push].text).map_or("", |(_, r)| r);
+    if !matches!(rest, "" | "null" | "~" | "{}") {
+        return PushFilter::Unread;
+    }
+    let filters = children(under, push);
+    let Some(first) = filters.first() else {
+        return PushFilter::AnyBranch;
+    };
+    let (mut branches, mut ignored, mut tags) = (None, None, false);
+    for (i, line) in filters.iter().enumerate() {
+        if line.indent != first.indent {
+            continue;
+        }
+        let Some((key, rest)) = key_of(line.text) else {
+            return PushFilter::Unread;
+        };
+        match key {
+            "branches" => branches = Some(list_value(rest, children(filters, i))),
+            "branches-ignore" => ignored = Some(list_value(rest, children(filters, i))),
+            "tags" | "tags-ignore" => tags = true,
+            _ => {}
+        }
+    }
+    match (branches, ignored) {
+        (Some(Some(patterns)), None) => PushFilter::Branches(patterns),
+        (None, Some(Some(patterns))) => PushFilter::BranchesIgnored(patterns),
+        (None, None) if tags => PushFilter::TagsOnly,
+        (None, None) => PushFilter::AnyBranch,
+        _ => PushFilter::Unread,
+    }
+}
+
+/// Whether a GitHub branch pattern matches `name`: `*` within a path segment, `**` across
+/// them. `None` for a pattern with `?`, `+` or `[`, which HQ does not read.
+fn pattern_matches(pattern: &str, name: &str) -> Option<bool> {
+    fn go(p: &[u8], s: &[u8]) -> bool {
+        match p {
+            [] => s.is_empty(),
+            [b'*', b'*', rest @ ..] => (0..=s.len()).any(|i| go(rest, &s[i..])),
+            [b'*', rest @ ..] => {
+                for i in 0..=s.len() {
+                    if go(rest, &s[i..]) {
+                        return true;
+                    }
+                    if s.get(i) == Some(&b'/') {
+                        return false;
+                    }
+                }
+                false
+            }
+            [c, rest @ ..] => s.first() == Some(c) && go(rest, &s[1..]),
+        }
+    }
+    if pattern.contains(['?', '+', '[']) {
+        return None;
+    }
+    Some(go(pattern.as_bytes(), name.as_bytes()))
+}
+
+impl PushFilter {
+    /// What a push of `branch` does with the workflow. Branch patterns are taken in order, a
+    /// `!` one excluding what the ones before it matched, as GitHub does.
+    #[must_use]
+    pub fn on_push_of(&self, branch: &str) -> OnPush {
+        let runs = |yes: bool| if yes { OnPush::Runs } else { OnPush::NotForIt };
+        match self {
+            Self::NotOnPush => OnPush::NotOnPush,
+            Self::AnyBranch => OnPush::Runs,
+            Self::TagsOnly => OnPush::NotForIt,
+            Self::Unread => OnPush::CannotTell,
+            Self::Branches(patterns) => {
+                let mut matched = false;
+                for p in patterns {
+                    let (negated, p) = p
+                        .strip_prefix('!')
+                        .map_or((false, p.as_str()), |p| (true, p));
+                    match pattern_matches(p, branch) {
+                        None => return OnPush::CannotTell,
+                        Some(true) => matched = !negated,
+                        Some(false) => {}
+                    }
+                }
+                runs(matched)
+            }
+            Self::BranchesIgnored(patterns) => {
+                for p in patterns {
+                    match pattern_matches(p, branch) {
+                        None => return OnPush::CannotTell,
+                        Some(true) => return OnPush::NotForIt,
+                        Some(false) => {}
+                    }
+                }
+                OnPush::Runs
+            }
+        }
+    }
+
+    /// The filter as the report says it.
+    fn said(&self) -> String {
+        match self {
+            Self::NotOnPush => "not on a push".to_owned(),
+            Self::AnyBranch => "on a push to any branch".to_owned(),
+            Self::Branches(p) => format!("on a push only to {}", listed(p, 6)),
+            Self::BranchesIgnored(p) => format!("on a push to any branch but {}", listed(p, 6)),
+            Self::TagsOnly => "on a push of tags only".to_owned(),
+            Self::Unread => "its push filter is not one HQ reads".to_owned(),
+        }
+    }
+}
+
+/// Whether a CI run can be had for a branch whose item's criteria ask for one (ADR 0142,
+/// amended 2026-10-31, D6): GitHub runs a workflow on a push only as its `on.push` says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ci {
+    /// The branch.
+    pub branch: String,
+    /// The criteria that ask for a CI run.
+    pub criteria: Vec<String>,
+    /// Each workflow at the branch's head, by file name, with its push filter; `None` when the
+    /// node did not hand them over.
+    pub workflows: Option<Vec<(String, PushFilter)>>,
+}
+
+impl Ci {
+    /// `Some(true)` when a push of the branch runs a workflow, `Some(false)` when none does
+    /// (or there is none), `None` when HQ cannot tell.
+    #[must_use]
+    pub fn can_be_had(&self) -> Option<bool> {
+        let workflows = self.workflows.as_ref()?;
+        let pushed: Vec<OnPush> = workflows
+            .iter()
+            .map(|(_, f)| f.on_push_of(&self.branch))
+            .collect();
+        if pushed.contains(&OnPush::Runs) {
+            return Some(true);
+        }
+        if pushed.contains(&OnPush::CannotTell) {
+            return None;
+        }
+        Some(false)
+    }
+
+    /// The report's line.
+    fn said(&self) -> String {
+        let quoted: Vec<String> = self
+            .criteria
+            .iter()
+            .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+            .collect();
+        let Some(workflows) = &self.workflows else {
+            return format!(
+                "- CI: not checked: the node did not hand HQ the workflows at {}'s head.\n",
+                self.branch
+            );
+        };
+        let each: Vec<String> = workflows
+            .iter()
+            .map(|(name, f)| format!("{name}: {}", f.said()))
+            .collect();
+        match self.can_be_had() {
+            Some(false) if workflows.is_empty() => format!(
+                "- CI: no CI run can be had for {}: there is no workflow at its head. {} cannot \
+                 be met as the fork stands: HQ will not pass the item on it; say so to the owner.\n",
+                self.branch,
+                quoted.join(", ")
+            ),
+            Some(false) => format!(
+                "- CI: no CI run can be had for {}: no workflow at its head runs on a push to it \
+                 ({}). {} cannot be met as the fork stands: HQ will not pass the item on it; say \
+                 so to the owner.\n",
+                self.branch,
+                each.join("; "),
+                quoted.join(", ")
+            ),
+            Some(true) => {
+                let runs: Vec<&str> = workflows
+                    .iter()
+                    .filter(|(_, f)| f.on_push_of(&self.branch) == OnPush::Runs)
+                    .map(|(n, _)| n.as_str())
+                    .collect();
+                format!(
+                    "- CI: {} runs on a push to {}: a run comes only once the branch is pushed, \
+                     and {} needs that run's result.\n",
+                    runs.join(", "),
+                    self.branch,
+                    quoted.join(", ")
+                )
+            }
+            None => format!(
+                "- CI: cannot tell whether a push of {} runs a workflow ({}).\n",
+                self.branch,
+                each.join("; ")
+            ),
+        }
+    }
+}
+
+/// What HQ can say of a CI run for `branch`, whose item's `criteria` ask for one, from the
+/// `(path, text)` of each workflow at its head, or `None` when the node did not tell them.
+#[must_use]
+pub fn ci(branch: &str, criteria: Vec<String>, workflows: Option<&[(String, String)]>) -> Ci {
+    Ci {
+        branch: branch.to_owned(),
+        criteria,
+        workflows: workflows.map(|w| {
+            w.iter()
+                .map(|(path, text)| {
+                    let name = path.rsplit_once('/').map_or(path.as_str(), |(_, n)| n);
+                    (name.to_owned(), push_filter(text))
+                })
+                .collect()
+        }),
+    }
+}
+
 /// What the checks found on one item, ready to be said.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Report {
@@ -587,6 +985,8 @@ pub struct Report {
     pub coverage: Vec<Coverage>,
     /// A README whose defaults file the branch's record does not hold, so was not checked.
     pub unchecked: Vec<String>,
+    /// Whether a CI run can be had for the branch, when the criteria ask for one.
+    pub ci: Option<Ci>,
 }
 
 /// A list said in one line, at most `most` items, saying how many more.
@@ -611,6 +1011,14 @@ impl Report {
             && self.branch.is_none()
             && self.coverage.is_empty()
             && self.unchecked.is_empty()
+            && self.ci.is_none()
+    }
+
+    /// The CI check, when it found that no CI run can be had for the branch: no criterion that
+    /// asks for one can be met (ADR 0142, amended 2026-10-31, D6).
+    #[must_use]
+    pub fn no_ci_run(&self) -> Option<&Ci> {
+        self.ci.as_ref().filter(|c| c.can_be_had() == Some(false))
     }
 
     /// The files the branch must never have touched.
@@ -632,6 +1040,7 @@ impl Report {
                 .as_ref()
                 .is_some_and(|(_, s)| !s.forbidden.is_empty() || !s.outside.is_empty())
             || self.coverage.iter().any(|c| !c.whole())
+            || self.no_ci_run().is_some()
     }
 
     /// The report as the thread and the reviewer read it.
@@ -731,6 +1140,9 @@ impl Report {
                 "- Defaults: {readme} not checked: the branch's record holds no defaults file \
                  beside it.\n"
             ));
+        }
+        if let Some(ci) = &self.ci {
+            told.push_str(&ci.said());
         }
         told
     }
@@ -1057,6 +1469,7 @@ mod tests {
                 wrong_value: vec![],
             }],
             unchecked: vec![],
+            ci: None,
         };
         let said = report.said();
         assert!(said.starts_with(HEADER), "{said}");
@@ -1077,5 +1490,194 @@ mod tests {
         assert!(report.failed());
         assert_eq!(report.forbidden(), ["host_vars/nas.yml".to_owned()]);
         assert!(Report::default().is_empty());
+    }
+
+    /// The fork's workflow as round 2 met it: CI on a push to main and develop alone.
+    const CI_MAIN_DEVELOP: &str = "---\nname: CI\n\n# Controls when the action will run.\non:\n  \
+        # Triggers the workflow on push or pull request events\n  push:\n    branches: [main, develop]\n  \
+        pull_request:\n    branches: [main]\n\n  workflow_dispatch:\n\njobs:\n  lint:\n    runs-on: ubuntu-latest\n";
+    const HQ_BRANCH: &str = "hq/task-932-ci-lint-rules";
+
+    #[test]
+    fn a_criterion_asks_for_ci_when_it_names_ci_or_a_workflow_run() {
+        let criteria = [
+            "The step is added to the workflow",
+            "A CI run on the branch passes",
+            "The tests pass on GitHub Actions",
+            "The specific rule is reverted",
+        ];
+        assert_eq!(
+            asks_for_ci(&criteria),
+            [
+                "A CI run on the branch passes",
+                "The tests pass on GitHub Actions"
+            ]
+        );
+        assert!(asks_for_ci(&["ci.yml runs the tests"]).len() == 1);
+        assert!(asks_for_ci(&["Decide which rules apply", "Specific circuits"]).is_empty());
+    }
+
+    #[test]
+    fn a_workflow_s_push_filter_is_read_in_its_block_and_flow_forms() {
+        assert_eq!(
+            push_filter(CI_MAIN_DEVELOP),
+            PushFilter::Branches(vec!["main".into(), "develop".into()])
+        );
+        let block = "on:\n  push:\n    branches:\n      - main\n      - 'release/**'\n";
+        assert_eq!(
+            push_filter(block),
+            PushFilter::Branches(vec!["main".into(), "release/**".into()])
+        );
+        assert_eq!(
+            push_filter("\"on\":\n  push:\n    branches: [\"**\"]\n"),
+            PushFilter::Branches(vec!["**".into()])
+        );
+        assert_eq!(push_filter("on: push\n"), PushFilter::AnyBranch);
+        assert_eq!(
+            push_filter("on: [push, pull_request]\n"),
+            PushFilter::AnyBranch
+        );
+        assert_eq!(push_filter("on: [pull_request]\n"), PushFilter::NotOnPush);
+        assert_eq!(push_filter("on:\n  - push\n"), PushFilter::AnyBranch);
+        assert_eq!(
+            push_filter("on:\n  push:\n  pull_request:\n"),
+            PushFilter::AnyBranch
+        );
+        assert_eq!(
+            push_filter("on:\n  pull_request:\n    branches:\n      - main\n"),
+            PushFilter::NotOnPush
+        );
+        assert_eq!(
+            push_filter("on:\n  workflow_dispatch:\n"),
+            PushFilter::NotOnPush
+        );
+        assert_eq!(
+            push_filter("on:\n  push:\n    branches-ignore: [main]\n"),
+            PushFilter::BranchesIgnored(vec!["main".into()])
+        );
+        assert_eq!(
+            push_filter("on:\n  push:\n    tags: ['v*']\n"),
+            PushFilter::TagsOnly
+        );
+        assert_eq!(
+            push_filter("on: { push: { branches: [main] } }\n"),
+            PushFilter::Unread
+        );
+        assert_eq!(
+            push_filter("name: no trigger\njobs: {}\n"),
+            PushFilter::NotOnPush
+        );
+    }
+
+    #[test]
+    fn a_push_filter_says_whether_a_push_of_the_branch_runs_it() {
+        let only = |p: &[&str]| PushFilter::Branches(p.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(
+            only(&["main", "develop"]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(only(&["**"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["hq/**"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["hq/*"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["*"]).on_push_of(HQ_BRANCH), OnPush::NotForIt);
+        assert_eq!(
+            only(&["hq/**", "!hq/task-932-*"]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(
+            only(&["hq/task-93?-*"]).on_push_of(HQ_BRANCH),
+            OnPush::CannotTell
+        );
+        assert_eq!(
+            PushFilter::BranchesIgnored(vec!["hq/**".into()]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(
+            PushFilter::BranchesIgnored(vec!["main".into()]).on_push_of(HQ_BRANCH),
+            OnPush::Runs
+        );
+        assert_eq!(PushFilter::AnyBranch.on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(PushFilter::TagsOnly.on_push_of(HQ_BRANCH), OnPush::NotForIt);
+        assert_eq!(
+            PushFilter::NotOnPush.on_push_of(HQ_BRANCH),
+            OnPush::NotOnPush
+        );
+        assert_eq!(PushFilter::Unread.on_push_of(HQ_BRANCH), OnPush::CannotTell);
+    }
+
+    #[test]
+    fn a_ci_run_cannot_be_had_when_no_workflow_runs_on_a_push_of_the_branch() {
+        let asked = vec!["A CI run on the branch passes".to_owned()];
+        let workflows = [
+            (
+                ".github/workflows/ci.yml".to_owned(),
+                CI_MAIN_DEVELOP.to_owned(),
+            ),
+            (
+                ".github/workflows/integration.yml".to_owned(),
+                "on:\n  workflow_dispatch:\n".to_owned(),
+            ),
+        ];
+        let none = ci(HQ_BRANCH, asked.clone(), Some(&workflows));
+        assert_eq!(none.can_be_had(), Some(false));
+        let report = Report {
+            ci: Some(none),
+            ..Report::default()
+        };
+        assert!(report.failed() && !report.is_empty());
+        assert!(report.no_ci_run().is_some());
+        let said = report.said();
+        assert!(
+            said.contains(
+                "- CI: no CI run can be had for hq/task-932-ci-lint-rules: no workflow at its \
+                 head runs on a push to it (ci.yml: on a push only to main, develop; \
+                 integration.yml: not on a push)."
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains("\"A CI run on the branch passes\" cannot be met as the fork stands"),
+            "{said}"
+        );
+        // A workflow that runs on hq/ branches: a run can be had once the branch is pushed.
+        let every = [(
+            ".github/workflows/ci.yml".to_owned(),
+            "on:\n  push:\n    branches: [\"**\"]\n".to_owned(),
+        )];
+        let some = ci(HQ_BRANCH, asked.clone(), Some(&every));
+        assert_eq!(some.can_be_had(), Some(true));
+        let said = Report {
+            ci: Some(some),
+            ..Report::default()
+        }
+        .said();
+        assert!(
+            said.contains("- CI: ci.yml runs on a push to hq/task-932-ci-lint-rules"),
+            "{said}"
+        );
+        // A branch with no workflow at all: none can be had.
+        assert_eq!(
+            ci(HQ_BRANCH, asked.clone(), Some(&[])).can_be_had(),
+            Some(false)
+        );
+        // A filter HQ does not read: it cannot tell, and says so.
+        let odd = [(
+            ".github/workflows/ci.yml".to_owned(),
+            "on: {push: {}}\n".to_owned(),
+        )];
+        assert_eq!(ci(HQ_BRANCH, asked.clone(), Some(&odd)).can_be_had(), None);
+        // A node that did not hand the workflows over: not checked, never failed.
+        let untold = ci(HQ_BRANCH, asked, None);
+        assert_eq!(untold.can_be_had(), None);
+        let report = Report {
+            ci: Some(untold),
+            ..Report::default()
+        };
+        assert!(!report.failed() && report.no_ci_run().is_none());
+        assert!(
+            report.said().contains("- CI: not checked"),
+            "{}",
+            report.said()
+        );
     }
 }
