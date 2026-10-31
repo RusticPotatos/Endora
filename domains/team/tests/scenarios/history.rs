@@ -29,6 +29,28 @@ fn worker_tells(w: &mut Office, name: String, said: String) {
 }
 
 #[when(
+    expr = "{word}'s worker tells the node the turn started with the tools {string}, held back {string}, the rules {string} and the briefing {string}"
+)]
+fn worker_tells_what_was_given(
+    w: &mut Office,
+    name: String,
+    tools: String,
+    held: String,
+    rules: String,
+    briefing: String,
+) {
+    let token = w.turn_of(&name).token;
+    let lines = |names: &str| names.split(", ").collect::<Vec<_>>().join("\n");
+    let text = format!(
+        "--- tools ---\n{}\n--- tools: held back ---\n{}\n--- system ---\n{rules}\n--- user ---\n{briefing}\n",
+        lines(&tools),
+        lines(&held)
+    );
+    let kept = w.hq.record_transcript(&token, "worker", &text);
+    assert!(w.note(kept).is_some(), "refused: {:?}", w.refused);
+}
+
+#[when(
     expr = "{word}'s worker tells the node a conversation of two megabytes that starts {string} and ends {string}"
 )]
 fn worker_tells_a_lot(w: &mut Office, name: String, start: String, end: String) {
@@ -53,6 +75,8 @@ fn says_last_word(w: &mut Office, name: String, text: String) {
 fn replay_shows(w: &mut Office, name: String, text: String) {
     let shown = w.replay_of(&name);
     let said = shown["transcript"]["text"].as_str().unwrap_or_default();
+    // A `\n` in the scenario is a line's end.
+    let text = text.replace("\\n", "\n");
     assert!(said.contains(&text), "the replay holds: {shown}");
 }
 

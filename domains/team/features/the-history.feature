@@ -18,6 +18,16 @@ Feature: The team's history
     Then the replay of Zed's turn shows "I read the logs and will cap sonarr at 512M."
     And the replay of Zed's turn says it is kept for 30 days
 
+  Scenario: The owner sees what a turn was given: its tools by name, its rules and its briefing
+    Given Zed has the task "Cap sonarr's memory"
+    When Zed's turn starts
+    And Zed's worker tells the node the turn started with the tools "post, claim", held back "container_logs", the rules "Look, then act." and the briefing "Your task: cap sonarr."
+    And Zed's turn ends
+    Then the replay of Zed's turn shows "--- tools ---\npost\nclaim\n"
+    And the replay of Zed's turn shows "--- tools: held back ---\ncontainer_logs\n"
+    And the replay of Zed's turn shows "--- system ---\nLook, then act."
+    And the replay of Zed's turn shows "--- user ---\nYour task: cap sonarr."
+
   Scenario: A conversation over a megabyte keeps its head and its tail
     Given Zed has the task "Read the logs"
     When Zed's turn starts

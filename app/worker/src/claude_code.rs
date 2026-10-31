@@ -468,9 +468,18 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
         (None, false, Err(_)) => "It failed.".to_owned(),
     };
     let last_word = done.as_ref().map_or("", |d| d.text.as_str());
+    let allowed: Vec<String> = BUILT_IN
+        .iter()
+        .map(|t| (*t).to_owned())
+        .chain(allowed_tools(&names))
+        .collect();
     node.tell_conversation(
         "claude-code",
-        &crate::transcript::claude_code(&briefing, last_word, &how_it_ended),
+        &format!(
+            "{}{}",
+            crate::transcript::claude_code_given(&told, &allowed),
+            crate::transcript::claude_code(&briefing, last_word, &how_it_ended)
+        ),
     );
     if let Some(why) = kept.over {
         return Err(Stopped::Over(why));

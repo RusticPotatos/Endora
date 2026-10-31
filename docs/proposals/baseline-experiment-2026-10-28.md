@@ -631,8 +631,11 @@ ways. To fix after the one-team clean-up lands, in this order:
 - [x] Activity on a tab of its own (Work, Manage, Health, Activity): the latest 20, and "Show
   more" opens a full-screen, paged view; never an endless scroll. On the `r3-ui-activity-tab`
   branch: fifty a page through the existing events route, no API change. Not yet merged.
-- [ ] On a task, each turn shows what the model was given: its instructions, tools and briefing,
-  secrets redacted (HQ keeps every turn's conversation, ADR 0129).
+- [x] On a task, each turn shows what the model was given: its instructions, tools and briefing,
+  secrets redacted (HQ keeps every turn's conversation, ADR 0129). Done on `r3-ui-turn-prompts`:
+  a folded "What it was given" card in each turn's replay, opened from the task's turn lines;
+  the worker now keeps the tools by name, the node scrubs the replay on its way out. Not kept,
+  and said so: schemas, Claude Code's own instructions, and the tools of turns before 31 Oct.
 - [x] The team board takes a line a member; the rest on a tap. *Done on `r3-ui-manage-layout`:
   name, model, what it is doing and today's money on one line, no groups; role, brains, allowance
   and every control on a tap.*

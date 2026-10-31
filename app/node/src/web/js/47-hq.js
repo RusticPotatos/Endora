@@ -386,7 +386,9 @@ function hqTurns(match, key) {
   const every = !!HQ.allTurns[key], runs = every ? all : all.slice(-5);
   const toggle = all.length > 5
     ? `<div class="hq-row"><button class="hq-btn" aria-expanded="${every ? "true" : "false"}" data-act="hq:turns:${key}:toggle">${every ? "Show the last 5" : `Show all ${all.length}`}</button></div>` : "";
-  return `${toggle}<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}</li>`).join("")}</ul>`;
+  // On a task, each turn also opens what it was given (the owner's notes of 31 Oct).
+  const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
+  return `${toggle}<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}${given(r)}</li>`).join("")}</ul>`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the

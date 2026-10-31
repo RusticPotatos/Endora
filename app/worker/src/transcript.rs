@@ -1,8 +1,9 @@
 //! A turn's conversation as plain text (ADR 0129), told to the node when the turn ends so that
 //! HQ can keep it for a while and show it in the turn's replay. The worker writes it from the
-//! messages it already holds: the instructions, the briefing, each round's words and calls, and
-//! what each call came to. A Claude Code turn has only its briefing and its last word (the
-//! session is not kept), and says so.
+//! messages it already holds: the tools it started with and those held back, by name (since
+//! 2026-10-31), the instructions, the briefing, each round's words and calls, and what each call
+//! came to. A Claude Code turn has only the rules Endora appended, its tools, its briefing and
+//! its last word (the session is not kept), and says so.
 //!
 //! The text is divided by lines that begin `--- ` and end ` ---` (`--- assistant ---`,
 //! `--- call: post ---`); a line inside what was said that would look like one is written so it
@@ -149,6 +150,32 @@ pub fn anthropic(system: &str, messages: &[Value]) -> String {
     out
 }
 
+/// The tools a turn started with, by name, one a line, and apart from them those it was told
+/// it could bring in (`find_tools`, Claude's tool search): what the model was offered in its
+/// first call. Never their schemas, which are long and the same for every turn.
+#[must_use]
+pub fn tools(up_front: &[String], held_back: &[String]) -> String {
+    let mut out = String::new();
+    for (kind, names) in [("tools", up_front), ("tools: held back", held_back)] {
+        if names.is_empty() {
+            continue;
+        }
+        out.push_str(&divider(kind));
+        out.push_str(&said(&names.join("\n")));
+    }
+    out
+}
+
+/// What the worker gave a Claude Code turn beside its briefing: Endora's rules, appended to
+/// Claude Code's own instructions (which the worker never sees), and the tools it allowed.
+#[must_use]
+pub fn claude_code_given(rules: &str, allowed: &[String]) -> String {
+    let mut out = divider("system");
+    out.push_str(&said(rules));
+    out.push_str(&tools(allowed, &[]));
+    out
+}
+
 /// A Claude Code turn: what the worker has of it. The session is not kept (the turn runs with
 /// no session file), so there is the briefing, the last word, and what the sandbox's hook
 /// reported as receipts.
@@ -265,6 +292,32 @@ mod tests {
         assert!(text.starts_with("--- user ---\nYou are Rae.\n--- assistant ---\nFixed it.\n"));
         assert!(text.contains("keeps no session") && text.contains("It ended well."));
         assert!(!claude_code("b", "  ", "x").contains("--- assistant ---"));
+    }
+
+    #[test]
+    fn the_tools_a_turn_started_with_are_named_and_those_held_back_apart() {
+        let text = tools(
+            &["post".to_owned(), "find_tools".to_owned()],
+            &["container_logs".to_owned()],
+        );
+        assert_eq!(
+            text,
+            "--- tools ---\npost\nfind_tools\n--- tools: held back ---\ncontainer_logs\n"
+        );
+        assert_eq!(tools(&["post".to_owned()], &[]), "--- tools ---\npost\n");
+        assert_eq!(tools(&[], &[]), "");
+    }
+
+    #[test]
+    fn a_claude_code_turn_keeps_the_rules_endora_gave_it_and_its_tools() {
+        let text = claude_code_given(
+            "Endora's rules.",
+            &["Bash".to_owned(), "mcp__hq__post".to_owned()],
+        );
+        assert_eq!(
+            text,
+            "--- system ---\nEndora's rules.\n--- tools ---\nBash\nmcp__hq__post\n"
+        );
     }
 
     #[test]

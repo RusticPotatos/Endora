@@ -2039,7 +2039,8 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
     );
     assert_eq!(last["last_word"], true);
     // What the worker has of the session is told to the node, for HQ to keep (ADR 0129): the
-    // briefing it was given, its last word, and that the session itself is not kept.
+    // rules Endora appended and the tools it allowed, the briefing it was given, its last word,
+    // and that the session itself is not kept.
     let told: Vec<Sent> = to_node
         .lock()
         .unwrap()
@@ -2050,8 +2051,13 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
     assert_eq!(told.len(), 1, "{told:?}");
     assert_eq!(told[0].body["runtime"], "claude-code");
     let talk = told[0].body["text"].as_str().unwrap();
+    assert!(talk.starts_with("--- system ---\n"), "{talk}");
     assert!(
-        talk.starts_with("--- user ---\nYou are Jane, the team's developer."),
+        talk.contains("--- tools ---\nRead\nEdit\n") && talk.contains("\nmcp__"),
+        "{talk}"
+    );
+    assert!(
+        talk.contains("--- user ---\nYou are Jane, the team's developer."),
         "{talk}"
     );
     assert!(

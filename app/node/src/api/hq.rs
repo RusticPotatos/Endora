@@ -116,7 +116,21 @@ pub(super) async fn hq_events(State(state): State<AppState>, Query(q): Query<HqA
 /// recorded; a checking credential never reaches it (`crate::auth`), as it carries what the
 /// member was told and Confidential excerpts.
 pub(super) async fn hq_run_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/runs/{id}/replay"), None).await
+    let mut answer = ask(&state, format!("/v1/runs/{id}/replay"), None).await?;
+    scrubbed(&mut answer.0);
+    Ok(answer)
+}
+
+/// Every word of a replay scrubbed of secrets on its way to the owner's screen, with the
+/// scrubber the receipts and the kept conversations already pass through: what a turn was
+/// given and said may hold a key that reached HQ before the scrubber knew its shape.
+fn scrubbed(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = endora_capabilities::scrub_secrets(text),
+        serde_json::Value::Array(all) => all.iter_mut().for_each(scrubbed),
+        serde_json::Value::Object(all) => all.values_mut().for_each(scrubbed),
+        _ => {}
+    }
 }
 
 /// Owner-only retained questions; rebuild the bounded cursor route from numbers.
@@ -135,7 +149,9 @@ pub(super) async fn hq_task_consultations(
 
 /// Replay: a task's turns read back, oldest first.
 pub(super) async fn hq_task_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/tasks/{id}/replay"), None).await
+    let mut answer = ask(&state, format!("/v1/tasks/{id}/replay"), None).await?;
+    scrubbed(&mut answer.0);
+    Ok(answer)
 }
 
 #[derive(Deserialize)]
@@ -1364,6 +1380,63 @@ mod tests {
             .map(|(p, _, _)| p.clone())
             .collect();
         assert_eq!(sent, ["/v1/scenarios/41/pgn", "/v1/chess/9/pgn"]);
+    }
+
+    /// What a turn was given reaches the owner's screen only through the node, and the node
+    /// scrubs every word of a replay with the scrubber the receipts and the kept conversations
+    /// use: a key, a token or a link's password planted anywhere in it never reaches the page.
+    #[tokio::test]
+    async fn a_secret_planted_in_a_replay_never_reaches_the_page() {
+        let planted = [
+            "sk-ant-abcdefabcdefabcdefabcdef",
+            "ghp_1234567890abcdefghijklmnopqrstuv",
+            "hunter2",
+            "AKIAIOSFODNN7EXAMPLE",
+        ];
+        let turn = json!({
+            "run": 3, "task": 7,
+            "moments": [
+                { "kind": "briefing", "text": "You are Bo. The key is sk-ant-abcdefabcdefabcdefabcdef." },
+                { "kind": "call", "tool": "container_logs", "args": "password=hunter2",
+                  "excerpt": "pulled https://jane:hunter2@example.com/x.git" },
+            ],
+            "transcript": { "runtime": "worker", "est_tokens": 40, "text":
+                "--- tools ---\npost\n--- system ---\nYou are Bo.\n--- user ---\nUse ghp_1234567890abcdefghijklmnopqrstuv \
+                 and AKIAIOSFODNN7EXAMPLE.\n" },
+        });
+        let answered = turn.clone();
+        let (url, _) = fake(Arc::new(move |path, _| {
+            let body = if path.starts_with("/v1/tasks/") {
+                json!({ "task": 7, "runs": [answered.clone()] })
+            } else {
+                json!({ "replay": answered.clone() })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let one = hq_run_replay(State(state.clone()), Path(3))
+            .await
+            .unwrap()
+            .0;
+        let all = hq_task_replay(State(state), Path(7)).await.unwrap().0;
+        for page in [one.to_string(), all.to_string()] {
+            for secret in planted {
+                assert!(!page.contains(secret), "{secret} reached the page: {page}");
+            }
+            assert!(page.contains("[redacted]"), "{page}");
+            assert!(
+                page.contains("--- tools ---\\npost"),
+                "the rest is kept: {page}"
+            );
+            assert!(
+                page.contains("[redacted]@example.com/x.git"),
+                "a link keeps its host: {page}"
+            );
+        }
+        assert_eq!(
+            all["runs"][0]["transcript"]["est_tokens"], 40,
+            "numbers stay numbers"
+        );
     }
 
     #[tokio::test]
