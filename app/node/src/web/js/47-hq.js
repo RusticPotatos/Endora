@@ -988,7 +988,7 @@ function hqRoomLabels(g) {
   return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "CEO", O.x * T + 5, O.y * T + 9),
     hqTag(g, "SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4), hqTag(g, "MEETING", M.x * T + 5, (M.y + M.h) * T - 4),
     hqTag(g, "PING-PONG", 4, 15 * T + 9, "#ffffff", "rgba(31,29,41,.45)"),
-    hqTag(g, "KITCHEN", 24.6 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
+    hqTag(g, "KITCHEN", 28.3 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
 }
 
 // The things on the floor now, from the snapshot's office (ADR 0119): where each stands, how
@@ -1340,7 +1340,8 @@ function hqDraw() {
     const x = Math.max(2, Math.min(HQ_W - w - 2, at.desk && at.dir === "left" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "right" ? Math.round(p.x) : Math.round(p.x) + 8 - Math.round(w / 2)));
     const top = Math.round(p.y) + hqSitDy(p);
     const under = top + 24, over = top - 18, clear = (y) => !placed.some((r) => hqOverlaps(r, { x: x - 2, y: y - 7, w: w + 3, h: 9 }));
-    placed.push(hqTag(ctx, name, x, clear(under) || !clear(over) ? under : over));
+    p.nameOver = !clear(under) && clear(over);
+    placed.push(hqTag(ctx, name, x, p.nameOver ? over : under));
   }
   // Decisions waiting on the board room table.
   (snap.desk || []).slice(0, 5).forEach((n, i) => {
@@ -1404,7 +1405,9 @@ function hqBubble(ctx, p) {
   // Up to two lines of whole words, over the speaker's head and inside the scene.
   const lines = hqWrap(text, (s) => ctx.measureText(s).width, HQ_BUBBLE_W);
   const tw = Math.ceil(Math.max(...lines.map((l) => ctx.measureText(l).width))) + 6, th = lines.length * 9 + 1;
-  const x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.max(1, Math.round(p.y - 20 - th));
+  // Above the name, when the name is over the head.
+  const lift = p.nameOver ? 10 : 0;
+  const x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.max(1, Math.round(p.y + hqSitDy(p) - 20 - lift - th));
   ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, th);
   ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + th, tw, 1);
   ctx.fillRect(Math.round(Math.min(x + tw - 3, Math.max(x + 1, p.x + 7))), y + th, 2, 2);
