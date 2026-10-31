@@ -592,6 +592,48 @@ fn work_in_review_goes_to_the_member_one_rank_up() {
     assert_eq!(hq.loop_failures(fix).unwrap(), 1);
 }
 
+/// The owner, 31 Oct (D7): reviews are capped at Haiku. Work done below Haiku's rank is never
+/// reviewed above it, and only the reviewer HQ chose may pass it.
+///
+/// Given Ada on DeepSeek, so nobody on the team thinks with Haiku, and her item in review,
+/// when HQ asks for its review,
+/// then Rae (the Mac, below her) is woken to it, not Kit (Sonnet), and Kit may not review it.
+#[test]
+fn work_below_haiku_is_never_reviewed_above_haiku() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_model(f.ada, "deepseek").unwrap();
+    hq.set_loop_rank(f.loop_, 4).unwrap();
+    let kit = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.name == "Kit")
+        .unwrap()
+        .id;
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let ada = turn_of(&hq, f.ada);
+    use_tool(&hq, &ada, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &ada,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(ada.run, true);
+    assert!(woken(&hq, f.rae, fix, WakeReason::ReviewRequested));
+    assert!(!woken(&hq, kit, fix, WakeReason::ReviewRequested));
+    let task = hq.store().task(fix).unwrap().unwrap();
+    assert_eq!(
+        hq.loop_reviewer_of(&task).unwrap().map(|m| m.id),
+        Some(f.rae)
+    );
+}
+
 /// The member one rank up passes work as it sends it back: with the review tool, on a reading
 /// of its own. Live, the tool asked for a tester's role, which no member has in the loops, so a
 /// reviewer could only send work back.
@@ -1631,6 +1673,7 @@ fn kept_at(head: &str) -> super::engine::Submission {
         can_push: false,
         changed: vec!["roles/gluetun/defaults/main.yml".to_owned()],
         texts: Vec::new(),
+        workflows: None,
     }
 }
 

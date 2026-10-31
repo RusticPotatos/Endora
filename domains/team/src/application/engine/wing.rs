@@ -68,6 +68,9 @@ pub struct Submission {
     /// Files as they are at its head that HQ's mechanical checks read, as `(path, text)`: each
     /// role README it changes and the role's `defaults/main.yml`.
     pub texts: Vec<(String, String)>,
+    /// `(path, text)` of each GitHub Actions workflow at its head, for HQ's check of a CI
+    /// criterion (ADR 0142, amended 2026-10-31); `None` from a node that does not tell them.
+    pub workflows: Option<Vec<(String, String)>>,
 }
 
 /// What recording a submission made: the branch, its document, and its check job.
@@ -174,7 +177,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             status: "submitted".to_owned(),
             at: now,
         })?;
-        self.keep_branch_files(branch, &s.changed, &s.texts)?;
+        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
         let (check, _) = self.store.add_check(&Check {
             id: 0,
             task,
@@ -273,7 +276,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             status: IN_PROGRESS.to_owned(),
             at: self.clock.now(),
         })?;
-        self.keep_branch_files(branch, &s.changed, &s.texts)?;
+        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
         self.store.set_gate(task, false)?;
         Ok(branch)
     }

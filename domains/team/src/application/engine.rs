@@ -1701,6 +1701,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             return Ok(());
         }
+        // A CI criterion no push can meet is never passed (ADR 0142, amended 2026-10-31).
+        self.ci_can_be_had(&current)?;
         if self.gated(&current)? {
             // Gated work keeps the gate's rule: done only once the gate has passed.
             self.approve_held_lock(reviewer.id, task)?;

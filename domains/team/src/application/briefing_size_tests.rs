@@ -325,6 +325,7 @@ fn bo_works(hq: &Hq<'_>, t: &Team, hard: TaskId, bo: &RunContext) {
                 "roles/gluetun/defaults/main.yml".to_owned(),
             ],
             texts: Vec::new(),
+            workflows: None,
         },
     )
     .unwrap();

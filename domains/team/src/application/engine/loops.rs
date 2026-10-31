@@ -236,20 +236,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
-    /// the top rank's work the member just below it. `None` for work outside the loops.
+    /// the top rank's work the member just below it; never above Haiku's rank for work done
+    /// below it (amended 2026-10-31, D7: [`crate::domain::review::reviewer_among`]). `None` for
+    /// work outside the loops.
     pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
         let Some(holder) = self.loop_holder(task)? else {
             return Ok(None);
         };
         let members = self.loop_members()?;
-        let rank = holder.brain.rank();
-        let up = Self::one_rank_up(&members, rank).or_else(|| {
-            members
-                .iter()
-                .filter(|m| m.id != holder.id && m.brain.rank() > rank)
-                .min_by_key(|m| (m.brain.rank(), m.id.0))
-        });
-        Ok(up.cloned())
+        let ranked: Vec<_> = members.iter().map(|m| (m.id, m.brain.rank())).collect();
+        let reviewer =
+            crate::domain::review::reviewer_among(holder.id, holder.brain.rank(), &ranked);
+        Ok(reviewer.and_then(|id| members.into_iter().find(|m| m.id == id)))
     }
 
     /// Whether an item is held by a member in the loops: its stalls and failures climb the

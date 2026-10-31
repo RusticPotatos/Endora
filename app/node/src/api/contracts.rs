@@ -910,6 +910,8 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "can_push": state.lab.can_push(),
                 // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
                 "changed": taken.changed, "texts": taken.texts, "wip": wip,
+                // For the check of a CI criterion (ADR 0142, amended 2026-10-31).
+                "workflows": taken.workflows,
             }),
         )
         .map_err(|e| {

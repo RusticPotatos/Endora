@@ -132,6 +132,30 @@ pub fn read_for_checks(changed: &[String]) -> Vec<String> {
     wanted
 }
 
+/// Where GitHub keeps a repository's Actions workflows.
+pub const WORKFLOWS_DIR: &str = ".github/workflows/";
+
+/// The most workflows a submission hands HQ.
+pub const WORKFLOWS_MOST: usize = 12;
+
+/// The workflows at a submission's head HQ's check of a CI criterion reads (ADR 0142, amended
+/// 2026-10-31), from `git ls-tree -z --name-only` of [`WORKFLOWS_DIR`]: its `.yml` and `.yaml`
+/// files, never a forbidden path, at most [`WORKFLOWS_MOST`].
+#[must_use]
+pub fn workflow_paths(listing: &str) -> Vec<String> {
+    listing
+        .split('\0')
+        .filter(|p| p.starts_with(WORKFLOWS_DIR))
+        .filter(|p| {
+            let p = p.to_ascii_lowercase();
+            p.ends_with(".yml") || p.ends_with(".yaml")
+        })
+        .filter(|p| !forbidden_path(p))
+        .take(WORKFLOWS_MOST)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// A branch name as the team may use one: a plain name under `hq/`, nothing else.
 ///
 /// # Errors
@@ -328,6 +352,10 @@ pub struct Submitted {
     /// `(path, text)` at its head of what [`read_for_checks`] names, for HQ's mechanical
     /// checks: what exists there and fits [`CHECKED_TEXT_MOST`].
     pub texts: Vec<(String, String)>,
+    /// `(path, text)` at its head of each workflow [`workflow_paths`] names, for HQ's check of
+    /// a CI criterion; one that cannot be read or does not fit [`CHECKED_TEXT_MOST`] is handed
+    /// over empty, so HQ cannot tell rather than think it is not there.
+    pub workflows: Vec<(String, String)>,
 }
 
 impl Submitted {
@@ -926,6 +954,24 @@ impl Mirror {
                     .then(|| (path, String::from_utf8_lossy(&bytes).into_owned()))
             })
             .collect();
+        let listing = git(
+            &self.dir,
+            &["ls-tree", "-z", "--name-only", &head, WORKFLOWS_DIR],
+            &[],
+        )
+        .map(text)
+        .unwrap_or_default();
+        let workflows = workflow_paths(&listing)
+            .into_iter()
+            .map(|path| {
+                let bytes =
+                    git(&self.dir, &["show", &format!("{head}:{path}")], &[]).unwrap_or_default();
+                if bytes.len() > CHECKED_TEXT_MOST {
+                    return (path, String::new());
+                }
+                (path, String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .collect();
         let path = self.submission_path(task, branch, &head);
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
@@ -945,6 +991,7 @@ impl Mirror {
             path,
             changed,
             texts,
+            workflows,
         })
     }
 
@@ -1155,6 +1202,17 @@ mod tests {
             "---\ndeluge_port: 8112\n",
         )
         .unwrap();
+        std::fs::create_dir_all(seed.join(".github/workflows")).unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/ci.yml"),
+            "on:\n  push:\n    branches: [main, develop]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/README.txt"),
+            "not a workflow\n",
+        )
+        .unwrap();
         run(&seed, &["add", "."]);
         commit(&seed, "the lab", "John Doe <john@example.com>");
         run(&seed, &["push", "-q", "origin", "HEAD:main"]);
@@ -1289,6 +1347,20 @@ mod tests {
     }
 
     #[test]
+    fn the_workflows_handed_over_are_the_yaml_files_in_github_s_folder_alone() {
+        let listing = ".github/workflows/ci.yml\0.github/workflows/docs.yaml\0\
+                       .github/workflows/README.md\0.github/workflows/vault.yml\0";
+        assert_eq!(
+            workflow_paths(listing),
+            [".github/workflows/ci.yml", ".github/workflows/docs.yaml"]
+        );
+        let many: String = (0..30)
+            .map(|i| format!(".github/workflows/w{i}.yml\0"))
+            .collect();
+        assert_eq!(workflow_paths(&many).len(), WORKFLOWS_MOST);
+    }
+
+    #[test]
     fn githubs_host_keys_are_the_three_github_publishes_in_shape() {
         let lines: Vec<&str> = GITHUB_KNOWN_HOSTS.lines().collect();
         assert_eq!(lines.len(), 3);
@@ -1364,6 +1436,15 @@ mod tests {
                     "---\ndeluge_port: 8112\n".to_owned()
                 ),
             ]
+        );
+        // And every GitHub Actions workflow at the head, for the check of a CI criterion
+        // (ADR 0142, amended 2026-10-31), whether the branch changes it or not.
+        assert_eq!(
+            taken.workflows,
+            [(
+                ".github/workflows/ci.yml".to_owned(),
+                "on:\n  push:\n    branches: [main, develop]\n".to_owned()
+            )]
         );
         assert!(taken.path.exists() && taken.path.to_string_lossy().contains("task-3"));
         assert_eq!(

@@ -145,6 +145,34 @@ fn submit(hq: &Hq<'_>, context: &RunContext, changed: &[&str], texts: &[(&str, &
                 .iter()
                 .map(|(p, t)| ((*p).to_owned(), (*t).to_owned()))
                 .collect(),
+            workflows: None,
+        },
+    )
+    .unwrap();
+}
+
+/// A branch submitted with the workflows at its head, as the node hands them over.
+fn submit_with_workflows(hq: &Hq<'_>, context: &RunContext, workflows: &[(&str, &str)]) {
+    hq.record_branch(
+        &context.token,
+        &Submission {
+            branch: "hq/task-1-ci-lint-rules".to_owned(),
+            head: "a1b2c3d4e5f60718293a4b5c".to_owned(),
+            base: "0123456789abcdef01234567".to_owned(),
+            files: 1,
+            plus: 3,
+            minus: 0,
+            stat: String::new(),
+            diff: String::new(),
+            can_push: false,
+            changed: vec![".github/workflows/ci.yml".to_owned()],
+            texts: Vec::new(),
+            workflows: Some(
+                workflows
+                    .iter()
+                    .map(|(p, t)| ((*p).to_owned(), (*t).to_owned()))
+                    .collect(),
+            ),
         },
     )
     .unwrap();
@@ -367,5 +395,171 @@ fn a_quote_from_another_items_reading_is_not_this_items() {
             "r{theirs}: `all services up`: not this item's receipt"
         )),
         "{posted}"
+    );
+}
+
+/// The fork's workflow as round 2 met it: CI on a push to main and develop alone.
+const CI_MAIN_DEVELOP: &str = "name: CI\non:\n  push:\n    branches: [main, develop]\n  \
+                               pull_request:\n    branches: [main]\n";
+
+/// The owner, 31 Oct (D6): HQ says when a CI criterion cannot be met. Task 932's criterion "A
+/// CI run on the branch passes" was never met, and HQ finished without noticing: the fork's
+/// workflow runs on a push only to main and develop, so an `hq/` branch never gets a run.
+///
+/// Given Bo's item whose criteria ask for a CI run, and a branch whose only workflow runs on a
+/// push to main and develop,
+/// when Bo asks for review,
+/// then HQ's checks say no CI run can be had and the criterion cannot be met, Rae's briefing
+/// carries it, and Rae's pass is refused, saying why; her send-back is not.
+#[test]
+fn a_ci_criterion_hq_cannot_meet_is_said_and_never_passed() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let t = team(&hq);
+    let fix = item(&hq, &t, "Run the lint rules' tests in CI", "");
+    hq.store()
+        .set_criteria(
+            fix,
+            &[
+                Criterion::new("The workflow runs tests/test_lint_rules.py", false),
+                Criterion::new("A CI run on the branch passes", false),
+            ],
+        )
+        .unwrap();
+    let bo = turn_of(&hq, t.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    submit_with_workflows(&hq, &bo, &[(".github/workflows/ci.yml", CI_MAIN_DEVELOP)]);
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Added the step.",
+                             "evidence": [[format!("task {}", fix.0)], [format!("task {}", fix.0)]] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    let posted = thread(&hq, fix).join("\n");
+    assert!(
+        posted.contains(
+            "- CI: no CI run can be had for hq/task-1-ci-lint-rules: no workflow at its head \
+             runs on a push to it (ci.yml: on a push only to main, develop)."
+        ),
+        "{posted}"
+    );
+    assert!(
+        posted.contains("\"A CI run on the branch passes\" cannot be met as the fork stands"),
+        "{posted}"
+    );
+    assert!(woken(&hq, t.rae, fix, WakeReason::ReviewRequested));
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, t.rae);
+    assert!(rae.told.contains("no CI run can be had"), "{}", rae.told);
+    let reading = receipt(
+        &hq,
+        &rae,
+        "repo_checkout",
+        "checked out hq/task-1-ci-lint-rules",
+    );
+    let refused = use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "approve", "notes": "Looks right.",
+                             "evidence": [[format!("r{reading}")], [format!("r{reading}")]] }),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("no CI run can be had for hq/task-1-ci-lint-rules"),
+        "{refused}"
+    );
+    assert_eq!(
+        hq.store().task(fix).unwrap().unwrap().status,
+        TaskStatus::InReview
+    );
+    use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "send_back",
+                             "notes": "No CI run can be had on an hq/ branch: ask the owner." }),
+    )
+    .unwrap();
+    assert!(woken(&hq, t.bo, fix, WakeReason::SentBack));
+}
+
+/// A workflow that runs on a push of `hq/` branches lets a CI criterion be met: HQ says the
+/// run comes once the branch is pushed, and fails nothing.
+#[test]
+fn a_ci_criterion_a_push_can_meet_is_said_and_not_failed() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let t = team(&hq);
+    let fix = item(&hq, &t, "Run the lint rules' tests in CI", "");
+    hq.store()
+        .set_criteria(
+            fix,
+            &[Criterion::new("A CI run on the branch passes", false)],
+        )
+        .unwrap();
+    let bo = turn_of(&hq, t.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    submit_with_workflows(
+        &hq,
+        &bo,
+        &[(
+            ".github/workflows/ci.yml",
+            "on:\n  push:\n    branches: [\"hq/**\"]\n",
+        )],
+    );
+    let task = hq.store().task(fix).unwrap().unwrap();
+    let report = hq.mechanical_checks(&task).unwrap();
+    assert_eq!(
+        report
+            .ci
+            .as_ref()
+            .and_then(crate::domain::mechanical::Ci::can_be_had),
+        Some(true)
+    );
+    assert!(!report.failed());
+    assert!(
+        report
+            .said()
+            .contains("- CI: ci.yml runs on a push to hq/task-1-ci-lint-rules"),
+        "{}",
+        report.said()
+    );
+}
+
+/// A workflow the node could not hand over whole (sent empty) is never read as one that does
+/// not run: HQ cannot tell, says so, and fails nothing.
+#[test]
+fn a_workflow_handed_over_empty_leaves_the_ci_check_unable_to_tell() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let t = team(&hq);
+    let fix = item(&hq, &t, "Run the lint rules' tests in CI", "");
+    hq.store()
+        .set_criteria(
+            fix,
+            &[Criterion::new("A CI run on the branch passes", false)],
+        )
+        .unwrap();
+    let bo = turn_of(&hq, t.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    submit_with_workflows(&hq, &bo, &[(".github/workflows/ci.yml", "")]);
+    let task = hq.store().task(fix).unwrap().unwrap();
+    let report = hq.mechanical_checks(&task).unwrap();
+    assert_eq!(
+        report
+            .ci
+            .as_ref()
+            .and_then(crate::domain::mechanical::Ci::can_be_had),
+        None
+    );
+    assert!(!report.failed());
+    assert!(
+        report.said().contains("- CI: not checked"),
+        "{}",
+        report.said()
     );
 }

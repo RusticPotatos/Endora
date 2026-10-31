@@ -482,11 +482,18 @@ done. Defects are numbered so the next round's changes can name them.
   2026-10-31).*
 - [ ] **D5. The NAS's model posts finished work as a desk question** instead of asking for
   review (935, twice; 938, once).
-- [ ] **D6. HQ cannot get a CI run on its branches and does not notice.** The fork's workflow
+- [x] **D6. HQ cannot get a CI run on its branches and does not notice.** The fork's workflow
   runs on push only for main and develop. Either the workflow runs on `hq/*` branches, or HQ
-  reports that a CI criterion cannot be met.
-- [ ] **D7. Paid reviews are most of the cost.** $1.90 of round 2's first $2.97 was Sonnet and
-  Opus reviewing; Kit spent $3.00 of a day's pool by 08:15.
+  reports that a CI criterion cannot be met. *Fixed on `r3-reviews-ci`: the node hands HQ the
+  workflows at the branch's head; when a criterion asks for CI and no workflow's `on.push` runs
+  for the branch, HQ's checks at review say the criterion cannot be met and HQ refuses a pass
+  (ADR 0142, amended 2026-10-31). The fork's own workflow change waits for the rounds to end.*
+- [x] **D7. Paid reviews are most of the cost.** $1.90 of round 2's first $2.97 was Sonnet and
+  Opus reviewing; Kit spent $3.00 of a day's pool by 08:15. *Fixed on `r3-reviews-ci`: the
+  reviewer is one rank up but never above Haiku's rank unless the work was done at Haiku's rank or
+  above (ADR 0142, amended 2026-10-31). With every rank filled, as in round 2, no reviewer
+  changes: the paid reviews the run log names were of Ada's and Kit's work, which the rule keeps
+  one rank up. If round 3's reviews still cost too much, that is a further decision.*
 - [ ] **D8. The house model's turns end at the budget with little to show.** Bo's 929 turns hit
   the 240 KB budget in 7 or 8 calls each; after three such passes the item climbed.
 - [x] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the

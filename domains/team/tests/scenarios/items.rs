@@ -336,6 +336,7 @@ fn submits_changing(w: &mut Office, name: &str, branch: &str, changed: &str, dif
             can_push: false,
             changed,
             texts: Vec::new(),
+            workflows: None,
         },
     );
     w.note(recorded).expect("the node's record is taken");

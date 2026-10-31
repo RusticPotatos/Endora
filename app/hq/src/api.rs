@@ -4300,6 +4300,7 @@ mod tests {
                     can_push: true,
                     changed: Vec::new(),
                     texts: Vec::new(),
+                    workflows: None,
                 },
             )
             .unwrap();

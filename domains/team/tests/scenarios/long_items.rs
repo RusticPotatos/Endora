@@ -49,6 +49,7 @@ impl Office {
                         can_push: false,
                         changed: vec!["tests/lint_rules/nas_rules.py".to_owned()],
                         texts: Vec::new(),
+                        workflows: None,
                     },
                 )
                 .expect("the work in progress is kept");
