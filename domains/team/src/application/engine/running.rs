@@ -153,6 +153,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         if self.in_the_loops(member.id)? && !in_a_game {
             told.push_str(&self.loops_said(run)?);
+            // Its own section: the item's handover, when it came to this member (ADR 0142,
+            // amended 2026-10-30).
+            told.push_str(&self.handover_briefed(member, run)?);
         }
         // Decided last, once the briefing has recorded what it showed the turn: a turn is told
         // of colleague help only when it is offered the tools (downtime lists them itself).
@@ -312,8 +315,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ));
         }
         let members = self.store.members()?;
+        // The handover this briefing carries is told in its own section, not again here.
+        let handover = self.handover_kept_for(member.id, task.id)?;
         let mut new = Vec::new();
-        for input in thread.iter().filter(|p| p.post.at > since) {
+        for input in thread
+            .iter()
+            .filter(|p| p.post.at > since)
+            .filter(|p| handover.as_deref() != Some(p.post.text.as_str()))
+        {
             self.inherit_authored_input(run.id, input.origin)?;
             let p = &input.post;
             new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));

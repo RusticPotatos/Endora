@@ -17,6 +17,7 @@ pub mod events;
 pub mod evidence;
 pub mod games;
 pub mod guards;
+pub mod handover;
 pub mod history;
 pub mod house;
 pub mod league;

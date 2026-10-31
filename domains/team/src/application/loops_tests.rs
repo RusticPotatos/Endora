@@ -1206,3 +1206,259 @@ fn a_read_only_items_turns_are_refused_the_restart() {
     use_tool(&hq2, &bo2, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
     assert!(hq2.lab_tools_refused(bo2.run).unwrap().is_empty());
 }
+
+// ---- the handover (ADR 0142, amended 2026-10-30) ---------------------------------------------
+
+/// The handover in a briefing: from its first line to its end, alone.
+fn handover_in(told: &str) -> &str {
+    let start = told
+        .find(crate::domain::handover::START)
+        .unwrap_or_else(|| panic!("a handover in the briefing: {told}"));
+    let rest = &told[start..];
+    let end = rest
+        .find(crate::domain::handover::END)
+        .expect("the handover's end")
+        + crate::domain::handover::END.len();
+    &rest[..end]
+}
+
+/// A reading a turn took, as the node records it.
+fn read(hq: &Hq<'_>, turn: &super::ports::RunContext, tool: &str, args: &str, got: &str) -> i64 {
+    hq.record_receipt(
+        &turn.token,
+        &super::engine::Called {
+            tool: tool.to_owned(),
+            args: args.to_owned(),
+            excerpt: got.to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap()
+}
+
+/// One item at a time, an earlier item done with its own readings and words, then a hard item
+/// with a criterion, on which Bo takes a reading and says what he tried; then `more` long
+/// readings and posts.
+fn bo_tried(hq: &Hq<'_>, f: &Five, more: usize) -> (TaskId, i64) {
+    hq.set_loop_items(f.loop_, 1).unwrap();
+    let other = item(hq, f, "Pin the homepage image", Priority::Normal);
+    let bo = turn_of(hq, f.bo);
+    read(hq, &bo, "homepage_probe", "homepage", "OTHER-ITEM-READING");
+    use_tool(
+        hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": other.0, "text": "OTHER-ITEM-WORDS pinned it." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.store().set_task_status(other, TaskStatus::Done).unwrap();
+    let hard = item(hq, f, "Find what stops gluetun", Priority::Normal);
+    hq.set_criteria(
+        hard,
+        &[crate::domain::evidence::Criterion::new(
+            "gluetun is running and healthy",
+            false,
+        )],
+    )
+    .unwrap();
+    let bo = turn_of(hq, f.bo);
+    use_tool(hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    let logs = read(
+        hq,
+        &bo,
+        "container_logs",
+        "gluetun",
+        "AUTH_FAILED from the provider",
+    );
+    use_tool(
+        hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": hard.0, "text": "The VPN credentials look stale." }),
+    )
+    .unwrap();
+    for i in 0..more {
+        read(
+            hq,
+            &bo,
+            "container_logs",
+            &format!("app{i}"),
+            &"x".repeat(300),
+        );
+        use_tool(
+            hq,
+            &bo,
+            "post",
+            &serde_json::json!({ "task": hard.0, "text": format!("try {i} {}", "y".repeat(500)) }),
+        )
+        .unwrap();
+    }
+    hq.runner().finish(bo.run, true);
+    (hard, logs)
+}
+
+/// Rung 5 of closing the gap: fewer handoffs. Baseline 28 Oct: an item that climbed was
+/// started over at every rank, the same container logs read again each time.
+///
+/// Given an item Bo took a reading on and said what he tried,
+/// when it fails three times at Bo's rank and climbs to Rae,
+/// then Rae's briefing carries a handover: the item's criterion and what the record shows of
+/// it, Bo's reading to cite, Bo's last post; it is posted on the thread as Endora's; and
+/// nothing of the loop's other item is in it.
+#[test]
+fn an_item_that_climbs_carries_a_handover_to_the_next_rank() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let (hard, logs) = bo_tried(&hq, &f, 0);
+    for _ in 0..3 {
+        hq.loop_failed(hard).unwrap();
+    }
+    assert_eq!(assignee(&hq, hard), Some(f.rae));
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let note = handover_in(&rae.told);
+    assert!(note.contains(&format!("#{} to Rae", hard.0)), "{note}");
+    assert!(note.contains("failed 3 times at Bo's rank"), "{note}");
+    assert!(
+        note.contains("1. gluetun is running and healthy [nothing cited yet]"),
+        "{note}"
+    );
+    assert!(
+        note.contains(&format!(
+            "r{logs} container_logs gluetun: AUTH_FAILED from the provider"
+        )),
+        "{note}"
+    );
+    assert!(
+        note.contains("Bo: The VPN credentials look stale."),
+        "{note}"
+    );
+    assert!(
+        !note.contains("OTHER-ITEM"),
+        "nothing of another item: {note}"
+    );
+    assert!(
+        note.chars().count() <= crate::domain::handover::chars_for(Brain::Mac),
+        "{note}"
+    );
+    let thread = hq.store().thread(hard).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.author == "endora" && p.text.starts_with("Handover of #")),
+        "the owner sees what was handed over: {thread:?}"
+    );
+    assert_eq!(
+        rae.told.matches(crate::domain::handover::START).count(),
+        1,
+        "told once, not again among the thread's news: {}",
+        rae.told
+    );
+    let (run, _) = hq.turn_of(&rae.token).unwrap().unwrap();
+    assert!(
+        crate::application::history_ports::HistoryStore::run_read_confidential(hq.store(), run.id)
+            .unwrap(),
+        "members' words are of unknown origin"
+    );
+}
+
+/// The handover is held to the receiving model's size: the house's models get less.
+///
+/// Given an item Bo took many long readings on, with many long posts,
+/// when it climbs to Rae, on the Mac,
+/// then the handover in Rae's briefing is within the Mac's size and still says the criterion.
+#[test]
+fn a_handover_stays_within_a_small_model_s_size() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let (hard, _) = bo_tried(&hq, &f, 30);
+    for _ in 0..3 {
+        hq.loop_failed(hard).unwrap();
+    }
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let note = handover_in(&rae.told);
+    assert!(
+        note.chars().count() <= crate::domain::handover::chars_for(Brain::Mac),
+        "{} chars: {note}",
+        note.chars().count()
+    );
+    assert!(note.contains("1. gluetun is running and healthy"), "{note}");
+    assert!(note.contains("app29"), "the newest readings first: {note}");
+}
+
+/// A send-back hands the item back to its worker with the reviewer's reasons.
+///
+/// Given Bo's item in review, with a reading of his,
+/// when Rae (one rank up) sends it back,
+/// then Bo's next briefing carries a handover with Rae's reasons and his own reading to cite.
+#[test]
+fn a_send_back_s_reasons_reach_the_worker_in_a_handover() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    let lint = read(&hq, &bo, "run_lint", "roles/gluetun", "3 warnings");
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("r{lint}")] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    use_tool(
+        &hq,
+        &rae,
+        "review",
+        &serde_json::json!({ "task": fix.0, "verdict": "send_back",
+                             "notes": "The lint still fails on roles/gluetun line 12." }),
+    )
+    .unwrap();
+    hq.runner().finish(rae.run, true);
+    let bo = turn_of(&hq, f.bo);
+    let note = handover_in(&bo.told);
+    assert!(note.contains(&format!("#{} to Bo", fix.0)), "{note}");
+    assert!(note.contains("sent back by Rae"), "{note}");
+    assert!(note.contains("Sent back because:"), "{note}");
+    assert!(
+        note.contains("Rae: The lint still fails on roles/gluetun line 12."),
+        "{note}"
+    );
+    assert!(note.contains(&format!("r{lint} run_lint")), "{note}");
+    assert!(
+        note.contains(&format!("- Fix the lint [cited r{lint}, then sent back]")),
+        "{note}"
+    );
+    assert!(
+        note.chars().count() <= crate::domain::handover::chars_for(Brain::Local),
+        "{note}"
+    );
+}
+
+/// A paused member's item goes one rank up with a handover too.
+#[test]
+fn a_paused_member_s_item_goes_up_with_a_handover() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let (hard, logs) = bo_tried(&hq, &f, 0);
+    hq.pause(f.bo, true).unwrap();
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, hard), Some(f.rae));
+    hq.tell_mac(true, "ready");
+    let rae = turn_of(&hq, f.rae);
+    let note = handover_in(&rae.told);
+    assert!(note.contains("Bo is paused"), "{note}");
+    assert!(note.contains(&format!("r{logs} container_logs")), "{note}");
+}

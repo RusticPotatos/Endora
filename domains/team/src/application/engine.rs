@@ -43,6 +43,7 @@ mod evidence;
 mod games;
 mod gaps;
 mod guards;
+mod handover;
 mod health;
 mod history;
 mod kinds;
@@ -1675,9 +1676,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if let Some(owner) = worker {
                 self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
             }
-            // In the loops a send-back is one of the item's failures (ADR 0142).
+            // In the loops a send-back is one of the item's failures (ADR 0142); kept at its
+            // rank, it goes back to its worker with a handover (amended 2026-10-30).
             if in_the_loops {
-                return self.loop_failed(task);
+                self.loop_failed(task)?;
+                let now = self.task(task)?;
+                if let Some(worker) = worker.filter(|w| now.owner.or(now.assignee) == Some(*w)) {
+                    self.hand_over(task, worker, &format!("sent back by {}", reviewer.name))?;
+                }
             }
             return Ok(());
         }
