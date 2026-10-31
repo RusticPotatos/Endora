@@ -470,6 +470,16 @@
   .hq-board { width: 100%; border-collapse: collapse; }
   .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
   .hq-board td.n { text-align: right; }
+  /* The Chess tab's bracket: as wide as its cells, scrolling inside its box so the page never
+     scrolls sideways on a phone. */
+  .hq-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 6px 0; }
+  .hq-cross { border-collapse: collapse; min-width: max-content; font-size: 13px; }
+  .hq-cross th, .hq-cross td { padding: 3px 8px; border: 1px solid var(--hq-line); text-align: center; white-space: nowrap; font-weight: 400; }
+  .hq-cross th[scope="row"] { text-align: left; }
+  .hq-cross td.won { color: var(--hq-green); font-weight: 600; }
+  .hq-cross td.notyet, .hq-cross td.playing { opacity: 0.7; }
+  .hq-game { display: flex; gap: 6px; align-items: center; }
+  .hq-game .hq-line { flex: 1 1 auto; min-width: 0; }
   /* What each model cost, on the Money card: each week's cell is its spend over a line of its
      turns, cost a turn and share, so four columns fit a phone and wrap rather than scroll. */
   .hq-by-model { margin-top: 8px; }

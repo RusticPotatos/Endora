@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
+use crate::domain::chess_match::Match;
 use crate::domain::games::{self, Rng};
 use crate::domain::league::{self, Played};
-use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, TaskId};
+use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
+use crate::domain::{lessons, money};
 
 /// Where the league is kept: its project and its brains, by name.
 const LEAGUE: &str = "league";
@@ -20,6 +22,9 @@ const GAMES: &str = "league_games";
 
 /// Where the games each reset set aside are kept: `[{at, games: [[task, white, black]]}]`.
 const BEFORE_RESET: &str = "league_games_before_reset";
+
+/// A league game as kept: its world's task and the brains playing white and black.
+type Kept = (TaskId, Brain, Brain);
 
 /// Where the brain a league game's side is pinned to is kept, by the side's task.
 fn side_key(task: TaskId) -> String {
@@ -100,23 +105,65 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The league's games with their results: a game whose world ended by the rules is scored;
-    /// one still being played, or abandoned with no result, is not.
-    fn league_played(&self) -> Done<Vec<(TaskId, Played, Option<&'static str>)>> {
-        let mut played = Vec::new();
-        for (task, white, black) in self.league_kept()? {
-            let now = self.replay_chess(task)?;
-            let end = now.outcome().map(|(name, _)| name);
-            played.push((
-                task,
-                Played {
-                    white,
-                    black,
-                    score: end.map(|_| now.score()),
-                },
-                end,
-            ));
-        }
-        Ok(played)
+    /// one still being played, or abandoned with no result, is not. Each with its match as its
+    /// log replays.
+    fn league_played(&self) -> Done<Vec<(TaskId, Played, Match)>> {
+        self.league_kept()?
+            .into_iter()
+            .map(|(task, white, black)| self.league_game(task, white, black))
+            .collect()
+    }
+
+    /// One league game, scored when its world ended by the rules, and its match.
+    fn league_game(
+        &self,
+        task: TaskId,
+        white: Brain,
+        black: Brain,
+    ) -> Done<(TaskId, Played, Match)> {
+        let now = self.replay_chess(task)?;
+        let score = now.outcome().map(|_| now.score());
+        Ok((
+            task,
+            Played {
+                white,
+                black,
+                score,
+            },
+            now,
+        ))
+    }
+
+    /// The games each reset set aside, in the order kept: one list a round, the first round
+    /// first, each with when it was set aside.
+    fn league_rounds_before(&self) -> Done<Vec<(Millis, Vec<Kept>)>> {
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
+        Ok(before
+            .iter()
+            .map(|r| {
+                let games = r["games"]
+                    .as_array()
+                    .map(|all| {
+                        all.iter()
+                            .filter_map(|g| {
+                                Some((
+                                    TaskId(g[0].as_i64()?),
+                                    Brain::from_name(g[1].as_str()?)?,
+                                    Brain::from_name(g[2].as_str()?)?,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (r["at"].as_i64().unwrap_or(0), games)
+            })
+            .collect())
+    }
+
+    /// `at` as the owner's day says it: "17 Oct".
+    fn owners_day(&self, at: Millis) -> String {
+        let (day, month) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
+        format!("{day} {month}")
     }
 
     /// A league game's round (its place among the games kept, from 1) and the brains that
@@ -260,8 +307,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The league for the screen: its brains rated best first, how many pairs have yet to
-    /// finish a game, and its games, latest last. `null` before the owner starts it.
+    /// The league for the screen: its brains in the standings' order (points, then rating), how
+    /// many pairs have yet to finish a game, which round it is, and its games, latest last; a
+    /// game in play with its board, the board before the last move, whose move it is and the
+    /// last move (the owner's Chess tab, 31 Oct). `null` before the owner starts it.
     pub(super) fn league_shown(&self) -> Done<Value> {
         let Some((project, brains)) = self.league()? else {
             return Ok(Value::Null);
@@ -272,19 +321,82 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .map(|r| {
                 json!({ "brain": r.brain.name(), "label": r.brain.label(), "rating": r.rating,
-                        "won": r.won, "drawn": r.drawn, "lost": r.lost, "history": r.history })
+                        "points": r.points(), "won": r.won, "drawn": r.drawn, "lost": r.lost,
+                        "history": r.history })
             })
             .collect();
-        let games: Vec<Value> = played
-            .iter()
-            .map(|(task, p, end)| {
-                json!({ "task": task.0, "white": p.white.name(), "black": p.black.name(),
-                        "end": end })
-            })
-            .collect();
+        let mut games = Vec::new();
+        for (task, p, now) in &played {
+            let end = now.outcome().map(|(name, _)| name);
+            let mut game = json!({ "task": task.0, "white": p.white.name(),
+                                   "black": p.black.name(), "end": end,
+                                   "half_moves": now.moves().len() });
+            let live = end.is_none() && !self.task(*task)?.status.finished();
+            game["live"] = json!(live);
+            if live {
+                let mut seen = now.positions();
+                let rows = seen.pop();
+                game["rows"] = json!(rows);
+                if let Some((fen, _)) = now.board() {
+                    game["fen"] = json!(fen);
+                }
+                game["before"] = json!(seen.pop().or_else(|| rows.clone()));
+                game["to_move"] = json!(now.to_move().name());
+                game["last"] = json!(now.moves().last());
+            }
+            games.push(game);
+        }
+        let before = self.league_rounds_before()?;
+        let since = before.last().map(|(at, _)| self.owners_day(*at));
         Ok(
             json!({ "project": project.0, "table": table, "games": games,
-                   "pairs_left": league::pairs_left(&brains, &results) }),
+                   "pairs_left": league::pairs_left(&brains, &results),
+                   "round": { "number": before.len() + 1, "since": since } }),
+        )
+    }
+
+    /// Every finished league game, of every round, newest first, `per` to a page (`page` from
+    /// 1): each with its round, its brains, its result (or `abandoned` for one stopped with no
+    /// result), its half-moves and the owner's day it ended. A game in play is not listed.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn league_games(&self, page: usize, per: usize) -> Done<Value> {
+        let per = per.max(1);
+        let mut rounds = self.league_rounds_before()?;
+        rounds.push((0, self.league_kept()?));
+        let mut finished = Vec::new();
+        for (round, (_, games)) in rounds.into_iter().enumerate() {
+            for (task, white, black) in games {
+                let (_, _, now) = self.league_game(task, white, black)?;
+                let result = now.outcome().map(|(name, _)| name);
+                if result.is_none() && !self.task(task)?.status.finished() {
+                    continue;
+                }
+                finished.push((round + 1, task, white, black, result, now.moves().len()));
+            }
+        }
+        finished.sort_by_key(|(_, task, ..)| std::cmp::Reverse(*task));
+        let total = finished.len();
+        let mut listed = Vec::new();
+        for (round, task, white, black, result, half_moves) in finished
+            .into_iter()
+            .skip(page.saturating_sub(1).saturating_mul(per))
+            .take(per)
+        {
+            let last = self.store.scenario_actions(task)?.last().map(|a| a.at);
+            listed.push(
+                json!({ "task": task.0, "round": round, "white": white.name(),
+                                "white_label": white.label(), "black": black.name(),
+                                "black_label": black.label(),
+                                "result": result.unwrap_or("abandoned"),
+                                "half_moves": half_moves,
+                                "day": last.map(|at| self.owners_day(at)) }),
+            );
+        }
+        Ok(
+            json!({ "page": page.max(1), "pages": total.div_ceil(per), "per_page": per,
+                   "total": total, "games": listed }),
         )
     }
 }

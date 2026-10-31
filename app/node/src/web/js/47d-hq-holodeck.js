@@ -1,5 +1,6 @@
 // ---- the Holodeck on the HQ screen (ADR 0135) ----
-// The Work tab lists the chess matches and the model league, and opens a match move by move.
+// The Work tab lists the chess matches and opens one move by move; the model league has its
+// own tab, Chess (47e, the owner's notes of 31 Oct), which the card points to.
 // The lighthouse, Silent Station, trials and re-runs were retired (2026-10-30). All of it is
 // fetched when it is opened, and all of it is the team's or the world's words, so all of it is
 // escaped.
@@ -19,41 +20,27 @@ function hqChessEnd(end, white, black) {
 function hqLeagueBrain(task, side) {
   const l = ((HQ.snap || {}).holodeck || {}).league || {};
   const game = (l.games || []).find((g) => Number(g.task) === Number(task));
-  if (!game) return "";
-  const row = (l.table || []).find((r) => r.brain === game[side]);
-  return row ? row.label : game[side];
+  return game ? hqChessLabelRaw(l, game[side]) : "";
 }
 
 // The Holodeck card, folded at the foot of the Work tab: nothing until there is something in it.
 function hqHolodeck(s) {
   const h = s && s.holodeck;
   const scenarios = (h && h.scenarios) || [];
-  const league = hqLeague(h && h.league);
+  // One thing, one home: the league is on the Chess tab, and this card says so in a line.
+  const league = h && h.league && (h.league.table || []).length
+    ? `<p class="hq-note">The model league, its live boards, this round's bracket and every game are on the Chess tab.</p><div class="hq-row"><button class="hq-btn" data-act="hq:tab:chess:go">Open the Chess tab</button></div>`
+    : "";
   if (!scenarios.length && !league) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `Chess: ${esc(x.title)}`,
     `${hqHoloEnd(x.end || x.status)}, ${Number(x.elapsed)} half-moves${x.round ? ` · ${esc(x.round)}` : ""}`));
   const scenList = hqMore("scenarios", scen, 3);
-  const open = HQ.holo && HQ.holo.what !== "replay" ? hqHoloDetail() : "";
+  const open = HQ.holo && HQ.holo.what !== "replay" && HQ.holo.where !== "chess" ? hqHoloDetail() : "";
   return `<section class="hq-card"><h2>Holodeck</h2>
     <p class="hq-note">Chess the team plays in matches that close themselves, and the league that ranks the brains by it. Nothing here touches the house.</p>
     ${scen.length ? `<p class="hq-who">Matches</p><ul class="hq-lines">${scenList.shown}</ul>${scenList.more}` : ""}
     ${league}
     ${open}</section>`;
-}
-
-// The model league (ADR 0135, amended 2026-10-25): the brains ranked by their chess, one line
-// each, and its games, latest first, each opening its board.
-function hqLeague(l) {
-  if (!l || !(l.table || []).length) return "";
-  const label = (name) => { const row = (l.table || []).find((r) => r.brain === name); return esc(row ? row.label : name); };
-  const rows = l.table.map((r, i) => `<li>${i + 1}. ${esc(r.label)} ${hqSpark(r.history, r.label)} <small>${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
-  const games = (l.games || []).slice().reverse().map((g) => hqLine(`hq:holo:open:${Number(g.task)}`,
-    `White: ${label(g.white)} · Black: ${label(g.black)}`, g.end ? hqChessEnd(g.end, label(g.white), label(g.black)) : "playing"));
-  const list = hqMore("league", games, 3);
-  const left = Number(l.pairs_left || 0);
-  return `<p class="hq-who">Model league</p><ul class="hq-lines">${rows}</ul>
-    <p class="hq-note">${left ? `${left} pair${left === 1 ? "" : "s"} still to meet; then the rematches, colours swapped.` : "Every pair has met; the rematches go on, colours swapped."}</p>
-    ${games.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}`;
 }
 
 // A brain's rating after each game it finished, as a small line (no library): the start alone,
@@ -151,8 +138,10 @@ async function hqHoloPgn(task) {
   return res.text();
 }
 
-// The taps: open a match, step through it, copy or save its PGN, close what is open.
+// The taps: open a match (on the Work card, or "watch" on the Chess tab), step through it, copy
+// or save its PGN, close what is open, and page through the league's games.
 async function hqHoloAct(what, arg) {
+  if (what === "page") { await hqChessLoad(arg); return true; }
   if (what === "close") { HQ.holo = null; render(); return true; }
   if (what === "copy") {
     try {
@@ -179,8 +168,8 @@ async function hqHoloAct(what, arg) {
     if (HQ.holo) HQ.holo.ply = arg === "live" || Number(arg) >= last ? null : Number(arg);
     render(); return true;
   }
-  if (what !== "open") return true;
-  try { HQ.holo = { what: "scenario", data: await api("GET", `/v1/hq/scenarios/${Number(arg)}`) }; }
+  if (what !== "open" && what !== "watch") return true;
+  try { HQ.holo = { what: "scenario", where: what === "watch" ? "chess" : "work", data: await api("GET", `/v1/hq/scenarios/${Number(arg)}`) }; }
   catch (e) { flash("Couldn't open it: " + e.message, "err"); }
   render(); return true;
 }

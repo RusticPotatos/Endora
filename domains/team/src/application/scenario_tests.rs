@@ -783,6 +783,148 @@ fn the_model_league_pins_each_side_to_its_brain_and_rates_the_results() {
     assert_eq!(league["games"].as_array().unwrap().len(), 1, "{league}");
 }
 
+/// The members playing white and black in the match on `game`.
+fn sides(hq: &Hq<'_>, game: TaskId) -> (MemberId, MemberId) {
+    let white = hq.store().task(game).unwrap().unwrap().assignee.unwrap();
+    let black = hq
+        .store()
+        .tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.parent == Some(game))
+        .and_then(|t| t.assignee)
+        .unwrap();
+    (white, black)
+}
+
+/// The league as the snapshot shows it, and its latest game's task.
+fn league_now(hq: &Hq<'_>) -> (serde_json::Value, TaskId) {
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    let last = league["games"].as_array().unwrap().last().unwrap()["task"]
+        .as_i64()
+        .unwrap();
+    (league, TaskId(last))
+}
+
+// The owner's Chess tab (31 Oct): the league's game in play with its board, whose move it is
+// and the last move, from the snapshot the console already refreshes; and which round of the
+// league this is. The league is not monthly: a round is its games since the owner's last reset.
+#[test]
+fn the_league_shows_its_game_in_play_and_its_round() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    hq.set_project_cap(project, Some(5_000_000)).unwrap();
+    hq.start_league(project, &["claude-haiku-5-5", "local"])
+        .unwrap();
+    hq.tick().unwrap();
+    let (league, game) = league_now(&hq);
+    assert_eq!(
+        league["round"],
+        json!({ "number": 1, "since": null }),
+        "{league}"
+    );
+    assert_eq!(league["table"][0]["points"], json!(0.0), "{league}");
+    let (white, _) = sides(&hq, game);
+    let [w] = <[RunContext; 1]>::try_from(turns(&hq, &[white]))
+        .ok()
+        .unwrap();
+    play(&hq, &w, "f3").unwrap();
+    let (league, _) = league_now(&hq);
+    let shown = &league["games"][0];
+    assert_eq!(shown["live"], true, "{shown}");
+    assert_eq!(shown["to_move"], "black");
+    assert_eq!(shown["last"], "f3");
+    assert_eq!(shown["half_moves"], 1);
+    assert_eq!(shown["rows"].as_array().unwrap().len(), 8, "{shown}");
+    assert_eq!(shown["before"].as_array().unwrap().len(), 8, "{shown}");
+    assert_ne!(
+        shown["rows"], shown["before"],
+        "the last move changed the board"
+    );
+    assert!(
+        shown["fen"].as_str().is_some_and(|f| f.contains(" b ")),
+        "the board's FEN, black to move: {shown}"
+    );
+
+    hq.reset_league().unwrap();
+    let league = hq.snapshot().unwrap()["holodeck"]["league"].clone();
+    assert_eq!(
+        league["round"],
+        json!({ "number": 2, "since": "17 Oct" }),
+        "{league}"
+    );
+}
+
+// Every finished league game, newest first, a page at a time, from every round: the owner's
+// Chess tab pages through them and downloads each one's PGN (31 Oct). A game in play is not
+// finished, so it is not listed.
+#[test]
+fn every_finished_league_game_is_listed_newest_first_a_page_at_a_time() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let (_, project) = crew(&hq);
+    hq.set_project_cap(project, Some(5_000_000)).unwrap();
+    hq.start_league(project, &["claude-haiku-5-5", "local"])
+        .unwrap();
+    hq.tick().unwrap();
+    let (_, first) = league_now(&hq);
+    let (white, _) = sides(&hq, first);
+    let [w] = <[RunContext; 1]>::try_from(turns(&hq, &[white]))
+        .ok()
+        .unwrap();
+    act(&hq, &w, "resign").unwrap();
+    hq.tick().unwrap();
+
+    hq.reset_league().unwrap();
+    hq.tick().unwrap();
+    let (_, second) = league_now(&hq);
+    assert_ne!(first, second, "a new round's game");
+    let playing = hq.league_games(1, 10).unwrap();
+    assert_eq!(
+        playing["total"], 1,
+        "the game in play is not listed: {playing}"
+    );
+    assert_eq!(playing["games"][0]["task"], first.0);
+    let (white, black) = sides(&hq, second);
+    let [w] = <[RunContext; 1]>::try_from(turns(&hq, &[white]))
+        .ok()
+        .unwrap();
+    play(&hq, &w, "e4").unwrap();
+    let [b] = <[RunContext; 1]>::try_from(turns(&hq, &[black]))
+        .ok()
+        .unwrap();
+    act(&hq, &b, "resign").unwrap();
+    hq.tick().unwrap();
+
+    let page = hq.league_games(1, 1).unwrap();
+    assert_eq!(
+        (page["total"].clone(), page["pages"].clone()),
+        (json!(2), json!(2)),
+        "{page}"
+    );
+    let newest = &page["games"][0];
+    assert_eq!(newest["task"], second.0, "{page}");
+    assert_eq!(newest["round"], 2);
+    assert_eq!(newest["result"], "white_won");
+    assert_eq!(newest["half_moves"], 1);
+    assert_eq!(newest["white"], "claude-haiku-5-5");
+    assert_eq!(newest["day"], "17 Oct");
+    let older = hq.league_games(2, 1).unwrap();
+    assert_eq!(older["games"][0]["task"], first.0, "{older}");
+    assert_eq!(older["games"][0]["round"], 1);
+    assert_eq!(older["games"][0]["result"], "black_won");
+    assert_eq!(older["games"][0]["half_moves"], 0);
+    assert_eq!(hq.league_games(3, 1).unwrap()["games"], json!([]));
+    assert_eq!(
+        hq.league_games(1, 10).unwrap()["games"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 // The relay lets a role think only with its own Claudes (ADR 0111; since one team, ADR 0142,
 // Opus is any player's): a Sonnet side never seats a researcher, whose Claude is Haiku alone.
 #[test]

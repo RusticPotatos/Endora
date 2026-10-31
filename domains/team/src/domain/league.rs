@@ -41,6 +41,14 @@ pub struct Row {
     pub history: Vec<i64>,
 }
 
+impl Row {
+    /// Its points in the standings: a win is one, a draw a half.
+    #[must_use]
+    pub fn points(&self) -> f64 {
+        f64::from(self.won) + f64::from(self.drawn) / 2.0
+    }
+}
+
 /// The next game: a pair of different brains that has not played yet (finished or not), the
 /// earlier pair in `brains` first; white is the earlier brain. `None` once every pair has
 /// played, or with fewer than two brains: one game a pair compares the models (the owner,
@@ -99,8 +107,9 @@ fn rounded(rating: f64) -> i64 {
     rating.round() as i64
 }
 
-/// The table: every brain in `brains`, rated from the finished games in the order played, best
-/// first (the earlier brain in `brains` on a tie).
+/// The table: every brain in `brains`, rated from the finished games in the order played, in
+/// the standings' order: most points first (a win one, a draw a half), then the higher rating,
+/// then the earlier brain in `brains` (the owner's bracket, 31 Oct).
 #[must_use]
 pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
     let mut rating: Vec<f64> = brains.iter().map(|_| START as f64).collect();
@@ -144,7 +153,8 @@ pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
     for (row, r) in rows.iter_mut().zip(&rating) {
         row.rating = rounded(*r);
     }
-    rows.sort_by_key(|r| std::cmp::Reverse(r.rating));
+    // Points in halves, so the order is whole numbers.
+    rows.sort_by_key(|r| std::cmp::Reverse((2 * r.won + r.drawn, r.rating)));
     rows
 }
 
@@ -239,6 +249,34 @@ mod tests {
             assert_eq!(row.history.last(), Some(&row.rating), "{row:?}");
         }
         assert!(table(&ALL, &[]).iter().all(|r| r.history == [START]));
+    }
+
+    #[test]
+    fn the_standings_rank_points_first_and_rating_second() {
+        // The owner's bracket (31 Oct): a win is a point and a draw half of one; between equal
+        // points, the rating. Here the Mac beats a strong Local late and passes it on rating,
+        // but Local has won twice.
+        const FOUR: [Brain; 4] = [Brain::Local, Brain::Mac, Brain::Haiku, Brain::Sonnet];
+        let games = vec![
+            game(Brain::Local, Brain::Haiku, Some(100)),
+            game(Brain::Local, Brain::Sonnet, Some(100)),
+            game(Brain::Mac, Brain::Local, Some(100)),
+        ];
+        let rows = table(&FOUR, &games);
+        let order: Vec<Brain> = rows.iter().map(|r| r.brain).collect();
+        assert_eq!(
+            order,
+            [Brain::Local, Brain::Mac, Brain::Sonnet, Brain::Haiku],
+            "{rows:?}"
+        );
+        let mac = &rows[1];
+        assert!(
+            mac.rating > rows[0].rating,
+            "the Mac rates higher: {rows:?}"
+        );
+        assert_eq!((rows[0].points(), mac.points()), (2.0, 1.0));
+        let drawn = table(&FOUR, &[game(Brain::Haiku, Brain::Sonnet, Some(50))]);
+        assert_eq!(drawn[0].points(), 0.5, "{drawn:?}");
     }
 
     #[test]

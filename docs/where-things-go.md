@@ -73,8 +73,13 @@ Settings.
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
   behind a fold. The console check measures each tab at rest and holds it to a budget; fold
   something before raising one. The Holodeck's chess matches are work, so they are a card in
-  Work, each opened move by move there, with the model league's table in the same card (ADR
-  0135; its other worlds and trials were retired on 2026-10-30). Information conversations also
+  Work, each opened move by move there (ADR 0135; its other worlds and trials were retired on
+  2026-10-30). The model league has a fourth tab of its own, **Chess** (the owner's notes of
+  31 Oct: none of the three could hold a live board, a bracket and every game without breaking
+  its budget): the league's games in play with their boards, this round's bracket and
+  standings, and every finished game a page at a time with its PGN. The Work card says so in a
+  line with a way there and shows none of the league itself. The office's chess board stays in
+  the office, on Manage; it is a different game (ADR 0121). Information conversations also
   live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
   requests, their results and project charges, source grants/revocation, and cancellation stay
   inside that conversation's Work view; they add no top-level screen. Something that needs your
@@ -93,7 +98,7 @@ Settings.
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
-| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js` |
+| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |

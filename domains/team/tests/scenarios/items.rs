@@ -500,6 +500,82 @@ fn league_lists(w: &mut Office, one: String, two: String) {
     assert_eq!(labels, wanted);
 }
 
+/// White, in the league's game in play, resigns in its turn; then every turn under way ends,
+/// so the players are free for the next game.
+#[when("white resigns the league's game in play")]
+fn white_resigns(w: &mut Office) {
+    w.tick();
+    let league = w.hq.holodeck_shown().expect("the Holodeck is shown")["league"].clone();
+    let game = league["games"]
+        .as_array()
+        .expect("the league's games")
+        .iter()
+        .find(|g| g["live"] == true)
+        .and_then(|g| g["task"].as_i64())
+        .unwrap_or_else(|| panic!("no league game is in play: {league}"));
+    let white =
+        w.hq.store()
+            .task(TaskId(game))
+            .expect("the store answers")
+            .and_then(|t| t.assignee)
+            .expect("white is seated");
+    let name = w
+        .members
+        .iter()
+        .find(|(_, id)| **id == white)
+        .map(|(n, _)| n.clone())
+        .expect("white is on the team");
+    let said = w.use_tool(&name, "scenario", &json!({ "action": "resign" }));
+    assert!(said.is_some(), "{name} could not resign: {:?}", w.refused);
+    for run in w.hq.store().live_runs().expect("the store answers") {
+        w.hq.runner().finish(run.id, true);
+    }
+    w.tick();
+}
+
+#[when("the owner resets the league")]
+fn resets_the_league(w: &mut Office) {
+    let reset = w.hq.reset_league();
+    w.note(reset);
+}
+
+#[then("the league's finished games read, newest first")]
+fn finished_games_read(w: &mut Office, step: &cucumber::gherkin::Step) {
+    let table = step.table.as_ref().expect("the games are the step's table");
+    let page = w.hq.league_games(1, 10).expect("the games are listed");
+    let read: Vec<Vec<String>> = page["games"]
+        .as_array()
+        .expect("a page of games")
+        .iter()
+        .map(|g| {
+            [
+                "round",
+                "white_label",
+                "black_label",
+                "result",
+                "half_moves",
+            ]
+            .iter()
+            .map(|k| match &g[*k] {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect()
+        })
+        .collect();
+    assert_eq!(read, table.rows[1..], "{page}");
+}
+
+#[then(regex = r#"^the league's round is (\d+), since a reset on "(.+)"$"#)]
+fn the_round(w: &mut Office, number: u64, day: String) {
+    let league = w.hq.holodeck_shown().expect("the Holodeck is shown")["league"].clone();
+    assert_eq!(
+        league["round"],
+        json!({ "number": number, "since": day }),
+        "{league}"
+    );
+}
+
 /// Turns that show nothing, ten minutes apart, each asked for by the owner's word: three of
 /// them are one of the item's failures, and three failures move it up a rank (ADR 0142).
 #[when(regex = r#"^(\w+) takes (\d+) more turns on "(.+)" that show nothing$"#)]

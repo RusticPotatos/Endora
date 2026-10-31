@@ -647,9 +647,10 @@ ways. To fix after the one-team clean-up lands, in this order:
   `r3-ui-manage-layout`.*
 - [x] The Mac's card leaves HQ for Settings, AI, beside the local model: on the
   `r3-ui-mac-to-settings` branch. HQ says only "Mac (busy)" where a member's brain is named.
-- [ ] A Chess tab: every league game, live boards for those in play, and the month's bracket
-  (who has played whom, results and standings), with each game's PGN.
-
+- [x] A Chess tab: every league game, live boards for those in play, and the month's bracket
+  (who has played whom, results and standings), with each game's PGN. Done on `r3-ui-chess-tab`:
+  the league is a round robin, so the bracket is the current round's ("Round N, since <reset
+  day>"); `GET /v1/league/games?page=N` lists every finished game (ADR 0135, amended 31 Oct).
 ### The owner's
 
 - [ ] Decide on round 3's changes once round 2 is judged.
