@@ -691,6 +691,23 @@ product grew by the domain rules now unit-tested in their own files.
   (who has played whom, results and standings), with each game's PGN. Done on `r3-ui-chess-tab`:
   the league is a round robin, so the bracket is the current round's ("Round N, since <reset
   day>"); `GET /v1/league/games?page=N` lists every finished game (ADR 0135, amended 31 Oct).
+### After round 3: what the second check of round 3's code found (31 Oct)
+
+To fix on one branch, released after round 3 so the round measures one build:
+- [ ] **Pushing is done two ways.** With "Cards on my desk" turned on, approving a card pushes
+  through the old path, which skips the privacy scan and the owner's-needs check (off by
+  default, so not live). One path: a card only marks the branch due; the node's delivery loop
+  pushes. Removes about 250 lines.
+- [ ] The console reads rules out of card wording (`hqCanPush`, `hqBundleOf`); HQ sends fields.
+- [ ] The privacy scan's rules are in Rust and in `check-nothing-personal.mjs` with nothing
+  keeping them alike: one set of cases both must pass.
+- [ ] Dead pool and ping-pong leaderboard UI; unused `hqSeats` and `presetFor`.
+- [ ] The Mac and credits cards' code still sits in `47-hq.js` though it shows in Settings, and
+  misses the snapshot there; move it to `30-settings.js`.
+- [ ] One pager (Activity and Chess), one chess-result wording, the small formatter copies, and a
+  shared commit-shortening helper in Rust.
+- [ ] Per-branch delivery state kept as `delivery:{id}` settings; fields on `Branch` instead.
+
 ### The owner's
 
 - [ ] Decide on round 3's changes once round 2 is judged.
