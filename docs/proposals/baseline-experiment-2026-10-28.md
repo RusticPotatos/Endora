@@ -511,14 +511,15 @@ done. Defects are numbered so the next round's changes can name them.
 ### From the review of round 2's code (31 Oct), not yet fixed
 
 Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
-are seen; quotes count only against the item's own receipts. Still open, on the `review-fixes`
-branch when finished:
-- [ ] Credits: a renewal from the console view runs outside the ledger's lock.
-- [ ] Credits: a first grant entered with only a balance counts it all as grant.
-- [ ] Stubbed results are keyed by the model server's call id, which a server may reuse.
-- [ ] A Mac away for a while can block an item for good when it is the only rank above.
-- [ ] A reviewer's turn that runs out of room is never continued.
-- [ ] Minor: a balance read inside the ledger lock; a blocking lock on the async thread; an
+are seen; quotes count only against the item's own receipts. The other six are fixed on the
+`r3-review-fixes` branch (from `round3-local`), not yet merged or released (ADR 0113 and ADR
+0142, amended 2026-10-31):
+- [x] Credits: a renewal from the console view runs outside the ledger's lock.
+- [x] Credits: a first grant entered with only a balance counts it all as grant.
+- [x] Stubbed results are keyed by the model server's call id, which a server may reuse.
+- [x] A Mac away for a while can block an item for good when it is the only rank above.
+- [x] A reviewer's turn that runs out of room is never continued.
+- [x] Minor: a balance read inside the ledger lock; a blocking lock on the async thread; an
   unbounded list of continued runs.
 
 ### Next steps, in order
