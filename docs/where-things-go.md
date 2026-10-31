@@ -51,8 +51,9 @@ Settings.
   worker's last word or a reviewer's notes, and the limits) in the team's domain,
   `domains/team/src/domain/lessons.rs`. The owner edits them whole through
   `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
-- Inside HQ, use its three tabs (2026-10-30, after the density audit of 2026-10-25), split by
-  what the owner is doing, and add no fourth without a reason none of them can hold: **Work**
+- Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
+  added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
+  them can hold: **Work**
   (where every device opens: giving work, your desk, the digest of what happened while you were
   away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
   **Manage** (what you own and set, in this order (the owner's notes of 31 Oct): the money and
@@ -64,7 +65,9 @@ Settings.
   two switches (ADR 0115, amended 2026-10-31), what the team may do on the home lab, what the
   team knows — the world's pages and the house — and the office with its games), **Health** (how
   the team and the lab are doing: the scorecard and outcomes, the
-  turns that failed with a link to the Home lab, and the live activity). The office animation
+  turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
+  the latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
+  Older; never an endless scroll). The office animation
   plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)

@@ -381,6 +381,8 @@
   .hq-more { background: none; border: 0; box-shadow: none; padding: 0 2px; color: var(--hq-blue); font: inherit; text-decoration: underline; cursor: pointer; }
   /* On a phone the log is part of the page, not a small window to scroll inside the page. */
   @media (max-width: 560px) { .hq-log { max-height: none; overflow-y: visible; } }
+  /* Activity's twenty and its pages are read whole, never a box that scrolls (the owner, 31 Oct). */
+  .hq-log.hq-log-whole { max-height: none; overflow-y: visible; }
   .hq-log .k-wake { color: var(--hq-blue); }
   .hq-log .k-done { color: var(--hq-green); }
   .hq-log .k-warn { color: var(--hq-amber); }
