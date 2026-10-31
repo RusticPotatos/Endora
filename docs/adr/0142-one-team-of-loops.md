@@ -256,3 +256,51 @@ restart and a post; the worker's test `a_house_turns_first_call_is_sized_to_the_
 the relay's bodies after the first call, about four a token): 478,129 bytes with every result
 whole, 298,407 with old ones stubbed, about 119,500 to 74,600 tokens. About 12 KB a call is the
 floor, the instructions, the tools and the briefing.
+
+## Amended 2026-10-30: every pass fits one fresh context window
+
+Ralph's rule (Huntley; snarktank/ralph) is that each pass of the loop starts with a fresh context
+and does one thing within it; what it learned is carried in files, not in the conversation. HQ's
+work turns broke it: a turn went on until the model stopped or its twelve rounds ran out, every
+call re-sending the whole conversation, so measured turns read 110,000 to 200,000 prompt tokens
+(above) and a long one on the Mac ran its calls into the relay's timeout. Stubbing old results
+shrank each call; nothing bounded the turn.
+
+- **A turn has a prompt budget by its kind.** The worker sums the bytes of every call's body it
+  sends (about four a token, as the measurements above count them). When the next call would
+  take the sum past the budget, the turn ends there, cleanly: every call the model made has been
+  answered and receipted, and no call is cut. The first call is always made. The budget is
+  240,000 bytes (about 60,000 tokens) on a house turn (the NAS's model, the Mac, DeepSeek; the
+  worker cannot tell them apart) and 480,000 (about 120,000) on Claude, unless the runner sets
+  `ENDORA_PROMPT_BUDGET`. Why these: the Mac reads about 100 tokens a second, so 60,000 is about
+  ten minutes of reading in a turn, and the measured ten-call task turn read about 74,600 tokens
+  stubbed; a Claude turn of that length with every result whole read about 119,500, so 120,000
+  lets it finish on its own and cuts only the long ones. Claude Code's runtime keeps its own
+  compaction and is out of scope.
+- **Its last word says it goes on.** The worker posts what the model said on the way and that
+  the prompt reached its budget, as its last word (not progress), marked `continues`. Only the
+  worker sets the mark: it strips `last_word` and `continues` from the model's own posts, so a
+  model cannot buy its item a continuation.
+- **HQ continues the item with the same member, from a handover.** Once that turn has ended, and
+  while the item is still the member's, in the loops and neither in review nor finished, HQ
+  composes the handover above for the same member (the asks and what is cited of each, the
+  readings its turns took, to cite rather than take again, and the last posts, the last word
+  among them), posts it, and wakes the member with the new reason `continued`, a work turn. The
+  fresh turn starts from its briefing and that note instead of the whole conversation.
+- **Running out of room is not a failure, up to three times.** It is not one of the three failures
+  that move an item up a rank, and a turn that ran out of room is never counted as one that
+  showed nothing, even when it took readings the turn before had taken. An item continues with
+  one member at most three times; the fourth time is one of its failures, as a turn that never
+  finished was, the count starts again, and if the item is still the member's it goes on from a
+  fresh handover. The count is kept per item (`loop_continued:<task>` in HQ's settings).
+- **The transcript stays whole.** What HQ keeps of each turn's conversation (ADR 0129) is that
+  turn's whole conversation; only what the model reads is bounded.
+
+Measured on the engine's real briefing and tools (the worker's test
+`a_house_turns_first_call_is_sized_to_the_turn`, a work turn of twelve calls, the worker's most
+rounds, on the lab's status, logs, the standards, a diff and a restart; each pass after the first
+starting from the briefing with a 2,000-character handover): on a house model 362,984 bytes as
+one turn (about 90,700 tokens) became two passes of 235,332 and 100,816 (the larger about 58,800);
+on Claude, every result whole, 644,020 bytes (about 161,000 tokens) became 421,162 and 56,016
+(the larger about 105,300). No pass reads more than its budget, and the two passes together read
+less than the one turn did.

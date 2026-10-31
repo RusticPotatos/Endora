@@ -89,6 +89,10 @@ pub struct Setup {
     pub api: Api,
     /// The most rounds of the model a turn may take.
     pub most_rounds: u32,
+    /// The most bytes a turn's calls may send the relay in all, its prompts summed: past it the
+    /// turn ends and goes on in a fresh one (ADR 0142, amended 2026-10-30). See
+    /// [`prompt_budget_for`].
+    pub prompt_budget: usize,
     /// Where the workbench's shell runs, when the worker is in the workbench; `None` anywhere
     /// else, where it has no shell.
     pub workbench: Option<std::path::PathBuf>,
@@ -115,6 +119,39 @@ pub enum Taken {
     AskedTheOwner,
     /// The model moved its task on with `set_status`, the turn's last step.
     MovedOn,
+    /// The next call would have taken what the turn read past its budget: it ended there, every
+    /// call answered, and HQ continues the item with the same member in a fresh turn.
+    OutOfRoom,
+}
+
+/// What a house turn (the NAS's model, the Mac, DeepSeek) may read in all, in bytes: about
+/// 60,000 tokens at four bytes a token. The Mac reads about 100 tokens a second, so that is
+/// about ten minutes of reading in a turn; measured, a ten-call task turn read about 74,600
+/// tokens with old results stubbed and work turns 110,000 to 200,000 (ADR 0142, amended
+/// 2026-10-30).
+pub const HOUSE_PROMPT_BUDGET: usize = 240_000;
+
+/// What a Claude turn may read in all, in bytes: about 120,000 tokens, the measured ten-call
+/// task turn with every result whole (about 119,500), so a turn of that length still ends on
+/// its own and only the long ones (110,000 to 200,000 and more) go on fresh.
+pub const CLAUDE_PROMPT_BUDGET: usize = 480_000;
+
+/// A turn's budget by its kind, which is all the worker knows of its brain: the API its relay
+/// speaks.
+#[must_use]
+pub const fn prompt_budget_for(api: Api) -> usize {
+    match api {
+        Api::OpenAi => HOUSE_PROMPT_BUDGET,
+        Api::Anthropic => CLAUDE_PROMPT_BUDGET,
+    }
+}
+
+/// Whether a turn that has read `read` bytes over `rounds` calls makes its next call, of
+/// `next` bytes, within `budget`. The first call is always made: a turn that could make none
+/// would never get anywhere.
+#[must_use]
+pub const fn has_room(rounds: u32, read: usize, next: usize, budget: usize) -> bool {
+    rounds == 0 || read.saturating_add(next) <= budget
 }
 
 /// Why a turn stopped short. The reason never carries the token.
@@ -225,7 +262,23 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let taken = (|| {
         // What the model said beside its calls: its last word should the rounds run out.
         let mut on_the_way: Vec<String> = Vec::new();
-        for _ in 0..setup.most_rounds {
+        // What the turn has read so far: every call's body, summed (ADR 0142, amended
+        // 2026-10-30, after Ralph: every pass fits one fresh context window).
+        let mut read = 0usize;
+        for round in 0..setup.most_rounds {
+            let next = talk.body(&setup.model).to_string().len();
+            if !has_room(round, read, next, setup.prompt_budget) {
+                let line = format!(
+                    "The turn's prompt reached its budget ({read} bytes read over {round} calls, \
+                     of {}): it ends here, and goes on in a fresh turn from HQ's handover. {}",
+                    setup.prompt_budget,
+                    did.line()
+                );
+                let room = POST_AT_MOST.saturating_sub(line.chars().count() + 2);
+                out_of_room(&mut hq, task, &newest(&on_the_way, room), &line)?;
+                return Ok(Taken::OutOfRoom);
+            }
+            read += next;
             let said = model.ask(&talk)?;
             // Its words are part of what the turn said, its last ones too. A result it now reads
             // as a stub is answered in full if asked for again.
@@ -1356,6 +1409,13 @@ pub(crate) fn run(
             return Ok(reply(format!("Refused: {why}"), true));
         }
     };
+    // The marks of the worker's own last word are the worker's, never the model's: a model
+    // that set them would post its words as not progress, or buy its item a continuation.
+    let args = if tool == "post" {
+        without_marks(args)
+    } else {
+        args
+    };
     let key = format!("{tool} {args}");
     if let Some(said) = answered.given.remove(&key) {
         answered.said.insert(key.clone(), said.clone());
@@ -1538,6 +1598,44 @@ pub(crate) fn last_word(
         )));
     }
     Ok(())
+}
+
+/// The worker's last word when the turn's prompt reached its budget: posted like any last word,
+/// and marked as going on, so HQ continues the item with the same member in a fresh turn. Said
+/// with or without the model's words, and with no task, nothing.
+fn out_of_room(
+    hq: &mut Hq<'_>,
+    task: Option<i64>,
+    answer: &str,
+    line: &str,
+) -> Result<(), Stopped> {
+    let Some(task) = task else {
+        return Ok(());
+    };
+    let text = if answer.is_empty() {
+        line.to_owned()
+    } else {
+        beside(answer, line, POST_AT_MOST)
+    };
+    let (said, refused) = hq.call(
+        "post",
+        &json!({ "task": task, "text": text, "last_word": true, "continues": true }),
+    )?;
+    if refused {
+        return Err(Stopped::Failed(format!(
+            "HQ refused the last word for task {task}: {said}"
+        )));
+    }
+    Ok(())
+}
+
+/// A post's arguments without the worker's own marks (`last_word`, `continues`).
+fn without_marks(mut args: Value) -> Value {
+    if let Some(object) = args.as_object_mut() {
+        object.remove("last_word");
+        object.remove("continues");
+    }
+    args
 }
 
 /// How a tool call came back.
@@ -2599,6 +2697,8 @@ mod tests {
         // Round 3: a ten-call turn on the task, its old results read as stubs.
         let mut whole_results = talk.clone();
         whole_results.keep_whole = None;
+        let opening_whole = whole_results.clone();
+        let opening_stubbed = talk.clone();
         let before = ten_calls_on_the_lab(whole_results);
         let after = ten_calls_on_the_lab(talk);
         eprintln!(
@@ -2634,12 +2734,104 @@ mod tests {
         // with old ones stubbed (about 119,500 to 74,600 tokens); each call's instructions,
         // tools and briefing, about 12 KB, are the floor. At most two thirds of what it was.
         assert!(after * 3 <= before * 2, "ten calls: {after} of {before}");
+
+        // Ralph's rule, every pass fits one fresh context window (ADR 0142, amended
+        // 2026-10-30): a long work turn of twelve calls (the worker's most rounds), as one turn
+        // and as passes each held to its kind's budget, each after the first starting fresh
+        // with a handover.
+        for (kind, opening, budget) in [
+            ("house", &opening_stubbed, HOUSE_PROMPT_BUDGET),
+            ("Claude", &opening_whole, CLAUDE_PROMPT_BUDGET),
+        ] {
+            let (whole, passes) = long_turn_on_the_lab(opening, budget);
+            let largest = passes.iter().max().copied().unwrap_or(0);
+            eprintln!(
+                "long work turn, twelve calls, {kind}: {whole} bytes (~{} tokens) as one turn; \
+                 {} passes within {budget} reading {:?} bytes, the largest ~{} tokens",
+                whole / 4,
+                passes.len(),
+                passes,
+                largest / 4
+            );
+            assert!(passes.len() > 1, "{kind}: a long turn goes on fresh");
+            assert!(
+                passes.iter().all(|p| *p <= budget),
+                "{kind}: every pass within its budget: {passes:?}"
+            );
+            assert!(largest < whole, "{kind}");
+        }
+    }
+
+    /// The lab's ten calls and then its first two again, each round's arguments its own: a work
+    /// turn as long as the worker's rounds allow (twelve).
+    /// Returns what it reads in all as one turn, and what each pass reads when a pass ends once
+    /// its next call would take it past `budget` and the next starts from `opening` with a
+    /// handover of the largest size (2,000 characters) added to its briefing.
+    fn long_turn_on_the_lab(opening: &Talk, budget: usize) -> (usize, Vec<usize>) {
+        let calls: Vec<(&str, Value, String)> = (0..2)
+            .flat_map(|k| {
+                lab_calls().into_iter().map(move |(tool, mut args, text)| {
+                    args["round"] = json!(k);
+                    (tool, args, text)
+                })
+            })
+            .take(12)
+            .collect();
+        let mut talk = opening.clone();
+        let mut whole = talk.body("local").to_string().len();
+        for (i, (tool, args, text)) in calls.iter().enumerate() {
+            round(&mut talk, &format!("c{i}"), tool, args, text);
+            whole += talk.body("local").to_string().len();
+        }
+        let fresh = || {
+            let mut talk = opening.clone();
+            let at = usize::from(talk.api == Api::OpenAi);
+            let briefing = talk.messages[at]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            let handover = format!(
+                "Handover of #7 to Jane (its turn ran out of room). {}",
+                "x".repeat(1_950)
+            );
+            talk.messages[at]["content"] = json!(format!("{briefing}\n{handover}"));
+            talk
+        };
+        let mut passes = Vec::new();
+        let (mut talk, mut read, mut rounds, mut i) = (opening.clone(), 0, 0, 0);
+        loop {
+            let next = talk.body("local").to_string().len();
+            if !has_room(rounds, read, next, budget) {
+                passes.push(read);
+                (talk, read, rounds) = (fresh(), 0, 0);
+                continue;
+            }
+            read += next;
+            rounds += 1;
+            let Some((tool, args, text)) = calls.get(i) else {
+                break;
+            };
+            round(&mut talk, &format!("c{i}"), tool, args, text);
+            i += 1;
+        }
+        passes.push(read);
+        (whole, passes)
     }
 
     /// The bytes of every call of a ten-call turn on an unhealthy container, after its first:
     /// the lab's status, its logs (a house model's 40 lines, and the 100 asked for), the
     /// standards, the branch's diff, a restart, then a word in the thread.
     fn ten_calls_on_the_lab(mut talk: Talk) -> usize {
+        let mut read = 0;
+        for (i, (tool, args, text)) in lab_calls().iter().enumerate() {
+            round(&mut talk, &format!("c{i}"), tool, args, text);
+            read += talk.body("local").to_string().len();
+        }
+        read
+    }
+
+    /// The ten calls of [`ten_calls_on_the_lab`], each with what it came to.
+    fn lab_calls() -> Vec<(&'static str, Value, String)> {
         let status = format!(
             "{} (receipt r101)",
             (0..40)
@@ -2703,12 +2895,7 @@ mod tests {
                 "Posted.".to_owned(),
             ),
         ];
-        let mut read = 0;
-        for (i, (tool, args, text)) in calls.iter().enumerate() {
-            round(&mut talk, &format!("c{i}"), tool, args, text);
-            read += talk.body("local").to_string().len();
-        }
-        read
+        calls.to_vec()
     }
 
     /// A house turn with no task (a chess move, a look round) whose lab tools are to be found is

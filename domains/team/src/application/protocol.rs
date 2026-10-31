@@ -647,6 +647,11 @@ fn tool_post<S: TeamStore, W: WorkerAdapter, C: Clock>(
         engine
             .last_word_in(run.id, task, text)
             .map_err(|e| said(&e))?;
+        // The worker's word that the turn's prompt reached its budget (ADR 0142, amended
+        // 2026-10-30): the item goes on with the same member in a fresh turn.
+        if args["continues"].as_bool() == Some(true) {
+            engine.out_of_room_in(run.id, task).map_err(|e| said(&e))?;
+        }
         return Ok("Posted.".to_owned());
     }
     let cited = evidence_flat(args)?;

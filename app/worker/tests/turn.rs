@@ -965,6 +965,119 @@ fn the_rounds_run_out_and_what_the_model_said_on_the_way_is_its_last_word() {
     );
 }
 
+/// The bytes of every call the relay was sent: what the turn read in all.
+fn read_in_all(to_model: &Seen) -> usize {
+    to_model
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.body.to_string().len())
+        .sum()
+}
+
+/// Ralph's rule, every pass fits one fresh context window (ADR 0142, amended 2026-10-30): once
+/// the next call would take what the turn has read past its budget, the turn ends cleanly
+/// there, every call answered, and its last word says it goes on in a fresh turn.
+#[test]
+fn a_turn_whose_prompt_reaches_its_budget_ends_cleanly_and_says_it_continues() {
+    let saying = |text: &str, i: usize| {
+        let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+        let mut said = calls(&[("call_1", "post", &args)]);
+        said["choices"][0]["message"]["content"] = json!(text);
+        (200, said)
+    };
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(
+        (0..12)
+            .map(|i| saying(&format!("Step {i}: the log says the disk is full."), i))
+            .collect(),
+    );
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_PROMPT_BUDGET", "12000".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert!(said(&out).contains("budget"), "{}", said(&out));
+    let asked = to_model.lock().unwrap().len();
+    assert!((2..12).contains(&asked), "{asked} calls");
+    let read = read_in_all(&to_model);
+    assert!(read <= 12_000, "{read} bytes read in all");
+    // Every call the model made was answered: the last thing the turn did was its last word.
+    let sent = to_hq.lock().unwrap().clone();
+    let posts: Vec<&Sent> = sent
+        .iter()
+        .filter(|s| s.method() == "tools/call post")
+        .collect();
+    assert_eq!(posts.len(), asked + 1, "a post a round, then the last word");
+    let last = &posts.last().unwrap().body["params"]["arguments"];
+    assert_eq!(last["last_word"], json!(true));
+    assert_eq!(last["continues"], json!(true));
+    let text = last["text"].as_str().unwrap();
+    assert!(text.contains("the log says the disk is full"), "{text}");
+    assert!(
+        text.contains("reached its budget") && text.contains("fresh turn"),
+        "{text}"
+    );
+}
+
+/// The first call is always made, however large: a turn that could make none would never
+/// get anywhere. The next one is not.
+#[test]
+fn a_turns_first_call_is_made_even_past_its_budget() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![(200, calls(&[("call_1", "claim", r#"{"task": 7}"#)]))]);
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_PROMPT_BUDGET", "100".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    let last = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(last["continues"], json!(true), "{last}");
+}
+
+/// A turn that ends within its budget is not marked as continuing.
+#[test]
+fn a_turn_within_its_budget_ends_as_before() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(vec![
+        (200, calls(&[("call_1", "claim", r#"{"task": 7}"#)])),
+        (200, says("Done.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let last = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(last["last_word"], json!(true));
+    assert!(last.get("continues").is_none(), "{last}");
+}
+
+/// The marks of the worker's own last word are the worker's: a model's post that carries them
+/// reaches HQ without them, so a model cannot buy its item a free continuation.
+#[test]
+fn a_models_post_cannot_mark_itself_the_workers_last_word() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(vec![
+        (
+            200,
+            calls(&[(
+                "call_1",
+                "post",
+                r#"{"task": 7, "text": "Later.", "last_word": true, "continues": true}"#,
+            )]),
+        ),
+        (200, says("")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent = to_hq.lock().unwrap().clone();
+    let post = sent
+        .iter()
+        .find(|s| s.method() == "tools/call post")
+        .expect("the model's post");
+    assert_eq!(
+        post.body["params"]["arguments"],
+        json!({ "task": 7, "text": "Later." })
+    );
+}
+
 #[test]
 fn a_failure_exits_1_and_never_prints_the_token() {
     let (hq_url, _) = hq(None);

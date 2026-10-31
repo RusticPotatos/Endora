@@ -904,6 +904,7 @@ mod tests {
             model: "claude-haiku-5-5".to_owned(),
             api: Api::Anthropic,
             most_rounds: 30,
+            prompt_budget: crate::turn::CLAUDE_PROMPT_BUDGET,
             workbench: Some("/work".into()),
             effort: Some("low".to_owned()),
             claude_code: true,

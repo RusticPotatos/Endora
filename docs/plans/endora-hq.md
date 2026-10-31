@@ -633,6 +633,8 @@ team pool stays $70 a month. The pieces and their contracts:
 3. **The worker**, `endora-worker` (crate `app/worker`, in the same image). It reads
    `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v2/team/mcp`), `ENDORA_MODEL_URL`
    (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
+   `ENDORA_PROMPT_BUDGET` (the bytes its calls may send in all before the turn goes on fresh;
+   default 240,000 on the house's models, 480,000 on Claude; ADR 0142, amended 2026-10-30), and
    `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay), and
    `ENDORA_MODEL` (the model it names, default `local`; the local relay uses its own whatever
    the name). A model named `claude-…` is a cloud brain (ADR 0109): the worker speaks

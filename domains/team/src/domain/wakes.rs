@@ -55,6 +55,9 @@ pub enum WakeReason {
     /// A colleague consults this member (ADR 0129): one short turn, about no task, to answer a
     /// question from what it knows and the record. A member who cannot be woken is not.
     Consulted,
+    /// Its own turn on its task ended at its prompt's budget (ADR 0142, amended 2026-10-30): it
+    /// goes on in a fresh turn, from HQ's handover rather than the whole conversation.
+    Continued,
 }
 
 impl WakeReason {
@@ -82,6 +85,7 @@ impl WakeReason {
             Self::Decide => "decide",
             Self::WaitDropped => "wait_dropped",
             Self::Consulted => "consulted",
+            Self::Continued => "continued",
         }
     }
 
@@ -139,7 +143,7 @@ impl WakeReason {
     /// be added here too, and classified in [`super::turns`], whose table test fails until it
     /// is.
     #[must_use]
-    pub const fn all() -> [Self; 20] {
+    pub const fn all() -> [Self; 21] {
         [
             Self::Assigned,
             Self::Mentioned,
@@ -161,6 +165,7 @@ impl WakeReason {
             Self::Decide,
             Self::WaitDropped,
             Self::Consulted,
+            Self::Continued,
         ]
     }
 

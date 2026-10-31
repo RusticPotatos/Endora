@@ -76,7 +76,8 @@ pub const fn kind_of(reason: WakeReason, role: Role) -> TurnKind {
         | W::CheckDone
         | W::Downtime
         | W::WaitDropped
-        | W::Consulted => TurnKind::Work,
+        | W::Consulted
+        | W::Continued => TurnKind::Work,
     };
     let office = matches!(reason, W::Downtime | W::Consulted);
     if matches!(role, Role::Ceo) && !office {
@@ -317,7 +318,7 @@ mod tests {
     /// not the tester, how far down its work may go (a judgment turn never goes down at all,
     /// so its column says what its work would be). A reason added to the enum fails
     /// `every_reason_is_classified` until it is in this table.
-    const TABLE: [(WakeReason, TurnKind, Allowed); 20] = [
+    const TABLE: [(WakeReason, TurnKind, Allowed); 21] = [
         (W::Assigned, TurnKind::Work, Allowed::Either),
         (W::Mentioned, TurnKind::Work, Allowed::Either),
         (W::WaitFinished, TurnKind::Work, Allowed::Either),
@@ -339,6 +340,8 @@ mod tests {
         (W::WaitDropped, TurnKind::Work, Allowed::Either),
         // ADR 0139: a colleague's answer is not forced onto the house's model.
         (W::Consulted, TurnKind::Work, Allowed::Either),
+        // ADR 0142, amended 2026-10-30: a turn out of room goes on as the work it was.
+        (W::Continued, TurnKind::Work, Allowed::Either),
     ];
 
     #[test]

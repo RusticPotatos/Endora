@@ -1481,3 +1481,154 @@ fn a_paused_member_s_item_goes_up_with_a_handover() {
     assert!(note.contains("Bo is paused"), "{note}");
     assert!(note.contains(&format!("r{logs} container_logs")), "{note}");
 }
+
+// ---- a turn out of room continues fresh (ADR 0142, amended 2026-10-30) ----------------------
+
+/// One turn of Bo's on `hard` that takes the same reading of gluetun's log, then ends as the
+/// worker ends a turn whose prompt reached its budget: its last word, marked as continuing.
+/// Returns the reading's receipt.
+fn bo_out_of_room(hq: &Hq<'_>, f: &Five, hard: TaskId) -> i64 {
+    let bo = turn_of(hq, f.bo);
+    use_tool(hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    let logs = read(
+        hq,
+        &bo,
+        "container_logs",
+        "gluetun",
+        "AUTH_FAILED from the provider",
+    );
+    use_tool(
+        hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": hard.0, "last_word": true, "continues": true,
+            "text": "The VPN credentials look stale.\n\nThe turn's prompt reached its budget: \
+                     it ends here and goes on in a fresh turn." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    logs
+}
+
+/// An item of one at a time with a criterion, given to Bo.
+fn hard_item(hq: &Hq<'_>, f: &Five) -> TaskId {
+    hq.set_loop_items(f.loop_, 1).unwrap();
+    let hard = item(hq, f, "Find what stops gluetun", Priority::Normal);
+    hq.set_criteria(
+        hard,
+        &[crate::domain::evidence::Criterion::new(
+            "gluetun is running and healthy",
+            false,
+        )],
+    )
+    .unwrap();
+    hard
+}
+
+/// Ralph's rule, every pass fits one fresh context window: a turn whose prompt reached its
+/// budget ends cleanly, and the same member goes on in a fresh turn that starts from HQ's
+/// handover instead of the whole conversation. It is not one of the item's failures.
+///
+/// Given Bo's item, on which he took a reading,
+/// when his turn ends at its prompt's budget,
+/// then he is woken to continue it, it is still his with no failure, and his next briefing
+/// carries a handover to him with his reading to cite and what he said.
+#[test]
+fn a_turn_out_of_room_continues_with_the_same_member_from_a_handover() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let logs = bo_out_of_room(&hq, &f, hard);
+    assert!(woken(&hq, f.bo, hard, WakeReason::Continued));
+    assert_eq!(hq.loop_failures(hard).unwrap(), 0);
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    let bo = turn_of(&hq, f.bo);
+    let note = handover_in(&bo.told);
+    assert!(note.contains(&format!("#{} to Bo", hard.0)), "{note}");
+    assert!(note.contains("out of room, continuation 1 of 3"), "{note}");
+    assert!(
+        note.contains(&format!(
+            "r{logs} container_logs gluetun: AUTH_FAILED from the provider"
+        )),
+        "{note}"
+    );
+    assert!(
+        note.contains("Bo: The VPN credentials look stale."),
+        "{note}"
+    );
+    assert!(
+        note.chars().count() <= crate::domain::handover::chars_for(Brain::Local),
+        "{note}"
+    );
+    let thread = hq.store().thread(hard).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.author == "endora" && p.text.starts_with("Handover of #")),
+        "the owner sees what was handed over: {thread:?}"
+    );
+}
+
+/// An item cannot continue for ever: past three continuations with one member, running out
+/// of room again is one of its failures, as a turn that never finished was before. Turns out
+/// of room are never counted as showing nothing, even when each takes the same reading.
+///
+/// Given Bo's item,
+/// when four of his turns on it in a row end at their prompt's budget, each reading the same
+/// log,
+/// then the first three continue with no failure, and the fourth is one failure, and he is
+/// woken to go on from a fresh handover.
+#[test]
+fn past_three_continuations_running_out_of_room_is_one_failure() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    for n in 1..=3 {
+        bo_out_of_room(&hq, &f, hard);
+        assert_eq!(hq.loop_failures(hard).unwrap(), 0, "continuation {n}");
+        let thread = hq.store().thread(hard).unwrap();
+        assert!(
+            thread
+                .last()
+                .is_some_and(|p| p.text.contains(&format!("continuation {n} of 3"))),
+            "{thread:?}"
+        );
+    }
+    bo_out_of_room(&hq, &f, hard);
+    assert_eq!(hq.loop_failures(hard).unwrap(), 1);
+    assert_eq!(assignee(&hq, hard), Some(f.bo));
+    let thread = hq.store().thread(hard).unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|p| p.author == "endora" && p.text.contains("ran out of room 4 times")),
+        "{thread:?}"
+    );
+    let bo = turn_of(&hq, f.bo);
+    assert!(handover_in(&bo.told).contains("out of room"), "{}", bo.told);
+}
+
+/// Only the worker's own last word says a turn continues: a post of the model's that says so
+/// is a post, and the turn ends as any other does.
+#[test]
+fn only_the_workers_last_word_continues_a_turn() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": hard.0, "continues": true, "text": "Going on later." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    assert!(!woken(&hq, f.bo, hard, WakeReason::Continued));
+}

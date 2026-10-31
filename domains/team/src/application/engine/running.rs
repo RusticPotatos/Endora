@@ -74,6 +74,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if status == RunStatus::Succeeded && label.is_some() {
             self.after_nothing_shown(&run)?;
         }
+        // A turn the worker ended at its prompt's budget goes on fresh (ADR 0142, amended
+        // 2026-10-30).
+        if status == RunStatus::Succeeded {
+            self.after_out_of_room(&run)?;
+        }
         // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
         self.after_a_deploy_check(&run)?;
         Ok(())

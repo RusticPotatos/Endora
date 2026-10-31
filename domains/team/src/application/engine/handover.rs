@@ -4,13 +4,18 @@
 //! ([`handover::compose`]), keeps it for that member's briefings on the item, and posts it on
 //! the item's thread as Endora's, so the owner sees what was handed over.
 //!
+//! The same note continues an item with the same member when the worker ended its turn at its
+//! prompt's budget (ADR 0142, amended 2026-10-30, after Ralph: every pass fits one fresh context
+//! window): the next turn starts from the note, not from the whole conversation, and running
+//! out of room is not one of the item's failures until it has happened [`CONTINUES_MOST`] times.
+//!
 //! Not a member's own handover note (ADR 0134, [`crate::domain::world::HandoverNote`]): that
 //! one a member writes as a restart ends its turn; this one is built by code, no model call.
 
-use super::{Author, Done, Engine};
+use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::handover::{self, CriterionSeen, ReadingSeen};
-use crate::domain::{Member, MemberId, TaskId};
+use crate::domain::{Member, MemberId, Refusal, RunId, TaskId, TaskStatus, WakeReason};
 
 /// How many of the members' last posts on the item a handover carries.
 const TRIED_MOST: usize = 3;
@@ -18,6 +23,49 @@ const TRIED_MOST: usize = 3;
 const SENT_BACK_MOST: usize = 2;
 /// How a send-back begins in a thread, the reviewer's and the checks' alike.
 const SENT_BACK: &str = "Sent back:";
+
+/// How many times an item goes on with one member in a fresh turn after its turn ran out of
+/// room; the next time is one of its failures, and the count starts again.
+pub(crate) const CONTINUES_MOST: u32 = 3;
+
+/// Where an item's continuations are kept.
+fn continued_key(task: TaskId) -> String {
+    format!("loop_continued:{}", task.0)
+}
+
+/// An item's continuations: with whom, how many since the count last started, the turn that
+/// ran out of room and has not ended yet, and every turn of it that ran out of room.
+/// Kept as `{member, n, pending, runs}`.
+#[derive(Debug, Default)]
+struct Continued {
+    member: i64,
+    n: u32,
+    pending: Option<i64>,
+    runs: Vec<i64>,
+}
+
+impl Continued {
+    fn read(kept: &serde_json::Value) -> Self {
+        Self {
+            member: kept["member"].as_i64().unwrap_or(0),
+            n: kept["n"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
+            pending: kept["pending"].as_i64(),
+            runs: kept["runs"]
+                .as_array()
+                .map(|r| r.iter().filter_map(serde_json::Value::as_i64).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn written(&self) -> String {
+        serde_json::json!({ "member": self.member, "n": self.n, "pending": self.pending,
+                            "runs": self.runs })
+        .to_string()
+    }
+}
 
 /// Where an item's latest handover is kept: `{to, text}`.
 fn handover_key(task: TaskId) -> String {
@@ -135,6 +183,108 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             readings,
             tried,
         })
+    }
+
+    fn continued(&self, task: TaskId) -> Done<Continued> {
+        Ok(self
+            .setting_json::<serde_json::Value>(&continued_key(task))?
+            .map(|kept| Continued::read(&kept))
+            .unwrap_or_default())
+    }
+
+    fn keep_continued(&self, task: TaskId, kept: &Continued) -> Done<()> {
+        self.store
+            .set_setting(&continued_key(task), &kept.written())?;
+        Ok(())
+    }
+
+    /// The worker says its turn on `task` ended at its prompt's budget: once the turn has ended,
+    /// the item goes on with the same member in a fresh turn ([`Self::after_out_of_room`]).
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`] for a turn not running; [`Refusal::OutOfReach`] for a task that is
+    /// not the turn's; a store failure.
+    pub fn out_of_room_in(&self, run: RunId, task: TaskId) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        if run.task != Some(task) {
+            return Err(EngineError::Refused(Refusal::OutOfReach));
+        }
+        let mut kept = self.continued(task)?;
+        kept.pending = Some(run.id.0);
+        kept.runs.push(run.id.0);
+        self.keep_continued(task, &kept)
+    }
+
+    /// Whether `run` ended at its prompt's budget: such a turn was working, so it never counts
+    /// as one that showed nothing.
+    pub(super) fn ran_out_of_room(&self, run: &Run) -> Done<bool> {
+        let Some(task) = run.task else {
+            return Ok(false);
+        };
+        Ok(self.continued(task)?.runs.contains(&run.id.0))
+    }
+
+    /// After a turn that ran out of room has ended (the lock held): while the item is still its
+    /// member's, in the loops and not in review or finished, the member goes on in a fresh turn
+    /// with a handover, counting no failure, up to [`CONTINUES_MOST`] times. The next time is
+    /// one of the item's failures, as a turn that never finished was, and the count starts
+    /// again; if the item is still the member's, it goes on from a fresh handover all the same.
+    pub(super) fn after_out_of_room(&self, run: &Run) -> Done<()> {
+        let Some(task) = run.task else {
+            return Ok(());
+        };
+        let mut kept = self.continued(task)?;
+        if kept.pending != Some(run.id.0) {
+            return Ok(());
+        }
+        kept.pending = None;
+        if kept.member != run.member.0 {
+            kept.member = run.member.0;
+            kept.n = 0;
+        }
+        let found = self.task(task)?;
+        let still_its = found.owner.or(found.assignee) == Some(run.member)
+            && !found.status.finished()
+            && found.status != TaskStatus::InReview
+            && self.loop_holds(&found)?;
+        if !still_its {
+            return self.keep_continued(task, &kept);
+        }
+        if kept.n < CONTINUES_MOST {
+            kept.n += 1;
+            self.keep_continued(task, &kept)?;
+            self.hand_over(
+                task,
+                run.member,
+                &format!(
+                    "its turn ran out of room, continuation {} of {CONTINUES_MOST}",
+                    kept.n
+                ),
+            )?;
+            self.wake_held_lock(run.member, Some(task), WakeReason::Continued)?;
+            return Ok(());
+        }
+        kept.n = 0;
+        self.keep_continued(task, &kept)?;
+        let member = self.member(run.member)?;
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "{}'s turns on this ran out of room {} times: that is one of its failures.",
+                member.name,
+                CONTINUES_MOST + 1
+            ),
+        )?;
+        self.loop_failed(task)?;
+        let now = self.task(task)?;
+        if now.owner.or(now.assignee) != Some(run.member) {
+            return Ok(());
+        }
+        self.hand_over(task, run.member, "its turns kept running out of room")?;
+        self.wake_held_lock(run.member, Some(task), WakeReason::Continued)?;
+        Ok(())
     }
 
     /// The handover kept for `member` on `task`, as it was posted, while the item is still

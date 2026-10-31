@@ -116,6 +116,13 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     if claude_code && (workbench.is_none() || api != Api::Anthropic) {
         return Err("Claude Code takes a turn only in the workbench, on a Claude model".to_owned());
     }
+    // What the turn may read in all before it goes on fresh: its kind's, unless told.
+    let prompt_budget = match given("ENDORA_PROMPT_BUDGET") {
+        None => turn::prompt_budget_for(api),
+        Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+            format!("ENDORA_PROMPT_BUDGET must be a whole number of bytes above zero, not {n}")
+        })?,
+    };
     let mcp = given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned());
     endora_protocol::team::canonical_endpoint(&mcp).map_err(str::to_owned)?;
     Ok(Setup {
@@ -126,6 +133,7 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         model,
         api,
         most_rounds,
+        prompt_budget,
         workbench,
         effort,
         claude_code,
@@ -179,6 +187,13 @@ fn main() {
             eprintln!(
                 "worker: the {} rounds ran out before the model finished",
                 setup.most_rounds
+            );
+            TAKEN
+        }
+        Ok(Taken::OutOfRoom) => {
+            eprintln!(
+                "worker: the turn's prompt reached its budget of {} bytes; it goes on in a fresh turn",
+                setup.prompt_budget
             );
             TAKEN
         }
@@ -302,6 +317,24 @@ mod tests {
         assert_eq!(setup.model, "claude-haiku-5-5");
         assert_eq!(setup.api, Api::Anthropic, "Claude speaks Anthropic's API");
         assert_eq!(setup.most_rounds, 4);
+    }
+
+    /// What a turn may read in all before it ends and goes on fresh (ADR 0142, amended
+    /// 2026-10-30): about 60,000 tokens on the house's models, 120,000 on Claude, four bytes a
+    /// token, unless told.
+    #[test]
+    fn the_prompt_budget_is_the_turn_kinds_unless_told() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).map(|s| s.prompt_budget)
+        };
+        assert_eq!(at(&[]), Ok(240_000), "a house turn");
+        assert_eq!(at(&[("ENDORA_MODEL", "claude-haiku-5-5")]), Ok(480_000));
+        assert_eq!(at(&[("ENDORA_PROMPT_BUDGET", "5000")]), Ok(5_000));
+        for odd in ["0", "-1", "lots"] {
+            assert!(at(&[("ENDORA_PROMPT_BUDGET", odd)]).is_err(), "{odd}");
+        }
     }
 
     #[test]

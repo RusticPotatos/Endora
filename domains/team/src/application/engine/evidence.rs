@@ -640,7 +640,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .collect();
             read.sort();
             read.dedup();
+            // A turn that ran out of room was working: it is never one that showed nothing.
+            let out_of_room = self.ran_out_of_room(&run)?;
             let nothing = match run.label {
+                _ if out_of_room => false,
                 Some(Label::Checked) => before
                     .as_ref()
                     .is_some_and(|b| !read.is_empty() && read.iter().all(|r| b.contains(r))),
