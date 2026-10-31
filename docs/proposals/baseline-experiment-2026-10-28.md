@@ -530,7 +530,7 @@ loaded on Claude too). One turn ended before the restart; none was cut.
 
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
-| 1 | 947 | | | | | |
+| 1 | 947 | No: blocked by HQ at 22:38 UTC, "failed at every rank". The work was ready at 19:36 and Ada approved it four times on her own readings (all 46 defaults, ports, lint same as develop), but no verdict could land (D19), and wakes refused while it waited in review counted as Mara's failures (D17). Never delivered | $0.50 | 158 min to first ready; never accepted | 1 | |
 | 2 | 948 | Yes (all 39 defaults with exact values against `defaults/main.yml`; ports and the VPN rule match the tasks; lint the same as develop, 14 and 6; pushed by delivery as `hq/task-948-role-readmes`, its privacy scan clean; rechecked by the round judge) | $0.36 (two thirds after it was ready, see D17) | 32 min | 0 | |
 | 3 | 949 | | | | | |
 | 4 | 950 | | | | | |
