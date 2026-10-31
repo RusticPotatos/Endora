@@ -1068,8 +1068,8 @@ if (failures.length) {
   if (office.includes("hq:brain:5:claude-haiku-5-5") || office.includes("hq:brain:1:claude-opus-5-5")) fail("hq: a brain was offered that the role may not use");
   if (!office.includes("CEO · ")) fail("hq: the CEO's role is not shown as CEO");
   if (!office.includes("the house's model: costs nothing")) fail("hq: a local member reads as if it cost money");
-  // The house log: readable and editable, and its text stays text.
-  if (!office.includes('id="hq-house"') || !office.includes('data-act="hq:house:save"') || !office.includes("House log")) fail("hq: the house log cannot be read and edited");
+  // The old house log: read-only, and its text stays text.
+  if (office.includes('id="hq-house"') || office.includes("hq:house:save") || !office.includes("The old house log (read-only)")) fail("hq: the old house log is not read-only");
   if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
   // The World card (ADR 0122): its pages and the export.
   for (const said of ["<h2>World</h2>", 'data-act="hq:world:export:md"']) {
@@ -1099,12 +1099,6 @@ if (failures.length) {
   for (const hostile of ["<img src=m1"]) {
     if (mapViews.includes(hostile)) fail(`hq: the map on the World card let markup through: ${hostile}`);
   }
-  // Once moved into the world, the old house log is read-only, and still escaped.
-  runInContext("HQ.snap.world.migrated = true;", context);
-  const moved = runInContext("viewHQ()", context);
-  if (moved.includes('id="hq-house"') || !moved.includes("The old house log (read-only)")) fail("hq: the moved house log is still editable");
-  if (moved.includes("<img src=h")) fail("hq: the read-only house log became markup");
-  runInContext("HQ.snap.world.migrated = false;", context);
   // Projects (ADR 0113): grouped by goal, each with its lead, status and money against its cap
   // (amber from 80%, red once spent); the owner's buttons offer only what each status takes;
   // whatever a member wrote stays text.
@@ -1715,14 +1709,15 @@ if (failures.length) {
     }
     // No action was lost to the regrouping: every act the four tabs offered (2026-10-29, the
     // same snapshot) is on one of the three, at rest or once its fold is opened. The CEO's
-    // decision card (18) and the Deployed cards (40, 41) retired with ADR 0142.
+    // decision card (18), the Deployed cards (40, 41) and the house log's save retired
+    // with ADR 0142.
     {
       const before = ["go:models", "hq:bundle:9:task-9-other", "hq:contracts:all:off", "hq:contracts:restart_container:on", "hq:decide:11:approve", "hq:decide:11:decline",
         "hq:decide:12:drop", "hq:decide:12:retry", "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:not_now", "hq:decide:14:read", "hq:decide:15:dismiss",
         "hq:decide:15:seen", "hq:decide:16:dismiss", "hq:decide:16:seen", "hq:decide:17:approve", "hq:decide:17:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
         "hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline", "hq:decide:24:dismiss", "hq:decide:24:seen", "hq:decide:27:approve",
         "hq:decide:27:decline", "hq:find:task:go", "hq:goal",
-        "hq:hire:new:add", "hq:house:save", "hq:logolder:0:more", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
+        "hq:hire:new:add", "hq:logolder:0:more", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
         "hq:more:outcome0:toggle", "hq:more:outcome4:toggle", "hq:more:proj1:toggle", "hq:more:proj2:toggle", "hq:more:proj3:toggle", "hq:more:routine3:toggle",
         "hq:more:routine4:toggle", "hq:pick:task:7", "hq:pick:task:9", "hq:pool:topup:go", "hq:project:new:add", "hq:roster:1:toggle", "hq:roster:8:toggle",
         "hq:routine:new:add", "hq:stop", "hq:work", "hq:world:edit:open-0", "hq:world:edit:open-1", "hq:world:export:md", "hq:world:page:all", "hq:world:paste:show",

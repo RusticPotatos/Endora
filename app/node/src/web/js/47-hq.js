@@ -2150,22 +2150,14 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
-// The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
-// every turn. The owner reads it here and may rewrite it.
+// The old house log (ADR 0111), the CEO's: read-only, as the house page is where the house is
+// kept now (ADR 0122, 0142).
 function hqHouse(s) {
   const log = s.house_log || "";
-  // Once its lines are on the house page's timeline (ADR 0122), the old log is read-only.
-  if (s.world && s.world.migrated) {
-    if (!log.trim()) return "";
-    return `<details class="hq-card"><summary>The old house log (read-only)</summary>
+  if (!log.trim()) return "";
+  return `<section class="hq-card"><h2>The old house log (read-only)</h2>
       <p class="hq-note">Its lines are on the house page's timeline, in the World card.</p>
-      <pre class="hq-doc">${esc(log)}</pre></details>`;
-  }
-  return `<section class="hq-card"><h2>House log</h2>
-    <p class="hq-note">Kept by the CEO; the CEO and the lead read it every turn.</p>
-    <textarea id="hq-house" rows="6" maxlength="6000" aria-label="The house log"
-      placeholder="Nothing yet: the CEO adds what it learns about the house">${esc(log)}</textarea>
-    <div class="hq-row"><button class="hq-btn ok" data-act="hq:house:save">Save the house log</button></div></section>`;
+      <pre class="hq-doc">${esc(log)}</pre></section>`;
 }
 
 // ---- The owner's Mac as a brain (ADR 0130) ---------------------------------------------------
@@ -2623,13 +2615,6 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The team's world (ADR 0122): make a piece canon, demote canon, or download it all.
   if (noun === "world") return hqWorldAct(id, arg);
-  // The owner rewrites the CEO's house log; empty clears it.
-  if (noun === "house") {
-    const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";
-    try { await api("POST", "/v1/hq/house", { log }); flash("House log saved.", "ok"); }
-    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
 
   // A goal's notes for the team; empty clears them.
   if (noun === "note") {
