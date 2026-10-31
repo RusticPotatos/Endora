@@ -1554,6 +1554,8 @@ const HQ_DESK_HELP = {
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
   deploy: "Deployed once you have merged the branch and run the playbook: the lab's routine member then checks the lab once, reading health, logs and metrics only. Won't deploy closes this with no check.",
   deploy_check: "The check after a deploy did not show the lab healthy: it found a problem, or could not tell. Seen or Dismiss clears it; the change's thread has the details.",
+  privacy: "The privacy scan found something personal-looking in an accepted branch, so nothing was pushed. Send it back has the team take it out; Push it anyway pushes it as it is, if what was found is not yours.",
+  needs_owner: "An accepted change needs something from you before it is deployed, such as a vault value it now reads. Done once you have set it; Dismiss clears it.",
 };
 
 // The choices each kind of desk item offers: [decision, label, style].
@@ -1595,6 +1597,10 @@ const HQ_DESK_CHOICES = {
   // deployed starts one read-only check of the lab; its verdict, when not healthy, comes back.
   deploy: [["deployed", "Deployed", "ok"], ["not_deploying", "Won't deploy", "no"]],
   deploy_check: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
+  // Accepted work without a card (ADR 0115, amended 2026-10-31): a branch the privacy scan
+  // held, and a change that needs something of the owner.
+  privacy: [["send_back", "Send it back", "ok"], ["push_anyway", "Push it anyway", "no"]],
+  needs_owner: [["seen", "Done", "ok"], ["dismiss", "Dismiss", "no"]],
 };
 
 function hqDeskChoices(d) {
@@ -1811,6 +1817,7 @@ function viewHQ() {
       ${hqPanel("manage", `
         ${hqProjects(s)}
         ${hqRoutines(s)}
+        ${hqAccepted(s)}
         ${hqNotes(s)}
         <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm(s))}</section>
         ${hqMoneyCard(s)}
@@ -2395,6 +2402,30 @@ function hqApproval(a, serves) {
     <p class="hq-who">${esc(a.member || "A member")} says why: ${esc(a.why)}</p>`;
 }
 
+// Accepted, waiting to merge (ADR 0115, amended 2026-10-31): each accepted branch HQ has not yet
+// merged, one line each (task, branch, when, where it stands), folded at rest; and the owner's two
+// switches: the merge cards back on the desk, and HQ merging develop itself.
+function hqAccepted(s) {
+  const rows = s.accepted || [];
+  const d = s.delivery || {};
+  const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
+    data-act="hq:delivery:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
+  const when = (at) => at ? `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${hqClock(at)}` : "";
+  const lines = rows.map((r) => {
+    const slug = String(r.branch || "").replace(/^hq\//, "");
+    const bundle = r.status === "accepted" && !r.can_push
+      ? ` <button class="hq-link" data-act="hq:bundle:${Number(r.task)}:${esc(slug)}">bundle</button>` : "";
+    return `<li><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(r.branch)} · ${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
+  });
+  const body = `<section class="hq-card"><h2>Accepted, waiting to merge <span class="hq-count">${rows.length}</span></h2>
+    ${lines.length ? `<ul class="hq-lines">${lines.join("")}</ul>` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
+    <p class="hq-note">HQ pushes each accepted branch to your fork once its review, its check and a privacy scan pass; nothing personal leaves without a card on your desk.
+      Merging develop stays off while the experiment's rounds run.</p>
+    <div class="hq-row">${btn("merge_develop", !!d.merge_develop, "Merge into develop")}${btn("cards", !!d.cards, "Cards on my desk")}</div></section>`;
+  const meta = rows.length ? `${rows.length} branch${rows.length === 1 ? "" : "es"}` : "none";
+  return hqFold("accepted", "Accepted, waiting to merge", meta, body);
+}
+
 // What the team may do on the home lab: Endora's contracts (ADR 0106), and the owner's two
 // switches. Each button offers the other way.
 function hqContracts(c) {
@@ -2723,6 +2754,14 @@ async function hqDispatch(verb, noun, id, arg) {
     const title = val("hq-goal"); if (!title) return true;
     try { await api("POST", "/v1/hq/goals", { title, reason: "" }); flash("Goal set.", "ok"); }
     catch (e) { flash("Couldn't set it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner's switches for accepted work (ADR 0115, amended 2026-10-31): the cards back on
+  // the desk, and merging develop.
+  if (noun === "delivery") {
+    if (!["cards", "merge_develop"].includes(id)) return true;
+    try { await api("POST", "/v1/hq/delivery", { [id]: arg === "on" }); flash(arg === "on" ? "Switched on." : "Switched off.", "ok"); }
+    catch (e) { flash("Couldn't switch it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's switches for the team's contracts.
