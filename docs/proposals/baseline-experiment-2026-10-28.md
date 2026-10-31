@@ -410,9 +410,9 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 |---|---|---|---|---|---|---|
 | 1 | 929 | Yes (all 46 defaults with exact values, rechecked; ports; Markdown only; pushed as `hq/task-929-readmes`. Bo's three budget-length turns, then Rae, then Ada; reviewed by Kit. One setup nudge after Rae's failed starts, not counted) | $0.26 | 142 min | 0 | |
 | 2 | 930 | Yes (all 39 defaults with exact values, rechecked against `defaults/main.yml`; ports; Markdown only; pushed as `hq/task-930-readmes`. Bo, then Rae, then Ada; reviewed by Kit) | $0.22 | 142 min | 0 | |
-| 3 | 931 | | | | | |
+| 3 | 931 | Yes (all seven `latest` tags pinned, each named in the commit message; each rechecked on its registry; no new ansible-lint or yamllint findings against develop; pushed as `hq/task-931-pin-homepage-stats`. Found `image_tags` once it was in the loop's tools; reviewed by Mara) | $1.12 | 231 min | 1 | |
 | 4 | 932 | No (criterion 2: no CI run on the branch. The step was added and runs `tests/test_lint_rules.py` by name; the broken rule is in the history and reverted; rechecked locally, the tests pass at the tip and fail at the broken commit. Pushed as `hq/task-932-ci-lint-rules`, but the workflow runs on push only for main and develop, so no run came, and HQ never asked for one) | $0.98 | 207 min | 0 | |
-| 5 | 933 | | | | | |
+| 5 | 933 | Yes (the admin password's literal default is gone, read from `vault_minio_admin_password`; an assert stops the play with a clear message when it is empty; the docs say how to set it in the vault; no new lint findings; pushed as `hq/task-933-minio-no-literal-secret`) | $0.25 | 492 min (about four of them waiting on the day's pool) | 0 | |
 | 6 | 934 | | | | | |
 | 7 | 935 | | | | | |
 | 8 | 938 | No (blocked honestly: the window's logs are gone, as expected after round 1; made no lab change) | $0.38 | blocked after ~4 h | 2 | |
