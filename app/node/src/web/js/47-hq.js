@@ -264,15 +264,16 @@ function hqInFlight(s) {
     <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>`;
 }
 
-// The money (Manage tab): today's pool with its top-up, and what is left with each paid
-// provider; the credits and their thresholds are set up in Settings → AI.
+// The money (Manage tab): today's pool with its top-up, which figure today's base is and why
+// (sized from the Claude credit, or the floor: ADR 0113, amended 2026-10-31), and what is left
+// with each paid provider; the credits and their thresholds are set up in Settings → AI.
 function hqMoneyCard(s) {
   const pool = s.pool || {}, credits = hqCreditChips();
   const left = pool.per_day == null ? null : Math.max(0, pool.per_day - (pool.committed || 0));
   const topUp = s.scorecard && s.scorecard.pool ? `<button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button>` : "";
   if (left == null && !credits.length && !topUp) return "";
   return `<section class="hq-card"><h2>Money</h2>
-    ${left == null ? "" : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}</p>`}
+    ${left == null ? "" : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}${pool.sized && pool.sized.why ? `<br><span class="hq-note">${esc(pool.sized.why)}</span>` : ""}</p>`}
     ${credits.length ? `<div class="hq-chips">${credits.join("")}</div>` : ""}
     <div class="hq-row">${topUp}<button class="hq-link" data-act="go:models">Credits and thresholds in AI</button></div></section>`;
 }
@@ -2642,7 +2643,8 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner adds to today's pool, for today only (ADR 0113 rule 6). HQ holds the limit.
   if (noun === "pool") {
-    const base = ((((HQ.snap || {}).scorecard || {}).pool || {}).base) || 0;
+    // Prefilled with one floor day, the unit HQ counts top-ups in (at most three).
+    const day = (((HQ.snap || {}).scorecard || {}).pool || {}), base = day.floor || day.base || 0;
     const said = prompt("Dollars to add to today's pool (gone tomorrow; at most three pool days in all):", (base / 1e6).toFixed(2));
     if (said === null) return true;
     const micros = Math.round(parseFloat(said) * 1e6);
