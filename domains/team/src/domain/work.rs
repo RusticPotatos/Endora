@@ -449,8 +449,6 @@ pub enum Refusal {
     },
     /// A project's lead is a lead or the CEO (ADR 0113).
     NotAProjectLead,
-    /// Only a lead or the CEO proposes a project.
-    OnlyLeadsPropose,
     /// The project serves another goal than the task's or the routine's.
     OtherGoal,
     /// The project takes no work: it is proposed, done or dropped.
@@ -654,9 +652,6 @@ impl fmt::Display for Refusal {
                 names.join(", ")
             ),
             Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
-            Self::OnlyLeadsPropose => f.write_str(
-                "only a lead proposes a project; the CEO decides proposals with decide_project",
-            ),
             Self::OtherGoal => f.write_str(
                 "that project serves another goal: a task's or a routine's project serves its goal",
             ),

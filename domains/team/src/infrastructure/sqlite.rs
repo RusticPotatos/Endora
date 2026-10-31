@@ -1441,7 +1441,7 @@ mod tests {
     use crate::application::office_ports::OfficeStore;
     use crate::application::receipt_ports::ReceiptStore;
     use crate::application::run_ports::RunStore;
-    use crate::application::schedule_ports::ScheduleStore;
+
     use crate::application::wing_ports::WingStore;
     use crate::domain::{Branch, Check};
 
@@ -1683,7 +1683,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
     }
 
     #[test]
-    fn a_store_made_before_projects_gains_their_columns_and_its_home_lab_work_one_project() {
+    fn a_store_made_before_projects_gains_their_columns_and_a_projects_ledger() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
@@ -1716,49 +1716,26 @@ CREATE TABLE IF NOT EXISTS check_backs (
             Noon,
             crate::application::Settings::default(),
         );
-        let made = hq.migrate_projects().unwrap().expect("made");
-        assert_eq!(hq.migrate_projects(), Ok(None), "once");
-        let projects = hq.store().projects().unwrap();
-        assert_eq!(projects.len(), 1);
-        let upkeep = &projects[0];
-        assert_eq!(
-            (
-                upkeep.id,
-                upkeep.title.as_str(),
-                upkeep.goal,
-                upkeep.lead,
-                upkeep.status,
-                upkeep.cap
-            ),
-            (
-                made,
-                crate::application::engine::LAB_UPKEEP,
-                GoalId(1),
-                MemberId(2),
-                ProjectStatus::Active,
-                None
+        let made = hq
+            .store()
+            .add_project(
+                &crate::application::ports::NewProject {
+                    goal: GoalId(1),
+                    title: "Home lab upkeep".to_owned(),
+                    reason: String::new(),
+                    lead: MemberId(2),
+                    status: ProjectStatus::Active,
+                    cap: None,
+                    asked_cap: None,
+                    created_by: "owner".to_owned(),
+                    proposer: None,
+                    proposed_in: None,
+                    evidence: Vec::new(),
+                },
+                NOON,
             )
-        );
-        let routines: Vec<Option<ProjectId>> = hq
-            .store()
-            .routines()
-            .unwrap()
-            .iter()
-            .map(|r| r.project)
-            .collect();
-        assert_eq!(routines, [Some(made), None], "the CEO's review stays out");
-        let tasks: Vec<Option<ProjectId>> = hq
-            .store()
-            .tasks()
-            .unwrap()
-            .iter()
-            .map(|t| t.project)
-            .collect();
-        assert_eq!(
-            tasks,
-            [Some(made), None, None],
-            "open work of its goal only"
-        );
+            .unwrap();
+        hq.store().set_task_project(TaskId(1), Some(made)).unwrap();
         // The old ledger row is no project's; a new turn's rows are its task's project's; and
         // nothing in the ledger may be changed.
         let (from, until) = crate::domain::projects::month_around(NOON);

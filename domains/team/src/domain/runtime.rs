@@ -122,7 +122,10 @@ mod tests {
         // Anthropic's API, so the runner refused every turn of a developer moved to it.
         assert!(!Runtime::ClaudeCode.allowed_for(Brain::DeepSeek));
         assert!(Runtime::for_member(Brain::DeepSeek, "claude-code").is_err());
-        assert_eq!(Runtime::ClaudeCode.effective(Brain::DeepSeek), Runtime::Worker);
+        assert_eq!(
+            Runtime::ClaudeCode.effective(Brain::DeepSeek),
+            Runtime::Worker
+        );
         for brain in [Brain::Opus, Brain::Sonnet, Brain::Haiku] {
             assert!(Runtime::ClaudeCode.allowed_for(brain), "{brain:?}");
         }

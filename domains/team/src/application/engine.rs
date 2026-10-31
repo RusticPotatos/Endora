@@ -71,7 +71,6 @@ pub use evidence::Called;
 pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
-pub use projects::{LAB_UPKEEP, Proposal};
 pub use runtime::ModelSet;
 pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission};
 

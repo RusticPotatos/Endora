@@ -199,13 +199,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // repeats the bounded cleanup and settles only still-live legacy turns.
     hq.retire_legacy_peer_work()?;
     {
-        match hq.migrate_projects() {
-            Ok(None) => {}
-            Ok(Some(id)) => {
-                println!("hq: put the home lab's routines and open work in project {id}")
-            }
-            Err(e) => eprintln!("hq: could not make the home lab's project: {e}"),
-        }
         // How this lab is built, in the house log, once and only when it is empty (ADR 0112).
         match hq.seed_house_log() {
             Ok(true) => println!("hq: put how this lab is built in the house log"),
