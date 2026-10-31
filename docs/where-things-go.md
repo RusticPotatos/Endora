@@ -45,23 +45,30 @@ Settings.
   models with no roles, and each loop is a project with a plan, checks, a starting rank and how many items it has in hand at once. A
   loop's plan and progress go in Work; its notes and the map go with what the team knows, in
   Team. Nothing new goes in for roles, reporting lines, conversations or office votes.
-- Inside HQ, use its four tabs (2026-10-25), and add no fifth without a reason none of them can
-  hold: **Now** (your desk, the digest of what happened while you were away, then the live
-  activity), **Team** (the people, the Mac, the office with its games, and what the team knows:
-  the world's pages and the house), **Work** (finding a task, conversations, the Holodeck, and
-  the team's health: guards and outcomes), **Manage** (every setting you own, each shown as it
-  stands). The office animation plays above every tab. The Holodeck's chess matches are
-  work, so they are a card in Work, each opened move by move there, with the model league's table
-  in the same card (ADR 0135; its other worlds and trials were retired on 2026-10-30). Information conversations
-  also live in Work: one Conversations card, with nothing to set up (ADR 0139).
-  Explicit assistance requests, their results and project charges, source grants/revocation,
-  and cancellation stay inside that conversation's Work view; they add no top-level screen.
-  Something that needs your word goes on the desk; something you may want
-  to look at, but nothing waits on, goes in the digest. Fun and decoration go in the office, on
-  Team, never on Now above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
-  Guards card, in Work, and not in Settings; a turn that waits for tomorrow shows in the top bar
-  and in the outcomes, and is never a card. When HQ stops the team itself, that is a card on the
-  desk, because it needs your word.
+- Inside HQ, use its three tabs (2026-10-30, after the density audit of 2026-10-25), split by
+  what the owner is doing, and add no fourth without a reason none of them can hold: **Work**
+  (where every device opens: giving work, your desk, the digest of what happened while you were
+  away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
+  **Manage** (what you own and set: projects and their loops, routines, goals and their notes,
+  the team and hiring, the money and credits, what the team may do on the home lab, what the
+  team knows — the world's pages and the house — and the office with its games), **Health** (how
+  the team and the lab are doing: the Mac and its busy switch, the scorecard and outcomes, the
+  turns that failed with a link to the Home lab, and the live activity). The office animation
+  plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
+  desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
+  project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
+  behind a fold. The console check measures each tab at rest and holds it to a budget; fold
+  something before raising one. The Holodeck's chess matches are work, so they are a card in
+  Work, each opened move by move there, with the model league's table in the same card (ADR
+  0135; its other worlds and trials were retired on 2026-10-30). Information conversations also
+  live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
+  requests, their results and project charges, source grants/revocation, and cancellation stay
+  inside that conversation's Work view; they add no top-level screen. Something that needs your
+  word goes on the desk; something you may want to look at, but nothing waits on, goes in the
+  digest. Fun and decoration go in the office, on Manage, never in Work above the desk. A switch
+  for a guard that is tried in shadow sits on that guard's line, in Health, and not in Settings;
+  a turn that waits for tomorrow shows in the top bar and in the outcomes, and is never a card.
+  When HQ stops the team itself, that is a card on the desk, because it needs your word.
 
 ## The repository
 
