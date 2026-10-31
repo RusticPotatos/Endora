@@ -210,24 +210,7 @@ pub fn quotes_checked(post: &str, receipts: &[Kept<'_>]) -> Vec<(Quote, Seen)> {
         .collect()
 }
 
-/// A path nobody's branch may touch: `group_vars/`, `host_vars/`, any inventory, anything
-/// named for a vault. The node refuses such a branch at submission; this is the same rule,
-/// checked again at review so it never rests on one place.
-#[must_use]
-pub fn forbidden(path: &str) -> bool {
-    let lower = path.trim().trim_start_matches("./").to_ascii_lowercase();
-    lower.split('/').any(|p| {
-        matches!(
-            p,
-            "group_vars"
-                | "host_vars"
-                | "inventories"
-                | "inventory"
-                | "inventory.yml"
-                | "inventory.ini"
-        ) || p.contains("vault")
-    })
-}
+pub use endora_kernel::lab::forbidden_path;
 
 /// Whether a word reads as a path: a folder (`roles/x/`), a file with an extension
 /// (`README.md`, `defaults/main.yml`), anything under `roles/`, or three segments or more.
@@ -268,19 +251,6 @@ pub fn named_paths(words: &str) -> Vec<String> {
     named
 }
 
-/// One segment against a pattern's, where `*` stands for any run of characters.
-fn segment_matches(pattern: &str, segment: &str) -> bool {
-    let Some((head, rest)) = pattern.split_once('*') else {
-        return pattern == segment;
-    };
-    let Some(tail) = segment.strip_prefix(head) else {
-        return false;
-    };
-    (0..=tail.len())
-        .filter(|i| tail.is_char_boundary(*i))
-        .any(|i| segment_matches(rest, &tail[i..]))
-}
-
 /// Whether a changed file is within a named path: the path is a folder it is under, the file
 /// itself, or the file's trailing segments (`defaults/main.yml`, `README.md`).
 #[must_use]
@@ -294,7 +264,13 @@ pub fn within(file: &str, named: &str) -> bool {
     if pattern.len() > file.len() {
         return false;
     }
-    let all = |of: &[&str]| pattern.iter().zip(of).all(|(p, s)| segment_matches(p, s));
+    // A named path holds no `/` within a segment, nor `?`, `+` or `[` (`a_path`).
+    let all = |of: &[&str]| {
+        pattern
+            .iter()
+            .zip(of)
+            .all(|(p, s)| pattern_matches(p, s) == Some(true))
+    };
     all(&file[..pattern.len()]) || all(&file[file.len() - pattern.len()..])
 }
 
@@ -315,7 +291,11 @@ pub struct Scope {
 #[must_use]
 pub fn scope(changed: &[String], task_words: &str) -> Scope {
     let named = named_paths(task_words);
-    let forbidden_files = changed.iter().filter(|f| forbidden(f)).cloned().collect();
+    let forbidden_files = changed
+        .iter()
+        .filter(|f| forbidden_path(f))
+        .cloned()
+        .collect();
     let outside = if named.is_empty() {
         Vec::new()
     } else {
@@ -453,31 +433,11 @@ pub fn role_readmes(changed: &[String]) -> Vec<(String, String)> {
 /// A YAML value as written, without a trailing comment or the quotes around it. `None` for a
 /// value on the lines below (a block, a list, `|` or `>`): its name is checked, not its value.
 fn plain_value(raw: &str) -> Option<String> {
-    let mut quote: Option<char> = None;
-    let mut cut_at = raw.len();
-    let mut last = ' ';
-    for (i, c) in raw.char_indices() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None if c == '#' && last.is_whitespace() => {
-                cut_at = i;
-                break;
-            }
-            None => {}
-        }
-        last = c;
-    }
-    let value = raw[..cut_at].trim();
+    let value = uncommented(raw).trim();
     if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
         return None;
     }
-    let unquoted = ['"', '\'']
-        .iter()
-        .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
-        .unwrap_or(value);
-    Some(unquoted.to_owned())
+    Some(unquote(value).to_owned())
 }
 
 /// The top-level keys of a `defaults/main.yml`, in order, each with its plain value.
@@ -1284,9 +1244,9 @@ mod tests {
             "roles/x/files/vault.yml",
             "./inventory",
         ] {
-            assert!(forbidden(p), "{p}");
+            assert!(forbidden_path(p), "{p}");
         }
-        assert!(!forbidden("roles/jellyfin/defaults/main.yml"));
+        assert!(!forbidden_path("roles/jellyfin/defaults/main.yml"));
     }
 
     #[test]

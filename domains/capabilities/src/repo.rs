@@ -89,26 +89,7 @@ pub fn branch_for(task: i64, title: &str) -> String {
     format!("{BRANCH_PREFIX}task-{task}-{}", slug(title))
 }
 
-/// Whether a path is one the team may never touch (ADR 0115): the owner's values live in
-/// `group_vars/*.yml`, `host_vars/` and every inventory, and anything named for a vault. A
-/// branch that changes one is refused whole; the briefing says never to edit, cite or copy
-/// from them.
-#[must_use]
-pub fn forbidden_path(path: &str) -> bool {
-    let lower = path.trim().trim_start_matches("./").to_ascii_lowercase();
-    let parts: Vec<&str> = lower.split('/').collect();
-    parts.iter().any(|p| {
-        matches!(
-            *p,
-            "group_vars"
-                | "host_vars"
-                | "inventories"
-                | "inventory"
-                | "inventory.yml"
-                | "inventory.ini"
-        ) || p.contains("vault")
-    })
-}
+pub use endora_kernel::lab::forbidden_path;
 
 /// The files at a submission's head HQ's mechanical checks read (ADR 0142, amended
 /// 2026-10-30): each role README the branch changes (`roles/x/README.md`) and that role's
