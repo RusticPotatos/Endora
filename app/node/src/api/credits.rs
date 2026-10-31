@@ -325,6 +325,50 @@ fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i6
     }
 }
 
+/// What HQ is told of Claude's credit (ADR 0113, amended 2026-10-31): what is left of the plan's
+/// grant and the day the plan next renews on the owner's calendar, after any renewal due; nulls
+/// when there is no plan grant. Bought credit is never sent: it does not expire, so it never
+/// sizes the pool.
+fn the_grant(state: &AppState, now: i64) -> serde_json::Value {
+    let _held = ledger();
+    renew_if_due(state, now);
+    let kept = Kept::load(state);
+    let spent = state.store.provider_spent("anthropic").unwrap_or(0);
+    let (Some((_, day)), Some(pots)) = (kept.plan(), kept.claude_pots(spent)) else {
+        return json!({ "grant_left": null, "renews": null });
+    };
+    json!({ "grant_left": pots.grant, "renews": next_renewal(state, now, day) })
+}
+
+/// Tells HQ what is left of Claude's grant and when it renews (blocking). Nothing when HQ is
+/// not set up. Returns whether HQ was told.
+pub(super) fn tell_hq(state: &AppState, now: i64) -> bool {
+    let Some(hq) = state.hq.as_ref() else {
+        return false;
+    };
+    match hq.post("/v1/pool/credit", &the_grant(state, now)) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("credits: HQ was not told Claude's grant: {e}");
+            false
+        }
+    }
+}
+
+/// Keeps HQ told of Claude's grant every five minutes, so a restarted HQ, or a new owner's
+/// day, hears it soon. HQ sizes each day's pool from the first word it hears that day.
+pub(crate) fn spawn(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let (state, now) = (state.clone(), state.clock.now().unix_millis());
+            let _ = tokio::task::spawn_blocking(move || tell_hq(&state, now)).await;
+        }
+    });
+}
+
 /// `GET /v1/credits`: what is left with each paid provider.
 pub(super) async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     let now = state.clock.now().unix_millis();
@@ -657,6 +701,47 @@ mod tests {
         let now = shown(&state, feb + 40 * DAY_MS);
         assert!(now["claude_grant"].is_null(), "{now}");
         assert_eq!(now["claude"]["left"], 102_000_000);
+    }
+
+    #[test]
+    fn hq_is_told_the_grant_left_and_the_next_renewal_and_never_bought_credit() {
+        use credits::{DAY_MS, days_from_civil};
+        let (hq_url, to_hq) = hq_as(0, "developer");
+        let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
+        let said = |seen: &super::super::relay::tests::Seen| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|(p, _, _)| p == "/v1/pool/credit")
+                .map(|(_, _, b)| serde_json::from_str::<serde_json::Value>(b).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let oct_31 = days_from_civil(2026, 10, 31) * DAY_MS + 12 * 3_600_000;
+        // No plan: HQ hears there is no grant, and sizes the pool from its floor.
+        assert!(tell_hq(&state, oct_31));
+        assert_eq!(
+            said(&to_hq),
+            vec![json!({ "grant_left": null, "renews": null })]
+        );
+        // A $100 grant renewing on the 18th, $30 bought on top, $29.77 of the grant spent.
+        apply(
+            &state,
+            &Change {
+                claude_grant: Some(100.0),
+                claude_renews_on: Some(18),
+                claude_purchased: Some(30.0),
+                ..Change::default()
+            },
+            oct_31,
+        )
+        .unwrap();
+        after_charge_at(&state, 7, "claude-opus-5-5", 29_770_000, oct_31);
+        assert!(tell_hq(&state, oct_31));
+        assert_eq!(
+            said(&to_hq).last().unwrap(),
+            &json!({ "grant_left": 70_230_000, "renews": "2026-11-18" }),
+            "the grant alone: bought credit does not expire"
+        );
     }
 
     #[tokio::test]

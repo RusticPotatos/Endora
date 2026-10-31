@@ -362,7 +362,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The team's pool a month (ADR 0113): the owner raised it from $70 to $95 on 2026-10-25, $10
-/// of it the model league's cap (ADR 0135) and the rest the agents'. The engine's own default
+/// of it the model league's cap (ADR 0135) and the rest the agents'. Since 2026-10-31 it is the
+/// floor: each day's pool is sized from the Claude grant left, between this over 30 days and
+/// three times that (ADR 0113, amended). The engine's own default
 /// stays $70, the figure its tests and the scripted demo are written around.
 const THE_HOUSES_POOL: money::Micros = 95 * money::DOLLAR;
 

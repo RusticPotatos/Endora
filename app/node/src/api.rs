@@ -645,6 +645,7 @@ mod mac;
 mod terminal;
 mod vault;
 use auth::*;
+pub(crate) use credits::spawn as spawn_credits;
 pub(crate) use homelab::spawn as spawn_homelab;
 pub(crate) use mac::spawn as spawn_mac;
 

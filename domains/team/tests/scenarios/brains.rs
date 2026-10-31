@@ -20,7 +20,7 @@ use endora_team::application::event_ports::EventStore;
 
 impl Office {
     /// An HQ with the settings this scenario has now, over its file if it keeps one.
-    fn restart_with_settings(&mut self) {
+    pub(super) fn restart_with_settings(&mut self) {
         if let Some(path) = self.file.clone() {
             self.hq = super::mac::hq_over(self, &path);
             return;

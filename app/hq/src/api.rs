@@ -86,6 +86,9 @@ pub fn app(state: State) -> Router {
         // come through the worker's door.
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/pool/top-up", post(pool_top_up))
+        // The node says what is left of the Claude plan's grant and when it renews: today's
+        // pool is sized from it (ADR 0113, amended 2026-10-31).
+        .route("/v1/pool/credit", post(pool_credit))
         // The owner hires (ADR 0115): a name, a role, a brain, whom it reports to.
         .route("/v1/members", post(hire))
         .route("/v1/projects", post(add_project))
@@ -751,6 +754,28 @@ async fn pool_top_up(
     let hq = state.hq.clone();
     let total = blocking(move || hq.top_up_pool(req.amount_micros)).await?;
     Ok(Json(json!({ "topped_up_today": total })))
+}
+
+#[derive(Deserialize)]
+struct PoolCredit {
+    /// What is left of the plan's grant, in micros; `null` when the owner has set no grant.
+    #[serde(default)]
+    grant_left: Option<i64>,
+    /// The day the plan next renews, `YYYY-MM-DD` on the owner's calendar; `null` with no grant.
+    #[serde(default)]
+    renews: Option<String>,
+}
+
+/// The node says what is left of the Claude grant and the day the plan next renews, every few
+/// minutes (ADR 0113, amended 2026-10-31). The first grant heard in the owner's day sizes that
+/// day's pool; bought credit is never sent, since it does not expire.
+async fn pool_credit(
+    Extract(state): Extract<State>,
+    Json(req): Json<PoolCredit>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.tell_claude_credit(req.grant_left, req.renews.as_deref())).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// A monthly cap as the screen sends it: dollars, as a number or as text; nothing for none.
@@ -3593,6 +3618,36 @@ mod tests {
         assert_eq!(shown["mac"]["why"], "owner active");
         app.oneshot(said(Some(TOKEN), true, "ready")).await.unwrap();
         assert_eq!(st.hq.snapshot().unwrap()["mac"]["ready"], true);
+    }
+
+    #[tokio::test]
+    async fn the_node_tells_the_claude_grant_and_todays_pool_is_sized_from_it() {
+        let st = state(false);
+        let app = app(st.clone());
+        let floor = st.hq.snapshot().unwrap()["pool"]["base_per_day"].clone();
+        let said = |token: Option<&str>, body: serde_json::Value| {
+            call("POST", "/v1/pool/credit", token, &body.to_string())
+        };
+        // Ten million dollars left and a renewal centuries off: about $28 a day whenever the
+        // test runs, so held at the ceiling, three floors.
+        let grant = json!({ "grant_left": 10_000_000_000_000_i64, "renews": "2999-01-01" });
+        let res = app
+            .clone()
+            .oneshot(said(None, grant.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node");
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["base_per_day"], floor);
+        let res = app.clone().oneshot(said(Some(TOKEN), grant)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let pool = st.hq.snapshot().unwrap()["pool"].clone();
+        assert_eq!(pool["base_per_day"], floor.as_i64().unwrap() * 3, "{pool}");
+        assert_eq!(pool["sized"]["by"], "ceiling", "{pool}");
+        // A word with no grant later the same day changes nothing.
+        let none = json!({ "grant_left": null, "renews": null });
+        let res = app.oneshot(said(Some(TOKEN), none)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["sized"]["by"], "ceiling");
     }
 
     #[test]

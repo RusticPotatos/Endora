@@ -521,7 +521,8 @@ if (failures.length) {
   // The members whose controls the checks below read are opened, as tapping their lines does.
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 }; HQ.roster = { 1: true, 2: true, 4: true, 5: true, 8: true };
     HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
-      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
+      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000,
+        sized: { by: "credit", why: "Sized from the Claude credit: $70.23 left, 18 days to the 18th." } },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1, rescues: 2,
@@ -1718,7 +1719,9 @@ if (failures.length) {
     }
     const where = { work: ["Your desk", "hq:decide:11:approve", "<h2>While you were away", "<h2>In flight", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
       manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Routines</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team",
-        "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
+        "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
+        // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
+        "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
       health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"', "<h2>Activity</h2>", 'id="hq-log-end"'] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
@@ -1779,7 +1782,12 @@ if (failures.length) {
     // below its threshold; Claude's asking to be set until the owner enters it; nothing when
     // the node cannot say; and the provider's words escaped.
     runInContext("HQ.credits = null;", context);
-    if (/DeepSeek \$|Claude credit/.test(shown())) fail("credits: a chip when the node cannot say");
+    // Chips only: the pool's line may say it was sized from the Claude credit (ADR 0113).
+    const aChip = /class="hq-chip[^"]*"[^>]*>(DeepSeek \$|Claude)/;
+    if (aChip.test(shown())) fail("credits: a chip when the node cannot say");
+    runInContext('HQ.credits = { claude: null };', context);
+    if (!aChip.test(shown())) fail("credits: the check for chips cannot see one");
+    runInContext("HQ.credits = null;", context);
     runInContext('HQ.credits = { deepseek: { left: 840000, currency: "USD", low: true }, claude: null, claude_low: 5000000, deepseek_low: 1000000, has_deepseek: true };', context);
     if (!/class="hq-chip low"[^>]*>DeepSeek \$0\.84 left</.test(shown())) fail("credits: DeepSeek's low balance is not shown in red");
     if (!shown().includes(">Claude credit: set it</button>")) fail("credits: Claude's chip does not ask to be set");

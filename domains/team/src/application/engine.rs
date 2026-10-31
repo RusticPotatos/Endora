@@ -3632,7 +3632,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn snapshot(&self) -> Done<serde_json::Value> {
         let _held = self.held();
         let day = self.today();
-        let pool = self.settings.pool_per_month;
         let every_run = self.store.runs()?;
         // A lead's report and patterns turns are not work on the board (ADR 0120).
         let reports = self.report_task_ids()?;
@@ -3657,6 +3656,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
         }
         let pool_day = self.pool_day_today()?;
+        let sized = self.pool_sized_today()?;
         let topped_up = self.topup_of(day)?;
         let all_members = self.store.members()?;
         let members = self.members_shown(&all_members, &runs, day, pool_day)?;
@@ -3703,7 +3703,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
                         "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
             "last_tick_at": last_tick_at,
-            "pool": { "per_day": pool_day, "base_per_day": money::pool_a_day(pool),
+            "pool": { "per_day": pool_day, "base_per_day": sized.base,
+                      // Which figure today's base is and why (ADR 0113, amended 2026-10-31).
+                      "sized": { "by": sized.sizing.name(), "why": sized.why(),
+                                 "floor": sized.floor, "ceiling": sized.ceiling },
                       "topped_up": topped_up, "committed": pool_committed,
                       "spent": pool_spent, "held": (pool_committed - pool_spent).max(0),
                       // Turns of judgment that wait for budget (ADR 0131): none is dropped.
@@ -3858,8 +3861,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // What the work came to, over the last day and week: landed changes, what one cost,
             // talk against work, interruptions and what waits (ADR 0132).
             "outcomes": self.outcomes_shown(runs, &events, kept_from)?,
-            // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6).
-            "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
+            // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6). The base is
+            // sized from the Claude credit (amended 2026-10-31); a top-up is counted in floors.
+            "pool": { "base": self.pool_sized_today()?.base,
+                      "floor": money::pool_a_day(self.settings.pool_per_month),
                       "topped_up": self.topup_of(day)? },
             // Each team's seats, at work and on furlough (ADR 0118).
             // Each area's measures, today and the last seven days (ADR 0120).

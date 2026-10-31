@@ -1,12 +1,15 @@
 //! A member out for the day (ADR 0113, amended): a paid member may spend at most twice its
 //! share (`money::may_draw`). The first time one is turned away for that while the pool's day
 //! still has money, one item goes on the owner's desk; approving gives it an allowance for the
-//! rest of the owner's day, which is gone when the next one starts.
+//! rest of the owner's day, which is gone when the next one starts. Also today's pool: its
+//! base, sized from the Claude credit the node says (ADR 0113, amended 2026-10-31), and the
+//! owner's top-up.
 
 use serde_json::json;
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
+use crate::domain::credit_pool::{self, CreditWord, PoolDay};
 use crate::domain::projects::{dollars, read_dollars};
 use crate::domain::{EventKind, Member, MemberId, Micros, Refusal, money};
 
@@ -19,6 +22,12 @@ fn allowance_key(member: MemberId, day: i64) -> String {
 /// the day, as an allowance does.
 fn topup_key(day: i64) -> String {
     format!("pool_topup:{day}")
+}
+
+/// What the node said of the Claude credit on one owner's day. The day is in the key, so the
+/// next day is sized afresh.
+fn credit_key(day: i64) -> String {
+    format!("pool_credit:{day}")
 }
 
 /// That a member has already asked the owner for one day.
@@ -45,11 +54,66 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .unwrap_or(0))
     }
 
-    /// Today's pool: the base day and the owner's top-up for today (ADR 0113 rule 6). Every
-    /// member's share is its claim's part of this, so a top-up grows each share, and the
-    /// borrowing cap with it, in proportion.
+    /// Today's pool: the base day (sized from the Claude credit, ADR 0113 amended 2026-10-31)
+    /// and the owner's top-up for today (ADR 0113 rule 6). Every member's share is its claim's
+    /// part of this, so a larger base or a top-up grows each share, and the borrowing cap with
+    /// it, in proportion.
     pub(super) fn pool_day_today(&self) -> Done<Micros> {
-        Ok(money::pool_a_day(self.settings.pool_per_month) + self.topup_of(self.today())?)
+        Ok(self.pool_sized_today()?.base + self.topup_of(self.today())?)
+    }
+
+    /// The node says what is left of the Claude plan's grant and the day the plan next renews
+    /// (`YYYY-MM-DD` on the owner's calendar), or `None` for either when there is no grant (ADR
+    /// 0113, amended 2026-10-31). The first grant heard in an owner's day sizes that day's pool,
+    /// and later words that day change nothing: what the team spends today must not shrink
+    /// today's pool under it. A day heard to have no grant takes a grant heard later in it. A
+    /// renewal that is not after today is out of date and is not kept.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn tell_claude_credit(&self, left: Option<Micros>, renews: Option<&str>) -> Done<()> {
+        let _held = self.held();
+        let day = self.today();
+        let word = match (left, renews.and_then(credit_pool::day_of_date)) {
+            (Some(left), Some(renews)) if renews > day => CreditWord::Grant { left, renews },
+            (Some(_), Some(_)) => return Ok(()),
+            _ => CreditWord::NoGrant,
+        };
+        let key = credit_key(day);
+        let kept = self
+            .store
+            .setting(&key)?
+            .and_then(|said| CreditWord::read(&said));
+        if matches!(kept, Some(CreditWord::Grant { .. })) || kept == Some(word) {
+            return Ok(());
+        }
+        self.store.set_setting(&key, &word.kept())?;
+        Ok(())
+    }
+
+    /// Today's base pool and how it was sized (ADR 0113, amended 2026-10-31): from the Claude
+    /// grant the node said today, with the floor's part for members whose brain is not a Claude
+    /// kept on top, between the floor and three times it.
+    pub(super) fn pool_sized_today(&self) -> Done<PoolDay> {
+        let day = self.today();
+        let word = self
+            .store
+            .setting(&credit_key(day))?
+            .and_then(|said| CreditWord::read(&said));
+        let per_month = self.settings.pool_per_month;
+        let (mut paid, mut others) = (0, 0);
+        for member in self.store.members()? {
+            if member.furloughed() {
+                continue;
+            }
+            let claim = money::claim(member.share_percent, member.brain);
+            paid += claim;
+            if !member.brain.claude() {
+                others += claim;
+            }
+        }
+        let others = money::share_of_day(money::pool_a_day(per_month), others, paid);
+        Ok(credit_pool::sized(per_month, others, word, day))
     }
 
     /// The owner adds `amount` to today's pool, and only today's: the setting is keyed by the
