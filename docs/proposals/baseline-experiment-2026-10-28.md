@@ -522,6 +522,12 @@ release changed that one number, its refusal's words and their tests; nothing in
 No turn was running or cut. Then $3 was topped up (the day's total $12.49), after checking the
 queued turns were on live tasks and none on a judged item.
 
+**A second release mid-round, by the owner's word (31 Oct 18:29 EDT, `1340e5b3`): D19.** A
+reviewer on Claude never had its verdict tool loaded, so 947's four approvals were refused and
+949 waited on the same review; left alone, the round would have measured the bug, not the
+team's work. The release changes the worker's opening only (what HQ marks for the turn is
+loaded on Claude too). One turn ended before the restart; none was cut.
+
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
 | 1 | 947 | | | | | |
@@ -652,7 +658,7 @@ done. Defects are numbered so the next round's changes can name them.
   She never searched. Every review by a member on Claude this round was exposed to it. *Fixed on
   `codex/agent-collaboration` (`app/worker/src/turn.rs`, test
   `a_claude_turn_loads_what_hq_marks_for_its_kind`); the worker has no scenario suite, so its
-  end-to-end test stands for one. Not released: a mid-round release is the owner's call.*
+  end-to-end test stands for one. Released in `1340e5b3` mid-round, by the owner's word.*
 - [ ] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
   to Sonnet.** Ada read 400–460 KB over 6–7 calls a turn (mostly `image_tags` and the
   checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
