@@ -31,9 +31,9 @@ Feature: What the team's work came to
     When Linus's turns on "Look at sonarr" spend $0.10 and then $0.20
     And 7 days pass
     And the owner gives Linus "Claude Sonnet" to judge with
-    And Linus's turns on "Look at sonarr" spend $0.50 and then $0.70
+    And Linus's turns on "Look at sonarr" spend $0.25 and then $0.35
     Then the cost by model puts Claude Sonnet first, then Claude Haiku
-    And this week Claude Sonnet ran 2 turns for $1.20, $0.60 a turn, 100% of the spend
+    And this week Claude Sonnet ran 2 turns for $0.60, $0.30 a turn, 100% of the spend
     And this week Claude Haiku ran no turns
     And the week before Claude Haiku ran 2 turns for $0.30, $0.15 a turn, 100% of the spend
     And Claude Sonnet's cost went up and Claude Haiku's went down

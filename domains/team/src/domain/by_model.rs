@@ -26,14 +26,26 @@ impl Week {
     /// nought and never a division by nothing.
     #[must_use]
     pub fn per_turn(&self) -> Option<Micros> {
-        todo!()
+        if self.turns == 0 {
+            return None;
+        }
+        Some(self.spent / self.turns as Micros)
     }
 
     /// This week's part of `all`, the week's spend over every brain, in whole percent rounded
     /// to the nearest. `None` when nothing was spent that week.
     #[must_use]
     pub fn share(&self, all: Micros) -> Option<u8> {
-        todo!()
+        if all <= 0 {
+            return None;
+        }
+        let part = self.spent.clamp(0, all);
+        Some(((part * 100 + all / 2) / all) as u8)
+    }
+
+    fn add(&mut self, spent: Micros) {
+        self.turns += 1;
+        self.spent += spent;
     }
 }
 
@@ -76,7 +88,12 @@ impl Row {
     /// Which way it went.
     #[must_use]
     pub fn trend(&self) -> Trend {
-        todo!()
+        let by_turns = self.now.turns.cmp(&self.before.turns);
+        match self.now.spent.cmp(&self.before.spent).then(by_turns) {
+            std::cmp::Ordering::Greater => Trend::Up,
+            std::cmp::Ordering::Less => Trend::Down,
+            std::cmp::Ordering::Equal => Trend::Same,
+        }
     }
 }
 
@@ -97,7 +114,39 @@ pub struct ByModel {
 /// the brain's rank, so the order never shifts between two looks at the same record.
 #[must_use]
 pub fn by_model(now: &[(Brain, Micros)], before: &[(Brain, Micros)]) -> ByModel {
-    todo!()
+    let mut table = ByModel::default();
+    for (this_week, turns) in [(true, now), (false, before)] {
+        for &(brain, spent) in turns {
+            let at = match table.rows.iter().position(|r| r.brain == brain) {
+                Some(at) => at,
+                None => {
+                    table.rows.push(Row {
+                        brain,
+                        now: Week::default(),
+                        before: Week::default(),
+                    });
+                    table.rows.len() - 1
+                }
+            };
+            let row = &mut table.rows[at];
+            if this_week {
+                row.now.add(spent);
+                table.now.add(spent);
+                continue;
+            }
+            row.before.add(spent);
+            table.before.add(spent);
+        }
+    }
+    table.rows.sort_by(|a, b| {
+        b.now
+            .spent
+            .cmp(&a.now.spent)
+            .then(b.before.spent.cmp(&a.before.spent))
+            .then(b.now.turns.cmp(&a.now.turns))
+            .then(a.brain.rank().cmp(&b.brain.rank()))
+    });
+    table
 }
 
 #[cfg(test)]

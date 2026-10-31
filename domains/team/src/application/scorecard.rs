@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 pub mod outcomes;
 
 use super::ports::{DeskItem, Run};
-use crate::domain::by_model;
 use crate::domain::money::{self, DAY_MS, Micros};
 use crate::domain::{Event, MemberId, Millis, Task, TaskId, TaskStatus};
+use crate::domain::{by_model, runs};
 
 /// A span of time, `from` inclusive to `until` exclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,7 +485,35 @@ fn cache(runs: &[Run], window: &Window) -> Cache {
 /// week's totals.
 #[must_use]
 pub fn by_model_shown(runs: &[Run], day: i64, offset_minutes: i64) -> Value {
-    todo!()
+    let now = Window::days_ending(day, 7, offset_minutes);
+    let before = Window::days_ending(day - 7, 7, offset_minutes);
+    let table = by_model::by_model(&ran_on(runs, &now), &ran_on(runs, &before));
+    let week = |w: &by_model::Week, all: Micros| json!({ "turns": w.turns, "spent": w.spent, "per_turn": w.per_turn(), "share": w.share(all) });
+    let total = |w: &by_model::Week, window: &Window| {
+        json!({ "from": window.from, "until": window.until, "turns": w.turns, "spent": w.spent,
+                "per_turn": w.per_turn() })
+    };
+    json!({
+        "now": total(&table.now, &now),
+        "before": total(&table.before, &before),
+        "rows": table.rows.iter().map(|r| json!({
+            "brain": r.brain.name(),
+            "now": week(&r.now, table.now.spent),
+            "before": week(&r.before, table.before.spent),
+            "trend": r.trend().name(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// The turns that ran in the window, each as the brain it ran on and what it spent: started and
+/// ended in it ([`ended_in`]: one the guards or the kill switch turned away never started), and
+/// not a start that never happened ([`runs::is_never_started`]: the runner could not start it).
+/// A turn from before turns recorded their brain is left out: which it ran on cannot be told.
+fn ran_on(runs: &[Run], window: &Window) -> Vec<(crate::domain::Brain, Micros)> {
+    ended_in(runs, window)
+        .filter(|r| !runs::is_never_started(&r.end_reason))
+        .filter_map(|r| Some((r.brain?, r.spent)))
+        .collect()
 }
 
 // ---- each team's measures (ADR 0120) ------------------------------------------------------
