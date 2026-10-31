@@ -108,7 +108,9 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
 
 ## 4. Closing a round (`close`)
 
-1. **The result**: accepted of ten, interventions, spend; the side-by-side table of every round
+1. **The result**: accepted of ten, **reported** (what HQ recorded) and **verified** (what the
+   judge finds the work meets, whatever HQ recorded) apart, so a fixed recording defect is not
+   read as better work; interventions, spend; the side-by-side table of every round
    and Claude Code; what held the round back, by the evidence.
 2. **Cost by model** from HQ's scorecard (`by_model`): per turn and share. It drove the review
    cap.

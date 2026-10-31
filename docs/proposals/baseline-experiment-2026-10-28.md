@@ -528,6 +528,13 @@ reviewer on Claude never had its verdict tool loaded, so 947's four approvals we
 team's work. The release changes the worker's opening only (what HQ marks for the turn is
 loaded on Claude too). One turn ended before the restart; none was cut.
 
+**Round 3 is a mixed build, and reports two acceptance rates.** Tasks judged before 22:35 UTC ran
+without the D19 fix; the rest with it. And D17 and D19 affect how outcomes are recorded, not
+only what the team did. So the round's result gives both: **reported** (what HQ recorded: done
+and delivered) and **verified** (what the judge finds the work meets on its own reading, whatever
+HQ recorded; 947, blocked by D19 and D17, is checked as well). Round 4's gain is then read
+against the verified rate, so fixing the measurement is not counted as better work.
+
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
 | 1 | 947 | No: blocked by HQ at 22:38 UTC, "failed at every rank". The work was ready at 19:36 and Ada approved it four times on her own readings (all 46 defaults, ports, lint same as develop), but no verdict could land (D19), and wakes refused while it waited in review counted as Mara's failures (D17). Never delivered | $0.50 | 158 min to first ready; never accepted | 1 | |
@@ -561,8 +568,9 @@ new agent, orchestration layer or scoring framework.
    (handoffs, recovery paths, model calls, settings a task depends on) and the code size. A round
    that gains a task by doubling cost or adding coordinating agents may not be worth keeping.
 4. **C. The playbook kept small.** `hq-round` holds its standing rules, its procedure and its
-   lessons as three recognisable parts; a lesson whose defect is fixed and held for a round is
-   retired, not kept as a rule.
+   lessons as three recognisable parts. When a defect is fixed and has held, the extra
+   instruction it needed is retired; its history (the defect, its evidence, its fix) stays in
+   this document, so a later regression can be understood. Not automatically after one round.
 5. **D. The judge tested, on two counts.** A few known-good and known-bad branches, run before a
    round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
    delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
