@@ -569,6 +569,13 @@ are seen; quotes count only against the item's own receipts. The other six are f
    member; HEADS DOWN overlaps a plant; the chess table's lower seat covers the board.
 9. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
    free; switch only if about twice as fast on a large turn.
+10. [x] Accepted work reaches the fork without a card (owner, 31 Oct: merging accepted work "is
+    just not something I need to review"; ADR 0115, amended 2026-10-31): no "Ready to merge" or
+    "Push" cards, a list on Manage, a push after a code privacy scan, merging develop behind a
+    setting that stays off while the rounds run. On the `r3-auto-merge` branch, to merge and
+    release with step 5. When the rounds end: turn "Merge into develop" on, and set
+    `ENDORA_PERSONAL_VALUES` for the node (in `local.mk`, or the role's `endora_personal_values`
+    from the vault).
 
 ### The owner's
 
