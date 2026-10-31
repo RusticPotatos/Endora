@@ -422,20 +422,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if task.status != TaskStatus::Todo {
                 self.store.set_task_status(task.id, TaskStatus::Todo)?;
             }
+            let why = format!(
+                "{} is {}",
+                holder.name,
+                if holder.paused {
+                    "paused"
+                } else {
+                    "away (the Mac is not free)"
+                }
+            );
             self.post_held_lock(
                 super::Author::Endora,
                 task.id,
-                &format!(
-                    "{} is {}: it goes to {}.",
-                    holder.name,
-                    if holder.paused {
-                        "paused"
-                    } else {
-                        "away (the Mac is not free)"
-                    },
-                    up.name
-                ),
+                &format!("{why}: it goes to {}.", up.name),
             )?;
+            self.hand_over(task.id, up.id, &why)?;
             self.wake_held_lock(up.id, Some(task.id), WakeReason::Assigned)?;
             // The holder's turns still queued on it (waiting for the Mac, or a retry) end: the
             // item is the next member's now (review of 30 Oct).
@@ -578,6 +579,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &format!(
                 "It failed {FAILURES_A_RANK} times at {}'s rank: it goes to {}, one rank up.",
                 holder.name, to.name
+            ),
+        )?;
+        self.hand_over(
+            task,
+            up,
+            &format!(
+                "it failed {FAILURES_A_RANK} times at {}'s rank",
+                holder.name
             ),
         )?;
         self.wake_held_lock(up, Some(task), WakeReason::Assigned)?;

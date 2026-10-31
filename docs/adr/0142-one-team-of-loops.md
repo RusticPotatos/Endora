@@ -197,3 +197,28 @@ it when the thread's news no longer shows it, as facts to weigh. The reviewer st
 except in one case: a branch that touches a forbidden path is sent back by HQ at once, with the
 reason, counts as one of the item's failures, and wakes no reviewer. The node already refuses
 such a branch at submission; the check at review keeps the rule from resting on one place.
+
+## Amended 2026-10-30: fewer handoffs, a handover when an item changes hands
+
+Rung 5 of closing the gap to Claude Code. When an item changed hands (a climb after three
+failures, a paused or away member's hand-up, a reviewer's send-back), the next member started a
+fresh turn that re-read the task and its thread and took the same readings again: in the
+baseline of 28 Oct the same container logs were read at every rank, and a send-back's reasons
+had to be found again. The work restarted instead of continuing.
+
+- **HQ composes a handover.** At each change of hands HQ builds, by code from the record and with
+  no model call, a note of what the item asks (each criterion on one line, or its title for work
+  with none) with what the record shows of each (the references last cited for it, or nothing
+  cited yet, and whether it was sent back since), the reviewer's or the checks' reasons if it was
+  sent back, the readings its turns already took (newest first, the newest of each tool and
+  arguments, each `rN tool args: gist`) for the next member to cite rather than take again, and
+  the members' last posts on it. Only that item's record is read.
+- **Sized to the receiver.** The note is held to the receiving member's model: 900 characters on
+  the NAS's model, 1,200 on the Mac, 2,000 on Claude. What does not fit is dropped from the end of
+  each part, in order of worth: the asks, the reasons, the readings, the tries. Members' words
+  are cleaned to one line each.
+- **Told and shown.** The note is kept for the receiving member and told in its own section of
+  each of its briefings on the item while the item is still its (and not again among the thread's
+  news); it carries members' words, so a turn told it is marked as having read input of unknown
+  origin. It is posted on the item's thread as Endora's, so the owner sees what was handed over.
+- **Not a member's own note.** A member's handover note at a restart (ADR 0134) is unchanged.
