@@ -428,3 +428,35 @@ worker's word, or that held an item where the owner would not. Each is now decid
   receipt a post named, so a line quoted from another item's reading (or a turn's with no item)
   passed as found. It now takes only a receipt whose task is the item's, as the handover does;
   any other is reported as "not this item's receipt", and counts as a failed check.
+
+## Amended 2026-10-31: what wakes an item (D2, D3, D10)
+
+Round 2 of the baseline experiment found three ways an item was woken wrongly
+(`docs/proposals/baseline-experiment-2026-10-28.md`, open issues).
+
+- **D2. A turn that never started is tried again later, and is nobody's failure.** Rae's turns
+  failed with "its container never started" (the runner could not start her runtime); HQ read the
+  last turn's failure as the runner's business and woke nobody, so her items sat until the owner
+  wrote on each thread. Now a turn whose container never started (the runner's exit -1), or that
+  the runner would not take, ends saying `never started`, has no label, and so shows nothing for
+  or against its member. Once its retries are spent, its item is woken again for the same member,
+  for the same reason as before (work in review for its reviewer, other work for its holder),
+  five minutes after it ended, doubling with each such turn in a row, at most an hour. It is not
+  handed up: by this ADR an item climbs on failed checks and send-backs, and "only finished turns
+  count against an item" (amended 2026-10-30). A turn that never ran checked nothing, and the
+  member above would meet the same runner; none of it is paid.
+- **D3. A blocked item in the loops wakes nobody until the owner's word or move.** Item 938,
+  blocked by Kit and judged by the owner, was treated as stranded work: nudged, then failed again
+  and again, waking Kit about every eleven minutes (about $0.39). A blocked item on a loop's plan
+  is no longer nudged, stalled or failed, and a wake on it is refused (`blocked`) unless the
+  owner asked for it (a reply, an answer, a move) or it is the end of what it waits on. The owner
+  seeing its question with no words wakes nobody; an answer in words wakes whoever holds it, and
+  moving it back to work wakes its holder as before. Since nothing else now moves it, a member's
+  block puts the item's question on the owner's desk, saying why.
+- **D10. One question on the owner's desk per item.** A member's question on an item that already
+  has one waiting, whoever asked it, is refused with the card's number and that the answer comes
+  to the thread and wakes whoever holds the item. HQ's own question (a block, a failure at every
+  rank) is added to the waiting card instead of a second one. The answer goes to whoever holds the
+  item now, not to a member it has since left. Round 1's repeats (915 five times) each followed an
+  answer, which the member did not find enough; one card at a time caps the desk, it does not
+  stop a member asking again after an answer.

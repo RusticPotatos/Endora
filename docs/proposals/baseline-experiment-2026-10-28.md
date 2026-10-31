@@ -465,10 +465,13 @@ done. Defects are numbered so the next round's changes can name them.
 - [ ] **D1. A model change can leave a member unable to start.** Rae was moved to DeepSeek with
   the runtime still Claude Code; every turn failed from 21:18 to 00:2x. HQ should refuse a model
   whose runtime the runner cannot start, or set the runtime with it.
-- [ ] **D2. A failed start does not wake the item's holder again.** Rae's items sat until a note
-  on each thread at 00:47.
-- [ ] **D3. A blocked item at the top rank keeps waking its member.** Kit was woken on 938 about
-  every 11 minutes after it was blocked and judged, about $0.39; set aside by hand.
+- [x] **D2. A failed start does not wake the item's holder again.** Rae's items sat until a note
+  on each thread at 00:47. Fixed on `r3-wakes` (ADR 0142, amended 2026-10-31): woken again after
+  a wait from 5 minutes to an hour, and no failure.
+- [x] **D3. A blocked item at the top rank keeps waking its member.** Kit was woken on 938 about
+  every 11 minutes after it was blocked and judged, about $0.39; set aside by hand. The stranded-work
+  path nudged and failed it. Fixed on `r3-wakes`: a blocked loop item wakes nobody until the
+  owner answers in words or moves it back to work.
 - [ ] **D4. A released tool is not offered until a loop lists it.** `image_tags` shipped but was
   not in the ansible-nas loop's tools until 02:2x. A new contract should reach the loops that
   can use it, or the release check should say which loops lack it.
@@ -483,8 +486,10 @@ done. Defects are numbered so the next round's changes can name them.
   the 240 KB budget in 7 or 8 calls each; after three such passes the item climbed.
 - [ ] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the
   18th cannot be spent without daily top-ups (see Next steps).
-- [ ] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
-  times, 920 four).
+- [x] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
+  times, 920 four). Fixed on `r3-wakes`: one question per item waits on the desk; another is
+  refused with the reason, HQ's own is added to the waiting card. Round 1's repeats each came
+  after an answer, which this does not stop.
 - [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
   record); cause unknown.
 
