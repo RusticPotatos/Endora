@@ -418,3 +418,39 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 | 8 | 938 | No (blocked honestly: the window's logs are gone, as expected after round 1; made no lab change) | $0.38 | blocked after ~4 h | 2 | |
 | 9 | 936 | | | | | |
 | 10 | 937 | | | | | |
+
+**Where round 2 stands (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
+and stopped on money.** The day's pool (about $3.33, the $100 a month over 30 days) was spent by
+02:44: $2.97 on round 2 (Kit's reviews $1.30, Rae $0.85, Mara's reviews $0.60, Ada $0.22; Bo free)
+and $0.19 on league chess. Every open item's next turn waits for the budget, which comes back at
+the owner's midnight. Raising it is the owner's decision; it was not raised overnight.
+
+Two setup faults in the release cost the first hours, both fixed during the round and neither
+counted as an intervention:
+- **Rae's runtime.** The evening's switch to DeepSeek had left Rae's runtime on Claude Code, so
+  none of her turns could start from 21:18 until 00:2x. Her items then sat un-woken (a failed
+  start does not wake the holder again) until a note on each thread at 00:47.
+- **The registry tool.** `image_tags` was released but not added to the ansible-nas loop's tools
+  until 02:2x, so 931 at first asked for tags as round 1's 915 had.
+
+**Rounds side by side, so far** (accepted of 10; interventions; HQ's spend):
+
+| | Accepted | Interventions | Spend | Notes |
+|---|---|---|---|---|
+| Claude Code (28 Oct) | 10 | 0 | tokens only | the bar |
+| Round 0, HQ (28 Oct) | 1 | many | | blocked by missing tools, restarts on a read-only task |
+| Round 1, HQ (30 Oct) | 3 | 7 counted | | one item at a time; five tasks never started |
+| Round 2, HQ (30–31 Oct) | 2 so far, 6 open | 5 so far | $2.97 by 03:30 | items side by side; two READMEs accepted in 142 min each (round 1: 82 and 461 min) |
+
+What round 2 shows already, by the evidence:
+- **Side by side works.** Six of ten tasks were worked within four hours; round 1 started five
+  in fourteen.
+- **The turn budget bites on the NAS's model.** Bo's turns ended at the budget after 7 or 8 calls
+  each (about 30 KB a call), and after three such turns the item climbed to Rae. The continuation
+  counted against the rank as the fourth-time rule meant, but three budget passes with nothing
+  to show is the 9B model's limit, not the budget's.
+- **The paid reviews are the cost.** Sonnet and Opus reviews were $1.90 of $2.97, for 15 turns.
+- **CI needs the owner's push and a trigger HQ cannot pull.** 932 did everything else; the
+  workflow runs on push only for main and develop, so no run came, and HQ never noticed.
+- **Questions are still the house model's habit.** Bo put its finished 935 finding on the desk
+  as a question twice instead of asking for review.
