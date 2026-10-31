@@ -637,7 +637,14 @@ fn opening(
     }
     let mut talk = Talk::new(api, told, briefing, &offered);
     if claude_searches {
-        talk.search_for_all_but(&CLAUDE_LOADS);
+        // What HQ marks for the turn's kind is loaded too: a Haiku reviewer never searched for
+        // the `review` held back, and her verdicts went to `set_status` (D19, 31 Oct).
+        let marked = offered
+            .iter()
+            .filter(|t| t["_meta"][UP_FRONT] == true)
+            .filter_map(|t| t["name"].as_str());
+        let loads: Vec<&str> = CLAUDE_LOADS.iter().copied().chain(marked).collect();
+        talk.search_for_all_but(&loads);
     }
     // What it starts with and what it may bring in, by name, for the conversation HQ keeps.
     let (later, now): (Vec<&Value>, Vec<&Value>) =

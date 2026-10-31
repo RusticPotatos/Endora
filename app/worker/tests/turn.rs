@@ -2504,6 +2504,28 @@ fn a_house_turn_is_offered_up_front_what_hq_marks_for_its_kind() {
     assert!(!first.to_string().contains("up_front"), "{first}");
 }
 
+/// Live, 31 Oct 2026 (D19): a Haiku reviewer's turn held `review` back behind the tool search
+/// although HQ marked it up front; she never searched, and four approvals went to `set_status`,
+/// which refused them. What HQ marks for the turn's kind is loaded on Claude too.
+#[test]
+fn a_claude_turn_loads_what_hq_marks_for_its_kind() {
+    let (hq_url, _) = hq_listing(tools_marking("consult"), None, false);
+    let (node_url, _) = node(many_contracts(), None);
+    let (relay_url, to_relay) = model(vec![(200, claude("Reviewed.", &[]))]);
+    let out = worker(&on_claude(&hq_url, &relay_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let tools = to_relay.lock().unwrap()[0].body["tools"].clone();
+    let consult = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "consult")
+        .cloned()
+        .expect("consult is sent");
+    assert!(consult.get("defer_loading").is_none(), "{consult}");
+    assert!(!tools.to_string().contains("up_front"), "{tools}");
+}
+
 /// The guard under on-demand tools: `find_tools` brings in only what HQ and the node listed for
 /// this turn, which is where every narrowing is applied (a project's list, a task that leaves the
 /// lab as it is, the Restricted tier, the NAS's keep from desk-ending tools). A name the turn was
