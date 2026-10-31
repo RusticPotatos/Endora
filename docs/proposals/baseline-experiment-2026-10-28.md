@@ -366,11 +366,24 @@ therefore measured together. Round 0's open items were set aside first (moved to
 |---|---|---|---|---|---|---|
 | 1 | 913 | Yes (all 46 defaults with values, ports; pushed as `hq/task-913-readmes`) | $0.03 | 82 min | 0 | |
 | 2 | 914 | Yes (all 39 defaults with exact values, directories included; ports; pushed as `hq/task-914-readmes`) | $0.23 | 461 min | 0 | |
-| 3 | 915 | | | | | |
-| 4 | 916 | | | | | |
-| 5 | 917 | | | | | |
-| 6 | 918 | | | | | |
+| 3 | 915 | No (never ready: no tool could check a tag on its registry, the round-0 blocker; Ada asked the owner five times and made no branch rather than guess) | $0.02 | not ready at close (14.7 h) | 5 | |
+| 4 | 916 | No (never started: the loop held one item at a time, and 915 held it) | $0 | not started at close | 0 | |
+| 5 | 917 | No (never started, as 916) | $0 | not started at close | 0 | |
+| 6 | 918 | No (never started, as 916) | $0 | not started at close | 0 | |
 | 7 | 919 | Yes (TheRARBG, The Pirate Bay, YTS from both apps; Prowlarr's own HTTP/2 and DNS-SSL failures, not a rate limit; DNS/IPv6 change; nothing changed. Dex sent Rae's first cause back) | $0.07 | 341 min | 1 | |
 | 8 | 920 | No (blocked honestly: the window's logs had rolled over by the time HQ reached it, a day after the session answered; recommended keep; changed nothing on the lab, where round 0 restarted gluetun) | $0.02 | blocked after ~11 h | 1 | |
-| 9 | 921 | | | | | |
-| 10 | 922 | | | | | |
+| 9 | 921 | No (never started, as 916) | $0 | not started at close | 0 | |
+| 10 | 922 | No (never started, as 916) | $0 | not started at close | 0 | |
+
+Round 1 was closed on 30 Oct at 21:30 EDT, 14.7 hours in and before its 24-hour cap, at the owner's
+request so that round 2 could run overnight. **Accepted 3 of 10** (round 0: 1 of 10). What held it
+back, by the evidence:
+- **One item at a time.** A loop worked one item, so five tasks never started while 915 waited
+  on a tool it did not have (items side by side, on round 2).
+- **No registry lookup.** 915 could not check a tag (the `image_tags` contract, on round 2).
+- **The Mac's timeouts** on long prompts, until Rae moved to DeepSeek for the evening (context
+  sized to the turn, stubs, a turn budget and gists, on round 2).
+- **Slowness let evidence expire.** 920's window had rolled out of the logs before HQ reached it.
+  Task 8 cannot be met in any later round either: its window is gone. It stays in the set with
+  its words unchanged, and is expected to be not accepted.
+- **A blocked item asked the owner again** about every half hour (915 five times, 920 four).
