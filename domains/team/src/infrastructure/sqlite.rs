@@ -689,7 +689,7 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
+                "SELECT id, name, role, share_percent, slots, paused, look, brain, \
                  furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
@@ -709,9 +709,8 @@ impl TeamStore for SqliteTeamStore {
                     paused: r.get::<_, i64>(5)? != 0,
                     look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
                     brain,
-                    reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
-                    furloughed_at: r.get(9)?,
-                    recalled_at: r.get(10)?,
+                    furloughed_at: r.get(8)?,
+                    recalled_at: r.get(9)?,
                 })
             })
             .map_err(backend)?;
@@ -732,16 +731,6 @@ impl TeamStore for SqliteTeamStore {
         self.conn()?
             .execute(
                 "UPDATE members SET furloughed_at = ?2, recalled_at = NULL WHERE id = ?1",
-                params![member.0, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
                 params![member.0, at],
             )
             .map_err(backend)?;
@@ -780,16 +769,6 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET runtime = ?2 WHERE id = ?1",
                 params![member.0, runtime.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET reports_to = ?2 WHERE id = ?1",
-                params![member.0, to.map(|t| t.0)],
             )
             .map_err(backend)?;
         Ok(())
@@ -1816,12 +1795,6 @@ INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VA
         assert_eq!(
             (rae.furloughed(), rae.furloughed_at, rae.name.as_str()),
             (true, Some(77), "Rae")
-        );
-        store.recall_member(MemberId(3), 99).unwrap();
-        let rae = store.members().unwrap().remove(2);
-        assert_eq!(
-            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
-            (false, Some(77), Some(99))
         );
         // A second furlough starts afresh.
         store.furlough_member(MemberId(3), 120).unwrap();

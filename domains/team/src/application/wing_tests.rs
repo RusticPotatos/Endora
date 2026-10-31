@@ -892,18 +892,13 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
     let hq = engine(&clock);
     let t = team(&hq);
     let sam = hq
-        .hire_by_owner("Sam", Role::Developer, "claude-haiku-5-5", Some(t.kit))
+        .hire_by_owner("Sam", Role::Developer, "claude-haiku-5-5")
         .unwrap();
     let members = hq.store().members().unwrap();
     let found = members.iter().find(|m| m.id == sam).unwrap();
     assert_eq!(
-        (
-            found.role,
-            found.brain,
-            found.reports_to,
-            found.share_percent
-        ),
-        (Role::Developer, Brain::Haiku, Some(t.kit), 40)
+        (found.role, found.brain, found.share_percent),
+        (Role::Developer, Brain::Haiku, 40)
     );
     let hired = hq
         .events_after(0)
@@ -915,37 +910,19 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
         (hired.data["name"].as_str(), hired.data["by"].as_str()),
         (Some("Sam"), Some("owner"))
     );
-    // Nobody reports to anyone unless the owner says so (ADR 0142).
-    let lee = hq
-        .hire_by_owner("Lee", Role::Researcher, "local", None)
-        .unwrap();
-    assert_eq!(members_of(&hq, lee).reports_to, None);
     // A title is a name only (ADR 0142): a second CEO, or a researcher on Sonnet, is a member.
-    hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5", None)
+    hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5")
         .unwrap();
-    hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5", None)
+    hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5")
         .unwrap();
     assert!(matches!(
-        hq.hire_by_owner("Quinn", Role::Researcher, "gpt-5", None),
+        hq.hire_by_owner("Quinn", Role::Researcher, "gpt-5"),
         Err(super::EngineError::Refused(Refusal::NotABrain { .. }))
     ));
     assert_eq!(
-        hq.hire_by_owner("sam", Role::Developer, "local", None),
+        hq.hire_by_owner("sam", Role::Developer, "local"),
         Err(super::EngineError::Refused(Refusal::NotAName)),
         "names stay unique"
     );
-    assert!(
-        hq.hire_by_owner("Nobody", Role::Developer, "local", Some(MemberId(999)))
-            .is_err()
-    );
     let _ = t.ceo;
-}
-
-fn members_of(hq: &Hq<'_>, id: MemberId) -> crate::domain::Member {
-    hq.store()
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.id == id)
-        .unwrap()
 }

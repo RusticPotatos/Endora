@@ -144,9 +144,6 @@ pub struct Member {
     /// protocol and the node, this is the brain the turn runs on (a league side's may differ),
     /// so the data tier and the relays see what the turn is.
     pub brain: super::brain::Brain,
-    /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
-    /// and for a member hired before anyone was there to report to.
-    pub reports_to: Option<MemberId>,
     /// When the member was furloughed (ADR 0118), if it ever was: set for the latest furlough.
     /// A furloughed member is never woken, holds no task, and is left out of every briefing's
     /// team and of the share arithmetic; it keeps its record, its name and its notebook.
@@ -458,9 +455,6 @@ pub enum Refusal {
     NoEvidence,
     /// Evidence that is not in HQ's record.
     NoSuchEvidence(String),
-    /// A member reports to another member, never to itself, and never in a circle; the CEO
-    /// reports to the board.
-    NotAManager,
     /// Work handed to another member says what done means (ADR 0114).
     NoCriteria,
     /// Work the owner hands out says what done means too, in at least one line (ADR 0124,
@@ -735,10 +729,6 @@ impl fmt::Display for Refusal {
             Self::NobodyHasIt => f.write_str(
                 "it was not tried again, and still waits here: no member has this task to wake",
             ),
-            Self::NotAManager => f.write_str(
-                "a member reports to another member, never itself and never in a circle; the \
-                 CEO reports to the board",
-            ),
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),
@@ -866,7 +856,6 @@ mod tests {
             look: 0,
             paused: false,
             brain: crate::domain::brain::Brain::Haiku,
-            reports_to: None,
             furloughed_at: None,
             recalled_at: None,
         }

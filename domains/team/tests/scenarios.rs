@@ -1060,29 +1060,14 @@ fn task_is(w: &mut Office, title: String, status: String) {
     assert_eq!(found.status.name(), status);
 }
 
-#[given(expr = "the owner hires {word} as a {word} under {word}")]
-#[when(expr = "the owner hires {word} as a {word} under {word}")]
-fn owner_hires(w: &mut Office, name: String, role: String, under: String) {
+#[given(expr = "the owner hires {word} as a {word}")]
+#[when(expr = "the owner hires {word} as a {word}")]
+fn owner_hires(w: &mut Office, name: String, role: String) {
     let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
-    let manager = w.member(&under);
-    let hired = w.hq.hire_by_owner(&name, role, "local", Some(manager));
+    let hired = w.hq.hire_by_owner(&name, role, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }
-}
-
-#[then(expr = "{word} reports to {word}")]
-fn reports_to(w: &mut Office, name: String, manager: String) {
-    let id = w.member(&name);
-    let manager = w.member(&manager);
-    let found =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired");
-    assert_eq!(found.reports_to, Some(manager));
 }
 
 #[then(expr = "it is refused for {string}")]

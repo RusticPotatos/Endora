@@ -931,7 +931,6 @@ fn the_team_becomes_one_team_of_five_ranked_models() {
         let m = by(name);
         assert_eq!(m.brain, brain, "{name}");
         assert_eq!(m.role, Role::Developer, "{name}: no titles in the code");
-        assert_eq!(m.reports_to, None, "{name}: no reporting lines");
         assert!(m.at_work(), "{name}");
     }
     for name in ["Cy", "Dee", "Zed"] {

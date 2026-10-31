@@ -448,8 +448,6 @@ struct HireRequest {
     /// Its model; the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
-    #[serde(default)]
-    reports_to: Option<i64>,
 }
 
 /// The owner hires a member (ADR 0115).
@@ -459,15 +457,7 @@ async fn hire(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
     let hq = state.hq.clone();
-    let id = blocking(move || {
-        hq.hire_by_owner_with(
-            &req.name,
-            role,
-            req.brain.as_deref(),
-            req.reports_to.map(MemberId),
-        )
-    })
-    .await?;
+    let id = blocking(move || hq.hire_by_owner_with(&req.name, role, req.brain.as_deref())).await?;
     Ok(Json(json!({ "member": id.0 })))
 }
 
@@ -3670,12 +3660,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let kit = json_of(res).await["member"].as_i64().unwrap();
         let res = app
             .clone()
             .oneshot(hire(
                 Some(TOKEN),
-                json!({ "name": "Rae", "role": "developer", "brain": "claude-haiku-5-5", "reports_to": kit }),
+                json!({ "name": "Rae", "role": "developer", "brain": "claude-haiku-5-5" }),
             ))
             .await
             .unwrap();
@@ -3683,8 +3672,8 @@ mod tests {
         let members = st.hq.store().members().unwrap();
         let rae = members.iter().find(|m| m.name == "Rae").unwrap();
         assert_eq!(
-            (rae.role, rae.brain.name(), rae.reports_to),
-            (Role::Developer, "claude-haiku-5-5", Some(MemberId(kit)))
+            (rae.role, rae.brain.name()),
+            (Role::Developer, "claude-haiku-5-5")
         );
         // A model Endora lacks is refused, whatever the title.
         let res = app

@@ -302,8 +302,6 @@ pub trait TeamStore:
     /// Puts a member on furlough from `at` (ADR 0118). Nothing else about it changes: members
     /// are never deleted.
     fn furlough_member(&self, member: MemberId, at: Millis) -> Stored<()>;
-    /// Ends a member's furlough at `at`.
-    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()>;
     /// Sets a member's model (ADR 0142): every turn of its runs on it.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
     /// What runs a member's turns, as the owner set it (ADR 0117): the worker for a member
@@ -313,8 +311,6 @@ pub trait TeamStore:
     fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()>;
     /// Renames a member.
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
-    /// Sets whom a member reports to (ADR 0113).
-    fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()>;
     /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
     fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 

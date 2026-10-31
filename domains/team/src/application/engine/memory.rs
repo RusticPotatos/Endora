@@ -58,7 +58,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             None => false,
         };
         Ok(situations::decide(&Facts {
-            recalled: self.back_from_furlough(member, run)?.is_some(),
             handed_a_note,
             new_to_the_work: last_on_task.is_none() && others_on_task,
             first_turn: mine.is_empty(),
@@ -115,7 +114,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     && !matches!(
                         piece.name.as_str(),
                         // HQ's own words, or classified where they are read.
-                        "map" | "furlough" | "world:lab" | "world:house"
+                        "map" | "world:lab" | "world:house"
                     )
             })
             .map(|piece| piece.name.clone())
@@ -188,24 +187,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.map_for(member, run)?.text,
             Weight::Core,
         )];
-        let last = self.last_turn_of(member, run)?;
-        let back = self.back_from_furlough(member, run)?;
-        // What changed while it was away: since its furlough began, or its last turn.
-        if matches!(situation, Situation::Recalled | Situation::AfterGap) {
-            let since = match back {
-                Some((from, _)) => from,
-                None => last.unwrap_or(0),
-            };
+        // What changed while it was away: since its last turn.
+        if situation == Situation::AfterGap {
+            let since = self.last_turn_of(member, run)?.unwrap_or(0);
             pieces.push(Piece::new(
                 "what changed",
                 self.changed_since(since)?,
-                Weight::Core,
-            ));
-        }
-        if let Some((from, to)) = back {
-            pieces.push(Piece::new(
-                "furlough",
-                self.furlough_said(from, to),
                 Weight::Core,
             ));
         }
@@ -360,30 +347,5 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         said.extend(lines.into_iter().skip(earlier));
         Ok(said)
-    }
-
-    /// The furlough a member is back from, `(from, to)`, if this is its first turn since its
-    /// recall.
-    pub(super) fn back_from_furlough(
-        &self,
-        member: &Member,
-        run: &Run,
-    ) -> Done<Option<(Millis, Millis)>> {
-        let (Some(from), Some(to)) = (member.furloughed_at, member.recalled_at) else {
-            return Ok(None);
-        };
-        let since_back = self.store.runs()?.iter().any(|r| {
-            r.member == member.id && r.id != run.id && r.started_at.is_some_and(|s| s >= to)
-        });
-        Ok((!since_back).then_some((from, to)))
-    }
-
-    /// The line a briefing opens with for a member back from a furlough.
-    pub(super) fn furlough_said(&self, from: Millis, to: Millis) -> String {
-        format!(
-            "You were furloughed from {} to {}.\n",
-            self.said_day(from),
-            self.said_day(to)
-        )
     }
 }

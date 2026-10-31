@@ -231,8 +231,6 @@ pub(super) struct HqHire {
     /// Its model (ADR 0142); the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
-    #[serde(default)]
-    reports_to: Option<i64>,
 }
 
 /// The owner hires a member (ADR 0115): HQ decides the rules (one CEO, a brain the role may
@@ -242,8 +240,7 @@ pub(super) async fn hq_hire(State(state): State<AppState>, Json(req): Json<HqHir
         &state,
         "/v1/members".to_owned(),
         Some(json!({
-            "name": req.name, "role": req.role, "brain": req.brain,
-            "reports_to": req.reports_to
+            "name": req.name, "role": req.role, "brain": req.brain
         })),
     )
     .await?;

@@ -112,7 +112,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 self.store.set_brain(member.id, *model)?;
                 self.store.set_role(member.id, Role::Developer)?;
-                self.store.set_reports_to(member.id, None)?;
                 seated.push(member.name.clone());
                 continue;
             }

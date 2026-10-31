@@ -24,9 +24,8 @@ Feature: The engineering wing and the git flow
     And the owner's desk holds no push
 
   Scenario: Hiring is the owner's, and a title is a name only
-    When the owner hires Sam as a developer under Kit
-    Then Sam reports to Kit
-    And Sam's model is "Local"
-    When the owner hires Second as a ceo under Mara
+    When the owner hires Sam as a developer
+    Then Sam's model is "Local"
+    When the owner hires Second as a ceo
     Then it is not refused
 

@@ -819,20 +819,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- hiring (ADR 0115) ---------------------------------------------------------------
 
-    /// The owner hires a member: a name, a title (a name only, ADR 0142), its model, and whom it
-    /// reports to. Said in the feed as the owner's.
+    /// The owner hires a member: a name, a title (a name only, ADR 0142) and its model. Nobody
+    /// reports to anyone. Said in the feed as the owner's.
     ///
     /// # Errors
-    /// [`Refusal::NotAName`], [`Refusal::NotABrain`], [`EngineError::Unknown`] for a manager
-    /// that is no member; a store failure.
-    pub fn hire_by_owner(
-        &self,
-        name: &str,
-        role: Role,
-        brain: &str,
-        reports_to: Option<MemberId>,
-    ) -> Done<MemberId> {
-        self.hire_by_owner_with(name, role, Some(brain), reports_to)
+    /// [`Refusal::NotAName`], [`Refusal::NotABrain`]; a store failure.
+    pub fn hire_by_owner(&self, name: &str, role: Role, brain: &str) -> Done<MemberId> {
+        self.hire_by_owner_with(name, role, Some(brain))
     }
 
     /// As [`Self::hire_by_owner`], the brain named or not: one not named is the house's model.
@@ -844,10 +837,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         name: &str,
         role: Role,
         brain: Option<&str>,
-        reports_to: Option<MemberId>,
     ) -> Done<MemberId> {
         let _held = self.held();
-        self.hire_held_lock(name, role, brain, reports_to, "owner")
+        self.hire_held_lock(name, role, brain, "owner")
     }
 
     /// Hires a member (the lock held), on the brain named. A blank name or brain is none.
@@ -856,7 +848,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         name: &str,
         role: Role,
         brain: Option<&str>,
-        reports_to: Option<MemberId>,
         by: &str,
     ) -> Done<MemberId> {
         let members = self.store.members()?;
@@ -870,24 +861,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(Brain::named)
             .transpose()
             .map_err(EngineError::Refused)?;
-        if let Some(to) = reports_to {
-            if !members.iter().any(|m| m.id == to) {
-                return Err(EngineError::Refused(Refusal::NotAManager));
-            }
-        }
-        let manager = reports_to;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
         let id = self.store.add_member(&name, role, role.share(), 2, look)?;
         if let Some(brain) = named {
             self.store.set_brain(id, brain)?;
         }
-        self.store.set_reports_to(id, manager)?;
         let hired = self.member(id)?;
         self.emit(
             EventKind::MemberHired,
             json!({ "member": id.0, "name": name, "role": role.name(),
-                    "brain": hired.brain.name(),
-                    "reports_to": manager.map(|m| m.0), "by": by }),
+                    "brain": hired.brain.name(), "by": by }),
         )?;
         Ok(id)
     }

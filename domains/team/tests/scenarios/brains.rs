@@ -88,7 +88,7 @@ fn hired_on_the_house_model(w: &mut Office, name: String, role: String) {
     } else {
         Role::from_name(&role).unwrap_or_else(|| panic!("the team has no role called {role}"))
     };
-    let hired = w.hq.hire_by_owner(&name, role, "local", None);
+    let hired = w.hq.hire_by_owner(&name, role, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }

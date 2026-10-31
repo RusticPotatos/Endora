@@ -23,7 +23,8 @@ pub enum Situation {
     AfterGap,
     /// The work was handed to it, or it is new to work another member took turns on.
     Handover,
-    /// Its first turn after a furlough (ADR 0118).
+    /// Its first turn after a furlough (ADR 0118): kept for the briefings recorded before
+    /// ADR 0142, which recalls nobody.
     Recalled,
     /// A runtime that carries its own earlier conversation (later: not yet built).
     Resumed,
@@ -69,8 +70,6 @@ impl Situation {
 /// What the record says about a member and the turn it is about to take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Facts {
-    /// It was recalled from a furlough and has taken no turn since.
-    pub recalled: bool,
     /// A handover note to it on this task is newer than its last turn on it.
     pub handed_a_note: bool,
     /// Another member took the task's last turn, and it has taken none on the task before.
@@ -87,13 +86,11 @@ pub struct Facts {
     pub now: Millis,
 }
 
-/// The situation a turn starts from: recalled, then handed over, then fresh, then after a gap,
-/// and otherwise continuing.
+/// The situation a turn starts from: handed over, then fresh, then after a gap, and otherwise
+/// continuing. A member is no longer recalled from a furlough (ADR 0142): a briefing kept from
+/// before may still say it was.
 #[must_use]
 pub fn decide(facts: &Facts) -> Situation {
-    if facts.recalled {
-        return Situation::Recalled;
-    }
     if facts.handed_a_note || facts.new_to_the_work {
         return Situation::Handover;
     }
@@ -374,14 +371,6 @@ mod tests {
                 ..base
             }),
             Situation::Handover
-        );
-        assert_eq!(
-            decide(&Facts {
-                recalled: true,
-                handed_a_note: true,
-                ..base
-            }),
-            Situation::Recalled
         );
     }
 

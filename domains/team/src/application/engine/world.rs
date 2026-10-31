@@ -297,17 +297,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         said
     }
 
-    /// The team page, derived from the record: who is at work, in what role, on what brain,
-    /// reporting to whom.
+    /// The team page, derived from the record: who is at work, by what title, on what brain.
     pub(super) fn team_said(&self) -> Done<String> {
         let members = self.store.members()?;
         let mut said = format!("{} (world:team):\n", world::TEAM.title);
         for m in &members {
-            let to = m
-                .reports_to
-                .and_then(|id| members.iter().find(|o| o.id == id))
-                .map(|o| format!(", reports to {}", o.name))
-                .unwrap_or_default();
             let away = if m.furloughed() {
                 ", on furlough"
             } else if m.paused {
@@ -316,7 +310,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 ""
             };
             said.push_str(&format!(
-                "- {} ({}, {}{to}{away})\n",
+                "- {} ({}, {}{away})\n",
                 m.name,
                 m.role.title(),
                 m.brain.label()

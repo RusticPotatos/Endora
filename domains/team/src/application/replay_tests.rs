@@ -30,7 +30,6 @@ fn kit() -> Member {
         look: 3,
         paused: false,
         brain: Brain::Haiku,
-        reports_to: None,
         furloughed_at: None,
         recalled_at: None,
     }
