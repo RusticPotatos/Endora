@@ -119,6 +119,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     id: r.id,
                     tool: &r.tool,
                     excerpt: &r.excerpt,
+                    this_items: r.task == Some(task.id),
                 })
                 .collect();
             report.quotes = mechanical::quotes_checked(&post.text, &kept);

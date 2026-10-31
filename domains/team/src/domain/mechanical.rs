@@ -38,6 +38,9 @@ pub struct Kept<'a> {
     pub tool: &'a str,
     /// What it kept of the result.
     pub excerpt: &'a str,
+    /// Whether it was taken on the item the quote is checked for: another item's reading
+    /// proves nothing of this one.
+    pub this_items: bool,
 }
 
 /// Whether a quote is in its receipt.
@@ -51,6 +54,8 @@ pub enum Seen {
     PastTheCut,
     /// No such receipt in HQ's record.
     NoReceipt,
+    /// A receipt of another item's (or of no item's): not evidence for this one.
+    NotThisItems,
 }
 
 /// The receipts a piece of text names, `r12`, with where each starts.
@@ -165,6 +170,9 @@ pub fn seen(quote: &Quote, receipts: &[Kept<'_>]) -> Seen {
     let Some(receipt) = receipts.iter().find(|r| r.id == quote.receipt) else {
         return Seen::NoReceipt;
     };
+    if !receipt.this_items {
+        return Seen::NotThisItems;
+    }
     let quoted = quote
         .text
         .trim()
@@ -618,7 +626,7 @@ impl Report {
     pub fn failed(&self) -> bool {
         self.quotes
             .iter()
-            .any(|(_, s)| matches!(s, Seen::NotFound | Seen::NoReceipt))
+            .any(|(_, s)| matches!(s, Seen::NotFound | Seen::NoReceipt | Seen::NotThisItems))
             || self
                 .branch
                 .as_ref()
@@ -647,6 +655,7 @@ impl Report {
                         "not in the start of the result the receipt keeps (cannot tell)"
                     }
                     Seen::NoReceipt => "no such receipt",
+                    Seen::NotThisItems => "not this item's receipt",
                     Seen::Found => "",
                 };
                 told.push_str(&format!(
@@ -732,7 +741,12 @@ mod tests {
     use super::*;
 
     fn kept<'a>(id: i64, tool: &'a str, excerpt: &'a str) -> Kept<'a> {
-        Kept { id, tool, excerpt }
+        Kept {
+            id,
+            tool,
+            excerpt,
+            this_items: true,
+        }
     }
 
     #[test]
@@ -828,6 +842,14 @@ mod tests {
             text: "long log".to_owned(),
         };
         assert_eq!(seen(&q, &receipts), Seen::Found);
+    }
+
+    #[test]
+    fn a_receipt_of_another_items_is_not_this_items() {
+        let mut theirs = kept(4, "homelab_status", "web: up");
+        theirs.this_items = false;
+        let got = quotes_checked("r4 says `web: up`", &[theirs]);
+        assert_eq!(got[0].1, Seen::NotThisItems);
     }
 
     #[test]

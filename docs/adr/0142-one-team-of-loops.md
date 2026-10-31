@@ -358,3 +358,7 @@ worker's word, or that held an item where the owner would not. Each is now decid
   Otherwise the last word is posted and the turn ends as any other, and is judged as any other.
   So that HQ sees them, the relay now tells HQ the tokens of the house's free calls too
   (`/v1/team/tokens`), charging nothing.
+- **A quote is checked against this item's readings only.** HQ's quoted-evidence check took any
+  receipt a post named, so a line quoted from another item's reading (or a turn's with no item)
+  passed as found. It now takes only a receipt whose task is the item's, as the handover does;
+  any other is reported as "not this item's receipt", and counts as a failed check.
