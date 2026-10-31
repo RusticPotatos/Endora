@@ -111,3 +111,21 @@ fn only_a_name_docker_could_give_is_inspected() {
     }
     assert!(!a_container_name(&"x".repeat(129)));
 }
+
+/// What tells an update from a restart (D11, ADR 0106 amended 2026-10-31): when Docker created
+/// the container, in milliseconds, and its image id, short. Neither reaches a chat skill.
+#[test]
+fn the_observer_sees_when_a_container_was_created_and_on_which_image() {
+    let containers = json!([
+        {"Names":["/sonarr"],"State":"running","Status":"Up 4 hours","Created":1_792_000_000,
+         "ImageID":format!("sha256:{}", "ab".repeat(32))},
+        {"Names":["/old"],"State":"running","Status":"Up 2 days"}
+    ]);
+    let result = normalize_observed("docker", &containers).unwrap();
+    assert_eq!(result["items"][0]["created_ms"], 1_792_000_000_000_i64);
+    assert_eq!(result["items"][0]["image"], "abababababab");
+    assert!(result["items"][1]["created_ms"].is_null());
+    assert!(result["items"][1]["image"].is_null());
+    let said = normalize("docker", &containers).unwrap().to_string();
+    assert!(!said.contains("created") && !said.contains("abab"), "{said}");
+}

@@ -1611,6 +1611,10 @@ mod tests {
         assert_eq!(check["HostConfig"]["Dns"], json!([NO_RESOLVER]));
         assert!(check["HostConfig"]["Tmpfs"]["/work"].is_string());
         assert_eq!(specs[1]["Labels"][RUN_LABEL], "12");
+        // Endora's own, released by Endora: Watchtower never recreates a check or a turn (D11).
+        for spec in &specs {
+            assert_eq!(spec["Labels"]["com.centurylinklabs.watchtower.enable"], "false");
+        }
         assert_eq!(hq.asked_with(), [2, 1], "a check takes a place");
         // The job reports for itself: when its container ends well, it is only removed.
         docker.exits("c1", 0);

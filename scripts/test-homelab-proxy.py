@@ -34,7 +34,9 @@ class ProxyTests(unittest.TestCase):
             def read(self, _):
                 if calls[-1][1].endswith('/json') and calls[-1][1] != '/containers/json':
                     return INSPECTED
-                return b'[{"Names":["/example"],"State":"running","Status":"Up","Env":["fictional-secret"],"Mounts":["/private"]}]'
+                return (b'[{"Names":["/example"],"State":"running","Status":"Up","Created":1792000000,'
+                        b'"ImageID":"sha256:' + b'ef' * 32 + b'","Env":["fictional-secret"],"Mounts":["/private"],'
+                        b'"Labels":{"com.centurylinklabs.watchtower.notification-url":"fictional"}}]')
             def close(self): pass
         original = proxy.UnixConnection
         proxy.UnixConnection = Connection
@@ -53,6 +55,10 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertNotIn(b'Env', body)
             self.assertNotIn(b'Mounts', body)
+            self.assertNotIn(b'notification-url', body)
+            # When each was created and its image id, which tell an update from a restart (D11).
+            self.assertEqual(json.loads(body), [{'Names': ['/example'], 'State': 'running', 'Status': 'Up',
+                                                 'Created': 1792000000, 'ImageID': 'sha256:' + 'ef' * 32}])
             # One container's inspection, for the home lab's map: only its few fields.
             status, body = request('GET', '/containers/deluge/json')
             self.assertEqual(status, 200)

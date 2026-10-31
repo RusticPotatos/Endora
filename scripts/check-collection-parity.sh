@@ -3,6 +3,8 @@
 # variable the compose file interpolates must be one the role renders into endora.env (its
 # template names it) or one that matters only on the Mac, listed below; every Compose profile
 # must be one the role can start. A new compose variable without a role variable fails here.
+# And every service is kept out of Watchtower: Endora is released by its own workflow (`make
+# deploy` or this role), never recreated by Watchtower overnight (D11).
 #   scripts/check-collection-parity.sh              check the repository
 #   scripts/check-collection-parity.sh --self-test  prove the check fails on an unknown variable
 set -eu
@@ -30,6 +32,19 @@ check() {
     case " $mac_only_profiles " in *" $name "*) continue ;; esac
     if grep -q "'$name'" "$role/defaults/main.yml"; then continue; fi
     echo "parity: profile $name is in $(basename "$compose") but endora_profiles never starts it" >&2
+    status=1
+  done
+  unlabelled=$(awk '
+    /^services:/ { inside = 1; next }
+    inside && /^[^ #]/ { inside = 0 }
+    !inside { next }
+    /^  [A-Za-z0-9_-]+:[ ]*$/ { if (name != "" && !out) print name; name = $1; sub(":", "", name); out = 0; next }
+    /^    labels: \*released-by-endora[ ]*$/ { out = 1 }
+    END { if (name != "" && !out) print name }
+  ' "$compose")
+  for name in $unlabelled; do
+    echo "parity: service $name in $(basename "$compose") is not kept out of Watchtower" >&2
+    echo "        give it labels: *released-by-endora" >&2
     status=1
   done
   return $status

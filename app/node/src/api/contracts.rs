@@ -1967,6 +1967,39 @@ mod tests {
         );
     }
 
+    /// What Watchtower did (D11, ADR 0106 amended 2026-10-31): a container recreated on a new
+    /// image says when, and one line says what was updated in the last day. Nothing else of the
+    /// observer's (its creation time, its image id) reaches the turn.
+    #[tokio::test]
+    async fn the_home_lab_says_what_was_updated_on_a_new_image() {
+        let (state, _) = with(lab());
+        let now = state.clock.now().unix_millis();
+        let at = now - 4 * 60 * 60 * 1000;
+        *state.homelab.lock().unwrap() = json!({ "observed_at_ms": now, "services": [
+            { "name": "docker", "state": "healthy", "total": 3, "observed_at_ms": now,
+              "updates_since_ms": now - 48 * 60 * 60 * 1000, "items": [
+                { "name": "sonarr", "state": "running", "health": "unknown", "status": "Up 4 hours",
+                  "created_ms": at, "image": "abababababab", "updated_at_ms": at },
+                { "name": "radarr", "state": "running", "health": "unknown", "status": "Up 2 days",
+                  "created_ms": now - 172_800_000, "image": "cdcdcdcdcdcd" },
+                { "name": "watchtower", "state": "running", "health": "unknown", "status": "Up 9 days" }] },
+        ] });
+        let (status, said) = use_contract(&state, "homelab_status", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let seen: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        let docker = &seen["services"][0];
+        let offset = state.clock.utc_offset_minutes();
+        let when = endora_capabilities::lab_updates::when(at, offset);
+        assert_eq!(docker["items"][0]["updated"], when.as_str());
+        assert!(docker["items"][1]["updated"].is_null(), "{docker}");
+        let line = docker["updates"].as_str().unwrap();
+        assert!(line.starts_with("Updated ") && line.contains("by Watchtower") && line.contains("sonarr"), "{line}");
+        assert!(!line.contains("radarr"), "{line}");
+        for never in ["abab", "cdcd", "created", "updated_at_ms", "since"] {
+            assert!(!said["text"].as_str().unwrap().contains(never), "{never}: {said}");
+        }
+    }
+
     /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.
     fn on_claude(role: &'static str) -> AppState {
         let (hq_url, _) = hq_thinking(40_000, role, true);
