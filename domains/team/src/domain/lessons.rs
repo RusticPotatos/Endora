@@ -97,7 +97,7 @@ pub fn checked(lesson: &str) -> Result<String, Unkept> {
     if lesson.chars().count() > LOOP_LESSON_MOST {
         return Err(Unkept::TooLong);
     }
-    if let Some(what) = endora_kernel::secrets::scan_outbound_secret(&lesson) {
+    if let Some(what) = endora_kernel::secrets::secret_in(&lesson) {
         return Err(Unkept::Secret(what));
     }
     Ok(lesson)
@@ -201,6 +201,21 @@ mod tests {
             Err(Unkept::Secret("a GitHub token"))
         );
         assert_eq!(kept(&list, " ... "), Err(Unkept::Empty));
+    }
+
+    #[test]
+    fn a_lesson_naming_a_secret_or_carrying_a_bearer_token_is_refused() {
+        for lesson in [
+            "Set DB_PASSWORD=hunter2 before the migration.",
+            "Send Authorization: Bearer abc123def456 to the API.",
+            "Clone from https://jane:hunter2@git.example.com/repo.",
+        ] {
+            assert!(
+                matches!(checked(lesson), Err(Unkept::Secret(_))),
+                "{lesson}"
+            );
+        }
+        assert!(checked("Pass the token through the vault, never inline.").is_ok());
     }
 
     #[test]
