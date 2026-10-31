@@ -28,4 +28,3 @@ Feature: The engineering wing and the git flow
     Then Sam's model is "Local"
     When the owner hires Second as a ceo
     Then it is not refused
-
