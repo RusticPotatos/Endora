@@ -267,15 +267,45 @@ function hqInFlight(s) {
 // The money (Manage tab): today's pool with its top-up, which figure today's base is and why
 // (sized from the Claude credit, or the floor: ADR 0113, amended 2026-10-31), and what is left
 // with each paid provider; the credits and their thresholds are set up in Settings → AI.
+//
+// What each model cost (the owner, 2026-10-31) folds under the pool, with the way to AI's
+// credits: the Manage tab is at its budget of rows, so the top-up sits at the end of the pool's
+// line rather than on a row of its own, and the fold's one line takes that row's place.
 function hqMoneyCard(s) {
   const pool = s.pool || {}, credits = hqCreditChips();
   const left = pool.per_day == null ? null : Math.max(0, pool.per_day - (pool.committed || 0));
   const topUp = s.scorecard && s.scorecard.pool ? `<button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button>` : "";
   if (left == null && !credits.length && !topUp) return "";
+  const toAi = `<button class="hq-link" data-act="go:models">Credits and thresholds in AI</button>`;
+  const byModel = hqByModel(s.scorecard && s.scorecard.by_model, toAi);
+  const line = left == null ? (topUp ? `<p class="hq-who">${topUp}</p>` : "")
+    : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}${pool.sized && pool.sized.why ? `<br><span class="hq-note">${esc(pool.sized.why)}</span>` : ""} ${topUp}</p>`;
   return `<section class="hq-card"><h2>Money</h2>
-    ${left == null ? "" : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}${pool.sized && pool.sized.why ? `<br><span class="hq-note">${esc(pool.sized.why)}</span>` : ""}</p>`}
+    ${line}
     ${credits.length ? `<div class="hq-chips">${credits.join("")}</div>` : ""}
-    <div class="hq-row">${topUp}<button class="hq-link" data-act="go:models">Credits and thresholds in AI</button></div></section>`;
+    ${byModel || `<div class="hq-row">${toAi}</div>`}</section>`;
+}
+
+// What each model cost (the owner, 2026-10-31), as HQ's scorecard computed it: a row per brain a
+// turn ran on, the most spent first, with the owner's last 7 days, the 7 before and which way it
+// went. Each week is one cell, its spend over its turns, cost a turn and share of that week's
+// spend, so the table is four columns and wraps on a phone. One line until tapped; `after` is
+// markup to end it with once open. "" without a table.
+function hqByModel(t, after) {
+  if (!t || !Array.isArray(t.rows)) return "";
+  const perTurn = (m) => (m === 0 ? "$0" : "$" + (m / 1e6).toFixed(3));
+  const spent = (m) => (m ? hqDollars(m) : "$0");
+  const week = (w) => {
+    if (!w || !w.turns) return `<td class="n"><small>no turns</small></td>`;
+    return `<td class="n">${spent(w.spent)}<small>${w.turns}&nbsp;${w.turns === 1 ? "turn" : "turns"} · ${w.per_turn == null ? "—" : perTurn(w.per_turn)}&nbsp;a&nbsp;turn${w.spent ? ` · ${Number(w.share)}%` : ""}</small></td>`;
+  };
+  const marks = { up: "↑", down: "↓", same: "=" };
+  const rows = t.rows.map((r) => `<tr><th scope="row">${esc(hqBrainTag(r.brain))}</th>${week(r.now)}${week(r.before)}
+    <td title="${r.trend === "same" ? "the same as" : esc(String(r.trend))} on the week before">${marks[r.trend] || ""}</td></tr>`).join("");
+  const body = `${rows ? `<table class="hq-board hq-cost"><thead><tr><th scope="col">Model</th><th scope="col" class="n">7 days</th><th scope="col" class="n">7 before</th><th scope="col" aria-label="Trend"></th></tr></thead>
+    <tbody>${rows}</tbody></table>` : `<p class="hq-empty">No turns in the last two weeks.</p>`}
+    <div class="hq-row">${after}</div>`;
+  return `<ul class="hq-lines hq-by-model">${hqOpenRow("bymodel", "By model", `${spent((t.now || {}).spent)} in 7 days · ${spent((t.before || {}).spent)} the 7 before`, body)}</ul>`;
 }
 
 // What went wrong lately (Health tab): the team's recent turns that did not succeed, each
@@ -1830,7 +1860,7 @@ function viewHQ() {
 // What a member thinks with, in a word for the roster line.
 function hqBrainTag(brain) {
   const b = String(brain || "local");
-  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b === "mac" ? "Mac" : "Local";
+  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b.includes("deepseek") ? "DeepSeek" : b === "mac" ? "Mac" : "Local";
 }
 
 // A member's two brains (ADR 0131), in a few words: "Work: Mac · Judgment: Sonnet".

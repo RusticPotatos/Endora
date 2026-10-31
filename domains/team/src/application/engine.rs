@@ -3693,7 +3693,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| !downtime.contains(&r.wake))
             .cloned()
             .collect();
-        let scorecard = self.scorecard(&worked, &tasks, day)?;
+        let scorecard = self.scorecard(&worked, &every_run, &tasks, day)?;
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
@@ -3876,8 +3876,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The scorecard ("How the team is doing"), for today and the last seven days by the
     /// owner's day boundaries, over every run, task, desk item and event the store keeps. The
     /// feed is pruned by the node, so each window says where the record starts when that is
-    /// later than the window does.
-    fn scorecard(&self, runs: &[Run], tasks: &[Task], day: i64) -> Done<serde_json::Value> {
+    /// later than the window does. `every_run` is every turn, downtime's too: what each model
+    /// cost counts every turn that ran, work or not.
+    fn scorecard(
+        &self,
+        runs: &[Run],
+        every_run: &[Run],
+        tasks: &[Task],
+        day: i64,
+    ) -> Done<serde_json::Value> {
         let desk = self.store.desk()?;
         // A lead's report and patterns turns are not work on the scorecard (ADR 0120).
         let reports = self.report_task_ids()?;
@@ -3911,6 +3918,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "pool": { "base": self.pool_sized_today()?.base,
                       "floor": money::pool_a_day(self.settings.pool_per_month),
                       "topped_up": self.topup_of(day)? },
+            // What each model cost, the owner's last seven days against the seven before (the
+            // owner, 2026-10-31): shown on the Money card.
+            "by_model": scorecard::by_model_shown(every_run, day, offset),
             // Each team's seats, at work and on furlough (ADR 0118).
             // Each area's measures, today and the last seven days (ADR 0120).
         }))

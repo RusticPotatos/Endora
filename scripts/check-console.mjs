@@ -649,7 +649,19 @@ if (failures.length) {
             memory: { reinvented: 0, record_asked: 0, consults: { asked: 0, answered: 0, from_record: 0 } } },
           waiting: { budget: 2, mac: 1, cap: 0, oldest_ms: 540000 }, talk_at: 3600000 },
         // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
-        pool: { base: 2333333, topped_up: 2333333 } },
+        pool: { base: 2333333, topped_up: 2333333 },
+        // What each model cost (the owner, 2026-10-31): round 2's hand-built table as this week,
+        // with a quieter week before it.
+        by_model: {
+          now: { from: -518400000, until: 86400000, turns: 315, spent: 8330000, per_turn: 26444 },
+          before: { from: -1123200000, until: -518400000, turns: 40, spent: 900000, per_turn: 22500 },
+          rows: [
+            { brain: "claude-sonnet-5-5", trend: "up", now: { turns: 36, spent: 4130000, per_turn: 114722, share: 50 }, before: { turns: 6, spent: 700000, per_turn: 116666, share: 78 } },
+            { brain: "claude-opus-5-5", trend: "up", now: { turns: 10, spent: 2360000, per_turn: 236000, share: 28 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } },
+            { brain: "deepseek-flash", trend: "up", now: { turns: 121, spent: 1310000, per_turn: 10826, share: 16 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } },
+            { brain: "claude-haiku-5-5", trend: "down", now: { turns: 88, spent: 530000, per_turn: 6022, share: 6 }, before: { turns: 34, spent: 200000, per_turn: 5882, share: 22 } },
+            { brain: "local", trend: "up", now: { turns: 60, spent: 0, per_turn: 0, share: 0 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } },
+            { brain: "mac", trend: "down", now: { turns: 0, spent: 0, per_turn: null, share: 0 }, before: { turns: 0, spent: 0, per_turn: null, share: 0 } }] } },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -780,6 +792,25 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the scorecard does not show the top-up (${said})`);
   }
   if (office.includes("Top up the pool first")) fail("hq: the out-for-the-day card offers a top-up while the pool has money");
+  // What each model cost (the owner, 2026-10-31): a small table on the Money card, one line until
+  // tapped, each brain by the name the roster gives it, the two weeks' figures in cells that wrap
+  // on a phone, and which way it went.
+  {
+    const money = office.split("<h2>Money</h2>")[1].split("</section>")[0];
+    if (!money.includes('data-act="hq:more:bymodel:toggle"><b>By model</b> <small>$8.33 in 7 days · $0.90 the 7 before</small>')) fail("hq: the Money card's cost by model line does not give the two weeks' totals");
+    if (money.includes("<table")) fail("hq: the cost by model is open at rest");
+    const table = runInContext(`(() => { HQ.more.bymodel = true; const html = hqMoneyCard(HQ.snap); delete HQ.more.bymodel; return html; })()`, context);
+    const rows = [...table.matchAll(/<tr><th scope="row">([^<]+)<\/th>/g)].map((m) => m[1]);
+    if (rows.join() !== "Sonnet,Opus,DeepSeek,Haiku,Local,Mac") fail(`hq: the cost by model's rows are ${rows.join()}`);
+    for (const said of ["$4.13<small>36&nbsp;turns · $0.115&nbsp;a&nbsp;turn · 50%</small>", "$0.70<small>6&nbsp;turns · $0.117&nbsp;a&nbsp;turn · 78%</small>",
+      "$0<small>60&nbsp;turns · $0&nbsp;a&nbsp;turn</small>", "<small>no turns</small>", 'title="up on the week before">↑', 'title="down on the week before">↓']) {
+      if (!table.includes(said)) fail(`hq: the cost by model does not show ${said}`);
+    }
+    if (/<td[^>]*>[^<]*NaN|undefined/.test(table)) fail("hq: the cost by model shows NaN or undefined");
+    if (!money.includes('data-act="hq:pool:topup:go">Top up today</button>')) fail("hq: the Money card lost its top-up");
+    const old = runInContext(`(() => { const t = HQ.snap.scorecard.by_model; delete HQ.snap.scorecard.by_model; const html = hqMoneyCard(HQ.snap); HQ.snap.scorecard.by_model = t; return html; })()`, context);
+    if (old.includes("hq-by-model") || !old.includes('data-act="go:models"')) fail("hq: an HQ without the cost by model loses the way to AI's credits");
+  }
   {
     const spent = runInContext(`(() => { const p = HQ.snap.pool, keep = p.committed; p.committed = p.per_day;
       const t = HQ.snap.scorecard.pool; const kept = t.topped_up; t.topped_up = 0;

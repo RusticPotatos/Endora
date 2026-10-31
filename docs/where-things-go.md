@@ -55,7 +55,8 @@ Settings.
   (where every device opens: giving work, your desk, the digest of what happened while you were
   away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
   **Manage** (what you own and set: projects and their loops, routines, goals and their notes,
-  the team and hiring, the money and credits, what the team may do on the home lab, what the
+  the team and hiring, the money and credits (with what each model cost by week, a fold on the
+  Money card), what the team may do on the home lab, what the
   team knows — the world's pages and the house — and the office with its games), **Health** (how
   the team and the lab are doing: the Mac and its busy switch, the scorecard and outcomes, the
   turns that failed with a link to the Home lab, and the live activity). The office animation
