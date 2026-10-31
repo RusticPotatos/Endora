@@ -517,7 +517,7 @@ yet**: its window starts when the owner runs the fork's playbook (D11), and it j
 | # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
 |---|---|---|---|---|---|---|
 | 1 | 947 | | | | | |
-| 2 | 948 | | | | | |
+| 2 | 948 | Yes (all 39 defaults with exact values against `defaults/main.yml`; ports and the VPN rule match the tasks; lint the same as develop, 14 and 6; pushed by delivery as `hq/task-948-role-readmes`, its privacy scan clean; rechecked by the round judge) | $0.36 (two thirds after it was ready, see D17) | 32 min | 0 | |
 | 3 | 949 | | | | | |
 | 4 | 950 | | | | | |
 | 5 | 951 | | | | | |
@@ -623,6 +623,15 @@ done. Defects are numbered so the next round's changes can name them.
   runaway; for a free model a loop that keeps failing is what should stop it, not the count.
 - [ ] **D16. The top-up refusal names a figure it then refuses.** HQ said "$2.84 may still be
   added today" and refused $2.84; $2.83 went through. The room is rounded up when said.
+
+- [ ] **D17. Refused wakes during review count as failures, and climb the item.** Round 3, 948:
+  after it was ready at 13:30, wakes HQ refused because the item was in review were counted as
+  failures 1 to 3, so the item climbed to Kit (Sonnet) and then Mara (Opus), who only re-checked
+  the same head. $0.24 of its $0.36 came after it was ready, and the reviews went above Haiku's
+  rank despite the cap (D7).
+- [ ] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
+  948: Rae's turns ended at the budget without keeping work in progress (D12's fix), and the item
+  moved only once it reached Ada. Check why the worker kept no work on these turns.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
