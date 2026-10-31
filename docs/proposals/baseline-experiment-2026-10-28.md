@@ -419,7 +419,13 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 | 9 | 936 | No (blocked honestly: the sandbox is offline and `repo_checkout` refuses `main`, so upstream could not be read (D13); nothing pushed or merged) | $0.16 | blocked at 09:31 | 1 | |
 | 10 | 937 | Yes (rule `nas-secret-default` in `tests/lint_rules` with fixtures and tests: a literal fails, a vault reference and an empty default pass; rechecked, 12 tests pass; on `warn_list`, so it reports today's 29 offenders as warnings while ansible-lint's failures stay develop's 14; no new yamllint findings; pushed as `hq/task-937-secret-defaults`. Over twelve turns lost to the budget first (D12); finished by Mara) | $3.34 | 651 min (about four of them waiting on the day's pool) | 1 | |
 
-**Where round 2 stands (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
+**Round 2's result (31 Oct, 10:00 EDT): 7 of 10 accepted** (round 1: 3; round 0: 1; Claude
+Code: 10). 7 interventions, $7.93 on the ten tasks; the owner topped up the day's pool twice
+($6.66). The three not accepted: 932 lacked a CI run it could not trigger (D6); 938's window has
+left the logs and cannot be met by any later round; 936 could not read upstream (D13). The
+paragraphs below were written at 03:30, part-way:
+
+**Where round 2 stood (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
 and stopped on money.** The day's pool (about $3.33, the $100 a month over 30 days) was spent by
 02:44: $2.97 on round 2 (Kit's reviews $1.30, Rae $0.85, Mara's reviews $0.60, Ada $0.22; Bo free)
 and $0.19 on league chess. Every open item's next turn waits for the budget, which comes back at
@@ -440,7 +446,7 @@ counted as an intervention:
 | Claude Code (28 Oct) | 10 | 0 | tokens only | the bar |
 | Round 0, HQ (28 Oct) | 1 | many | | blocked by missing tools, restarts on a read-only task |
 | Round 1, HQ (30 Oct) | 3 | 7 counted | | one item at a time; five tasks never started |
-| Round 2, HQ (30–31 Oct) | 2 so far, 6 open | 5 so far | $2.97 by 03:30 | items side by side; two READMEs accepted in 142 min each (round 1: 82 and 461 min) |
+| Round 2, HQ (30–31 Oct) | **7** | 7 | $7.93 on the ten tasks | items side by side; the registry tool; all ten judged by 10:00 on 31 Oct, about 11 hours in, four of them waiting on the day's pool |
 
 What round 2 shows already, by the evidence:
 - **Side by side works.** Six of ten tasks were worked within four hours; round 1 started five
@@ -454,6 +460,34 @@ What round 2 shows already, by the evidence:
   workflow runs on push only for main and develop, so no run came, and HQ never noticed.
 - **Questions are still the house model's habit.** Bo put its finished 935 finding on the desk
   as a question twice instead of asking for review.
+
+### Round 3, proposed (31 Oct, for the owner)
+
+Round 2 reached 7 of 10. Of the three left, one can no longer be met by any round, so 10 of 10
+needs a decision about task 8 first.
+
+**Built and gated on the local branch `round3-local`** (2,171 unit tests, 110 scenarios):
+- D1, D4: a model change keeps a member able to start; a checkout brings `image_tags`.
+- D2, D3, D10: what wakes an item (a never-started turn is retried, a blocked item wakes nobody,
+  one question per item).
+- D9: the day's pool sized from the Claude credit left and the days to its renewal.
+- D12, in progress: a long item reads the newest handover and keeps its work across turns.
+
+**For the owner to decide:**
+1. **Task 8 (gluetun's restart).** Its window ended 29 Oct and has left the logs, so no round can
+   pass it. Proposed: switch the restart timer off for a fresh window and run task 8 again in
+   both arms with that window's date; until then the bar is 9.
+2. **D7, reviews.** Sonnet and Opus reviews were most of the cost. Proposed: the member one rank
+   up reviews, but never above Haiku unless the work came from Haiku or above; HQ's mechanical
+   checks carry the rest.
+3. **D6, CI.** Proposed: the fork's workflow also runs on `hq/*` branches (a fork change, made
+   when the rounds end and develop may move), and until then HQ says when a CI criterion cannot
+   be met rather than finishing without it.
+4. **D13, upstream.** Proposed: a read-only mirror of upstream ansible-nas on the node that
+   `repo_checkout` may check out, so 936 can be done.
+5. **The rest of round 2's review fixes, the stable prompt opening with a lessons list, and the
+   owner's scenarios for round 2's changes** were left part-done by their agents; they are
+   restarted and join `round3-local` before release.
 
 ## Open issues and next steps (kept current)
 
