@@ -459,6 +459,14 @@
   .hq-board { width: 100%; border-collapse: collapse; }
   .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
   .hq-board td.n { text-align: right; }
+  /* What each model cost, on the Money card: each week's cell is its spend over a line of its
+     turns, cost a turn and share, so four columns fit a phone and wrap rather than scroll. */
+  .hq-by-model { margin-top: 8px; }
+  .hq-cost { margin-top: 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .hq-cost th.n { text-align: right; }
+  .hq-cost td, .hq-cost th { vertical-align: top; padding: 3px 6px; }
+  .hq-cost tbody th { font-weight: 600; }
+  .hq-cost small { display: block; color: var(--hq-muted); font-size: 12px; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
   /* A phone: the office is a thin strip until the owner opens it, so the desk is first on
      screen; the tabs sit straight under the top bar. */
