@@ -81,20 +81,20 @@ const HQ_ROOMS = {
 const HQ_MEETING = {
   table: { x: 12, y: 16 },
   head: hqAt(12, 16, { room: "meeting", dir: "down" }),
-  chairs: [hqAt(12, 18, { room: "meeting", dir: "up" }), hqAt(13, 18, { room: "meeting", dir: "up" })],
+  chairs: [hqAt(12, 18, { room: "meeting", dir: "up", sit: "chair" }), hqAt(13, 18, { room: "meeting", dir: "up", sit: "chair" })],
 };
 // The CEO's desk in its own office, where it works, and the sofa where it rests.
 const HQ_CEO = {
   desk: { x: 21, y: 3 },
   work: hqAt(22, 3, { room: "ceo", dir: "down", desk: true }),
-  rest: hqAt(25, 5, { room: "ceo", dir: "down" }),
+  rest: hqAt(25, 5, { room: "ceo", dir: "down", sit: "couch" }),
 };
 // Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
 // ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
 // from what stands on the floor now (`hqWanderSpots`).
 const HQ_WANDER = [
   hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
-  hqAt(26, 18, { dir: "up" }), hqAt(27, 18, { dir: "up" }), hqAt(17, 17, { dir: "up" }),
+  hqAt(26, 18, { dir: "up", sit: "chair" }), hqAt(27, 18, { dir: "up", sit: "chair" }), hqAt(17, 17, { dir: "up" }),
   // The pool table's two sides and the chess table's two seats: two idle members at a pair play.
   hqAt(29, 17, { dir: "up", pool: "L" }), hqAt(31, 17, { dir: "up", pool: "R" }),
   hqAt(23, 16, { dir: "down", chess: "W" }), hqAt(23, 18, { dir: "up", chess: "B" }),
@@ -601,7 +601,8 @@ function hqTeams(members) {
 // The pods and the seats (ADR 0119): one pod for each team, side by side from the left of the
 // open floor with no walls between, each a cluster of desks two to a row, a desk for every
 // member of the team. A desk is three tiles by two; between the two desks of a row is an
-// aisle where their members stand facing each other, one above the other's visitors. A pod
+// aisle where their members sit, each on a chair at its own desk's end, facing its computer
+// (the owner: "stands next to an empty desk"), back to back with the other. A pod
 // that would not fit in the row starts a new one below; none ever leaves the band the rules
 // of the office keep clear. Everything comes from the members: no name is in this.
 function hqLayout(members) {
@@ -624,12 +625,14 @@ function hqLayout(members) {
     team.people.forEach((m, i) => {
       const col = i % cols, row = Math.floor(i / cols);
       const dx = x + col * (P.desk.w + P.aisle), dy = top + row * P.desk.h;
-      const stand = cols === 1 ? dx + P.desk.w : col === 0 ? dx + P.desk.w : dx - 1;
-      const dir = cols === 1 ? "down" : col === 0 ? "right" : "left";
+      // Which end of the desk its member sits at: the aisle's, facing the desk.
+      const side = cols === 1 || col === 0 ? "right" : "left";
+      const stand = side === "right" ? dx + P.desk.w : dx - 1;
+      const dir = side === "right" ? "left" : "right";
       seats[m.id] = {
-        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id },
+        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id, side },
         // A visitor stands on the desk's outer side, away from where its member sits.
-        work: hqAt(stand, dy + 1, { dir, desk: true }),
+        work: hqAt(stand, dy + 1, { dir, desk: true, sit: "desk" }),
         visit: cols === 1 || col === 0 ? hqAt(dx - 1, dy + 1, { dir: "right" }) : hqAt(dx + P.desk.w, dy + 1, { dir: "left" }),
         pod: pods.length,
       };
@@ -758,7 +761,7 @@ function hqCalm() {
 function hqWanderSpots() {
   const spots = HQ_WANDER.slice();
   for (const it of hqItems()) {
-    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down" }), hqAt(it.x + 1, it.y, { dir: "down" }));
+    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down", sit: "couch" }), hqAt(it.x + 1, it.y, { dir: "down", sit: "couch" }));
     else if (it.kind === "bean_bag") spots.push(hqAt(it.x, it.y, { dir: "down" }));
     else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
   }
@@ -1055,7 +1058,10 @@ function hqFurniture() {
   for (const pod of HQ.pods) {
     for (const d of pod.desks) {
       f("DESK_FRONT", d.x * T, d.y * T);
-      f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pcOf: d.member });
+      // The computer at the end its member sits at, and the member's chair beside it, in the aisle.
+      f("PC_FRONT_OFF", d.x * T + (d.side === "left" ? 4 : (d.w - 1) * T - 4), d.y * T - 6, { lift: 0.5, pcOf: d.member });
+      const cx = d.side === "left" ? d.x - 1 : d.x + d.w, cy = d.y + 1;
+      out.push({ base: (cy + 0.5) * T - 0.5, draw: (g) => hqDeskChair(g, cx, cy, d.side === "left" ? "right" : "left") });
       const away = members.find((x) => x.id === d.member && x.furloughed);
       if (away) out.push({ base: d.y * T + 33, draw: (g) => hqAwayCard(g, d) });
     }
@@ -1088,6 +1094,16 @@ function hqFurniture() {
     out.push({ base: (it.y + it.h) * T, item: it, draw: (g) => hqDrawItem(g, it) });
   }
   return out;
+}
+
+// A desk chair seen from the side, in a cell of the aisle, for someone facing `dir` (towards the
+// desk): the seat under them and the back behind them. Drawn just before whoever sits on it.
+function hqDeskChair(g, cx, cy, dir) {
+  const x = cx * HQ_T, y = cy * HQ_T, back = dir === "left" ? x + 13 : x + 1, seat = dir === "left" ? x + 5 : x + 3;
+  g.fillStyle = HQ_C.shadow; g.fillRect(x + 3, y + 5, 10, 2);
+  g.fillStyle = "#3b4048"; g.fillRect(seat + 3, y + 1, 2, 5); g.fillRect(seat, y + 5, 8, 1);
+  g.fillStyle = "#4f7f6a"; g.fillRect(seat, y - 2, 8, 3); g.fillRect(back, y - 12, 2, 11);
+  g.fillStyle = "#6aa186"; g.fillRect(seat, y - 2, 8, 1); g.fillRect(back, y - 12, 2, 1);
 }
 
 // The card on an empty desk: its member is away on furlough (ADR 0118), and keeps the desk.
@@ -1163,8 +1179,18 @@ function hqFrame(p) {
   const pool = hqPool(), chess = hqChessPair();
   if (pool && pool.includes(p)) return { dir, frame: Math.floor(HQ.t / 2 + (at.pool === "L" ? 0 : 1)) % 2 ? 3 : 0 };
   if (chess && chess.includes(p)) return { dir, frame: 5 + (Math.floor(HQ.t * 1.5) % 2) };
-  return { dir, frame: p.paused ? 1 : 0 };
+  return { dir, frame: hqSits(p) ? 3 : p.paused ? 1 : 0 };
 }
+
+// What a member is sitting on, if anything: a couch, a chair or its desk's chair, once there.
+function hqSits(p) { return !p.path.length && p.at && p.at.sit ? p.at.sit : ""; }
+// How far down a seated member is drawn from where they would stand: on a couch, into its seat,
+// in front of its back (the owner saw people standing behind the sofas).
+const HQ_SIT_DY = { couch: 6, chair: 0, desk: 0 };
+function hqSitDy(p) { return HQ_SIT_DY[hqSits(p)] || 0; }
+// Where a member falls in the drawing's depth order: by their feet, and someone on a couch just
+// after it, so they sit in front of its back rather than behind it.
+function hqDepth(p) { return hqSits(p) === "couch" ? (p.at.cy + 1) * HQ_T + 0.5 : p.y + 16 + hqSitDy(p); }
 
 // When idle, who says what.
 const HQ_IDLE = { researcher: "zZ", reviewer: "heads down", lead: "", developer: "" };
@@ -1224,7 +1250,7 @@ function hqDraw() {
   // People and furniture, in depth order.
   const people = Object.values(HQ.people);
   const items = HQ_FURN.map((f) => ({ base: f.base, f }));
-  for (const p of people) items.push({ base: p.y + 16, p });
+  for (const p of people) items.push({ base: hqDepth(p), p });
   items.sort((a, b) => a.base - b.base);
   for (const it of items) {
     if (it.p) { hqDrawPerson(ctx, it.p); continue; }
@@ -1241,7 +1267,7 @@ function hqDraw() {
   ctx.font = HQ_PIXEL;
   for (const p of people) {
     const name = String(p.name || "").toUpperCase(), at = p.at || {}, w = Math.ceil(ctx.measureText(name).width);
-    const x = at.desk && at.dir === "right" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "left" ? Math.round(p.x) : Math.round(p.x) + 1;
+    const x = at.desk && at.dir === "left" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "right" ? Math.round(p.x) : Math.round(p.x) + 1;
     ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(name, x, Math.round(p.y) + 24);
   }
   // Decisions waiting on the board room table.
@@ -1317,8 +1343,8 @@ function hqBubble(ctx, p) {
 const HQ_BUBBLE_W = 124;
 
 function hqDrawPerson(ctx, p) {
-  const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y);
-  ctx.fillStyle = HQ_C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3);
+  const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y) + hqSitDy(p);
+  if (!hqSits(p)) { ctx.fillStyle = HQ_C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3); }
   if (img) {
     const { dir, frame } = hqFrame(p), row = dir === "up" ? 1 : dir === "down" ? 0 : 2;
     if (dir === "left") { ctx.save(); ctx.translate(x + 16, 0); ctx.scale(-1, 1); ctx.drawImage(img, frame * 16, row * 32, 16, 32, 0, y - 16, 16, 32); ctx.restore(); }

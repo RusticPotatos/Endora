@@ -1345,8 +1345,9 @@ if (failures.length) {
     const every = layout.pods.flatMap((p) => p.desks.map((d) => `${d[0]},${d[1]}`));
     if (new Set(every).size !== every.length) fail("hq: two members share a desk");
     if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
-    // Two to a row, standing in the aisle between their desks, facing each other.
-    if (layout.seats[1].work.join() !== "8,9,right" || layout.seats[2].work.join() !== "9,9,left") fail(`hq: the two of a row do not face each other: ${layout.seats[1].work} ${layout.seats[2].work}`);
+    // Two to a row, each sitting in the aisle at its own desk's end, facing its computer (the
+    // owner saw a member at work standing beside an empty desk).
+    if (layout.seats[1].work.join() !== "8,9,left" || layout.seats[2].work.join() !== "9,9,right") fail(`hq: the two of a row do not sit facing their own desks: ${layout.seats[1].work} ${layout.seats[2].work}`);
     // The teams are the snapshot's: a third lead is a third pod, a fourth that will not fit goes below, none leaves the band.
     const grown = runInContext(`(() => {
       const members = HQ.snap.members.concat([{ id: 9, name: "Ned", role: "lead", reports_to: 5 }, { id: 10, name: "Pia", role: "developer", reports_to: 9 }]);
@@ -1405,6 +1406,25 @@ if (failures.length) {
       const world = runInContext(`(() => { const b = HQ.world.blocked, [first, , , last] = HQ.pods[0].desks, w = HQ.seats[1].work;
         return [b.has("8,3"), b.has("17,18"), b.has("18,18"), !b.has("11,4"), b.has(first.x + "," + first.y), b.has(last.x + "," + last.y), b.has("22,3"), !b.has(w.cx + "," + w.cy)]; })()`, context);
       if (world.some((ok) => !ok)) fail(`hq: the floor's things and desks are not what blocks the way: ${world}`);
+      // A member sits where it rests and works (the owner saw people standing behind the sofas
+      // and beside an empty desk): on a couch it is drawn in front of the couch, seated; at work
+      // its computer is on the desk's end where it sits, its chair beside it.
+      const seated = runInContext(`(() => {
+        HQ_IMG.PC_FRONT_OFF = { width: 16, height: 32 };
+        const furn = hqFurniture(); delete HQ_IMG.PC_FRONT_OFF;
+        const couch = furn.find((f) => f.item && f.item.kind === "couch");
+        const spot = hqWanderSpots().find((s) => s.sit === "couch");
+        const p = { x: spot.x * HQ_T, y: spot.y * HQ_T, path: [], at: spot, working: false };
+        const pcs = furn.filter((f) => f.pcOf !== undefined), desks = HQ.pods[0].desks;
+        const pcOf = (id) => pcs.find((f) => f.pcOf === id), deskOf = (id) => desks.find((d) => d.member === id);
+        const work = (id) => HQ.seats[id].work;
+        return [hqSits(p) === "couch", hqDepth(p) > couch.base, hqFrame(p).frame === 3,
+          // Ada's desk is on the left of the aisle, Bo's on the right: each one's computer at the aisle end.
+          pcOf(1).x >= (deskOf(1).x + 1.5) * HQ_T, pcOf(2).x < (deskOf(2).x + 1.5) * HQ_T,
+          work(1).sit === "desk" && work(1).cx === deskOf(1).x + 3 && work(2).cx === deskOf(2).x - 1,
+          furn.filter((f) => f.draw && !f.item && !f.key).length >= desks.length];
+      })()`, context);
+      if (seated.some((ok) => !ok)) fail(`hq: a member does not sit on the couch, or at its own desk by its computer: ${seated}`);
       // Nobody walks through glass or furniture: from the ping-pong table to Mara's desk, in by
       // her open door; to the head of the meeting table, in by its door.
       const paths = runInContext(`(() => {
