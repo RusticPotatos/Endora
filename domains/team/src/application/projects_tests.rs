@@ -515,10 +515,19 @@ fn a_list_naming_the_team_narrows_the_node_and_keeps_each_members_own_tools() {
     for own in ["create_task", "ask_owner", "post", "set_status"] {
         assert!(offered.iter().any(|t| t == own), "{own} kept: {offered:?}");
     }
+    // And the read-only lookup that goes with a checkout (round 2, 31 Oct: the ansible-nas
+    // loop's members never found image_tags, which its list did not name).
+    let mut given = list.clone();
+    given.push("image_tags".to_owned());
     assert_eq!(
         hq.lab_tools_of(run.id).unwrap(),
+        Some(given),
+        "the node offers its listed contracts and what goes with them alone"
+    );
+    assert_eq!(
+        hq.project_tools(cleanup).unwrap(),
         Some(list),
-        "the node offers its listed contracts alone"
+        "the owner's list is kept as the owner wrote it"
     );
     assert!(hq.may_use_a_shell(run.id).unwrap(), "the shell, as listed");
     use_tool(&hq, &context, "claim", &json!({ "task": work.0 })).unwrap();

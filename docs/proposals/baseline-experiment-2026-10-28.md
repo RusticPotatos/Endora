@@ -462,16 +462,21 @@ done. Defects are numbered so the next round's changes can name them.
 
 ### Defects found in round 2, not yet fixed
 
-- [ ] **D1. A model change can leave a member unable to start.** Rae was moved to DeepSeek with
+- [x] **D1. A model change can leave a member unable to start.** Rae was moved to DeepSeek with
   the runtime still Claude Code; every turn failed from 21:18 to 00:2x. HQ should refuse a model
-  whose runtime the runner cannot start, or set the runtime with it.
+  whose runtime the runner cannot start, or set the runtime with it. *Fixed on `r3-setup-safety`:
+  Claude Code is a developer's on Claude alone (not DeepSeek), a model change it cannot run moves
+  the member to the worker and says so, and Claude Code is refused for such a model (ADR 0117,
+  amended 2026-10-31).*
 - [ ] **D2. A failed start does not wake the item's holder again.** Rae's items sat until a note
   on each thread at 00:47.
 - [ ] **D3. A blocked item at the top rank keeps waking its member.** Kit was woken on 938 about
   every 11 minutes after it was blocked and judged, about $0.39; set aside by hand.
-- [ ] **D4. A released tool is not offered until a loop lists it.** `image_tags` shipped but was
+- [x] **D4. A released tool is not offered until a loop lists it.** `image_tags` shipped but was
   not in the ansible-nas loop's tools until 02:2x. A new contract should reach the loops that
-  can use it, or the release check should say which loops lack it.
+  can use it, or the release check should say which loops lack it. *Fixed on `r3-setup-safety`:
+  a listed `repo_checkout` brings the read-only `image_tags` with it (ADR 0113, amended
+  2026-10-31).*
 - [ ] **D5. The NAS's model posts finished work as a desk question** instead of asking for
   review (935, twice; 938, once).
 - [ ] **D6. HQ cannot get a CI run on its branches and does not notice.** The fork's workflow

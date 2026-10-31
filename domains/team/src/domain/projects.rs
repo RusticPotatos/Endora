@@ -377,10 +377,62 @@ pub const SHELL: &str = "shell";
 /// local model is spared the rest. Without it a list gives HQ's four alone, as a scenario needs.
 pub const TEAM: &str = "team";
 
+/// The read-only lookups that go with a tool on a project's list: listed, the tool brings them
+/// (ADR 0113, amended 2026-10-31). Round 2 (31 Oct): the node's `image_tags` shipped, but the
+/// ansible-nas loop's list named `repo_checkout` and not it, so its members never found it and
+/// asked the owner which tags exist. Only reads go here, and only where the tool's own work
+/// needs them: work on the fork pins images to tags that exist. A read gives a read-only task
+/// nothing to change the lab with, and the lab's acts are refused it as before.
+pub const COMES_WITH: [(&str, &[&str]); 1] = [("repo_checkout", &["image_tags"])];
+
+/// What a project's list gives its work: the list as the owner wrote it, then what comes with
+/// its tools ([`COMES_WITH`]), each once. An empty list stays empty.
+#[must_use]
+pub fn tools_given(list: &[String]) -> Vec<String> {
+    let mut given = list.to_vec();
+    for (tool, with) in COMES_WITH {
+        if !list.iter().any(|t| t == tool) {
+            continue;
+        }
+        for read in with {
+            if !given.iter().any(|g| g == read) {
+                given.push((*read).to_owned());
+            }
+        }
+    }
+    given
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::money::POOL_PER_MONTH;
+
+    #[test]
+    fn a_checkout_brings_the_image_lookup_and_nothing_else_does() {
+        let list = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            tools_given(&list(&[TEAM, SHELL, "repo_checkout", "repo_submit"])),
+            list(&[TEAM, SHELL, "repo_checkout", "repo_submit", "image_tags"])
+        );
+        assert_eq!(
+            tools_given(&list(&["repo_checkout", "image_tags"])),
+            list(&["repo_checkout", "image_tags"]),
+            "once"
+        );
+        assert_eq!(
+            tools_given(&list(&["homelab_status", "container_logs"])),
+            list(&["homelab_status", "container_logs"])
+        );
+        assert!(tools_given(&[]).is_empty(), "a scenario's empty list");
+        // Only reads come with a tool: never one of the lab's acts, nor a submission.
+        for (_, with) in COMES_WITH {
+            for read in with {
+                assert!(!super::super::deploy::LAB_ACTS.contains(read), "{read}");
+                assert_ne!(*read, "repo_submit");
+            }
+        }
+    }
 
     #[test]
     fn a_lead_or_the_ceo_leads_a_project_and_only_a_lead_proposes_one() {

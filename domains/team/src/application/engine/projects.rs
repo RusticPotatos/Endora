@@ -458,7 +458,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ))
     }
 
-    /// The project a turn's work is in and the tools it gives that work, if it narrows them.
+    /// The project a turn's work is in and the tools it gives that work, if it narrows them:
+    /// its list and the read-only lookups that come with the list's tools
+    /// ([`projects::tools_given`]).
     pub(super) fn project_tools_of_run(&self, run: RunId) -> Done<Option<(Project, Vec<String>)>> {
         let task = self.store.run(run)?.and_then(|r| r.task);
         let Some(id) = self.project_of(task)? else {
@@ -467,7 +469,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(tools) = self.project_tools(id)? else {
             return Ok(None);
         };
-        Ok(Some((self.project(id)?, tools)))
+        Ok(Some((self.project(id)?, projects::tools_given(&tools))))
     }
 
     /// Why a turn on a narrowed project's work is refused one of HQ's tools, if it is: any

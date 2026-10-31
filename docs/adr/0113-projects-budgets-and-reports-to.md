@@ -236,6 +236,21 @@ project, which reads and acts only through its own tool. The list is kept as a s
 (`project_tools:<id>`), so nothing in the store's tables changes. Not built yet: a field for it
 on the owner's screen.
 
+## Amendment (2026-10-31): a listed tool brings the lookups that go with it
+
+Live (round 2 of the baseline experiment, defect D4) the node's `image_tags` contract shipped,
+but the ansible-nas loop's list was `team`, `shell`, `repo_checkout`, `repo_submit`; the node
+offered its members nothing it did not name, so they never found the lookup and asked the
+owner which tags exist. A list now gives its work what it names and the read-only lookups that
+go with its tools (`projects::COMES_WITH`, applied by `projects::tools_given` where HQ reads a
+turn's list): `repo_checkout` brings `image_tags`, since work on the fork pins images to tags
+that exist. Only reads are grouped, so a read-only task gains nothing that changes the lab, and
+its refusal of the lab's acts stands; the shell still comes only when named, and an empty list
+still gives nothing of the node's. The owner's list is kept as written, and the next read-only
+contract made for work on the fork is added to the group in the same change. Chosen over a
+console line naming each loop's missing tools because the grouping is one rule in the domain
+and needs no owner's step. Scenarios: `features/a-loop-is-offered-what-goes-with-its-tools.feature`.
+
 ## Amendment (2026-10-25): the pool is $95 a month
 
 The owner raised the team's pool from $70 to $95 a month, about $3.17 a day: $10 of it is the
