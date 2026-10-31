@@ -96,7 +96,7 @@ impl Office {
     }
 
     /// `name`'s running turn ends, and HQ ticks.
-    fn ends_turn(&mut self, name: &str) {
+    pub(super) fn ends_turn(&mut self, name: &str) {
         let context = self.turn_of(name);
         self.hq.runner().finish(context.run, true);
         self.tick();

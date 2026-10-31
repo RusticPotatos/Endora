@@ -37,13 +37,6 @@ impl Office {
             .expect("the node's receipt")
     }
 
-    /// Ends `name`'s running turn well, as its worker would, and ticks.
-    fn ends_turn(&mut self, name: &str) {
-        let context = self.turn_of(name);
-        self.hq.runner().finish(context.run, true);
-        self.tick();
-    }
-
     /// The reviewer's turn on `title`: it was asked to review it, and reviews it with `notes`.
     fn reviews(&mut self, name: &str, title: &str, approve: bool, notes: &str) {
         let task = self.task(title);
