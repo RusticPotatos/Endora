@@ -107,6 +107,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/league", post(start_league))
         .route("/v1/league/reset", post(reset_league))
+        // The league's finished games, newest first, a page at a time (the owner's Chess tab).
+        .route("/v1/league/games", get(league_games))
         .route("/v1/scenarios/{task}", get(scenario_shown))
         // A game written out in PGN, to copy or keep: a Holodeck match, or the office's chess.
         .route("/v1/scenarios/{task}/pgn", get(scenario_pgn))
@@ -960,6 +962,28 @@ struct ProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
 /// `null` takes the list away.
+/// Which page of a list, from 1.
+#[derive(Deserialize)]
+struct Page {
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+/// How many of the league's finished games a page holds.
+const LEAGUE_GAMES_A_PAGE: usize = 10;
+
+/// The league's finished games, of every round, newest first, a page at a time.
+async fn league_games(
+    Extract(state): Extract<State>,
+    Query(q): Query<Page>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let page = q.page.unwrap_or(1);
+    Ok(Json(
+        blocking(move || hq.league_games(page, LEAGUE_GAMES_A_PAGE)).await?,
+    ))
+}
+
 /// The owner resets the model league: its games set aside, every brain rated afresh.
 async fn reset_league(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
@@ -1393,6 +1417,26 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    /// The league's finished games, a page at a time, for the owner's Chess tab (31 Oct): an
+    /// empty first page before any game, and a page past the end empty too.
+    #[tokio::test]
+    async fn the_leagues_finished_games_are_read_a_page_at_a_time() {
+        let app = app(state(false));
+        for (path, page) in [("/v1/league/games", 1), ("/v1/league/games?page=3", 3)] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let got = json_of(res).await;
+            assert_eq!(got["page"], page, "{path}: {got}");
+            assert_eq!(got["per_page"], 10, "{path}: {got}");
+            assert_eq!(got["total"], 0, "{path}: {got}");
+            assert_eq!(got["games"], json!([]), "{path}: {got}");
         }
     }
 

@@ -394,6 +394,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/scenarios", post(hq_start_scenario))
         .route("/v1/hq/league", post(hq_start_league))
         .route("/v1/hq/league/reset", post(hq_reset_league))
+        // The league's finished games, a page at a time (the owner's Chess tab).
+        .route("/v1/hq/league/games", get(hq_league_games))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
         // A game in PGN, to copy or keep: a Holodeck match, or the office's chess.
         .route("/v1/hq/scenarios/{task}/pgn", get(hq_scenario_pgn))

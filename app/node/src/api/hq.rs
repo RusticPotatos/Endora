@@ -737,6 +737,21 @@ pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<
     ask(&state, format!("/v1/scenarios/{task}"), None).await
 }
 
+#[derive(Deserialize)]
+pub(super) struct LeaguePage {
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+/// The league's finished games, newest first, a page at a time, for the owner's Chess tab.
+pub(super) async fn hq_league_games(
+    State(state): State<AppState>,
+    Query(q): Query<LeaguePage>,
+) -> Answer {
+    let page = q.page.unwrap_or(1);
+    ask(&state, format!("/v1/league/games?page={page}"), None).await
+}
+
 /// A game in PGN as HQ wrote it, passed on as plain text named `file`, to copy or keep.
 async fn pgn_passed(state: &AppState, path: String, file: String) -> Response {
     let hq = match client(state) {
@@ -1526,6 +1541,30 @@ mod tests {
             .map(|(p, _, _)| p.clone())
             .collect();
         assert_eq!(sent, ["/v1/scenarios/41/pgn", "/v1/chess/9/pgn"]);
+    }
+
+    #[tokio::test]
+    async fn the_leagues_finished_games_are_asked_of_hq_a_page_at_a_time() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "page": 2, "pages": 3, "total": 21, "games": [] });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_league_games(State(state.clone()), Query(LeaguePage { page: Some(2) }))
+            .await
+            .unwrap();
+        assert_eq!(answer.0["pages"], 3);
+        let first = hq_league_games(State(state), Query(LeaguePage { page: None }))
+            .await
+            .unwrap();
+        assert_eq!(first.0["pages"], 3);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/league/games?page=2", "/v1/league/games?page=1"]);
     }
 
     #[tokio::test]
