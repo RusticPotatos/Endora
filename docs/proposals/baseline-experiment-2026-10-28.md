@@ -489,11 +489,15 @@ done. Defects are numbered so the next round's changes can name them.
   for the branch, HQ's checks at review say the criterion cannot be met and HQ refuses a pass
   (ADR 0142, amended 2026-10-31). The fork's own workflow change waits for the rounds to end.*
 - [x] **D7. Paid reviews are most of the cost.** $1.90 of round 2's first $2.97 was Sonnet and
-  Opus reviewing; Kit spent $3.00 of a day's pool by 08:15. *Fixed on `r3-reviews-ci`: the
-  reviewer is one rank up but never above Haiku's rank unless the work was done at Haiku's rank or
-  above (ADR 0142, amended 2026-10-31). With every rank filled, as in round 2, no reviewer
-  changes: the paid reviews the run log names were of Ada's and Kit's work, which the rule keeps
-  one rank up. If round 3's reviews still cost too much, that is a further decision.*
+  Opus reviewing; Kit spent $3.00 of a day's pool by 08:15. *Fixed on `r3-reviews-ci` for work
+  below Haiku's rank, then on `r3-review-cap` for all work (owner, 31 Oct): no review above
+  Haiku's rank (ADR 0142, amended 2026-10-31). Work done below Haiku's rank is reviewed one rank
+  up within the cap; work done at Haiku's rank or above (Ada's, Kit's, Mara's) is reviewed by
+  another member at Haiku's rank, else the nearest below it, else, last, the nearest above.
+  Escalation by failed checks and send-backs is unchanged, and HQ's checks, CI included, still
+  run at review. Round 3 records each reviewer's verdict against the owner's re-checked
+  judgment; past one disagreement in ten from Haiku for a kind of work, that kind goes back to
+  one rank up.*
 - [ ] **D8. The house model's turns end at the budget with little to show.** Bo's 929 turns hit
   the 240 KB budget in 7 or 8 calls each; after three such passes the item climbed.
 - [x] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the

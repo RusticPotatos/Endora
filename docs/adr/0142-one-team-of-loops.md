@@ -630,25 +630,44 @@ Round 2 of the baseline experiment (`docs/proposals/baseline-experiment-2026-10-
 issues) found the paid reviews were most of the cost, and a criterion no push could meet passed
 unnoticed. The owner approved both changes on 31 Oct.
 
-- **D7. Reviews are capped at Haiku's rank.** Sonnet's and Opus's reviews were $1.90 of round 2's
-  first $2.97, and Kit spent $3.00 of a day's pool by 08:15. The reviewer is still the member one
-  rank up, but never above Haiku's rank unless the work itself was done at Haiku's rank or above
+- **D7. No review above Haiku's rank.** Sonnet's and Opus's reviews were $1.90 of round 2's
+  first $2.97, and Kit spent $3.00 of a day's pool by 08:15. The owner decided on 31 Oct, from
+  the evidence below, that no work of any rank is reviewed above Haiku's
   (`domains/team/src/domain/review.rs`, `reviewer_among`; the loops ask it, so the review tool's
   gate follows it):
-  - work done at Haiku's rank or above (Ada's, Kit's, Mara's) is reviewed one rank up as before,
-    the top rank's by the member just below it;
   - work done below Haiku's rank is reviewed by the nearest member above it at Haiku's rank or
-    below; with none, by the nearest member below it, as the top rank's work already is; only
-    when no member but the worker is at Haiku's rank or below does it go to the next member up;
-  - a member never reviews its own work, and a second member at the worker's own rank is not
-    one rank up. Ties go to the member hired first.
-  HQ's mechanical checks carry what the cheaper review does not. In round 2's line-up (Opus,
-  Sonnet, Haiku, DeepSeek, the house's model, every rank between filled) the member one rank up
-  from work below Haiku is already at Haiku's rank or below, so the cap changes no reviewer
-  there: the paid reviews round 2's run log names were of work done at Haiku's rank or above
-  (Ada's by Kit, Kit's by Mara), which the owner's rule keeps. The cap bites when a rank at or below Haiku's is
-  empty (no member on Haiku, or none between the worker and it), where Sonnet or Opus reviewed
-  before.
+    below; with none, by the nearest member below it; only when no member but the worker is at
+    Haiku's rank or below does it go to the next member up;
+  - work done at Haiku's rank or above (Ada's, Kit's, Mara's) is reviewed by another member at
+    Haiku's rank (several may share it, say Ada, Cy, Dee and Zed); with none, by the nearest
+    other member below Haiku's rank; with none, as the last resort, by the nearest member above
+    Haiku's rank;
+  - a member never reviews its own work, and a second member at the worker's own rank below
+    Haiku's is not one rank up. Ties go to the member hired first.
+  Escalation is unchanged: an item still climbs the ranks by its failed checks and send-backs
+  (above), so harder work reaches stronger models by the climb, not by review. HQ's mechanical
+  checks, the CI check (D6) among them, still run at review and carry what the cheaper review
+  does not. The thread says who reviews ("Ada reviews this."), no longer "one rank up".
+
+  *An earlier form of this amendment kept work done at Haiku's rank or above reviewed one rank
+  up. In round 2's line-up (Opus, Sonnet, Haiku, DeepSeek, the house's model) that changed no
+  reviewer: every paid review round 2's run log names was of Ada's work by Kit or Kit's by
+  Mara. The rule above replaces it.*
+
+  **The evidence.** Round 2's Sonnet and Opus reviews cost $0.10–0.23 each, against about
+  $0.007 for a Haiku review. Against the owner's re-checked judgments, the expensive reviews
+  passed six correct items and sent back one; they also passed 932 twice, which was missing its
+  CI run, and the CI check (D6) now catches that by rule. Published guidance favours a cheap judge
+  with a clear rubric, checked against human labels: Anthropic's "Choosing the right model" and
+  "Optimizing for cost and intelligence" (start with Haiku, step up only where evals fall short,
+  compare cost per task); OpenAI's "Evaluation best practices" (validate a cheaper judge's
+  agreement with human labels before switching); and research on LLM judges, where rubrics and
+  ensembling matter more than a bigger model.
+
+  **Measured in round 3.** Each reviewer's verdict is recorded against the owner's re-checked
+  judgment of the item. If Haiku's verdict disagrees with the owner's on more than one item in
+  ten for a kind of work, that kind of work goes back to review one rank up. This is a
+  measurement and a decision rule for the owner, not code.
 - **D6. HQ says when a CI criterion cannot be met.** Task 932's criterion "A CI run on the branch
   passes" was never met: the fork's workflow runs on a push only for main and develop, so a
   branch HQ pushes (`hq/task-N-…`) never gets a run, and HQ finished without noticing. Until the
