@@ -52,6 +52,10 @@ mod mac;
 #[path = "scenarios/brains.rs"]
 mod brains;
 
+/// The pool follows the Claude credit (ADR 0113, amended 2026-10-31), in its own file.
+#[path = "scenarios/credit.rs"]
+mod credit;
+
 /// What the team's work came to (ADR 0132), in its own file.
 #[path = "scenarios/outcomes.rs"]
 mod outcomes;

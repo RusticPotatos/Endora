@@ -1946,7 +1946,8 @@ fn a_top_up_grows_the_pool_and_every_share_in_proportion_for_today_only() {
     assert!((lead2 - lead * 2).abs() <= 1, "{lead2} against {lead}");
     assert_eq!(
         hq.snapshot().unwrap()["scorecard"]["pool"],
-        json!({ "base": 1_000_000, "topped_up": 1_000_000 })
+        // No word of the Claude credit: the base is the floor (ADR 0113, amended 2026-10-31).
+        json!({ "base": 1_000_000, "floor": 1_000_000, "topped_up": 1_000_000 })
     );
     // Tomorrow it is gone.
     clock.forward(24 * 60 * 60 * 1000);

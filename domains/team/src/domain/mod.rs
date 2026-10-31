@@ -7,6 +7,7 @@ pub mod chess;
 pub mod chess_match;
 pub mod closure;
 pub mod consult;
+pub mod credit_pool;
 pub mod cut;
 pub mod deploy;
 pub mod desk;
