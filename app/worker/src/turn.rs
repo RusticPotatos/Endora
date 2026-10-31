@@ -897,7 +897,20 @@ pub(crate) fn member_of(briefing: &str) -> Option<String> {
 /// may submit (`can_submit`: a lead or a developer) is told to branch from the base, or, for the
 /// team's own kept branch, to go on from it and submit it again; a turn that may not (the
 /// tester's) is told to read it and to cite this checkout's receipt as a reading of its own.
+/// Upstream ansible-nas, when it came with the checkout, is said last.
 pub(crate) fn said_after_checkout(
+    out: &repo::CheckedOut,
+    base: &str,
+    kept: bool,
+    can_submit: bool,
+    task: Option<i64>,
+    receipt: &str,
+) -> String {
+    said_of_the_branch(out, base, kept, can_submit, task, receipt)
+        + &upstream_note(out.upstream.as_deref(), base, can_submit)
+}
+
+fn said_of_the_branch(
     out: &repo::CheckedOut,
     base: &str,
     kept: bool,
@@ -939,6 +952,27 @@ pub(crate) fn said_after_checkout(
          Never edit, cite or copy from group_vars/*.yml, host_vars or any inventory: they \
          hold the owner's own values, and a branch touching them is refused."
     )
+}
+
+/// What a checkout that brought upstream ansible-nas says of it (ADR 0106, amended 2026-10-31),
+/// after the rest: where it is, how to compare it with the base offline, and, to a member who
+/// may submit, that it is never a base. Empty without.
+fn upstream_note(upstream: Option<&str>, base: &str, can_submit: bool) -> String {
+    let Some(up) = upstream else {
+        return String::new();
+    };
+    let mut note = format!(
+        " Upstream ansible-nas is in the checkout too, read-only, as {up}: `git log --oneline \
+         {base}..{up}` lists what upstream has that {base} lacks, and `git diff {base} {up} -- \
+         <path>` shows a change."
+    );
+    if can_submit {
+        note.push_str(
+            " Read it; never merge it or branch from it (a branch carrying upstream's commits is \
+             refused): take what you need as your own commit.",
+        );
+    }
+    note
 }
 
 /// What the node handed over for `repo_checkout`, read from its text.
@@ -2398,6 +2432,28 @@ mod tests {
             branch: branch.to_owned(),
             head: "6efcf97c1954aaaaaaaa".to_owned(),
             files: 412,
+            upstream: None,
+        }
+    }
+
+    /// D13 (task 936): a checkout that brought upstream says where it is and how to read it,
+    /// and that it is never a base; one without says nothing of it.
+    #[test]
+    fn a_checkout_with_upstream_says_how_to_read_it_and_never_to_build_on_it() {
+        let mut out = checked_out("develop");
+        let without = said_after_checkout(&out, "develop", false, true, Some(936), "");
+        assert!(!without.contains("upstream"), "{without}");
+        out.upstream = Some("upstream/master".to_owned());
+        for (kept, can_submit) in [(false, true), (true, true), (false, false)] {
+            let said = said_after_checkout(&out, "develop", kept, can_submit, Some(936), "");
+            assert!(
+                said.contains("git log --oneline develop..upstream/master")
+                    && said.contains("read-only"),
+                "{said}"
+            );
+            if can_submit {
+                assert!(said.contains("never merge it or branch from it"), "{said}");
+            }
         }
     }
 

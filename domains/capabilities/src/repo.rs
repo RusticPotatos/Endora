@@ -10,6 +10,11 @@
 //! deploy key, never with force, never to the default branch. HQ opens no pull request and
 //! merges nothing.
 //!
+//! Upstream ansible-nas is kept beside the fork, read-only (ADR 0106, amended 2026-10-31): its
+//! default branch is fetched into `refs/upstream/<branch>` on the fork's schedule and carried in
+//! every checkout, so an offline sandbox can compare the two. It is never a base and never a
+//! push target: no remote names it, and a branch named for it or carrying its commits is refused.
+//!
 //! Every refusal here is a rule in code: the model proposes a branch, this decides it.
 
 use std::path::{Path, PathBuf};
@@ -189,6 +194,43 @@ pub fn plain_remote(url: &str) -> Result<(), String> {
     Err("a remote with a credential in its address is refused".to_owned())
 }
 
+/// Whether `name` names upstream ansible-nas rather than a branch of the fork: `upstream`,
+/// `upstream/<branch>`, or that under `refs/`, `refs/heads/` or `refs/remotes/`. Upstream is
+/// read-only (ADR 0106, amended 2026-10-31): never checked out alone, submitted or pushed.
+#[must_use]
+pub fn names_upstream(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let bare = ["refs/remotes/", "refs/heads/", "refs/"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p))
+        .unwrap_or(&lower);
+    bare == "upstream" || bare.starts_with("upstream/")
+}
+
+/// A remote's address as one key, so the same repository is known by any of its addresses:
+/// GitHub's HTTPS and SSH forms of `owner/name` are the same key; any other address is itself.
+fn repo_key(url: &str) -> String {
+    let lower = url.trim().to_ascii_lowercase();
+    let bare = [
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|p| lower.strip_prefix(p))
+    .unwrap_or(&lower)
+    .trim_end_matches('/');
+    bare.strip_suffix(".git").unwrap_or(bare).to_owned()
+}
+
+/// Whether two remotes' addresses name the same repository.
+#[must_use]
+pub fn same_repo(a: &str, b: &str) -> bool {
+    repo_key(a) == repo_key(b)
+}
+
 /// One `git` run: its stdout, or its stderr as the error.
 fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
@@ -237,6 +279,27 @@ pub struct Bundle {
     pub head: String,
     /// The bundle itself.
     pub bytes: Vec<u8>,
+    /// Upstream's default branch, carried in the bundle as `refs/upstream/<branch>` to be read
+    /// in the sandbox as `upstream/<branch>`; `None` when the node has not fetched it.
+    pub upstream: Option<Upstream>,
+}
+
+/// Upstream ansible-nas's default branch as the node last fetched it (ADR 0106, amended
+/// 2026-10-31): read-only, never a base and never a push target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream {
+    /// Upstream's default branch, e.g. `master`.
+    pub branch: String,
+    /// Its head.
+    pub head: String,
+}
+
+impl Upstream {
+    /// What the sandbox calls it: `upstream/<branch>`.
+    #[must_use]
+    pub fn named(&self) -> String {
+        format!("upstream/{}", self.branch)
+    }
 }
 
 /// A branch the team submitted, once it passed every check.
@@ -288,6 +351,7 @@ pub struct Mirror {
     submissions: PathBuf,
     url: String,
     base: String,
+    upstream: Option<String>,
     refreshed: Mutex<Option<i64>>,
 }
 
@@ -302,8 +366,79 @@ impl Mirror {
             submissions: root.join("submissions"),
             url: url.to_owned(),
             base: base.to_owned(),
+            upstream: None,
             refreshed: Mutex::new(None),
         }
+    }
+
+    /// With upstream at `url` kept beside the fork, read-only (ADR 0106, amended 2026-10-31):
+    /// its default branch is fetched into `refs/upstream/<branch>` on the fork's schedule, and
+    /// every checkout carries it. An upstream that is the fork itself is not kept twice.
+    #[must_use]
+    pub fn with_upstream(mut self, url: &str) -> Self {
+        if !url.trim().is_empty() && !same_repo(url, &self.url) {
+            self.upstream = Some(url.trim().to_owned());
+        }
+        self
+    }
+
+    /// Upstream's default branch as last fetched, if it has been.
+    #[must_use]
+    pub fn upstream(&self) -> Option<Upstream> {
+        let said = git(
+            &self.dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname:strip=2) %(objectname)",
+                "refs/upstream/",
+            ],
+            &[],
+        )
+        .map(text)
+        .ok()?;
+        let (branch, head) = said.lines().next()?.split_once(' ')?;
+        Some(Upstream {
+            branch: branch.to_owned(),
+            head: head.to_owned(),
+        })
+    }
+
+    /// Fetches upstream's default branch (asked of upstream each time, so a renamed default is
+    /// followed) into `refs/upstream/<branch>`, the only ref kept under `refs/upstream/`. No
+    /// remote is configured for it: there is nothing named to push to.
+    fn fetch_upstream(&self, url: &str) -> Result<(), String> {
+        plain_remote(url)?;
+        let said = text(git(
+            &self.dir,
+            &["ls-remote", "--symref", url, "HEAD"],
+            &[],
+        )?);
+        let branch = said
+            .lines()
+            .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+            .and_then(|r| r.split('\t').next())
+            .filter(|b| crate::ansible_nas::plain_branch(b))
+            .ok_or_else(|| "upstream names no default branch".to_owned())?;
+        let kept = format!("refs/upstream/{branch}");
+        git(
+            &self.dir,
+            &[
+                "fetch",
+                "--no-tags",
+                url,
+                &format!("+refs/heads/{branch}:{kept}"),
+            ],
+            &[],
+        )?;
+        let refs = text(git(
+            &self.dir,
+            &["for-each-ref", "--format=%(refname)", "refs/upstream/"],
+            &[],
+        )?);
+        for old in refs.lines().filter(|r| *r != kept) {
+            git(&self.dir, &["update-ref", "-d", old], &[])?;
+        }
+        Ok(())
     }
 
     /// The base branch the wing works from: `ENDORA_ANSIBLE_NAS_REF` when the owner set it
@@ -322,7 +457,9 @@ impl Mirror {
     }
 
     /// Clones the fork as a bare mirror, or fetches what changed, at most once in
-    /// [`REFRESH_MS`]; the first call makes it.
+    /// [`REFRESH_MS`]; the first call makes it. Upstream, when kept, is fetched with it, and an
+    /// upstream that cannot be reached leaves what was last fetched (or nothing) without
+    /// failing the fork's refresh.
     ///
     /// # Errors
     /// What git said, in a line.
@@ -361,8 +498,22 @@ impl Mirror {
                 &[],
             )?;
         }
+        if let Some(url) = &self.upstream {
+            if let Err(why) = self.fetch_upstream(url) {
+                eprintln!("team repo: upstream ansible-nas was not fetched: {why}");
+            }
+        }
         *last = Some(now);
         Ok(())
+    }
+
+    /// The bundle's refs: `refs`, and upstream's when it is kept, with what upstream is.
+    fn with_upstream_ref(&self, mut refs: Vec<String>) -> (Vec<String>, Option<Upstream>) {
+        let upstream = self.upstream();
+        if let Some(up) = &upstream {
+            refs.push(format!("refs/upstream/{}", up.branch));
+        }
+        (refs, upstream)
     }
 
     /// The whole history of a stored submission, as one bundle the check's sandbox can fetch
@@ -428,14 +579,26 @@ impl Mirror {
     }
 
     /// A bundle of `branch` (the default branch when `None`): the default branch, or one of the
-    /// team's under `hq/`, with its whole history, at most [`BUNDLE_MOST`].
+    /// team's under `hq/`, with its whole history, at most [`BUNDLE_MOST`]. Upstream's default
+    /// branch comes with it as `refs/upstream/<branch>`, when the node keeps it.
     ///
     /// # Errors
-    /// A branch that is neither, one the fork does not have, or git failing.
+    /// A branch that is neither (upstream among them), one the fork does not have, or git
+    /// failing.
     pub fn bundle(&self, branch: Option<&str>, now: i64) -> Result<Bundle, String> {
         let branch = match branch.map(str::trim).filter(|b| !b.is_empty()) {
             None => self.base.clone(),
             Some(named) if named == self.base => named.to_owned(),
+            Some(named) if names_upstream(named) => {
+                let _ = self.refresh(now);
+                let upstream = self
+                    .upstream()
+                    .map_or_else(|| "upstream/<its default branch>".to_owned(), |u| u.named());
+                return Err(format!(
+                    "upstream ansible-nas is not checked out on its own: every checkout of {base} carries it as {upstream}, read-only. Check out {base} and read it there, e.g. git log --oneline {base}..{upstream}",
+                    base = self.base
+                ));
+            }
             Some(named) => hq_branch(named)
                 .map_err(|_| {
                     format!(
@@ -447,11 +610,10 @@ impl Mirror {
         };
         self.refresh(now)?;
         let head = self.head_of(&branch)?;
-        let bytes = git(
-            &self.dir,
-            &["bundle", "create", "-", &format!("refs/heads/{branch}")],
-            &[],
-        )?;
+        let (refs, upstream) = self.with_upstream_ref(vec![format!("refs/heads/{branch}")]);
+        let mut args = vec!["bundle", "create", "-"];
+        args.extend(refs.iter().map(String::as_str));
+        let bytes = git(&self.dir, &args, &[])?;
         if bytes.len() > BUNDLE_MOST {
             return Err(format!(
                 "the bundle of {branch} is {} MB, more than the {} MB a checkout may be",
@@ -463,6 +625,7 @@ impl Mirror {
             branch,
             head,
             bytes,
+            upstream,
         })
     }
 
@@ -507,17 +670,11 @@ impl Mirror {
             ));
         }
         self.head_of(&self.base)?;
-        let bytes = git(
-            &self.dir,
-            &[
-                "bundle",
-                "create",
-                "-",
-                &format!("refs/heads/{}", self.base),
-                &kept,
-            ],
-            &[],
-        )?;
+        let (refs, upstream) =
+            self.with_upstream_ref(vec![format!("refs/heads/{}", self.base), kept]);
+        let mut args = vec!["bundle", "create", "-"];
+        args.extend(refs.iter().map(String::as_str));
+        let bytes = git(&self.dir, &args, &[])?;
         if bytes.len() > BUNDLE_MOST {
             return Err(format!(
                 "the bundle of {branch} is {} MB, more than the {} MB a checkout may be",
@@ -529,6 +686,7 @@ impl Mirror {
             branch: branch.to_owned(),
             head: stored,
             bytes,
+            upstream,
         })
     }
 
@@ -563,6 +721,12 @@ impl Mirror {
         task: i64,
         now: i64,
     ) -> Result<Submitted, String> {
+        if names_upstream(branch) {
+            return Err(format!(
+                "upstream ansible-nas is read-only: nothing is submitted or pushed to it. Work on hq/task-{task}-<slug> from {}, and make what you take from upstream your own commits",
+                self.base
+            ));
+        }
         let branch = task_branch(branch, task)?.to_owned();
         if bytes.is_empty() {
             return Err("the bundle is empty".to_owned());
@@ -676,6 +840,7 @@ impl Mirror {
             ));
         }
         let range = format!("{base_ref}..{staged}");
+        self.not_upstreams(&range, branch)?;
         let commits = text(git(
             &self.dir,
             &["log", "--format=%H%x1f%ae%x1f%B%x1e", &range],
@@ -783,6 +948,30 @@ impl Mirror {
         })
     }
 
+    /// Refuses a branch built on upstream (ADR 0106, amended 2026-10-31): any commit of `range`
+    /// that upstream has (a merge of it, a branch cut from it) makes upstream a base, which it
+    /// never is. A change read from upstream and made as HQ's own commit is not upstream's.
+    fn not_upstreams(&self, range: &str, branch: &str) -> Result<(), String> {
+        let Some(up) = self.upstream() else {
+            return Ok(());
+        };
+        let count = |extra: &[&str]| -> Result<i64, String> {
+            let mut args = vec!["rev-list", "--count", range];
+            args.extend(extra);
+            Ok(text(git(&self.dir, &args, &[])?).parse().unwrap_or(0))
+        };
+        let not_upstream = format!("^refs/upstream/{}", up.branch);
+        let carried = count(&[])? - count(&[&not_upstream])?;
+        if carried > 0 {
+            return Err(format!(
+                "{branch} carries upstream's commits ({carried} of {}): upstream ansible-nas is read-only and never a base. Branch from {} and make what you take from upstream your own commits (copy the change, then commit it)",
+                up.named(),
+                self.base
+            ));
+        }
+        Ok(())
+    }
+
     /// Pushes the stored submission of `branch` at `head` to `remote`, as that branch: only a
     /// branch under `hq/`, only what was submitted (never the default branch, never with
     /// force), over SSH with the deploy key at `key` when the remote is an SSH address (with
@@ -798,6 +987,16 @@ impl Mirror {
         remote: &str,
         key: Option<&Path>,
     ) -> Result<String, String> {
+        if self
+            .upstream
+            .as_deref()
+            .is_some_and(|up| same_repo(up, remote))
+        {
+            return Err(
+                "upstream ansible-nas is read-only: HQ never pushes to it, only to the fork"
+                    .to_owned(),
+            );
+        }
         let branch = hq_branch(branch)?;
         if branch == self.base || branch.starts_with('+') {
             return Err(format!("{branch} is never pushed by HQ"));
@@ -1032,6 +1231,40 @@ mod tests {
         assert!(plain_remote("/tmp/fork.git").is_ok());
         assert!(plain_remote("https://user:token@example.com/owner/x.git").is_err());
         assert!(plain_remote("").is_err());
+    }
+
+    #[test]
+    fn upstream_is_known_by_its_name_and_by_any_of_its_addresses() {
+        for named in [
+            "upstream",
+            "upstream/master",
+            "Upstream/main",
+            "refs/remotes/upstream/master",
+            "refs/heads/upstream/master",
+            "refs/upstream/master",
+        ] {
+            assert!(names_upstream(named), "{named}");
+        }
+        for not in [
+            "develop",
+            "hq/task-936-upstream-diff",
+            "upstreamish",
+            "main",
+        ] {
+            assert!(!names_upstream(not), "{not}");
+        }
+        let up = "https://github.com/davestephens/ansible-nas.git";
+        for same in [
+            "https://github.com/davestephens/ansible-nas",
+            "git@github.com:davestephens/ansible-nas.git",
+            "ssh://git@github.com/DaveStephens/ansible-nas.git/",
+        ] {
+            assert!(same_repo(up, same), "{same}");
+        }
+        assert!(!same_repo(up, "git@github.com:example/ansible-nas.git"));
+        // The fork is never kept twice as its own upstream.
+        let fork = Mirror::new(Path::new("/nowhere"), up, "master").with_upstream(up);
+        assert_eq!(fork.upstream, None);
     }
 
     #[test]
