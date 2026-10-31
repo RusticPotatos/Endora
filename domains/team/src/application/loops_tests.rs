@@ -1680,6 +1680,83 @@ fn past_three_continuations_running_out_of_room_is_one_failure() {
     assert!(handover_in(&bo.told).contains("out of room"), "{}", bo.told);
 }
 
+/// Review of 31 Oct: a reviewer's turn that ran out of room was never continued, since only
+/// the item's holder was, and the review stalled. The reviewer goes on in a fresh review turn,
+/// under the same cap; past it, the owner is asked about the item, which is no failure of the
+/// worker's.
+///
+/// Given Bo's item in review, Rae reviewing it one rank up,
+/// when four of her review turns in a row end at their prompt's budget,
+/// then the first three wake her to review it afresh, and the fourth asks the owner; the item
+/// stays in review and Bo's, with no failure.
+#[test]
+fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = hard_item(&hq, &f);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": hard.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": hard.0, "status": "in_review", "reason": "gluetun is up.",
+                             "evidence": [format!("task {}", hard.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tell_mac(true, "ready");
+    let reviews = |hq: &Hq<'_>| {
+        hq.wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| {
+                w.member == f.rae && w.task == Some(hard) && w.reason == WakeReason::ReviewRequested
+            })
+            .count()
+    };
+    assert_eq!(reviews(&hq), 1);
+    for n in 1..=4 {
+        let rae = turn_of(&hq, f.rae);
+        hq.note_tokens(rae.run, 50_000, 0, 0, 500).unwrap();
+        let said = use_tool(
+            &hq,
+            &rae,
+            "post",
+            &serde_json::json!({ "task": hard.0, "last_word": true, "continues": true,
+                "text": "Reading gluetun's log; the turn's prompt reached its budget." }),
+        )
+        .unwrap();
+        assert!(!said.contains("not continued"), "{said}");
+        hq.runner().finish(rae.run, true);
+        hq.tick().unwrap();
+        if n <= 3 {
+            assert_eq!(reviews(&hq), 1 + n, "review {n} goes on");
+            let thread = hq.store().thread(hard).unwrap();
+            assert!(
+                thread
+                    .iter()
+                    .any(|p| p.author == "endora"
+                        && p.text.contains(&format!("continuation {n} of 3"))),
+                "{thread:?}"
+            );
+        }
+    }
+    assert_eq!(reviews(&hq), 4, "not past the cap");
+    let found = hq.store().task(hard).unwrap().unwrap();
+    assert_eq!(found.status, TaskStatus::InReview);
+    assert_eq!(found.owner.or(found.assignee), Some(f.bo));
+    assert_eq!(hq.loop_failures(hard).unwrap(), 0, "no failure of Bo's");
+    let desk = hq.store().desk().unwrap();
+    assert!(
+        desk.iter().any(|d| d.task == Some(hard)
+            && d.status == "waiting"
+            && d.text.contains("ran out of room 4 times")),
+        "{desk:?}"
+    );
+}
+
 /// Only the worker's own last word says a turn continues: a post of the model's that says so
 /// is a post, and the turn ends as any other does.
 #[test]

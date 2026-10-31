@@ -249,3 +249,27 @@ fn waits_at_rank(w: &mut Office, title: String, name: String) {
         "it failed and was held: {thread:#?}"
     );
 }
+
+/// The member's turn on the item reads near its brain's budget, as the relay meters it, and
+/// ends as the worker ends one whose prompt reached its budget: its last word, marked as
+/// continuing.
+#[when(regex = r#"^(\w+)'s turn on "(.+)" ends at its prompt's budget(?: (\d+) times in a row)?$"#)]
+fn ends_at_budget(w: &mut Office, name: String, title: String, times: String) {
+    let task = w.task(&title);
+    for _ in 0..times.parse::<usize>().unwrap_or(1) {
+        let turn = w.turn_of(&name);
+        w.hq.note_tokens(turn.run, 50_000, 0, 0, 500)
+            .expect("the relay meters the turn");
+        let said = w
+            .use_tool(
+                &name,
+                "post",
+                &json!({ "task": task.0, "last_word": true, "continues": true,
+                         "text": "The turn's prompt reached its budget." }),
+            )
+            .expect("the last word is posted");
+        assert!(!said.contains("not continued"), "{said}");
+        w.hq.runner().finish(turn.run, true);
+        w.tick();
+    }
+}
