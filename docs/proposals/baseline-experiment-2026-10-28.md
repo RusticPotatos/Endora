@@ -541,6 +541,62 @@ loaded on Claude too). One turn ended before the restart; none was cut.
 | 9 | 954 | | | | | |
 | 10 | 955 | | | | | |
 
+### Round 4, planned (owner's review of 31 Oct)
+
+The purpose of harness engineering is not to make the harness more sophisticated. It is to make
+valuable work more reliable and economical. Round 3's failures so far were in the machinery
+around the reasoning (D17, D19, D20), not in the reasoning: Ada judged 947 right four times and
+the verdict could not land. So round 4 fixes that machinery before it adds anything, and adds no
+new agent, orchestration layer or scoring framework.
+
+**The changes, in order:**
+1. **The three infrastructure defects:** D17 (a refused wake counts as a failure and climbs the
+   item), D19 (released mid-round 3; round 4 is its first full measure), D20 (a turn's results
+   fill a Haiku prompt and the item climbs).
+2. **A. A fresh set beside the fixed ten.** The ten stay unchanged as the regression benchmark.
+   Each round adds 2–3 tasks HQ has never seen, drawn from the real backlog and written the same
+   way, scored apart: does an improvement carry over, or does HQ only get good at the ten?
+3. **B. Cost and complexity, not reliability alone.** Each round's report adds the cost of
+   building the round (the assistant's sessions, not only HQ's turns), the mechanisms it added
+   (handoffs, recovery paths, model calls, settings a task depends on) and the code size. A round
+   that gains a task by doubling cost or adding coordinating agents may not be worth keeping.
+4. **C. The playbook kept small.** `hq-round` holds its standing rules, its procedure and its
+   lessons as three recognisable parts; a lesson whose defect is fixed and held for a round is
+   retired, not kept as a rule.
+5. **D. The judge tested, on two counts.** A few known-good and known-bad branches, run before a
+   round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
+   delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
+   reasoning alone would have passed it.
+
+**Two scorecards, because they are two products.** HQ's development work and its standing,
+unattended work have different measures. HQ could fall short of Claude Code at development and
+still be worth more for the house's running; that would be a result, not a failed experiment.
+
+| Development | Unattended operations |
+|---|---|
+| Accepted tasks (fixed ten; fresh set apart) | Successful scheduled jobs |
+| Cost per accepted task | Cost per successful run |
+| Human interventions | Unplanned human interventions |
+| Rework | Recovery rate |
+| Time to an accepted result | Time to detect and recover |
+
+**An investment gate after round 4, and after each round from then.** A small section of the
+round's report, answered from its numbers:
+- Did acceptance improve (fixed ten; fresh set)?
+- Did cost per accepted task fall?
+- Did interventions fall?
+- Did the gain carry over to the fresh tasks?
+- What did it take to build (cost, mechanisms added)?
+- For a change that saves money per task: break-even tasks = its build cost ÷ the saving per
+  accepted task (a $200 change saving $2 a task pays back after 100 tasks). If HQ still costs
+  more per accepted task than Claude Code, it may never break even on cost alone, so the
+  projected workload and the owner's time saved count too.
+
+If none improves across two rounds, development-path investment pauses for a decision. The
+gate allows three: **continue** the general development harness, **narrow** its scope to the
+task kinds where it pays, or **redirect** investment into unattended operations. The decision is
+the owner's (money and direction); the report gives the evidence for it.
+
 ## Open issues and next steps (kept current)
 
 The one list of what is open, kept up to date as rounds run. Ticked items say where they were

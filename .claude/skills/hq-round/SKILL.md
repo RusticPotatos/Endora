@@ -21,6 +21,10 @@ round stands (step 2's status) and do the next due step.
 
 ## Standing rules (from the owner; never relaxed by a round)
 
+- **The purpose of harness engineering is not to make the harness more sophisticated. It is to
+  make valuable work more reliable and economical.** Fix the machinery around the reasoning
+  before adding to it; add no agent, orchestration layer or scoring framework to run a decision
+  the round's report can hold.
 - **Claude Code is the bar.** Improve HQ by measured changes; never propose scrapping it.
 - **Nothing personal in a tracked file**: the repo and the fork are public. Review every outgoing
   diff and commit message before a push.
@@ -61,6 +65,9 @@ round stands (step 2's status) and do the next due step.
    was released, what changed and why, the task ids and the start time.
    - A task that can no longer be met (round 2's task 8: its window had left the logs) is not
      silently kept: say so, and fix the task's conditions before the round counts it.
+5. **The judge is tested** (from round 4, before its first judging) on its known-good and known-bad branches, on both
+   counts: it accepts and refuses rightly, and its verdict is recorded and acted on (D19 was
+   the second, with the reasoning right).
 
 ## 2. During the round (`tick`)
 
@@ -108,7 +115,15 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
 3. **The code**: `sh scripts/code-size.sh` against the last release; the `end-of-round`
    workflow (or `duplication-reviewer`) on the round's diff; consolidate its findings with one
    agent, in order of what each removes, a secret or safety gap first.
-4. **Push the record** after the privacy scan, and summarise for the owner in plain words.
+4. **The investment gate** (from round 4; the experiment doc's "Round 4, planned"), a short
+   section of the report answered from its numbers: acceptance (fixed ten and the fresh set
+   apart), cost per accepted task, interventions, whether the gain carried over to the fresh
+   tasks, and what the round cost to build (sessions and mechanisms added), with break-even
+   tasks for a change that saves per task. Keep the development and unattended-operations
+   scorecards apart: they are two products. If none improves across two rounds, put the three
+   choices to the owner: continue, narrow the development harness, or redirect to unattended
+   operations.
+5. **Push the record** after the privacy scan, and summarise for the owner in plain words.
 
 ## 5. The next round (`next`)
 
