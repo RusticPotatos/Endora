@@ -618,8 +618,11 @@ ways. To fix after the one-team clean-up lands, in this order:
 
 - [ ] Activity on a tab of its own (Work, Manage, Health, Activity): the latest 20, and "Show
   more" opens a full-screen, paged view; never an endless scroll.
-- [ ] On a task, each turn shows what the model was given: its instructions, tools and briefing,
-  secrets redacted (HQ keeps every turn's conversation, ADR 0129).
+- [x] On a task, each turn shows what the model was given: its instructions, tools and briefing,
+  secrets redacted (HQ keeps every turn's conversation, ADR 0129). Done on `r3-ui-turn-prompts`:
+  a folded "What it was given" card in each turn's replay, opened from the task's turn lines;
+  the worker now keeps the tools by name, the node scrubs the replay on its way out. Not kept,
+  and said so: schemas, Claude Code's own instructions, and the tools of turns before 31 Oct.
 - [ ] The team board takes a line a member; the rest on a tap.
 - [ ] Routines join Projects as a kind of project; the ones turned off fold away.
 - [ ] Manage in this order: money first, then goals, then projects.
