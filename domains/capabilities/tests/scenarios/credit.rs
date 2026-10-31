@@ -8,9 +8,6 @@ use endora_capabilities::credits::{self, DAY_MS, Pots};
 
 use super::Bridge;
 
-/// A dollar, in micros.
-const DOLLAR: i64 = 1_000_000;
-
 /// What the node keeps of Claude's credit, and the owner's clock.
 #[derive(Debug, Default)]
 pub struct Credit {
@@ -39,8 +36,9 @@ impl Credit {
         self.offset
     }
 
-    /// `date` (`YYYY-MM-DD`) at `hour:minute` on the owner's clock, in UTC milliseconds.
-    fn at(&self, date: &str, hour: i64, minute: i64) -> i64 {
+    /// `date` (`YYYY-MM-DD`) at `hour:minute` on the owner's clock, in UTC milliseconds: the
+    /// one clock the credit's and the lab's scenarios read.
+    pub(super) fn at(&self, date: &str, hour: i64, minute: i64) -> i64 {
         let day = day_of(date);
         day * DAY_MS + (hour * 60 + minute - self.offset) * 60_000
     }
@@ -73,7 +71,7 @@ impl Credit {
 }
 
 /// The day (from 1970-01-01) of a date written `YYYY-MM-DD`.
-pub(super) fn day_of(date: &str) -> i64 {
+fn day_of(date: &str) -> i64 {
     let parts: Vec<&str> = date.split('-').collect();
     let [year, month, day] = parts[..] else {
         panic!("a date is YYYY-MM-DD: {date}");
@@ -85,8 +83,12 @@ pub(super) fn day_of(date: &str) -> i64 {
     )
 }
 
+/// Dollars as the owner writes them, in micros: `0` is nothing.
 fn dollars(written: &str) -> i64 {
-    written.parse::<i64>().expect("whole dollars") * DOLLAR
+    endora_kernel::money::read_dollars(written).unwrap_or_else(|| {
+        assert_eq!(written, "0", "dollars");
+        0
+    })
 }
 
 #[given(regex = r"^the owner's clock is (\d+) hours (behind|ahead of) UTC$")]

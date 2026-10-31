@@ -350,6 +350,168 @@ impl Office {
         let made = self.hq.add_task(by, task);
         self.note(made)
     }
+
+    // ---- One helper a job, for every feature's steps (review of 31 Oct) --------------------
+
+    /// The owner's team member `name`, one model: hired under the role its model is ranked to
+    /// (ADR 0142), as production's five were.
+    fn hires_model(&mut self, name: &str, model: &str) {
+        let role = match model {
+            "opus" => Role::Ceo,
+            "sonnet" | "haiku" => Role::Lead,
+            _ => Role::Developer,
+        };
+        let id = self.hq.hire(name, role, 10, 2, 0).expect("HQ hires");
+        self.hq.set_model(id, model).expect("a model Endora has");
+        self.members.insert(name.to_owned(), id);
+    }
+
+    /// A loop: a project of the scenario's goal, led by `lead`.
+    fn makes_loop(&mut self, title: &str, lead: MemberId) {
+        let goal = self.goal();
+        let id = self
+            .hq
+            .add_project(goal, title, "the fork's work", lead, None)
+            .expect("the owner adds the loop");
+        self.projects.insert(title.to_owned(), id);
+    }
+
+    /// A loop item: the owner puts it on the loop's plan, for nobody yet.
+    fn loop_item(&mut self, project: &str, title: &str, description: &str, criteria: &[Criterion]) {
+        let goal = self.goal();
+        let project = self.project(project).id;
+        let task = NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: title.to_owned(),
+            description: description.to_owned(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        // Work with criteria is handed out as the owner's console does; without, as the plan's.
+        let added = if criteria.is_empty() {
+            self.hq.add_task(Author::Owner, task)
+        } else {
+            self.hq.add_task_with(Author::Owner, task, criteria)
+        };
+        if self.note(added).is_none() {
+            panic!("the owner puts work on a loop: {:?}", self.refused);
+        }
+    }
+
+    /// Who holds `title` now, by name, as the HQ screen shows it.
+    fn holder_of(&self, title: &str) -> Option<String> {
+        let found = self
+            .hq
+            .store()
+            .task(self.task(title))
+            .expect("the store answers")
+            .expect("a task");
+        let id = found.holder()?;
+        self.members
+            .iter()
+            .find(|(_, m)| **m == id)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// How many of its failures `title` has at its holder's rank.
+    fn failures(&self, title: &str) -> u32 {
+        self.hq
+            .loop_failures(self.task(title))
+            .expect("the store answers")
+    }
+
+    /// A reading `name`'s running turn takes, as the node records it: its receipt's id.
+    fn reads(&mut self, name: &str, tool: &str, args: &str, got: &str) -> i64 {
+        let context = self.turn_of(name);
+        self.hq
+            .record_receipt(
+                &context.token,
+                &Called {
+                    tool: tool.to_owned(),
+                    args: args.to_owned(),
+                    excerpt: got.to_owned(),
+                    ok: true,
+                    act: false,
+                    confidential: false,
+                },
+            )
+            .expect("the node's receipt")
+    }
+
+    /// `name`'s running turn ends, and HQ ticks.
+    fn ends_turn(&mut self, name: &str) {
+        let context = self.turn_of(name);
+        self.hq.runner().finish(context.run, true);
+        self.tick();
+    }
+
+    /// The worker ends `name`'s running turn at its prompt's budget: the relay has metered
+    /// `read` prompt tokens of the turn's calls, and the worker posts `text` as the turn's last
+    /// word, marked as going on (only the worker sets the mark); the turn ends. What HQ
+    /// answered is kept as the answer, and returned.
+    fn runs_out_of_room(&mut self, name: &str, read: i64, text: &str) -> String {
+        let context = self.turn_of(name);
+        let task = context.task.expect("a turn on an item");
+        self.hq
+            .note_tokens(context.run, read, 0, 0, 500)
+            .expect("the relay meters the turn's calls");
+        let said = self
+            .use_tool(
+                name,
+                "post",
+                &json!({ "task": task.0, "last_word": true, "continues": true, "text": text }),
+            )
+            .unwrap_or_else(|| panic!("the last word is posted: {:?}", self.refused));
+        self.answer = Some(said.clone());
+        self.ends_turn(name);
+        said
+    }
+
+    /// `name` asks for review of `task` in its running turn, saying `reason` and citing
+    /// `evidence` (the `set_status` tool's own), and its turn ends.
+    fn asks_for_review(
+        &mut self,
+        name: &str,
+        task: TaskId,
+        reason: &str,
+        evidence: &serde_json::Value,
+    ) {
+        self.use_tool(
+            name,
+            "set_status",
+            &json!({ "task": task.0, "status": "in_review", "reason": reason,
+                     "evidence": evidence }),
+        )
+        .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        self.ends_turn(name);
+    }
+
+    /// The reviewer's turn on `task`: it was asked to review, and gives its verdict with
+    /// `notes` (a pass citing a reading of its own), and its turn ends.
+    fn reviews(&mut self, name: &str, task: TaskId, approve: bool, notes: &str) {
+        let member = self.member(name);
+        assert!(
+            self.hq
+                .wakes()
+                .expect("the store answers")
+                .iter()
+                .any(|w| w.member == member && w.reason == WakeReason::ReviewRequested),
+            "{name} is asked to review #{}",
+            task.0
+        );
+        let mut args = json!({ "task": task.0, "notes": notes,
+            "verdict": if approve { "approve" } else { "send_back" } });
+        if approve {
+            let reading = self.reads(name, "container_logs", "gluetun", "healthy");
+            args["evidence"] = json!([[format!("r{reading}")]]);
+        }
+        self.use_tool(name, "review", &args)
+            .unwrap_or_else(|| panic!("the review is taken: {:?}", self.refused));
+        self.ends_turn(name);
+    }
 }
 
 /// Dollars as the owner writes them, in the ledger's micros.
@@ -782,13 +944,7 @@ impl Office {
 
 #[when(regex = r"^(\w+)'s turn ends$")]
 fn turn_ends(w: &mut Office, name: String) {
-    let context = w
-        .turns
-        .get(&name)
-        .unwrap_or_else(|| panic!("{name}'s turn has not started"))
-        .clone();
-    w.hq.runner().finish(context.run, true);
-    w.tick();
+    w.ends_turn(&name);
 }
 
 /// The member takes its task and hands it in, citing the task as what counts (the owner's
@@ -799,15 +955,13 @@ fn submits(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
     w.use_tool(&name, "claim", &json!({ "task": task.0 }))
         .expect("the member takes its task");
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "ready for a look",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .expect("the work goes to review");
     // Its turn is over; the tester's wake was held while it ran on the task.
-    turn_ends(w, name);
+    w.asks_for_review(
+        &name,
+        task,
+        "ready for a look",
+        &json!([format!("task {}", task.0)]),
+    );
 }
 
 #[when(expr = "the owner drops the task {string}")]

@@ -5,9 +5,8 @@
 use cucumber::{given, then, when};
 use serde_json::json;
 
-use endora_team::application::engine::Called;
-use endora_team::application::{Author, NewTask, Submission, TeamStore};
-use endora_team::domain::{Criterion, Priority};
+use endora_team::application::{Submission, TeamStore};
+use endora_team::domain::Criterion;
 
 use super::Office;
 
@@ -26,23 +25,7 @@ fn loop_has_item_with_criteria(
         .iter()
         .map(|row| Criterion::new(&row[0], false))
         .collect();
-    let project = w.project(&project).id;
-    let goal = w.goal();
-    w.hq.add_task_with(
-        Author::Owner,
-        NewTask {
-            goal,
-            project: Some(project),
-            parent: None,
-            title,
-            description: String::new(),
-            assignee: None,
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-        &criteria,
-    )
-    .expect("the item is on the loop's plan");
+    w.loop_item(&project, &title, "", &criteria);
 }
 
 /// The node's `repo_submit`, as it tells HQ: the branch, with its one workflow at its head.
@@ -100,16 +83,7 @@ fn asks_for_review(w: &mut Office, name: String, title: String) {
         .iter()
         .map(|_| json!([format!("task {}", task.0)]))
         .collect();
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "ready for a look",
-                 "evidence": evidence }),
-    )
-    .expect("the work goes to review");
-    let context = w.turn_of(&name);
-    w.hq.runner().finish(context.run, true);
-    w.tick();
+    w.asks_for_review(&name, task, "ready for a look", &json!(evidence));
 }
 
 #[then(expr = "HQ's checks on {string} say {string}")]
@@ -132,20 +106,7 @@ fn checks_say(w: &mut Office, title: String, said: String) {
 #[when(expr = "{word} passes {string} on a reading of her own")]
 fn passes_on_own_reading(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
-    let context = w.turn_of(&name);
-    let reading =
-        w.hq.record_receipt(
-            &context.token,
-            &Called {
-                tool: "repo_checkout".to_owned(),
-                args: String::new(),
-                excerpt: "checked out the branch".to_owned(),
-                ok: true,
-                act: false,
-                confidential: false,
-            },
-        )
-        .expect("the node's receipt");
+    let reading = w.reads(&name, "repo_checkout", "", "checked out the branch");
     let found =
         w.hq.store()
             .task(task)

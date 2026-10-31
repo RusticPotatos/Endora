@@ -6,7 +6,7 @@
 //! Models propose; these rules decide: who may lead and propose, whether a task fits, whether
 //! a cap fits in the pool, and when a project has spent its cap.
 
-use super::money::{DOLLAR, Micros};
+use super::money::Micros;
 use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, TaskId};
 
 /// Of its cap, the share a project may spend before the owner hears of it, once a month.
@@ -299,34 +299,7 @@ pub const fn month_around(at: Millis) -> (Millis, Millis) {
     (month_start(month), month_start(month + 1))
 }
 
-/// An amount as dollars and cents: `$12.50`.
-#[must_use]
-pub fn dollars(amount: Micros) -> String {
-    let cents = (amount + 5_000).div_euclid(10_000);
-    format!("${}.{:02}", cents.div_euclid(100), cents.rem_euclid(100))
-}
-
-/// An amount the owner or the CEO wrote in dollars (`25`, `$12.50`), if it reads as one
-/// above nothing, to the cent.
-#[must_use]
-pub fn read_dollars(text: &str) -> Option<Micros> {
-    let text = text.trim().trim_start_matches('$').trim();
-    let (whole, cents) = text.split_once('.').unwrap_or((text, ""));
-    if whole.is_empty() && cents.is_empty() {
-        return None;
-    }
-    let whole: i64 = if whole.is_empty() {
-        0
-    } else {
-        whole.parse().ok()?
-    };
-    if cents.len() > 2 || !cents.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let cents: i64 = format!("{cents:0<2}").parse().ok()?;
-    let amount = whole.checked_mul(DOLLAR)?.checked_add(cents * 10_000)?;
-    (amount > 0).then_some(amount)
-}
+pub use endora_kernel::money::{dollars, read_dollars};
 
 /// The tools a project's work is given, when the owner narrows them (the Holodeck plan's phase
 /// 4): kept as one setting a project, a JSON list of tool names, or `null` for none. A turn on
@@ -383,7 +356,7 @@ pub fn tools_given(list: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::money::POOL_PER_MONTH;
+    use crate::domain::money::{DOLLAR, POOL_PER_MONTH};
 
     #[test]
     fn a_checkout_brings_the_image_lookup_and_nothing_else_does() {

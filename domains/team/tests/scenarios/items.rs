@@ -4,12 +4,11 @@
 //! office's chess written out in PGN and the model league (ADR 0135).
 
 use cucumber::{given, then, when};
-use endora_team::application::engine::Called;
 use endora_team::application::office_ports::OfficeStore;
 use endora_team::application::receipt_ports::ReceiptStore;
 use endora_team::application::run_ports::RunStore;
-use endora_team::application::{Author, NewTask, Submission, TeamStore};
-use endora_team::domain::{Criterion, Priority, Role, RunStatus, TaskId, WakeReason};
+use endora_team::application::{Author, Submission, TeamStore};
+use endora_team::domain::{Criterion, RunStatus, TaskId, WakeReason};
 use serde_json::json;
 
 use super::{Office, micros};
@@ -20,47 +19,6 @@ const OUT_OF_ROOM: &str =
     "The turn's prompt reached its budget: it ends here and goes on in a fresh turn.";
 
 impl Office {
-    /// A loop item: the owner puts it on the loop's plan, for nobody yet.
-    fn loop_item(&mut self, project: &str, title: &str, description: &str, criteria: &[Criterion]) {
-        let goal = self.goal();
-        let project = self.project(project).id;
-        let task = NewTask {
-            goal,
-            project: Some(project),
-            parent: None,
-            title: title.to_owned(),
-            description: description.to_owned(),
-            assignee: None,
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        };
-        // Work with criteria is handed out as the owner's console does; without, as the plan's.
-        let added = if criteria.is_empty() {
-            self.hq.add_task(Author::Owner, task)
-        } else {
-            self.hq.add_task_with(Author::Owner, task, criteria)
-        };
-        if self.note(added).is_none() {
-            panic!("the owner puts work on a loop: {:?}", self.refused);
-        }
-    }
-
-    /// Who holds `title` now, by name, as the HQ screen shows it.
-    fn holder_of(&self, title: &str) -> Option<String> {
-        let task = self.task(title);
-        let found = self
-            .hq
-            .store()
-            .task(task)
-            .expect("the store answers")
-            .expect("a task");
-        let id = found.owner.or(found.assignee)?;
-        self.members
-            .iter()
-            .find(|(_, m)| **m == id)
-            .map(|(name, _)| name.clone())
-    }
-
     /// The newest reading `name`'s running turn took, as it is cited: `r12`.
     fn newest_reading(&mut self, name: &str) -> String {
         let run = self.turn_of(name).run;
@@ -76,74 +34,6 @@ impl Office {
             .unwrap_or_else(|| panic!("{name}'s turn took no reading"));
         format!("r{newest}")
     }
-
-    /// `name` reads a container's logs in its running turn, as the node records the reading.
-    fn reads_logs(&mut self, name: &str, container: &str, got: &str) {
-        let context = self.turn_of(name);
-        self.hq
-            .record_receipt(
-                &context.token,
-                &Called {
-                    tool: "container_logs".to_owned(),
-                    args: container.to_owned(),
-                    excerpt: got.to_owned(),
-                    ok: true,
-                    act: false,
-                    confidential: false,
-                },
-            )
-            .expect("the node's receipt");
-    }
-
-    /// `name`'s running turn ends, and HQ ticks.
-    pub(super) fn ends_turn(&mut self, name: &str) {
-        let context = self.turn_of(name);
-        self.hq.runner().finish(context.run, true);
-        self.tick();
-    }
-
-    /// The worker ends `name`'s running turn at its prompt's budget: the relay has metered
-    /// `read` prompt tokens of the turn's calls, and the worker posts what the model said on the
-    /// way as the turn's last word, marked as going on (only the worker sets the mark). What HQ
-    /// answered is kept as the answer.
-    fn runs_out_of_room(&mut self, name: &str, read: i64, said: &str) {
-        let context = self.turn_of(name);
-        let task = context.task.expect("a turn on an item");
-        self.hq
-            .note_tokens(context.run, read, 0, 0, 500)
-            .expect("the relay meters the turn's calls");
-        self.answer = self.use_tool(
-            name,
-            "post",
-            &json!({ "task": task.0, "last_word": true, "continues": true,
-                     "text": format!("{said}\n\n{OUT_OF_ROOM}") }),
-        );
-        assert!(self.answer.is_some(), "refused: {:?}", self.refused);
-        self.ends_turn(name);
-    }
-
-    /// `name` asks for review of `task` in its running turn, saying `reason` and citing
-    /// `evidence`.
-    fn asks_for_review(&mut self, name: &str, task: TaskId, reason: &str, evidence: &str) {
-        self.use_tool(
-            name,
-            "set_status",
-            &json!({ "task": task.0, "status": "in_review", "reason": reason,
-                     "evidence": [evidence] }),
-        )
-        .expect("the work goes to review");
-    }
-
-    /// `reviewer`'s turn on the item sends it back with `notes`, and ends.
-    fn sends_back(&mut self, reviewer: &str, task: TaskId, notes: &str) {
-        self.use_tool(
-            reviewer,
-            "review",
-            &json!({ "task": task.0, "verdict": "send_back", "notes": notes }),
-        )
-        .expect("the reviewer sends the work back");
-        self.ends_turn(reviewer);
-    }
 }
 
 // --- The team and its loops -------------------------------------------------------------------
@@ -157,15 +47,7 @@ fn one_team_of_models(w: &mut Office, step: &cucumber::gherkin::Step) {
         .as_ref()
         .expect("the members are the step's table");
     for row in table.rows.iter().skip(1) {
-        let (name, model) = (row[0].clone(), row[1].as_str());
-        let role = match model {
-            "opus" => Role::Ceo,
-            "sonnet" | "haiku" => Role::Lead,
-            _ => Role::Developer,
-        };
-        let id = w.hq.hire(&name, role, 10, 2, 0).expect("HQ hires");
-        w.hq.set_model(id, model).expect("a model Endora has");
-        w.members.insert(name, id);
+        w.hires_model(&row[0], &row[1]);
     }
 }
 
@@ -184,10 +66,7 @@ fn a_loop(w: &mut Office, title: String, goal: String) {
             .map(|m| m.id)
             .min_by_key(|id| id.0)
             .expect("a team");
-    let id =
-        w.hq.add_project(goal, &title, "the fork's work", lead, None)
-            .expect("the owner adds the loop");
-    w.projects.insert(title, id);
+    w.makes_loop(&title, lead);
 }
 
 #[given(regex = r#"^the owner sets the loop "(.+)" to (\d+) items? at a time$"#)]
@@ -272,13 +151,12 @@ fn no_turn_waiting_on(w: &mut Office, name: String, title: String) {
 
 #[then(regex = r#"^"(.+)" has (no|\d+) failures?$"#)]
 fn has_failures(w: &mut Office, title: String, count: String) {
-    let task = w.task(&title);
     let wanted: u32 = if count == "no" {
         0
     } else {
         count.parse().expect("a count")
     };
-    assert_eq!(w.hq.loop_failures(task).expect("the store answers"), wanted);
+    assert_eq!(w.failures(&title), wanted);
 }
 
 // --- Work on an item ----------------------------------------------------------------------------
@@ -295,15 +173,19 @@ fn takes_and_reads_logs(
     let task = w.task(&title);
     w.use_tool(&name, "claim", &json!({ "task": task.0 }))
         .expect("the member takes its item");
-    w.reads_logs(&name, &container, &got);
+    w.reads(&name, "container_logs", &container, &got);
 }
 
 #[when(regex = r#"^(\w+) asks for review of "(.+)", citing (?:his|her) reading$"#)]
 fn asks_for_review_citing(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
     let reading = w.newest_reading(&name);
-    w.asks_for_review(&name, task, "Done, as the reading shows.", &reading);
-    w.ends_turn(&name);
+    w.asks_for_review(
+        &name,
+        task,
+        "Done, as the reading shows.",
+        &json!([reading]),
+    );
 }
 
 /// The member quotes two lines it says its newest reading holds, in backticks, as a worker does.
@@ -314,8 +196,7 @@ fn asks_for_review_quoting(w: &mut Office, name: String, title: String, one: Str
     let task = w.task(&title);
     let reading = w.newest_reading(&name);
     let reason = format!("Done. {reading} shows `{one}` and `{two}`.");
-    w.asks_for_review(&name, task, &reason, &reading);
-    w.ends_turn(&name);
+    w.asks_for_review(&name, task, &reason, &json!([reading]));
 }
 
 /// The node took the member's branch and tells HQ the files it changes, and its diff.
@@ -366,7 +247,7 @@ fn submits_branch_with_diff(
 #[when(regex = r#"^(\w+) sends "(.+)" back: "(.+)"$"#)]
 fn sends_back_once(w: &mut Office, reviewer: String, title: String, notes: String) {
     let task = w.task(&title);
-    w.sends_back(&reviewer, task, &notes);
+    w.reviews(&reviewer, task, false, &notes);
 }
 
 /// The item's holder asks for review and the reviewer sends it back, `times` times over: each
@@ -380,10 +261,9 @@ fn sends_back_times(w: &mut Office, reviewer: String, title: String, times: usiz
             &worker,
             task,
             "Ready for a look.",
-            &format!("task {}", task.0),
+            &json!([format!("task {}", task.0)]),
         );
-        w.ends_turn(&worker);
-        w.sends_back(&reviewer, task, &notes);
+        w.reviews(&reviewer, task, false, &notes);
     }
 }
 
@@ -396,7 +276,7 @@ fn tokens(written: &str) -> i64 {
     regex = r#"^(\w+)'s turn runs out of room after reading ([\d,]+) prompt tokens, having said "(.+)"$"#
 )]
 fn turn_runs_out_of_room(w: &mut Office, name: String, read: String, said: String) {
-    w.runs_out_of_room(&name, tokens(&read), &said);
+    w.runs_out_of_room(&name, tokens(&read), &format!("{said}\n\n{OUT_OF_ROOM}"));
 }
 
 #[then(regex = r#"^the thread of "(.+)" shows Endora's handover to (\w+)$"#)]

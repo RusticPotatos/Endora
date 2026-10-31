@@ -8,8 +8,8 @@ use cucumber::{given, then, when};
 use serde_json::json;
 
 use endora_team::application::run_ports::RunStore;
-use endora_team::application::{Author, NewTask, TeamStore};
-use endora_team::domain::{Brain, DeskId, Priority, Receipt, Role, RunStatus, TaskStatus};
+use endora_team::application::{Author, TeamStore};
+use endora_team::domain::{Brain, DeskId, Receipt, RunStatus, TaskStatus};
 use endora_team::infrastructure::Script;
 
 use super::Office;
@@ -45,60 +45,36 @@ impl Office {
 
 #[given("the five ranked members Mara, Kit, Ada, Rae and Bo")]
 fn five_ranked_members(w: &mut Office) {
-    for (name, model, role) in [
-        ("Mara", "opus", Role::Ceo),
-        ("Kit", "sonnet", Role::Lead),
-        ("Ada", "haiku", Role::Lead),
-        ("Rae", "mac", Role::Developer),
-        ("Bo", "local", Role::Developer),
+    for (name, model) in [
+        ("Mara", "opus"),
+        ("Kit", "sonnet"),
+        ("Ada", "haiku"),
+        ("Rae", "mac"),
+        ("Bo", "local"),
     ] {
-        let id = w.hq.hire(name, role, 10, 2, 0).expect("hired");
-        w.hq.set_model(id, model).expect("its model");
-        w.members.insert(name.to_owned(), id);
+        w.hires_model(name, model);
     }
 }
 
 #[given(expr = "the loop {string}")]
 fn the_loop(w: &mut Office, title: String) {
-    let goal = match w.goal {
-        Some(goal) => goal,
-        None => {
-            let goal =
-                w.hq.set_goal(
-                    "Keep the home lab healthy",
-                    "the owner asked",
-                    Author::Owner,
-                )
-                .expect("a goal");
-            w.goal = Some(goal);
-            goal
-        }
-    };
+    if w.goal.is_none() {
+        let goal =
+            w.hq.set_goal(
+                "Keep the home lab healthy",
+                "the owner asked",
+                Author::Owner,
+            )
+            .expect("a goal");
+        w.goal = Some(goal);
+    }
     let lead = w.member("Mara");
-    let project =
-        w.hq.add_project(goal, &title, "the fork's work", lead, None)
-            .expect("a project");
-    w.projects.insert(title, project);
+    w.makes_loop(&title, lead);
 }
 
 #[given(expr = "the loop {string} has the item {string}")]
 fn loop_has_item(w: &mut Office, project: String, title: String) {
-    let project = w.project(&project).id;
-    let goal = w.goal();
-    w.add_task(
-        Author::Owner,
-        NewTask {
-            goal,
-            project: Some(project),
-            parent: None,
-            title,
-            description: String::new(),
-            assignee: None,
-            priority: Priority::Normal,
-            waits_on: Vec::new(),
-        },
-    )
-    .expect("the item is on the loop's plan");
+    w.loop_item(&project, &title, "", &[]);
 }
 
 #[given(expr = "the loop {string} starts at {word}'s rank")]
@@ -149,14 +125,8 @@ fn every_try_fails(w: &mut Office, name: String, title: String) {
 
 #[then(expr = "{string} has no failures and is still {word}'s")]
 fn no_failures_still_held(w: &mut Office, title: String, name: String) {
-    let task = w.task(&title);
-    assert_eq!(w.hq.loop_failures(task).expect("the store answers"), 0);
-    let found =
-        w.hq.store()
-            .task(task)
-            .expect("the store answers")
-            .expect("the item");
-    assert_eq!(found.owner.or(found.assignee), Some(w.member(&name)));
+    assert_eq!(w.failures(&title), 0);
+    assert_eq!(w.holder_of(&title), Some(name));
 }
 
 #[then(regex = r#"^(\w+) has been woken on "(.+)" (\d+) times?$"#)]
@@ -238,7 +208,7 @@ fn waits_at_rank(w: &mut Office, title: String, name: String) {
             .expect("the store answers")
             .expect("the item");
     assert_ne!(found.status, TaskStatus::Blocked, "{found:?}");
-    assert_eq!(found.owner.or(found.assignee), Some(w.member(&name)));
+    assert_eq!(w.holder_of(&title), Some(name));
     let desk: Vec<_> = w
         .waiting_on_desk("")
         .into_iter()
@@ -259,19 +229,12 @@ fn waits_at_rank(w: &mut Office, title: String, name: String) {
 fn ends_at_budget(w: &mut Office, name: String, title: String, times: String) {
     let task = w.task(&title);
     for _ in 0..times.parse::<usize>().unwrap_or(1) {
-        let turn = w.turn_of(&name);
-        w.hq.note_tokens(turn.run, 50_000, 0, 0, 500)
-            .expect("the relay meters the turn");
-        let said = w
-            .use_tool(
-                &name,
-                "post",
-                &json!({ "task": task.0, "last_word": true, "continues": true,
-                         "text": "The turn's prompt reached its budget." }),
-            )
-            .expect("the last word is posted");
+        assert_eq!(
+            w.turn_of(&name).task,
+            Some(task),
+            "{name}'s turn is on {title:?}"
+        );
+        let said = w.runs_out_of_room(&name, 50_000, "The turn's prompt reached its budget.");
         assert!(!said.contains("not continued"), "{said}");
-        w.hq.runner().finish(turn.run, true);
-        w.tick();
     }
 }

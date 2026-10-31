@@ -21,6 +21,7 @@ pub mod autonomy;
 pub mod error;
 pub mod ids;
 pub mod lab;
+pub mod money;
 pub mod prompt_budget;
 pub mod reversibility;
 pub mod secrets;

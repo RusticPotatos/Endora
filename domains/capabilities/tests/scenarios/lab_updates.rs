@@ -4,11 +4,10 @@
 //! (`app/node/src/api/contracts.rs`).
 
 use cucumber::{given, then, when};
-use endora_capabilities::credits::DAY_MS;
 use endora_capabilities::lab_updates::{ImageUpdates, summary, updated_at};
 use serde_json::{Value, json};
 
-use super::{Bridge, credit::day_of};
+use super::Bridge;
 
 /// The lab's containers and what Endora has noted of them.
 #[derive(Debug, Default)]
@@ -60,10 +59,11 @@ impl Lab {
 /// `date` (`YYYY-MM-DD`) at `hh:mm` on the owner's clock, in UTC milliseconds.
 fn at(w: &Bridge, date: &str, hh_mm: &str) -> i64 {
     let (hour, minute) = hh_mm.split_once(':').expect("a time is hh:mm");
-    let minutes: i64 = hour.parse::<i64>().expect("an hour") * 60
-        + minute.parse::<i64>().expect("a minute")
-        - w.credit.offset();
-    day_of(date) * DAY_MS + minutes * 60_000
+    w.credit.at(
+        date,
+        hour.parse().expect("an hour"),
+        minute.parse().expect("a minute"),
+    )
 }
 
 /// Long before the scenario: when a container Endora first sees was made.

@@ -7,8 +7,6 @@ use cucumber::{given, then, when};
 use serde_json::json;
 
 use endora_team::application::TeamStore;
-use endora_team::application::engine::Called;
-use endora_team::domain::WakeReason;
 
 use super::Office;
 
@@ -17,46 +15,6 @@ impl Office {
     fn lessons_of(&self, title: &str) -> Vec<String> {
         let project = self.project(title).id;
         self.hq.loop_lessons(project).expect("the store answers")
-    }
-
-    /// A reading `name`'s running turn takes: the node's receipt of it.
-    fn reading(&mut self, name: &str) -> i64 {
-        let context = self.turn_of(name);
-        self.hq
-            .record_receipt(
-                &context.token,
-                &Called {
-                    tool: "container_logs".to_owned(),
-                    args: "gluetun".to_owned(),
-                    excerpt: "healthy".to_owned(),
-                    ok: true,
-                    act: false,
-                    confidential: false,
-                },
-            )
-            .expect("the node's receipt")
-    }
-
-    /// The reviewer's turn on `title`: it was asked to review it, and reviews it with `notes`.
-    fn reviews(&mut self, name: &str, title: &str, approve: bool, notes: &str) {
-        let task = self.task(title);
-        let member = self.member(name);
-        assert!(
-            self.hq
-                .wakes()
-                .expect("the store answers")
-                .iter()
-                .any(|w| w.member == member && w.reason == WakeReason::ReviewRequested),
-            "{name} is asked to review {title:?}"
-        );
-        let mut args = json!({ "task": task.0, "notes": notes,
-            "verdict": if approve { "approve" } else { "send_back" } });
-        if approve {
-            args["evidence"] = json!([[format!("r{}", self.reading(name))]]);
-        }
-        self.use_tool(name, "review", &args)
-            .unwrap_or_else(|| panic!("the review is taken: {:?}", self.refused));
-        self.ends_turn(name);
     }
 
     /// The briefing `name`'s running turn on `title` was told.
@@ -99,20 +57,14 @@ fn same_opening(w: &mut Office, one: String, first: String, other: String, secon
 fn asks_for_review(w: &mut Office, name: String, title: String, reason: String) {
     let task = w.task(&title);
     w.use_tool(&name, "claim", &json!({ "task": task.0 }));
-    let reading = w.reading(&name);
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": reason,
-                 "evidence": [[format!("r{reading}")]] }),
-    )
-    .unwrap_or_else(|| panic!("the item goes to review: {:?}", w.refused));
-    w.ends_turn(&name);
+    let reading = w.reads(&name, "container_logs", "gluetun", "healthy");
+    w.asks_for_review(&name, task, &reason, &json!([[format!("r{reading}")]]));
 }
 
 #[when(regex = r#"^(\w+) sends "(.+)" back, saying "(.+)"$"#)]
 fn sends_back(w: &mut Office, name: String, title: String, notes: String) {
-    w.reviews(&name, &title, false, &notes);
+    let task = w.task(&title);
+    w.reviews(&name, task, false, &notes);
 }
 
 #[when(
@@ -124,7 +76,8 @@ fn approves_noting(w: &mut Office, name: String, title: String, lesson: String) 
         "x".repeat(161),
         "a1".repeat(18)
     );
-    w.reviews(&name, &title, true, &notes);
+    let task = w.task(&title);
+    w.reviews(&name, task, true, &notes);
 }
 
 #[given(expr = "the loop {string} has the lessons:")]

@@ -215,13 +215,7 @@ pub const fn warn(left: i64, low: i64, told: bool) -> (bool, bool) {
     (!told, true)
 }
 
-/// Dollars from micros, for the owner: `$4.21`.
-#[must_use]
-pub fn dollars(micros: i64) -> String {
-    #[allow(clippy::cast_precision_loss)]
-    let d = micros as f64 / 1_000_000.0;
-    format!("${d:.2}")
-}
+pub use endora_kernel::money::dollars;
 
 #[cfg(test)]
 mod tests {

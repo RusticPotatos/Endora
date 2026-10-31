@@ -29,9 +29,6 @@ impl Office {
         let turn = self.turn_of(name);
         assert_eq!(turn.task, Some(task), "{name}'s turn is on {title:?}");
         self.use_tool(name, "claim", &json!({ "task": task.0 }));
-        self.hq
-            .note_tokens(turn.run, 100_000, 0, 0, 2_000)
-            .expect("the relay's count is taken");
         if let Some(slug) = kept {
             let kept_before = self.hq.store().branches().expect("the store answers").len();
             self.hq
@@ -54,13 +51,7 @@ impl Office {
                 )
                 .expect("the work in progress is kept");
         }
-        self.use_tool(
-            name,
-            "post",
-            &json!({ "task": task.0, "last_word": true, "continues": true, "text": OUT_OF_ROOM }),
-        );
-        self.hq.runner().finish(turn.run, true);
-        self.tick();
+        self.runs_out_of_room(name, 100_000, OUT_OF_ROOM);
     }
 
     /// What `name` reads first on `title`: its turn's `my_turn`, the briefing and the thread.
@@ -152,15 +143,6 @@ fn says_check_out(w: &mut Office, name: String, title: String, slug: String) {
 
 #[then(regex = r#"^"(.+)" has (\d+) failures? and is still (\w+)'s$"#)]
 fn failures_still_held(w: &mut Office, title: String, failures: u32, name: String) {
-    let task = w.task(&title);
-    assert_eq!(
-        w.hq.loop_failures(task).expect("the store answers"),
-        failures
-    );
-    let found =
-        w.hq.store()
-            .task(task)
-            .expect("the store answers")
-            .expect("the item");
-    assert_eq!(found.owner.or(found.assignee), Some(w.member(&name)));
+    assert_eq!(w.failures(&title), failures);
+    assert_eq!(w.holder_of(&title), Some(name));
 }
