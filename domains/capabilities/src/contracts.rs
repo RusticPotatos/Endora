@@ -143,7 +143,7 @@ pub fn all() -> Vec<Contract> {
     vec![
         Contract {
             name: HOMELAB_STATUS,
-            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items; each container's name, state, status and health. Marked stale when unseen for a minute. Free.",
+            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items; each container's name, state, status and health; when one was updated to a new image. Marked stale when unseen for a minute. Free.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {} }),
@@ -751,7 +751,13 @@ mod tests {
             (
                 HOMELAB_STATUS,
                 300,
-                &["docker, sonarr, radarr", "health", "stale", "Free"][..],
+                &[
+                    "docker, sonarr, radarr",
+                    "health",
+                    "new image",
+                    "stale",
+                    "Free",
+                ][..],
             ),
             (
                 CONTAINER_LOGS,

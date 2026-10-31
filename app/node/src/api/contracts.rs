@@ -20,6 +20,7 @@ use endora_capabilities::contracts::{
     REPO_CHECKOUT, REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
 };
 use endora_capabilities::lab_map;
+use endora_capabilities::lab_updates;
 use endora_capabilities::registry;
 use endora_capabilities::repo::{self, Mirror};
 use std::path::PathBuf;
@@ -521,7 +522,11 @@ fn homelab_status(state: &AppState) -> Done {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let seen = compact(&snapshot, state.clock.now().unix_millis());
+    let seen = compact(
+        &snapshot,
+        state.clock.now().unix_millis(),
+        state.clock.utc_offset_minutes(),
+    );
     Done {
         text: seen.to_string(),
         said: "read the home lab's state".to_owned(),
@@ -530,8 +535,10 @@ fn homelab_status(state: &AppState) -> Done {
 
 /// The home lab as a turn reads it: each service's state and its items, the containers by
 /// name, state, status text, health and exit code, and whether it is all stale (unseen for a
-/// minute, or never seen). Ids are left out: a contract names a container.
-fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
+/// minute, or never seen). Ids are left out: a contract names a container. A container last
+/// created again on a new image says when (`updated`), and the docker service has one line of
+/// the last day's updates (`updates`, D11); its creation time and image id are left out.
+fn compact(snapshot: &serde_json::Value, now: i64, offset: i64) -> serde_json::Value {
     let observed = snapshot["observed_at_ms"].as_i64().unwrap_or(0);
     let stale = observed == 0 || now - observed > STALE_AFTER_MS;
     let services: Vec<serde_json::Value> = snapshot["services"]
@@ -565,6 +572,9 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
                     if let Some(code) = item["exit"].as_i64() {
                         container["exit_code"] = code.into();
                     }
+                    if let Some(when) = lab_updates::updated_at(item, offset) {
+                        container["updated"] = when.into();
+                    }
                     container
                 })
                 .collect();
@@ -574,6 +584,12 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
             }
             if let Some(error) = service["error"].as_str() {
                 out["error"] = error.into();
+            }
+            if let Some(line) = docker
+                .then(|| lab_updates::summary(service, now, offset))
+                .flatten()
+            {
+                out["updates"] = line.into();
             }
             out
         })
@@ -1993,10 +2009,18 @@ mod tests {
         assert_eq!(docker["items"][0]["updated"], when.as_str());
         assert!(docker["items"][1]["updated"].is_null(), "{docker}");
         let line = docker["updates"].as_str().unwrap();
-        assert!(line.starts_with("Updated ") && line.contains("by Watchtower") && line.contains("sonarr"), "{line}");
+        assert!(
+            line.starts_with("Updated ")
+                && line.contains("by Watchtower")
+                && line.contains("sonarr"),
+            "{line}"
+        );
         assert!(!line.contains("radarr"), "{line}");
         for never in ["abab", "cdcd", "created", "updated_at_ms", "since"] {
-            assert!(!said["text"].as_str().unwrap().contains(never), "{never}: {said}");
+            assert!(
+                !said["text"].as_str().unwrap().contains(never),
+                "{never}: {said}"
+            );
         }
     }
 

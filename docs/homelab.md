@@ -441,7 +441,9 @@ python3 scripts/homelab-docker-proxy.py
 ```
 
 It binds only loopback on port 9876 and accepts exactly `GET /version`,
-`GET /containers/json?all=true`, and `GET /containers/<name>/json` for a name
+`GET /containers/json?all=true` (each container's name, state, status, creation time and
+image id, which tell Watchtower's updates from restarts; no label or anything else), and
+`GET /containers/<name>/json` for a name
 matching `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` (the team's lab map, ADR 0112: only
 the id, name, image, state, restart policy, network mode and the compose
 service, project and `depends_on` labels are passed on; never the environment,

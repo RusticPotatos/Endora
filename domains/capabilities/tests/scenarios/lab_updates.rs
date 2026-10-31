@@ -36,8 +36,10 @@ impl Lab {
             })
             .collect();
         if self.watchtower {
-            items.push(json!({ "name": "watchtower", "state": "running", "health": "unknown",
-                               "created_ms": 0, "image": "w1" }));
+            items.push(
+                json!({ "name": "watchtower", "state": "running", "health": "unknown",
+                               "created_ms": 0, "image": "w1" }),
+            );
         }
         let mut snapshot = json!({ "observed_at_ms": at, "services": [
             { "name": "docker", "state": "healthy", "items": items },

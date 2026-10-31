@@ -127,5 +127,8 @@ fn the_observer_sees_when_a_container_was_created_and_on_which_image() {
     assert!(result["items"][1]["created_ms"].is_null());
     assert!(result["items"][1]["image"].is_null());
     let said = normalize("docker", &containers).unwrap().to_string();
-    assert!(!said.contains("created") && !said.contains("abab"), "{said}");
+    assert!(
+        !said.contains("created") && !said.contains("abab"),
+        "{said}"
+    );
 }

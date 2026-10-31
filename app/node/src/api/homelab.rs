@@ -162,6 +162,9 @@ pub(crate) fn spawn(state: AppState) {
     ));
     // The containers' names as HQ was last told them, and when.
     let told = Arc::new(std::sync::Mutex::new(None::<(Vec<String>, i64)>));
+    // Each container's creation and image since Endora started, which tell Watchtower's
+    // updates from restarts (D11): in memory, begun again on restart.
+    let mut updates = endora_capabilities::lab_updates::ImageUpdates::new();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -174,7 +177,8 @@ pub(crate) fn spawn(state: AppState) {
                 endora_capabilities::application::observe_homelab(&reader, now)
             })
             .await;
-            if let Ok(snapshot) = result {
+            if let Ok(mut snapshot) = result {
+                updates.observe(&mut snapshot, now);
                 *state
                     .homelab
                     .lock()

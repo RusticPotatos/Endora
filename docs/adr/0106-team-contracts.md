@@ -52,6 +52,24 @@ link), and no credential is sent. HTTPS only, ten seconds and 2 MB an answer, at
 pages of Docker Hub and ten of an OCI list. It is not one of the post-deploy check's lab reads.
 Code: `domains/capabilities/src/registry.rs`.
 
+Amended 2026-10-31 (what Watchtower did, D11): `homelab_status` says what recreated a
+container. The NAS's Watchtower recreates containers on new images every night, and after
+sonarr restarted at 03:24 nobody at HQ could tell an update from a crash. A container last
+created again on a new image now carries `updated` (on the owner's clock, `31 Oct 03:24`), and
+the docker service one line, `updates`: "Updated last night by Watchtower: sonarr, nzbget
+(03:24)", or since when no update was seen. It is inferred from Docker alone, through the
+observer's list route, which now also passes each container's creation time and image id
+(nothing else, no label): a creation time that moved means created again (a restart keeps it),
+and on a different image, updated. The node remembers both since it started, in memory, so
+what happened before is never guessed, and the line says since when it knows; an update
+pulled by a deploy rather than Watchtower looks the same, and is said "by Watchtower" when a
+container of that name is in the lab. Watchtower's own log is not read: the observer has no
+route to logs, and the log can hold notification URLs. Endora's own containers are left out,
+and kept out of Watchtower by a label on every compose service and every runner container:
+Endora is released by its own workflow. A container adds `updated` only when it has one, and
+the line is the day's: the reply stays small (ADR 0142). Code:
+`domains/capabilities/src/lab_updates.rs`.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the
@@ -79,7 +97,7 @@ boundary.
 
 | Contract | Kind | Tier | What it does, and its limits |
 | --- | --- | --- | --- |
-| `homelab_status` | read | Internal | The observer's snapshot, compact: each service's state and items; for each container its name, state, status text, health and exit code. Marked stale when unseen for a minute. No ids. |
+| `homelab_status` | read | Internal | The observer's snapshot, compact: each service's state and items; for each container its name, state, status text, health and exit code, and when it was last recreated on a new image; a line of the last day's updates. Marked stale when unseen for a minute. No ids. |
 | `container_logs` | read | Confidential | The newest 100 lines of one container's log, at most 16 KB, scrubbed of secrets. A name resolved through Portainer; an unknown name is refused, and so is Endora's own. Refused with a plain message when Portainer is not set up. |
 | `restart_container` | automatic act | Internal | Restarts one container through the console's own container action (its allowlist, protection, journal and read-back), with a reason. Never Endora's own, and never what a restart will not fix (below). At most once a container an hour, and three an hour across the team. |
 
