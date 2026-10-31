@@ -387,3 +387,34 @@ back, by the evidence:
   Task 8 cannot be met in any later round either: its window is gone. It stays in the set with
   its words unchanged, and is expected to be not accepted.
 - **A blocked item asked the owner again** about every half hour (915 five times, 920 four).
+
+### Round 2 (30–31 Oct): context sized to the turn, items side by side, the registry tool
+
+Released 30 Oct 22:43 EDT as `7c195ac6`, at the owner's word ("do whatever is needed to push and
+measure the changes against the first round"). It changes several rungs at once, measured
+together:
+- **Context:** context sized to the turn; tools on demand; old results read as stubs; a turn
+  budget with a fresh continuation; gists of long results; a briefing and a review sized to the
+  item (ADR 0142's amendments of 30 Oct).
+- **Loops:** items side by side (two in hand per loop); a handover at each change of hands; HQ's
+  mechanical checks at review.
+- **Tools:** the `image_tags` registry tool.
+- **Fixes:** the review's three most serious fixes (HQ decides out-of-room; moved and quoted
+  owner's files are seen; quotes are checked only against the item's own receipts).
+
+Rae ran on DeepSeek Flash, with the Mac marked busy (the owner's laptop), as at the end of round 1.
+Round 1's open items were set aside first (project 7, "Round 1 (archived)", dropped, history
+kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
+
+| # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |
+|---|---|---|---|---|---|---|
+| 1 | 929 | | | | | |
+| 2 | 930 | | | | | |
+| 3 | 931 | | | | | |
+| 4 | 932 | | | | | |
+| 5 | 933 | | | | | |
+| 6 | 934 | | | | | |
+| 7 | 935 | | | | | |
+| 8 | 938 | | | | | |
+| 9 | 936 | | | | | |
+| 10 | 937 | | | | | |
