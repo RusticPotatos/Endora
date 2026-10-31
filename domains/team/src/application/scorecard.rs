@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 pub mod outcomes;
 
 use super::ports::{DeskItem, Run};
+use crate::domain::by_model;
 use crate::domain::money::{self, DAY_MS, Micros};
 use crate::domain::{Event, MemberId, Millis, Task, TaskId, TaskStatus};
 
@@ -475,6 +476,16 @@ fn cache(runs: &[Run], window: &Window) -> Cache {
         cache.read += run.cache_read_tokens;
     }
     cache
+}
+
+// ---- what each model cost (the owner, 2026-10-31) -----------------------------------------
+
+/// What each model cost over the owner's last seven days ending with `day` and the seven before
+/// them, for the Money card: a row per brain a turn ran on ([`by_model::by_model`]), and each
+/// week's totals.
+#[must_use]
+pub fn by_model_shown(runs: &[Run], day: i64, offset_minutes: i64) -> Value {
+    todo!()
 }
 
 // ---- each team's measures (ADR 0120) ------------------------------------------------------

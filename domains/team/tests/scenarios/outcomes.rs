@@ -2,7 +2,11 @@
 //! screen's "How the team is doing" card, as the snapshot serves it, read after the owner, the
 //! node and the members have done what the scenario says.
 
-use cucumber::then;
+use std::sync::atomic::Ordering;
+
+use cucumber::{given, then, when};
+use endora_team::domain::Brain;
+use endora_team::domain::money::DAY_MS;
 use serde_json::json;
 
 use super::{Office, micros};
@@ -65,4 +69,109 @@ fn the_memory_is_used(w: &mut Office, asks: u64, consults: u64, answered: u64) {
     assert_eq!(memory["record_asked"], json!(asks), "{memory}");
     assert_eq!(memory["consults"]["asked"], json!(consults), "{memory}");
     assert_eq!(memory["consults"]["answered"], json!(answered), "{memory}");
+}
+
+// --- What each model cost (the owner, 2026-10-31) --------------------------------------------
+
+impl Office {
+    /// What each model cost, as the Money card reads it.
+    fn by_model(&self) -> serde_json::Value {
+        self.hq.snapshot().expect("the snapshot is built")["scorecard"]["by_model"].clone()
+    }
+
+    /// The row of the brain the owner calls `label`, if a turn ran on it in either week.
+    fn by_model_row(&self, label: &str) -> Option<serde_json::Value> {
+        let brain = brain_called(label);
+        self.by_model()["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["brain"] == brain.name())
+            .cloned()
+    }
+}
+
+/// The brain the owner calls `label`.
+fn brain_called(label: &str) -> Brain {
+    [
+        Brain::Local,
+        Brain::Mac,
+        Brain::Opus,
+        Brain::Sonnet,
+        Brain::Haiku,
+        Brain::DeepSeek,
+    ]
+    .into_iter()
+    .find(|b| b.label() == label)
+    .unwrap_or_else(|| panic!("no brain is called {label}"))
+}
+
+/// The key of a week in a row: `now` or `before`.
+fn week_of(said: &str) -> &'static str {
+    if said == "this week" { "now" } else { "before" }
+}
+
+#[given(regex = r"^(\d+) days pass$")]
+#[when(regex = r"^(\d+) days pass$")]
+fn days_pass(w: &mut Office, days: i64) {
+    w.clock.0.fetch_add(days * DAY_MS, Ordering::SeqCst);
+    w.tick();
+}
+
+#[then(regex = r"^the cost by model puts (.+) first, then (.+)$")]
+fn by_model_order(w: &mut Office, first: String, second: String) {
+    let shown = w.by_model();
+    let names: Vec<&str> = shown["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|r| r["brain"].as_str())
+        .collect();
+    assert_eq!(
+        names.get(..2),
+        Some(&[brain_called(&first).name(), brain_called(&second).name()][..]),
+        "{shown}"
+    );
+}
+
+#[then(
+    regex = r"^(this week|the week before) (.+?) ran (\d+) turns? for \$(\d+\.\d\d), \$(\d+\.\d\d) a turn(?:, (\d+)% of the spend)?$"
+)]
+fn brain_ran(
+    w: &mut Office,
+    week: String,
+    label: String,
+    turns: u64,
+    spent: f64,
+    per_turn: f64,
+    share: String,
+) {
+    let row = w
+        .by_model_row(&label)
+        .unwrap_or_else(|| panic!("{label} has no row: {}", w.by_model()));
+    let shown = &row[week_of(&week)];
+    assert_eq!(shown["turns"], json!(turns), "{row}");
+    assert_eq!(shown["spent"], json!(micros(spent)), "{row}");
+    assert_eq!(shown["per_turn"], json!(micros(per_turn)), "{row}");
+    if let Ok(share) = share.parse::<u64>() {
+        assert_eq!(shown["share"], json!(share), "{row}");
+    }
+}
+
+#[then(regex = r"^(this week|the week before) (.+?) ran no turns$")]
+fn brain_ran_none(w: &mut Office, week: String, label: String) {
+    let row = w
+        .by_model_row(&label)
+        .unwrap_or_else(|| panic!("{label} has no row: {}", w.by_model()));
+    let shown = &row[week_of(&week)];
+    assert_eq!(shown["turns"], json!(0), "{row}");
+    assert_eq!(shown["per_turn"], serde_json::Value::Null, "{row}");
+}
+
+#[then(regex = r"^(.+?)'s cost went (up|down) and (.+?)'s went (up|down)$")]
+fn costs_went(w: &mut Office, first: String, way: String, second: String, other: String) {
+    for (label, way) in [(first, way), (second, other)] {
+        let row = w.by_model_row(&label).expect("a row");
+        assert_eq!(row["trend"], json!(way), "{row}");
+    }
 }
