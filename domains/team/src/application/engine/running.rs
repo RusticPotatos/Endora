@@ -34,7 +34,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
-        let label = self.settle_label(&mut run)?;
+        // A turn that never started ran nothing: it has no label, so it shows nothing for or
+        // against its member and backs off nothing (ADR 0142, amended 2026-10-31).
+        let label = if runs::is_never_started(why) {
+            run.label = None;
+            None
+        } else {
+            self.settle_label(&mut run)?
+        };
         run.status = status;
         run.ended_at = Some(now);
         run.end_reason = why.to_owned();
@@ -87,6 +94,69 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
         self.after_a_deploy_check(&run)?;
+        Ok(())
+    }
+
+    /// D2 of round 2 (ADR 0142, amended 2026-10-31): open work whose last turn never started (the
+    /// runner could not start the member's runtime) is woken again for that member, as it was
+    /// woken before, once [`runs::wake_again_after`] has passed since that turn ended. A turn
+    /// that never started is no failure of the work, so the item neither counts one nor climbs:
+    /// only a failed check or a send-back moves an item up a rank. Work in review is woken again
+    /// for its reviewer, other work for its holder; anything else has moved on.
+    pub(super) fn wake_after_failed_starts(
+        &self,
+        tasks: &[crate::domain::Task],
+        live: &[Option<TaskId>],
+        now: Millis,
+    ) -> Done<()> {
+        use crate::domain::TaskStatus;
+        let members = self.store.members()?;
+        for task in tasks {
+            if !matches!(
+                task.status,
+                TaskStatus::Todo | TaskStatus::Doing | TaskStatus::InReview
+            ) || live.contains(&Some(task.id))
+                || !self.store.held_wakes(task.id)?.is_empty()
+            {
+                continue;
+            }
+            let mut ended: Vec<Run> = self
+                .store
+                .runs_of(task.id)?
+                .into_iter()
+                .filter(|r| !r.status.live())
+                .collect();
+            ended.sort_by_key(|r| std::cmp::Reverse(r.id));
+            let Some(last) = ended.first() else {
+                continue;
+            };
+            let never = |r: &&Run| {
+                r.member == last.member
+                    && r.status == RunStatus::Failed
+                    && runs::is_never_started(&r.end_reason)
+            };
+            let in_a_row = ended.iter().take_while(never).count();
+            let Some(ended_at) = last.ended_at.filter(|_| in_a_row > 0) else {
+                continue;
+            };
+            if now < ended_at + runs::wake_again_after(in_a_row) {
+                continue;
+            }
+            let holder = task.owner.or(task.assignee);
+            let still_its = match task.status {
+                TaskStatus::InReview => holder != Some(last.member),
+                _ => holder == Some(last.member),
+            };
+            let at_work = members.iter().any(|m| m.id == last.member && m.at_work());
+            if !still_its || !at_work || self.in_a_scenario(task.id)? {
+                continue;
+            }
+            let reason = self
+                .store
+                .wake(last.wake)?
+                .map_or(WakeReason::Retry, |w| w.reason);
+            self.wake_held_lock(last.member, Some(task.id), reason)?;
+        }
         Ok(())
     }
 

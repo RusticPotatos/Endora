@@ -1272,7 +1272,12 @@ fn a_paused_member_is_turned_away_and_a_runner_that_says_no_is_a_retry() {
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     assert_eq!(run.status, RunStatus::RetryWaiting);
-    assert!(run.end_reason.starts_with("could not start"));
+    // A turn the runner would not start never started (ADR 0142, amended 2026-10-31).
+    assert!(
+        run.end_reason.starts_with("never started: could not start"),
+        "{}",
+        run.end_reason
+    );
 }
 
 #[test]

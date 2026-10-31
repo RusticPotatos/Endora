@@ -1704,3 +1704,241 @@ fn a_claude_code_turn_never_continues() {
     assert!(said.contains("not continued"), "{said}");
     assert!(!woken(&hq, f.bo, hard, WakeReason::Continued));
 }
+
+/// Bo's turns, until his item's newest has failed for good.
+fn fail_to_start(hq: &Hq<'_>, clock: &Hands, member: MemberId, task: TaskId) {
+    for _ in 0..10 {
+        hq.tick().unwrap();
+        let newest = hq
+            .store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .max_by_key(|r| r.id)
+            .unwrap();
+        if newest.status == crate::domain::RunStatus::Failed {
+            return;
+        }
+        clock.0.fetch_add(61_000, Ordering::SeqCst);
+    }
+    panic!("the turn did not fail for good");
+}
+
+fn wakes_on(hq: &Hq<'_>, member: MemberId, task: TaskId) -> Vec<super::ports::Wake> {
+    hq.wakes()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.member == member && w.task == Some(task))
+        .collect()
+}
+
+/// D2 of round 2 (31 Oct): Rae's turns failed because the runner could not start her runtime,
+/// and her items sat with nobody woken until the owner wrote on each thread. A turn that never
+/// started did nothing, well or badly: it is no failure of the item and shows nothing, and the
+/// item is woken again for the same member after a wait (ADR 0142, amended 2026-10-31).
+///
+/// Given Bo's item, and a runner that cannot start Bo's runtime,
+/// when every try of Bo's turn on it fails to start,
+/// then the item has no failure and is still Bo's, the turn says it never started and has no
+/// label, nobody is woken for five minutes, and then Bo is woken on it again, as he was.
+#[test]
+fn a_turn_that_never_started_is_no_failure_and_its_item_is_woken_again_later() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.runner()
+        .script(f.bo, crate::infrastructure::Script::NeverStarts);
+    let pin = item(&hq, &f, "Pin the homepage image", Priority::Normal);
+    fail_to_start(&hq, &clock, f.bo, pin);
+    assert_eq!(hq.loop_failures(pin).unwrap(), 0);
+    assert_eq!(assignee(&hq, pin), Some(f.bo));
+    let failed = hq
+        .store()
+        .runs()
+        .unwrap()
+        .into_iter()
+        .rfind(|r| r.task == Some(pin))
+        .unwrap();
+    assert!(
+        crate::domain::runs::is_never_started(&failed.end_reason),
+        "{}",
+        failed.end_reason
+    );
+    assert_eq!(failed.label, None, "a turn that never ran shows nothing");
+    assert_eq!(wakes_on(&hq, f.bo, pin).len(), 1);
+    clock.0.fetch_add(4 * 60_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    assert_eq!(wakes_on(&hq, f.bo, pin).len(), 1, "not before its wait");
+    clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
+    hq.tick().unwrap();
+    let wakes = wakes_on(&hq, f.bo, pin);
+    assert_eq!(wakes.len(), 2, "{wakes:?}");
+    assert_eq!(wakes[1].reason, WakeReason::Assigned, "woken as it was");
+}
+
+/// D3 of round 2 (31 Oct): item 938, blocked and judged, woke Kit about every eleven minutes. A
+/// blocked item in the loops is not stranded work: it is neither nudged nor failed, and only
+/// the owner's word wakes it (ADR 0142, amended 2026-10-31).
+///
+/// Given Bo's item, which he blocks,
+/// when three hours pass,
+/// then Bo was woken on it only the once, it has no failure and is still his; a check-back is
+/// refused, and the owner's reply wakes him.
+#[test]
+fn a_blocked_item_in_the_loops_wakes_nobody_but_for_the_owner() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let timer = item(&hq, &f, "Judge the gluetun timer", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": timer.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": timer.0, "status": "blocked",
+                             "reason": "the logs do not reach back to the window" }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    for _ in 0..36 {
+        clock.0.fetch_add(5 * 60_000, Ordering::SeqCst);
+        hq.tick().unwrap();
+        for c in hq.runner().started() {
+            hq.runner().finish(c.run, true);
+        }
+    }
+    let woken: Vec<_> = wakes_on(&hq, f.bo, timer)
+        .into_iter()
+        .filter(|w| !matches!(w.receipt, crate::domain::Receipt::Refused(_)))
+        .collect();
+    assert_eq!(woken.len(), 1, "{woken:?}");
+    assert_eq!(hq.loop_failures(timer).unwrap(), 0);
+    let now = hq.store().task(timer).unwrap().unwrap();
+    assert_eq!(now.status, TaskStatus::Blocked);
+    assert_eq!(now.owner, Some(f.bo));
+    assert_eq!(
+        hq.wake(f.bo, Some(timer), WakeReason::CheckBack).unwrap(),
+        crate::domain::Receipt::Refused(crate::domain::Refused::Blocked)
+    );
+    hq.post(Author::Owner, timer, "Keep the timer.").unwrap();
+    assert_eq!(
+        hq.wakes().unwrap().last().unwrap().reason,
+        WakeReason::OwnerReplied
+    );
+    assert!(!matches!(
+        hq.wakes().unwrap().last().unwrap().receipt,
+        crate::domain::Receipt::Refused(_)
+    ));
+}
+
+/// A member's block puts one question on the owner's desk, since only the owner now moves the
+/// item; the owner seeing it with no words wakes nobody, and answering it in words wakes the
+/// member who holds it.
+#[test]
+fn a_block_asks_the_owner_once_and_only_words_wake_its_holder() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let timer = item(&hq, &f, "Judge the gluetun timer", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": timer.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": timer.0, "status": "blocked", "reason": "no logs" }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.tick().unwrap();
+    let cards: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.task == Some(timer) && d.status == "waiting")
+        .collect();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(cards[0].kind, "question");
+    assert!(cards[0].text.contains("no logs"), "{}", cards[0].text);
+    let before = wakes_on(&hq, f.bo, timer).len();
+    hq.decide(cards[0].id, "seen").unwrap();
+    assert_eq!(
+        wakes_on(&hq, f.bo, timer).len(),
+        before,
+        "seen, with no words"
+    );
+}
+
+/// D10 of round 2: a blocked item asked the owner again and again. An item has one question
+/// waiting on the owner's desk at a time: another member's question on it is refused with the
+/// reason, and nothing new reaches the desk (ADR 0142, amended 2026-10-31).
+#[test]
+fn a_second_question_on_an_item_is_refused_while_the_first_waits() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let mem = item(&hq, &f, "Raise sonarr's memory", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "ask_owner",
+        &serde_json::json!({ "text": "May sonarr have 2 GB?", "evidence": [format!("task {}", mem.0)] }),
+    )
+    .unwrap();
+    hq.pause(f.bo, true).unwrap();
+    hq.tell_mac(true, "ready");
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, mem), Some(f.rae));
+    let rae = turn_of(&hq, f.rae);
+    let said = use_tool(
+        &hq,
+        &rae,
+        "ask_owner",
+        &serde_json::json!({ "text": "May sonarr have 3 GB?", "evidence": [format!("task {}", mem.0)] }),
+    )
+    .unwrap_err();
+    assert!(said.contains("already waits on the owner's desk"), "{said}");
+    let cards = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.task == Some(mem) && d.status == "waiting")
+        .count();
+    assert_eq!(cards, 1);
+}
+
+/// A failure at the top rank, while a question on the item already waits, is told on that card
+/// rather than on a second one.
+#[test]
+fn a_top_rank_failure_is_folded_into_the_question_already_waiting() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let hard = item(&hq, &f, "Find what stops gluetun", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "ask_owner",
+        &serde_json::json!({ "text": "Is the VPN's account paid?", "evidence": [format!("task {}", hard.0)] }),
+    )
+    .unwrap();
+    for _ in 0..15 {
+        hq.loop_failed(hard).unwrap();
+    }
+    let cards: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.task == Some(hard) && d.status == "waiting")
+        .collect();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert!(cards[0].text.contains("VPN's account"), "{}", cards[0].text);
+    assert!(cards[0].text.contains("every rank"), "{}", cards[0].text);
+}

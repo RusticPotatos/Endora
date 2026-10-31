@@ -272,6 +272,74 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// Whether an item is blocked in the loops (ADR 0142, amended 2026-10-31): blocked, on a
+    /// loop's plan while the loops run, and not a scenario's. Such an item waits for the owner,
+    /// and only their word, or their move of it back to work, wakes anyone on it.
+    pub(super) fn blocked_in_the_loops(&self, task: TaskId) -> Done<bool> {
+        let found = self.task(task)?;
+        if found.status != TaskStatus::Blocked || found.project.is_none() {
+            return Ok(false);
+        }
+        if self.loop_members()?.is_empty() || self.in_a_scenario(task)? {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// The question about an item that waits on the owner's desk, whoever asked it.
+    pub(super) fn question_waiting_on(
+        &self,
+        task: TaskId,
+    ) -> Done<Option<crate::application::ports::DeskItem>> {
+        Ok(self
+            .store
+            .desk()?
+            .into_iter()
+            .find(|d| d.kind == "question" && d.status == "waiting" && d.task == Some(task)))
+    }
+
+    /// HQ asks the owner about an item: one question waits on the desk per item (ADR 0142,
+    /// amended 2026-10-31). With one already waiting, `text` is added to that card; otherwise it
+    /// is a new card, from `member` when a member's act raised it.
+    pub(super) fn ask_about_the_item(
+        &self,
+        task: TaskId,
+        member: Option<MemberId>,
+        text: &str,
+    ) -> Done<()> {
+        if let Some(waiting) = self.question_waiting_on(task)? {
+            return Ok(self
+                .store
+                .set_desk_text(waiting.id, &format!("{}\n{text}", waiting.text))?);
+        }
+        let desk =
+            self.store
+                .add_desk("question", Some(task), None, member, text, self.clock.now())?;
+        self.emit(
+            crate::domain::EventKind::DeskAdded,
+            serde_json::json!({ "item": desk.0, "kind": "question", "task": task.0 }),
+        )
+    }
+
+    /// A member blocked its item in the loops: since nothing but the owner now moves it, the
+    /// owner is asked, once (ADR 0142, amended 2026-10-31).
+    pub(super) fn loop_blocked(&self, task: TaskId, member: MemberId, reason: &str) -> Done<()> {
+        if !self.blocked_in_the_loops(task)? {
+            return Ok(());
+        }
+        let found = self.task(task)?;
+        let who = self.member(member)?;
+        let text = format!(
+            "{} blocked #{} ({}): {}. Nobody is woken on it until you answer here in words, or \
+             move it back to work.",
+            who.name,
+            task.0,
+            found.title,
+            super::one_line(reason, 600)
+        );
+        self.ask_about_the_item(task, Some(member), &text)
+    }
+
     /// A notice made while the loops run is kept and told, but never waits on the owner's desk
     /// (ADR 0142): the desk is for what only the owner decides.
     pub(super) fn quiet_in_the_loops(&self, desk: crate::domain::DeskId) -> Done<()> {
@@ -602,16 +670,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.set_assignee(task, None)?;
             self.store.set_task_status(task, TaskStatus::Blocked)?;
             let text = format!(
-                "{} failed at every rank, Mara's last: {}. It is blocked and its loop has moved \
-                 on; its thread says what was tried.",
+                "{} failed at every rank, {} the last to try it. It is blocked and its loop has \
+                 moved on; its thread says what was tried.",
                 found.title, holder.name
             );
-            self.store
-                .add_desk("question", Some(task), None, None, &text, self.clock.now())?;
-            return self.emit(
-                crate::domain::EventKind::DeskAdded,
-                serde_json::json!({ "kind": "question", "task": task.0 }),
-            );
+            return self.ask_about_the_item(task, None, &text);
         };
         let up: MemberId = up.id;
         let to = self.member(up)?;

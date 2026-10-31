@@ -401,6 +401,12 @@ pub enum Refusal {
     HandBack,
     /// The member's last question or approval about the task still waits on the owner's desk.
     AlreadyAsked,
+    /// A question about the item already waits on the owner's desk, whoever asked it: an item
+    /// has one at a time (ADR 0142, amended 2026-10-31).
+    QuestionWaits {
+        /// The desk card that waits.
+        item: i64,
+    },
     /// The task is not one this turn may touch.
     OutOfReach,
     /// The turn has ended.
@@ -649,6 +655,12 @@ impl fmt::Display for Refusal {
             ),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting for an answer; end your turn",
+            ),
+            Self::QuestionWaits { item } => write!(
+                f,
+                "a question about this item already waits on the owner's desk (card {item}); \
+                 their answer comes to this thread and wakes whoever holds the item: post \
+                 what you would add, and end your turn"
             ),
             Self::Covered { task, names } => write!(
                 f,
