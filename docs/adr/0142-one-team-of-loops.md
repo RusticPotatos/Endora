@@ -408,3 +408,23 @@ and 824 s gisted, or 867 s if each gist call thinks 300 tokens. Gisting everythi
 (341,642 bytes, about 864 s). The first call of a turn is unchanged (11,878 bytes for the task
 turn). The thinking a gist call does on the Mac is not measured yet: the first live turns'
 `team-mac` usage records will say, and the size moves with it.
+
+## Amended 2026-10-30: what a review of the loops found
+
+A bug and security review of the loops (round 2) found rules that rested on a model's or a
+worker's word, or that held an item where the owner would not. Each is now decided by HQ.
+
+- **HQ decides whether a turn ran out of room.** The `continues` mark on the worker's last word
+  is the worker's word, not HQ's authorization: a Claude Code turn has the turn's token in its
+  environment and could post the mark itself. HQ continues the item only when the turn ran on
+  the worker (never Claude Code, which keeps its own context and has no prompt budget of the
+  worker's) and the relay metered at least half its brain's budget in prompt tokens (about
+  60,000 tokens on the house's models and DeepSeek, 120,000 on Claude): the worker ends a turn
+  when its next call would pass the budget, and the next call is about as large as the last.
+  Otherwise the last word is posted and the turn ends as any other, and is judged as any other.
+  So that HQ sees them, the relay now tells HQ the tokens of the house's free calls too
+  (`/v1/team/tokens`), charging nothing.
+- **A quote is checked against this item's readings only.** HQ's quoted-evidence check took any
+  receipt a post named, so a line quoted from another item's reading (or a turn's with no item)
+  passed as found. It now takes only a receipt whose task is the item's, as the handover does;
+  any other is reported as "not this item's receipt", and counts as a failed check.

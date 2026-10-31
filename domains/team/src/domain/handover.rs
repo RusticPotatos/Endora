@@ -29,6 +29,28 @@ pub const fn chars_for(brain: Brain) -> usize {
     }
 }
 
+/// About how many prompt tokens a work turn on `brain` reads before the worker ends it at its
+/// prompt's budget (ADR 0142, amended 2026-10-30): the worker's 240,000 bytes on the house's
+/// models and DeepSeek, 480,000 on Claude, at about four bytes a token.
+#[must_use]
+pub const fn prompt_budget_tokens(brain: Brain) -> i64 {
+    match brain {
+        Brain::Local | Brain::Mac | Brain::DeepSeek => 60_000,
+        Brain::Sonnet | Brain::Haiku | Brain::Opus => 120_000,
+    }
+}
+
+/// Whether HQ takes a turn's last word, marked as going on, for a turn that ran out of room:
+/// never from Claude Code, which has no prompt budget of the worker's and has the turn's token
+/// in its environment; otherwise only when the relay metered at least half the brain's budget
+/// in prompt tokens. The worker ends a turn when its next call would pass the budget, and the
+/// next call is about as large as the last it made, so a turn that truly ran out of room has
+/// read at least about half of it. The mark is the worker's word; this decides.
+#[must_use]
+pub const fn out_of_room(brain: Brain, claude_code: bool, metered: i64) -> bool {
+    !claude_code && metered.saturating_mul(2) >= prompt_budget_tokens(brain)
+}
+
 /// How every handover begins: in a thread, it is how one is known.
 pub const START: &str = "Handover of #";
 /// The line that ends a handover.
@@ -184,6 +206,19 @@ pub fn compose(h: &Handover, most: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_worker_turn_that_read_near_its_budget_ran_out_of_room() {
+        assert!(out_of_room(Brain::Local, false, 30_000));
+        assert!(!out_of_room(Brain::Local, false, 29_999));
+        assert!(!out_of_room(Brain::Sonnet, false, 59_999));
+        assert!(out_of_room(Brain::Sonnet, false, 60_000));
+        assert!(
+            !out_of_room(Brain::Sonnet, true, 500_000),
+            "never from Claude Code"
+        );
+        assert!(!out_of_room(Brain::Mac, false, 0));
+    }
 
     fn handover() -> Handover {
         Handover {

@@ -15,7 +15,7 @@
 use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::handover::{self, CriterionSeen, ReadingSeen};
-use crate::domain::{Member, MemberId, Refusal, RunId, TaskId, TaskStatus, WakeReason};
+use crate::domain::{Member, MemberId, Refusal, RunId, Runtime, TaskId, TaskStatus, WakeReason};
 
 /// How many of the members' last posts on the item a handover carries.
 const TRIED_MOST: usize = 3;
@@ -200,20 +200,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The worker says its turn on `task` ended at its prompt's budget: once the turn has ended,
     /// the item goes on with the same member in a fresh turn ([`Self::after_out_of_room`]).
+    /// HQ decides, not the mark ([`handover::out_of_room`]): a Claude Code turn, or one the
+    /// relay metered far below its brain's budget, is not continued. Returns whether it will be.
     ///
     /// # Errors
     /// [`Refusal::TurnOver`] for a turn not running; [`Refusal::OutOfReach`] for a task that is
     /// not the turn's; a store failure.
-    pub fn out_of_room_in(&self, run: RunId, task: TaskId) -> Done<()> {
+    pub fn out_of_room_in(&self, run: RunId, task: TaskId) -> Done<bool> {
         let _held = self.held();
         let run = self.running(run)?;
         if run.task != Some(task) {
             return Err(EngineError::Refused(Refusal::OutOfReach));
         }
+        let brain = match run.brain {
+            Some(brain) => brain,
+            None => self.member(run.member)?.brain,
+        };
+        let claude_code = self.runtime_of_turn(run.id)? == Runtime::ClaudeCode;
+        let metered = run.input_tokens + run.cache_read_tokens + run.cache_write_tokens;
+        if !handover::out_of_room(brain, claude_code, metered) {
+            return Ok(false);
+        }
         let mut kept = self.continued(task)?;
         kept.pending = Some(run.id.0);
         kept.runs.push(run.id.0);
-        self.keep_continued(task, &kept)
+        self.keep_continued(task, &kept)?;
+        Ok(true)
     }
 
     /// Whether `run` ended at its prompt's budget: such a turn was working, so it never counts

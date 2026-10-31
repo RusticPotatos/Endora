@@ -156,7 +156,12 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    **1 MB** of diff; **every commit is HQ's** (the author and the trailer); and it **touches
    nothing of the owner's values**: `group_vars/*.yml`, `host_vars/`, any inventory or anything
    named for a vault is refused whole, and the briefing says never to edit, cite or copy from
-   them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
+   them. *Amended 2026-10-30 (review of round 2):* both sides of a move count, and a name is
+   read as it is: the node lists the files with `git -c core.quotePath=false diff --no-renames
+   --name-only -z`, so moving `group_vars/all.yml` to `roles/all.yml` touches `group_vars/`
+   (git listed only the new name), and `group_vars/é.yml` is under `group_vars/` (git quoted it
+   as `"group_vars/\303\251.yml"`, which matched nothing); HQ's own reading of a recorded diff
+   takes both sides of each `diff --git` line and unquotes them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
    `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes: the
    submission is **staged** apart and moved there only once every rule has passed, so a
    refused attempt, a missing trailer being the commonest, leaves the kept branch as it was),

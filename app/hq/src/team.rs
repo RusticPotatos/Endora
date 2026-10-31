@@ -248,6 +248,46 @@ pub(crate) async fn usage(
 }
 
 #[derive(serde::Deserialize)]
+pub(crate) struct TokensTold {
+    run: i64,
+    /// The call's prompt tokens, as the house's model reported them.
+    #[serde(default)]
+    input: i64,
+    /// Its output tokens.
+    #[serde(default)]
+    output: i64,
+}
+
+/// For the node's model relay: what one free call of a turn (the house's models) read and
+/// wrote, in tokens. Nothing is charged; HQ keeps them to see whether a turn reached its
+/// prompt's budget (ADR 0142, amended 2026-10-30).
+pub(crate) async fn tokens(
+    Extract(state): Extract<State>,
+    Json(req): Json<TokensTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let noted = tokio::task::spawn_blocking(move || {
+        hq.note_tokens(
+            endora_team::domain::RunId(req.run),
+            req.input.max(0),
+            0,
+            0,
+            req.output.max(0),
+        )
+    })
+    .await;
+    match noted {
+        Ok(Ok(())) => Json(json!({ "noted": true })).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub(crate) struct ReceiptTold {
     /// The turn's own token, as its worker presented it to the node.
     token: String,

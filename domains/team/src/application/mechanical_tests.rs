@@ -327,3 +327,45 @@ fn work_with_nothing_to_check_has_no_report() {
     );
     assert!(woken(&hq, t.rae, fix, WakeReason::ReviewRequested));
 }
+
+/// A quote is checked against a reading of this item's, and only this item's: a line quoted
+/// from another item's reading, though it is word for word in that reading, proves nothing of
+/// this one.
+///
+/// Given Bo's item and Rae's, and a reading Rae took on hers,
+/// when Bo asks for review quoting that reading,
+/// then HQ's checks say the receipt is not this item's.
+#[test]
+fn a_quote_from_another_items_reading_is_not_this_items() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let t = team(&hq);
+    let mine = item(&hq, &t, "Document the media role", "");
+    let hers = item(&hq, &t, "Tidy the compose files", "");
+    hq.tell_mac(true, "ready");
+    let bo = turn_of(&hq, t.bo);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": mine.0 })).unwrap();
+    let rae = turn_of(&hq, t.rae);
+    use_tool(&hq, &rae, "claim", &serde_json::json!({ "task": hers.0 })).unwrap();
+    let theirs = receipt(&hq, &rae, "read_logs", "compose: all services up");
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": mine.0, "status": "in_review",
+            "reason": format!("Documented. r{theirs} shows `all services up`."),
+            "evidence": [format!("task {}", mine.0)] }),
+    )
+    .unwrap();
+    let posted = thread(&hq, mine).join("\n");
+    assert!(
+        posted.contains("0 of 1 quoted lines are in their receipts"),
+        "{posted}"
+    );
+    assert!(
+        posted.contains(&format!(
+            "r{theirs}: `all services up`: not this item's receipt"
+        )),
+        "{posted}"
+    );
+}

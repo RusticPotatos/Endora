@@ -930,6 +930,13 @@ pub(super) async fn chat_completions(
                     return Ok((status, bytes));
                 }
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
+                // Free, but HQ keeps the turn's tokens: it decides from them whether the turn
+                // ran out of room (ADR 0142, amended 2026-10-30).
+                let told = json!({ "run": run, "input": used("prompt_tokens"),
+                                   "output": used("completion_tokens") });
+                if let Err(e) = hq.post("/v1/team/tokens", &told) {
+                    eprintln!("relay: could not tell HQ run {run}'s tokens: {e}");
+                }
                 endora_application::UsageLog::record(
                     state.store.as_ref(),
                     if on_the_mac { "team-mac" } else { "team-local" },
@@ -1904,6 +1911,19 @@ pub(super) mod tests {
         json!({ "model": model, "messages": [{ "role": "user", "content": "Hi." }] })
     }
 
+    /// The tokens HQ was told of free calls, `(input, output)`, call by call.
+    fn tokens_told(seen: &Seen) -> Vec<(i64, i64)> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/tokens")
+            .map(|(_, _, b)| {
+                let v: serde_json::Value = serde_json::from_str(b).unwrap();
+                (v["input"].as_i64().unwrap(), v["output"].as_i64().unwrap())
+            })
+            .collect()
+    }
+
     /// The model a fake was asked for, call by call.
     fn models_asked(seen: &Seen) -> Vec<String> {
         seen.lock()
@@ -2072,6 +2092,11 @@ pub(super) mod tests {
                 .iter()
                 .all(|(p, _, _)| p != "/v1/team/usage"),
             "local is free: HQ is charged nothing, even with nothing left"
+        );
+        assert_eq!(
+            tokens_told(&to_hq),
+            vec![(120, 30)],
+            "but HQ is told the tokens, to see a turn reach its prompt's budget"
         );
         let used = store.model_usage_totals("team-local", 0).unwrap();
         assert_eq!(
@@ -2298,6 +2323,7 @@ pub(super) mod tests {
                 .all(|(p, _, _)| p != "/v1/team/usage"),
             "the Mac costs nothing"
         );
+        assert_eq!(tokens_told(&to_hq), vec![(120, 30)], "its tokens are told");
         let used = store.model_usage_totals("team-mac", 0).unwrap();
         assert_eq!(
             (used.calls, used.prompt_tokens, used.completion_tokens),
