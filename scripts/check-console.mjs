@@ -1366,13 +1366,13 @@ if (failures.length) {
         In(O, HQ_CEO.work), In(O, HQ_CEO.rest), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
     })()`, context);
     if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the CEO's office is not where its seats and door are: ${inside}`);
-    const written = [], filled = [];
+    const written = [], filled = [], order = [];
     const ctx = {
       fillStyle: "", strokeStyle: "", font: "",
-      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); },
+      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); order.push({ rect: this.fillStyle }); },
       strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
       save() {}, restore() {}, translate() {}, scale() {},
-      fillText(text) { written.push(String(text)); },
+      fillText(text) { written.push(String(text)); order.push({ text: String(text) }); },
       measureText: (text) => ({ width: String(text).length * 6 }),
     };
     const canvas = () => ({ ...element(), width: 0, height: 0, getContext: () => ctx });
@@ -1390,6 +1390,16 @@ if (failures.length) {
       if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
+      // Every name, the people's and the rooms', is written on its own light plate after all
+      // that stands on the floor, so no sofa, plant or checkerboard hides it (the owner read
+      // "RAE" as "RAB", and "BO" was under a sofa).
+      {
+        const lastThing = Math.max(...order.map((o, i) => (o.rect === "#7d6bb0" || o.rect === "#b8a68a" ? i : -1)));
+        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "BOARD ROOM", "CEO", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
+        const plated = (name) => { const i = order.findLastIndex((o) => o.text === name); return i > lastThing && order[i - 1] && /^rgba\(255,253,246/.test(order[i - 1].rect || ""); };
+        const bare = names.filter((n) => !plated(n));
+        if (bare.length) fail(`hq: these names are not on a plate over the furniture: ${bare}`);
+      }
       // Everything on the floor is drawn from the snapshot's office: the tank's water where the
       // data puts the tank, and elsewhere once the data moves it.
       const at = (style) => filled.filter((f) => f.style === style).map((f) => f.x + "," + f.y);

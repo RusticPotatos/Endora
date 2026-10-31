@@ -938,13 +938,28 @@ function hqPaintRoom() {
   for (let i = 0; i < 8; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(17.8 * T + 2 + i * 4.4, 15.6 * T - 5 + (i % 2) * 13, 3, 5); }
   // The front door, on the floor's right wall.
   g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
-  // Labels.
-  g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
-  g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
-  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 15 * T + 9); g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("KITCHEN", 24.6 * T, HQ_ROWS * T - 4); g.fillText("LOUNGE", 16.3 * T, HQ_ROWS * T - 4);
   return bg;
+}
+
+// A word on a small light plate, so it reads on any floor and over any furniture (the owner
+// read "RAE" as "RAB" across the checkerboard, and the rooms' names were faint).
+function hqTag(g, text, x, y, fg = "rgba(31,29,41,.9)", bg = "rgba(255,253,246,.78)") {
+  const w = Math.ceil(g.measureText(text).width);
+  g.fillStyle = bg; g.fillRect(x - 2, y - 7, w + 3, 9);
+  g.fillStyle = fg; g.fillText(text, x, y);
+  return { x: x - 2, y: y - 7, w: w + 3, h: 9 };
+}
+function hqOverlaps(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
+
+// The rooms' names, drawn over what stands in them so nothing covers a name.
+// Returns where they are, for the people's names to keep clear of.
+function hqRoomLabels(g) {
+  const T = HQ_T, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = HQ_P.engine;
+  g.font = HQ_PIXEL;
+  return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "CEO", O.x * T + 5, O.y * T + 9),
+    hqTag(g, "SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4), hqTag(g, "MEETING", M.x * T + 5, (M.y + M.h) * T - 4),
+    hqTag(g, "PING-PONG", 4, 15 * T + 9, "#ffffff", "rgba(31,29,41,.45)"),
+    hqTag(g, "KITCHEN", 24.6 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
 }
 
 // The things on the floor now, from the snapshot's office (ADR 0119): where each stands, how
@@ -1231,14 +1246,14 @@ function hqDraw() {
   ctx.font = HQ_PIXEL;
   for (const pod of HQ.pods) {
     ctx.fillStyle = "rgba(255,255,255,.12)"; ctx.fillRect(pod.x * T - 4, pod.y * T - 18, pod.width * T + 8, pod.rows * HQ_POD.desk.h * T + 20);
-    ctx.fillStyle = "rgba(31,29,41,.7)"; ctx.fillText(String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9);
+    hqTag(ctx, String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9, "rgba(31,29,41,.85)", "rgba(255,253,246,.55)");
   }
   // The burn gauge: today's spend against the pool's day.
   const pool = snap.pool || { per_day: 1, committed: 0 }, fill = Math.min(1, (pool.committed || 0) / Math.max(1, pool.per_day));
   const jx = P.jar.x * T, jy = P.jar.y * T, hgt = 30;
   ctx.fillStyle = "#ffffff"; ctx.fillRect(jx, jy, 8, hgt); ctx.strokeStyle = C.trim; ctx.strokeRect(jx - 0.5, jy - 0.5, 9, hgt + 1);
   ctx.fillStyle = fill > .85 ? C.red : fill > .6 ? C.lamp : C.green; ctx.fillRect(jx + 1, jy + hgt - Math.round(hgt * fill), 6, Math.round(hgt * fill));
-  ctx.font = HQ_PIXEL; ctx.fillStyle = "rgba(31,29,41,.65)"; ctx.fillText("BURN", jx + 12, jy + hgt);
+  ctx.font = HQ_PIXEL; hqTag(ctx, "BURN", jx + 12, jy + hgt);
   // The kill switch on the board room's glass.
   const lx = P.lever.x * T, ly = P.lever.y * T, up = !snap.stopped;
   ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
@@ -1262,13 +1277,17 @@ function hqDraw() {
     }
     if (HQ_IMG[key]) ctx.drawImage(HQ_IMG[key], Math.round(it.f.x), Math.round(it.f.y));
   }
-  // Names under their people; at a pod's aisle they run out over their own desk, so the two
-  // who face each other do not write over one another.
+  const placed = hqRoomLabels(ctx);
+  // Names under their people, each on its plate over everything on the floor; at a pod's aisle
+  // they run out over their own desk, so the two sitting back to back do not overlap. A name
+  // that would cover a room's name or another's goes over its person's head instead.
   ctx.font = HQ_PIXEL;
-  for (const p of people) {
+  for (const p of people.slice().sort((a, b) => hqDepth(a) - hqDepth(b))) {
     const name = String(p.name || "").toUpperCase(), at = p.at || {}, w = Math.ceil(ctx.measureText(name).width);
-    const x = at.desk && at.dir === "left" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "right" ? Math.round(p.x) : Math.round(p.x) + 1;
-    ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(name, x, Math.round(p.y) + 24);
+    const x = Math.max(2, Math.min(HQ_W - w - 2, at.desk && at.dir === "left" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "right" ? Math.round(p.x) : Math.round(p.x) + 8 - Math.round(w / 2)));
+    const top = Math.round(p.y) + hqSitDy(p);
+    const under = top + 24, over = top - 18, clear = (y) => !placed.some((r) => hqOverlaps(r, { x: x - 2, y: y - 7, w: w + 3, h: 9 }));
+    placed.push(hqTag(ctx, name, x, clear(under) || !clear(over) ? under : over));
   }
   // Decisions waiting on the board room table.
   (snap.desk || []).slice(0, 5).forEach((n, i) => {
