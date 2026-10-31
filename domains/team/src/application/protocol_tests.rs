@@ -358,7 +358,6 @@ fn asking_the_owner_ends_the_turn_and_its_token_does_nothing_more() {
 /// A goal's tasks as a tree, with Linus's turn on `own`: `parent` above it, `child` and
 /// `grandchild` below, and `other` beside, in the same goal.
 struct Tree {
-    lead: MemberId,
     dev: MemberId,
     parent: TaskId,
     own: TaskId,
@@ -396,7 +395,6 @@ fn tree(hq: &Hq<'_>) -> Tree {
     let grandchild = add(Some(child), "Sort by brand", None);
     let other = add(None, "Write the help page", None);
     Tree {
-        lead,
         dev,
         parent,
         own,
@@ -455,37 +453,6 @@ fn a_turn_acts_on_its_own_task_and_below_and_writes_above_or_where_it_was_named(
         .unwrap();
     post(t.other).unwrap();
     assert!(use_tool("claim", json!({ "task": t.other.0 })).is_err());
-}
-
-#[test]
-fn the_lead_acts_on_any_task_in_its_goal_but_never_sets_done() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let hq = Engine::new(
-        SqliteTeamStore::in_memory().unwrap(),
-        SimulatedRunner::new(4),
-        &clock,
-        Settings::default(),
-    );
-    let t = tree(&hq);
-    let lead = next_turn(&hq, t.lead);
-    let (run, me) = turn(&hq, &lead.token);
-    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
-    use_tool("claim", json!({ "task": t.other.0 })).unwrap();
-    use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "blocked", "reason": "waiting on the owner" }),
-    )
-    .unwrap();
-    use_tool(
-        "post",
-        json!({ "task": t.grandchild.0, "text": "Brand first." }),
-    )
-    .unwrap();
-    let done = use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "done", "reason": "finished" }),
-    );
-    assert!(done.unwrap_err().contains("gate"));
 }
 
 #[test]

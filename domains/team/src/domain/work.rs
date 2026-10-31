@@ -107,16 +107,6 @@ impl Role {
         }
     }
 
-    /// Lower is more senior.
-    #[must_use]
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Ceo => 0,
-            Self::Lead => 1,
-            Self::Developer | Self::Researcher | Self::Reviewer => 2,
-        }
-    }
-
     /// The role's weight in the team's pool (ADR 0111): what a member in it is hired with as
     /// its share. The day's pool is split among the members by these weights and the price
     /// class of the Claude each judges with (ADR 0131); a member's work costs nothing.
@@ -129,13 +119,6 @@ impl Role {
             Self::Reviewer => 20,
             Self::Researcher => 15,
         }
-    }
-
-    /// Whether a member in this role may act on any task of the team: the CEO and the lead,
-    /// who lead every goal.
-    #[must_use]
-    pub const fn leads(self) -> bool {
-        matches!(self, Self::Ceo | Self::Lead)
     }
 }
 
@@ -378,7 +361,7 @@ pub enum Refusal {
         /// Where it was asked to go.
         to: TaskStatus,
     },
-    /// Work is handed only to members below.
+    /// Work goes to a member through its loop, never from another member (ADR 0142).
     NotBelow,
     /// The task is over.
     Finished,
@@ -423,8 +406,6 @@ pub enum Refusal {
     },
     /// A goal's notes have no room for one more lesson.
     NotesFull,
-    /// Only the CEO does that (ADR 0111).
-    OnlyTheCeo,
     /// The house log has no room for one more line.
     HouseLogFull,
     /// What the team's world refuses (ADR 0122): its pages, stages, stories and handovers.
@@ -447,8 +428,6 @@ pub enum Refusal {
         /// The containers both are about.
         names: Vec<String>,
     },
-    /// A project's lead is a lead or the CEO (ADR 0113).
-    NotAProjectLead,
     /// The project serves another goal than the task's or the routine's.
     OtherGoal,
     /// The project takes no work: it is proposed, done or dropped.
@@ -580,7 +559,10 @@ impl fmt::Display for Refusal {
                     to.name()
                 )
             }
-            Self::NotBelow => f.write_str("work is handed only to members below you"),
+            Self::NotBelow => f.write_str(
+                "work goes to a member through its loop: you may make work for yourself, not hand \
+                 it to another member",
+            ),
             Self::Finished => f.write_str("this task is over"),
             Self::OwnWork => f.write_str("work is reviewed by a different member"),
             Self::GateNotPassed => f.write_str("the gate has not passed"),
@@ -622,7 +604,6 @@ impl fmt::Display for Refusal {
                  Claude alone"
             ),
             Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
-            Self::OnlyTheCeo => f.write_str("only the CEO does that"),
             Self::HouseLogFull => f.write_str(
                 "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
             ),
@@ -651,7 +632,6 @@ impl fmt::Display for Refusal {
                  second task",
                 names.join(", ")
             ),
-            Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
             Self::OtherGoal => f.write_str(
                 "that project serves another goal: a task's or a routine's project serves its goal",
             ),
@@ -835,17 +815,6 @@ pub fn may_close_check(from: TaskStatus) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Whether `from` may hand work to `to`: only to members below it.
-///
-/// # Errors
-/// [`Refusal::NotBelow`] otherwise.
-pub fn may_delegate(from: Role, to: Role) -> Result<(), Refusal> {
-    if to.rank() > from.rank() {
-        return Ok(());
-    }
-    Err(Refusal::NotBelow)
-}
-
 /// Whether work is done: the gate passed, and the member approving it is not the one who did
 /// it. A member saying it is done changes nothing.
 ///
@@ -952,25 +921,6 @@ mod tests {
     }
 
     #[test]
-    fn work_is_handed_down_and_never_up_or_across() {
-        assert!(may_delegate(Role::Ceo, Role::Lead).is_ok());
-        assert!(may_delegate(Role::Ceo, Role::Developer).is_ok());
-        assert_eq!(may_delegate(Role::Lead, Role::Ceo), Err(Refusal::NotBelow));
-        assert_eq!(may_delegate(Role::Ceo, Role::Ceo), Err(Refusal::NotBelow));
-        assert!(may_delegate(Role::Lead, Role::Developer).is_ok());
-        assert!(may_delegate(Role::Lead, Role::Reviewer).is_ok());
-        assert_eq!(
-            may_delegate(Role::Developer, Role::Lead),
-            Err(Refusal::NotBelow)
-        );
-        assert_eq!(
-            may_delegate(Role::Developer, Role::Researcher),
-            Err(Refusal::NotBelow)
-        );
-        assert_eq!(may_delegate(Role::Lead, Role::Lead), Err(Refusal::NotBelow));
-    }
-
-    #[test]
     fn the_roles_weights_in_the_pool_are_the_owners() {
         let weights: Vec<u8> = [
             Role::Ceo,
@@ -982,8 +932,6 @@ mod tests {
         .map(Role::share)
         .to_vec();
         assert_eq!(weights, [35, 25, 40, 20, 15]);
-        assert!(Role::Ceo.leads() && Role::Lead.leads());
-        assert!(!Role::Developer.leads() && !Role::Reviewer.leads());
     }
 
     #[test]

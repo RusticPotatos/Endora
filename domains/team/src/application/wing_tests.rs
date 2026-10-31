@@ -159,7 +159,7 @@ fn quiet(hq: &Hq<'_>) {
 /// Kit hands Rae a branch's worth of work under the plan, with criteria.
 fn raes_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     hq.add_task_with(
-        Author::Member(t.kit),
+        Author::Owner,
         NewTask {
             goal: t.goal,
             project: None,
@@ -372,7 +372,7 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
         .id;
     let sibling = |title: &str, to: MemberId| {
         hq.add_task_with(
-            Author::Member(t.kit),
+            Author::Owner,
             NewTask {
                 goal: t.goal,
                 project: None,
@@ -389,7 +389,7 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
     };
     let under = hq
         .add_task_with(
-            Author::Member(t.kit),
+            Author::Owner,
             NewTask {
                 goal: t.goal,
                 project: None,
@@ -631,7 +631,7 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
 /// Another piece of Rae's work, with nothing submitted on it.
 fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     hq.add_task_with(
-        Author::Member(t.kit),
+        Author::Owner,
         NewTask {
             goal: t.goal,
             project: None,

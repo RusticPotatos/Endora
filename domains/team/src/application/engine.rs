@@ -727,49 +727,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
     }
 
-    /// A turn of the CEO's adds a dated line to the house page's timeline (ADR 0122; before
-    /// it, to the house log). Returns the line.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`] for anyone else; [`EngineError::Unknown`]
-    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`].
-    pub fn note_house(&self, run: RunId, entry: &str) -> Done<String> {
-        let _held = self.held();
-        let (run, ceo) = self.the_ceos_turn(run)?;
-        if entry.trim().is_empty() {
-            return Err(EngineError::Unknown("entry for the house page's timeline"));
-        }
-        let line = self.note_house_line(&run, &ceo, entry)?;
-        if let Some(task) = run.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(line)
-    }
-
-    /// A turn of the CEO's once rewrote the house log whole. The house log is the house page
-    /// now (ADR 0122): refused, saying what to use instead, for one release.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`].
-    pub fn rewrite_house(&self, run: RunId, _log: &str) -> Done<usize> {
-        let _held = self.held();
-        self.the_ceos_turn(run)?;
-        Err(EngineError::Refused(Refusal::World(
-            crate::domain::world::WorldRefusal::HouseLogRetired,
-        )))
-    }
-
-    /// A running turn of the CEO's, and the CEO.
-    fn the_ceos_turn(&self, run: RunId) -> Done<(Run, Member)> {
-        let run = self.running(run)?;
-        let member = self.member(run.member)?;
-        if member.role != Role::Ceo {
-            return Err(EngineError::Refused(Refusal::OnlyTheCeo));
-        }
-        Ok((run, member))
-    }
-
     /// A member's turn reads one of Endora's public library (its records, plans, drafts and
     /// the team's standards), a part at a time ([`docs::DOC_PART`] characters), or the list of
     /// a folder's. They are public already; nothing else is read.
@@ -922,10 +879,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .map_err(EngineError::Refused)?;
         }
         let task = NewTask { project, ..task };
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
         if let (Author::Member(from), Some(to)) = (by, task.assignee) {
             if from != to {
-                let (from, to) = (self.member(from)?, self.member(to)?);
-                work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+                return Err(EngineError::Refused(Refusal::NotBelow));
             }
         }
         if let Some(to) = task.assignee {
@@ -1070,17 +1027,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether a turn may act on `task`: its own task and the sub-tasks under it, at any
     /// depth. Writing reaches further: the task its own hangs from, and any task whose thread
-    /// names the member (`@name`, as a wake reads it). The lead and the CEO may act on any task
-    /// in a goal they lead; a team has one of each, which lead every goal.
+    /// names the member (`@name`, as a wake reads it).
     ///
     /// # Errors
     /// [`EngineError::Refused`] with [`Refusal::OutOfReach`] when it may not.
     fn reach(&self, run: &Run, task: TaskId, writing: bool) -> Done<()> {
         let target = self.task(task)?;
         let member = self.member(run.member)?;
-        if member.role.leads() {
-            return Ok(());
-        }
         if let Some(own) = run.task {
             if self.under(target.id, own)? {
                 return Ok(());

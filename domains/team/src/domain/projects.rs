@@ -7,7 +7,7 @@
 //! a cap fits in the pool, and when a project has spent its cap.
 
 use super::money::{DOLLAR, Micros};
-use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
+use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, TaskId};
 
 /// Of its cap, the share a project may spend before the owner hears of it, once a month.
 pub const WARN_PERCENT: i64 = 80;
@@ -182,17 +182,6 @@ pub struct Project {
     pub created_at: Millis,
     /// When it last changed.
     pub updated_at: Millis,
-}
-
-/// Whether a member in `role` may lead a project.
-///
-/// # Errors
-/// [`Refusal::NotAProjectLead`] for anyone but a lead or the CEO.
-pub const fn may_lead(role: Role) -> Result<(), Refusal> {
-    if role.leads() {
-        return Ok(());
-    }
-    Err(Refusal::NotAProjectLead)
 }
 
 /// Whether a task, or a routine, under `goal` may be put in a project serving `serves`, which
@@ -419,16 +408,6 @@ mod tests {
                 assert!(!super::super::lab_tools::LAB_ACTS.contains(read), "{read}");
                 assert_ne!(*read, "repo_submit");
             }
-        }
-    }
-
-    #[test]
-    fn a_lead_or_the_ceo_leads_a_project() {
-        for role in [Role::Ceo, Role::Lead] {
-            assert!(may_lead(role).is_ok(), "{role:?}");
-        }
-        for role in [Role::Developer, Role::Researcher, Role::Reviewer] {
-            assert_eq!(may_lead(role), Err(Refusal::NotAProjectLead));
         }
     }
 

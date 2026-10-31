@@ -14,7 +14,7 @@ Feature: The engineering wing and the git flow
 
   Scenario: A branch that fails its checks is sent back
     Given Kit's planning turn is over
-    And Kit hands Rae the task "Tidy the deluge role" in the wing
+    And the owner hands Rae the task "Tidy the deluge role" in the wing
     When Rae's turn starts
     And Rae submits the branch "hq/task-2-tidy-the-deluge-role"
     And Rae submits "Tidy the deluge role" for review

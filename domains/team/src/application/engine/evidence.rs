@@ -372,9 +372,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         // Who may hand what to whom comes first.
         let to_another = task.assignee.filter(|a| *a != turn.member);
-        if let Some(to) = to_another {
-            let (from, to) = (self.member(turn.member)?, self.member(to)?);
-            crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
+        if to_another.is_some() {
+            return Err(EngineError::Refused(Refusal::NotBelow));
         }
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_authored_held_lock(

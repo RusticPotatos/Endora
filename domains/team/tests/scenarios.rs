@@ -478,11 +478,12 @@ fn owner_hands_in_project(w: &mut Office, name: String, title: String, project: 
     .expect("the owner may hand out what they like");
 }
 
-#[given(expr = "{word} hands {word} the task {string} under {string}")]
-#[when(expr = "{word} hands {word} the task {string} under {string}")]
-fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent: String) {
+/// A member splits a task off one it holds: its own, since a member hands work to nobody
+/// (ADR 0142).
+#[given(expr = "{word} splits off the task {string} under {string}")]
+#[when(expr = "{word} splits off the task {string} under {string}")]
+fn member_splits_off(w: &mut Office, by: String, title: String, parent: String) {
     let by = w.member(&by);
-    let to = w.member(&to);
     let goal = w.goal();
     let parent = w.task(&parent);
     w.add_task(
@@ -493,7 +494,7 @@ fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent
             parent: Some(parent),
             title,
             description: String::new(),
-            assignee: Some(to),
+            assignee: Some(by),
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
@@ -926,43 +927,13 @@ fn wing(w: &Office) -> &Wing {
     w.wing.as_ref().expect("the scenario has the wing")
 }
 
-#[given(expr = "{word} hands {word} the task {string} in the wing")]
-fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
-    hand_in_the_wing(
-        w,
-        &by,
-        &to,
-        title,
-        vec![Criterion::new("The branch passes its checks", false)],
-    );
-}
-
-/// As above, with what done means as the owner wrote it: a line of the step's table each.
-#[given(expr = "{word} hands {word} the task {string} in the wing, with the criteria")]
-fn wing_hands_with_criteria(
-    w: &mut Office,
-    by: String,
-    to: String,
-    title: String,
-    step: &cucumber::gherkin::Step,
-) {
-    let criteria: Vec<Criterion> = step
-        .table
-        .as_ref()
-        .expect("the criteria are the step's table")
-        .rows
-        .iter()
-        .map(|row| Criterion::new(&row[0], false))
-        .collect();
-    hand_in_the_wing(w, &by, &to, title, criteria);
-}
-
-fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria: Vec<Criterion>) {
-    let by = w.member(by);
-    let to = w.member(to);
+/// The owner hands a member of the wing a task under the plan, with the wing's criterion.
+#[given(expr = "the owner hands {word} the task {string} in the wing")]
+fn wing_hands(w: &mut Office, to: String, title: String) {
+    let to = w.member(&to);
     let (goal, project, plan) = (wing(w).goal, wing(w).project, wing(w).task);
     w.hq.add_task_with(
-        Author::Member(by),
+        Author::Owner,
         NewTask {
             goal,
             project: Some(project),
@@ -973,9 +944,9 @@ fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria:
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
-        &criteria,
+        &[Criterion::new("The branch passes its checks", false)],
     )
-    .expect("the lead hands work on");
+    .expect("the owner hands work out");
 }
 
 /// The head the node's record of a submission has in these scenarios, and the base under it.

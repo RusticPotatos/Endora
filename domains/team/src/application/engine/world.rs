@@ -11,7 +11,7 @@ use crate::domain::world::{
     self, Address, HOUSE, HandoverNote, Section, Snapshot, Stage, Trust, WorldRefusal,
 };
 use crate::domain::world_migration::TimelineLine;
-use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, RunId};
+use crate::domain::{EventKind, MemberId, Millis, Refusal, RunId};
 
 /// The day of `at` with its year, in the owner's time: `17 Oct 2026`.
 pub(super) fn day_with_year(at: Millis, offset_minutes: i64) -> String {
@@ -131,25 +131,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run,
         )?;
         Ok(())
-    }
-
-    /// The house page's timeline gains a member's dated line: what the house log's `note_house`
-    /// does now (ADR 0122). Returns the line, dated.
-    pub(super) fn note_house_line(&self, run: &Run, ceo: &Member, entry: &str) -> Done<String> {
-        let entry = self.dated_true(&ceo.name, "the house page's timeline", entry)?;
-        let line =
-            crate::domain::house::line(&entry, self.clock.now(), self.settings.offset_minutes)
-                .map_err(EngineError::Refused)?;
-        let said = line
-            .split_once(": ")
-            .map_or(line.as_str(), |(_, rest)| rest)
-            .to_owned();
-        self.timeline_line(HOUSE.slug, &ceo.name, Some(run.id), &said)?;
-        self.emit(
-            EventKind::HouseNoted,
-            json!({ "by": ceo.name, "entry": line, "page": HOUSE.slug }),
-        )?;
-        Ok(line)
     }
 
     // ---- what a turn may do ---------------------------------------------------------------

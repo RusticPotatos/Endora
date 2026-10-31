@@ -28,6 +28,6 @@ Feature: What done means comes first
   Scenario: Work already open with no criteria has none to name, so its split is free
     Given Ada has the task "Keep sonarr up"
     When Ada's turn starts
-    And Ada hands Linus the part "Read sonarr's queue" of "Keep sonarr up", done when "The queue is read"
+    And Ada splits off the part "Read sonarr's queue" of "Keep sonarr up", done when "The queue is read"
     Then it is not refused
     And the team has 2 tasks

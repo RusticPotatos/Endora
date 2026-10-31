@@ -966,9 +966,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         {
             reach.push(parent);
         }
-        // The CEO and a lead read any document: they accept the work.
-        let member = self.member(turn.member)?;
-        if !member.role.leads() && !reach.contains(&document.task) {
+        if !reach.contains(&document.task) {
             return Err(EngineError::Refused(Refusal::NotADocument));
         }
         self.inherit_input_from(run, document.run)?;
