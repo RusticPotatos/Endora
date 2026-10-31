@@ -20,6 +20,7 @@ use endora_capabilities::contracts::{
     REPO_CHECKOUT, REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
 };
 use endora_capabilities::lab_map;
+use endora_capabilities::lab_updates;
 use endora_capabilities::registry;
 use endora_capabilities::repo::{self, Mirror};
 use std::path::PathBuf;
@@ -521,7 +522,11 @@ fn homelab_status(state: &AppState) -> Done {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let seen = compact(&snapshot, state.clock.now().unix_millis());
+    let seen = compact(
+        &snapshot,
+        state.clock.now().unix_millis(),
+        state.clock.utc_offset_minutes(),
+    );
     Done {
         text: seen.to_string(),
         said: "read the home lab's state".to_owned(),
@@ -530,8 +535,10 @@ fn homelab_status(state: &AppState) -> Done {
 
 /// The home lab as a turn reads it: each service's state and its items, the containers by
 /// name, state, status text, health and exit code, and whether it is all stale (unseen for a
-/// minute, or never seen). Ids are left out: a contract names a container.
-fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
+/// minute, or never seen). Ids are left out: a contract names a container. A container last
+/// created again on a new image says when (`updated`), and the docker service has one line of
+/// the last day's updates (`updates`, D11); its creation time and image id are left out.
+fn compact(snapshot: &serde_json::Value, now: i64, offset: i64) -> serde_json::Value {
     let observed = snapshot["observed_at_ms"].as_i64().unwrap_or(0);
     let stale = observed == 0 || now - observed > STALE_AFTER_MS;
     let services: Vec<serde_json::Value> = snapshot["services"]
@@ -565,6 +572,9 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
                     if let Some(code) = item["exit"].as_i64() {
                         container["exit_code"] = code.into();
                     }
+                    if let Some(when) = lab_updates::updated_at(item, offset) {
+                        container["updated"] = when.into();
+                    }
                     container
                 })
                 .collect();
@@ -574,6 +584,12 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
             }
             if let Some(error) = service["error"].as_str() {
                 out["error"] = error.into();
+            }
+            if let Some(line) = docker
+                .then(|| lab_updates::summary(service, now, offset))
+                .flatten()
+            {
+                out["updates"] = line.into();
             }
             out
         })
@@ -2031,6 +2047,47 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("Linus (run 7) read the home lab's state"))
         );
+    }
+
+    /// What Watchtower did (D11, ADR 0106 amended 2026-10-31): a container recreated on a new
+    /// image says when, and one line says what was updated in the last day. Nothing else of the
+    /// observer's (its creation time, its image id) reaches the turn.
+    #[tokio::test]
+    async fn the_home_lab_says_what_was_updated_on_a_new_image() {
+        let (state, _) = with(lab());
+        let now = state.clock.now().unix_millis();
+        let at = now - 4 * 60 * 60 * 1000;
+        *state.homelab.lock().unwrap() = json!({ "observed_at_ms": now, "services": [
+            { "name": "docker", "state": "healthy", "total": 3, "observed_at_ms": now,
+              "updates_since_ms": now - 48 * 60 * 60 * 1000, "items": [
+                { "name": "sonarr", "state": "running", "health": "unknown", "status": "Up 4 hours",
+                  "created_ms": at, "image": "abababababab", "updated_at_ms": at },
+                { "name": "radarr", "state": "running", "health": "unknown", "status": "Up 2 days",
+                  "created_ms": now - 172_800_000, "image": "cdcdcdcdcdcd" },
+                { "name": "watchtower", "state": "running", "health": "unknown", "status": "Up 9 days" }] },
+        ] });
+        let (status, said) = use_contract(&state, "homelab_status", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let seen: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        let docker = &seen["services"][0];
+        let offset = state.clock.utc_offset_minutes();
+        let when = endora_capabilities::lab_updates::when(at, offset);
+        assert_eq!(docker["items"][0]["updated"], when.as_str());
+        assert!(docker["items"][1]["updated"].is_null(), "{docker}");
+        let line = docker["updates"].as_str().unwrap();
+        assert!(
+            line.starts_with("Updated ")
+                && line.contains("by Watchtower")
+                && line.contains("sonarr"),
+            "{line}"
+        );
+        assert!(!line.contains("radarr"), "{line}");
+        for never in ["abab", "cdcd", "created", "updated_at_ms", "since"] {
+            assert!(
+                !said["text"].as_str().unwrap().contains(never),
+                "{never}: {said}"
+            );
+        }
     }
 
     /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.

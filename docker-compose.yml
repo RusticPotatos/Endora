@@ -23,10 +23,20 @@
 #
 # The node requires bearer authentication for /v1. Keep its published port on a
 # trusted network and use HTTPS for credentials. See docs/hosting.md.
+
+# Every service here is released by Endora (`make deploy`, or the endora.homelab collection's
+# `endora` role), never by Watchtower: its images are built here, not pulled, and a container
+# recreated at night cuts the team's turns. Watchtower failed nightly on docker-observer, which
+# runs in the node's network ("Unable to resolve network container"), and HQ could not tell
+# why containers had restarted (D11). scripts/check-collection-parity.sh holds every service to it.
+x-released-by-endora: &released-by-endora
+  com.centurylinklabs.watchtower.enable: "false"
+
 services:
   docker-observer:
     # Explicit opt-in; fixed GET routes are the boundary, not a read-only socket mount.
     profiles: [homelab]
+    labels: *released-by-endora
     image: endora-node:latest
     entrypoint: [python3, /usr/local/lib/endora/homelab-docker-proxy.py]
     network_mode: "service:node"
@@ -47,6 +57,7 @@ services:
   # demo team (HQ_DEMO=1) works on the simulated runner until real workers exist.
   hq:
     profiles: [hq]
+    labels: *released-by-endora
     image: endora-node:latest
     container_name: endora-hq
     entrypoint: [endora-hq]
@@ -92,6 +103,7 @@ services:
   # and the limits are its own. HQ hands it turns only with the demo off.
   runner:
     profiles: [workers]
+    labels: *released-by-endora
     image: endora-node:latest
     container_name: endora-runner
     entrypoint: [endora-runner]
@@ -114,6 +126,7 @@ services:
   # share. Radio stations need the internet; nothing else does.
   sound:
     profiles: [sound]
+    labels: *released-by-endora
     build:
       context: .
       target: sound
@@ -149,6 +162,7 @@ services:
   # old ansible-nas receiver, which it does not clash with.
   spotify:
     profiles: [sound]
+    labels: *released-by-endora
     image: giof71/librespot@sha256:0c7cd19a49547cd0e34ac7c6d9aadd4b2703c5cb13acd1dbfd4982c311d478fb
     container_name: endora-spotify
     restart: unless-stopped
@@ -176,6 +190,7 @@ services:
   # ports and the speakers), so a routine deploy must never start it beside the old one.
   senders:
     profiles: [senders]
+    labels: *released-by-endora
     build:
       context: .
       target: senders
@@ -211,6 +226,7 @@ services:
   # SOUND_AIRPLAY2 = 1 (with the network's values, docs/homelab.md).
   airplay2:
     profiles: [airplay2]
+    labels: *released-by-endora
     build:
       context: .
       target: airplay2
@@ -243,6 +259,7 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 128m
   node:
+    labels: *released-by-endora
     build:
       context: .
       args:
@@ -398,6 +415,7 @@ services:
   # "the biggest that fits".
   runtime:
     profiles: ["bundled"]
+    labels: *released-by-endora
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: endora-runtime
     restart: unless-stopped

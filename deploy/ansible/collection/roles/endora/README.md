@@ -96,6 +96,12 @@ profile `endora_profiles` cannot start. Its Mac-only allow-list is two entries: 
 (`DOCKER_CONTEXT`, `ENDORA_MAC_*`, `ENDORA_PI_SSH`, `ENDORA_BUILD_CONTEXT`, ...) only matters on
 the Mac and is not compose input.
 
+Endora is released by this role or `make deploy`, never by Watchtower: every compose service
+carries `com.centurylinklabs.watchtower.enable: "false"` (the file's `released-by-endora`
+labels), and so does every container Endora's runner starts. Its images are built, not pulled,
+and Watchtower failed nightly on `docker-observer`, which runs in the node's network. The same
+script fails when a compose service lacks the label.
+
 ## Sound, and the AirPlay 2 door
 
 - **The sound hub** (Endora ADR 0104): `endora_sound: true` starts it (the `sound` profile,

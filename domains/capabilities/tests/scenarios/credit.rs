@@ -34,6 +34,11 @@ pub struct Credit {
 }
 
 impl Credit {
+    /// The owner's offset from UTC, in minutes, which the lab's scenarios read too.
+    pub(super) const fn offset(&self) -> i64 {
+        self.offset
+    }
+
     /// `date` (`YYYY-MM-DD`) at `hour:minute` on the owner's clock, in UTC milliseconds.
     fn at(&self, date: &str, hour: i64, minute: i64) -> i64 {
         let day = day_of(date);
@@ -68,7 +73,7 @@ impl Credit {
 }
 
 /// The day (from 1970-01-01) of a date written `YYYY-MM-DD`.
-fn day_of(date: &str) -> i64 {
+pub(super) fn day_of(date: &str) -> i64 {
     let parts: Vec<&str> = date.split('-').collect();
     let [year, month, day] = parts[..] else {
         panic!("a date is YYYY-MM-DD: {date}");

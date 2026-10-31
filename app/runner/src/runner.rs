@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::docker::{CHECK_LABEL, Docker, LEASE_LABEL, RUN_LABEL, State};
+use crate::docker::{CHECK_LABEL, Docker, LEASE_LABEL, RUN_LABEL, State, WATCHTOWER_LABEL};
 use crate::hq::{Ending, Hq, HqError};
 
 /// The longest a turn's container runs before it is killed, in seconds.
@@ -176,7 +176,9 @@ pub fn check_spec(work: &Work, job: &CheckJob) -> Value {
         "Image": work.image,
         "Entrypoint": ["endora-worker"],
         "Env": env,
-        "Labels": { CHECK_LABEL: job.id.to_string(), "endora.branch": job.branch },
+        "Labels": {
+            CHECK_LABEL: job.id.to_string(), "endora.branch": job.branch, WATCHTOWER_LABEL: "false",
+        },
         "HostConfig": {
             "NetworkMode": work.network,
             "Memory": 1024 * 1024 * 1024,
@@ -365,7 +367,10 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
         "Image": work.image,
         "Entrypoint": ["endora-worker"],
         "Env": env,
-        "Labels": { RUN_LABEL: turn.run.to_string(), LEASE_LABEL: turn.lease.to_string() },
+        "Labels": {
+            RUN_LABEL: turn.run.to_string(), LEASE_LABEL: turn.lease.to_string(),
+            WATCHTOWER_LABEL: "false",
+        },
         "HostConfig": {
             "NetworkMode": work.network,
             "Memory": memory,
@@ -1171,7 +1176,10 @@ mod tests {
                     "ENDORA_HQ_MCP=http://hq:8790/v2/team/mcp",
                     "ENDORA_MODEL_URL=http://node:8788/team-relay/local/v1",
                 ],
-                "Labels": { "endora.run": "12", "endora.lease": "1012" },
+                "Labels": {
+                    "endora.run": "12", "endora.lease": "1012",
+                    "com.centurylinklabs.watchtower.enable": "false",
+                },
                 "HostConfig": {
                     "NetworkMode": "endora_team",
                     "Memory": 268_435_456,
@@ -1277,7 +1285,10 @@ mod tests {
                     "ENDORA_MODEL_URL=http://192.168.1.10:8788/team-relay/local/v1",
                     "ENDORA_WORKBENCH=1",
                 ],
-                "Labels": { "endora.run": "12", "endora.lease": "1012" },
+                "Labels": {
+                    "endora.run": "12", "endora.lease": "1012",
+                    "com.centurylinklabs.watchtower.enable": "false",
+                },
                 "HostConfig": {
                     "NetworkMode": "endora_sandbox",
                     // A gigabyte, two CPUs, 256 processes: room for a shell, git and a build,
@@ -1611,6 +1622,13 @@ mod tests {
         assert_eq!(check["HostConfig"]["Dns"], json!([NO_RESOLVER]));
         assert!(check["HostConfig"]["Tmpfs"]["/work"].is_string());
         assert_eq!(specs[1]["Labels"][RUN_LABEL], "12");
+        // Endora's own, released by Endora: Watchtower never recreates a check or a turn (D11).
+        for spec in &specs {
+            assert_eq!(
+                spec["Labels"]["com.centurylinklabs.watchtower.enable"],
+                "false"
+            );
+        }
         assert_eq!(hq.asked_with(), [2, 1], "a check takes a place");
         // The job reports for itself: when its container ends well, it is only removed.
         docker.exits("c1", 0);

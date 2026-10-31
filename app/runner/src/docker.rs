@@ -18,6 +18,11 @@ pub const LEASE_LABEL: &str = "endora.lease";
 /// The label a check job's container carries: its check (ADR 0115).
 pub const CHECK_LABEL: &str = "endora.check";
 
+/// The label that keeps a container out of Watchtower, which every container the runner starts
+/// carries, set to `"false"`: Endora's image is built, not pulled, and a check or a turn
+/// recreated at night would be cut (D11).
+pub const WATCHTOWER_LABEL: &str = "com.centurylinklabs.watchtower.enable";
+
 /// How long one call to Docker may take. Starting a container on a busy NAS is the slowest.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(30);
 

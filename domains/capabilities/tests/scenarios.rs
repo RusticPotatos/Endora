@@ -1,9 +1,10 @@
 //! The bridge's scenarios (docs/testing.md): the owner's words in `features/*.feature`, run
 //! against the bridge's policy as the node composes it (`app/node/src/api/bridge.rs`): each
 //! capability or tool server's tool is a candidate, the node asks the policy which are offered,
-//! and a call is resolved against that same list. The team's lookup of an image's tags and
-//! Claude's monthly credit have their own files. The node's mirror of the fork and of upstream
-//! has its own world, in `scenarios/mirror.rs`, for the features tagged `@mirror`.
+//! and a call is resolved against that same list. The team's lookup of an image's tags,
+//! Claude's monthly credit and what Watchtower did to the lab have their own files. The node's
+//! mirror of the fork and of upstream has its own world, in `scenarios/mirror.rs`, for the
+//! features tagged `@mirror`.
 
 #[path = "scenarios/mirror.rs"]
 mod mirror;
@@ -33,6 +34,8 @@ struct Bridge {
     answer: Option<serde_json::Value>,
     /// Claude's credit as the node keeps it.
     credit: credit::Credit,
+    /// The lab's containers and what Endora noted of their updates.
+    lab: lab_updates::Lab,
 }
 
 /// The lookup of an image's tags in its registry (ADR 0106, amended 2026-10-30), in its own
@@ -43,6 +46,10 @@ mod registry;
 /// Claude's monthly credit (the owner, 2026-10-30), in its own file.
 #[path = "scenarios/credit.rs"]
 mod credit;
+
+/// What Watchtower did to the lab (D11, ADR 0106 amended 2026-10-31), in its own file.
+#[path = "scenarios/lab_updates.rs"]
+mod lab_updates;
 
 impl Bridge {
     /// A candidate as the node makes one: ready, the owner's stance on it, and whether it
