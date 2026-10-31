@@ -1,6 +1,6 @@
 //! Runs: one turn of a member, from queued to how it ended.
 
-use super::work::Millis;
+use super::work::{MemberId, Millis, TaskStatus};
 
 /// At most this many retries after a turn fails.
 pub const MOST_RETRIES: u8 = 2;
@@ -179,6 +179,58 @@ pub fn wake_again_after(in_a_row: usize) -> Millis {
     (AGAIN_FIRST_MS << doublings).min(AGAIN_LONGEST_MS)
 }
 
+/// One ended turn on an item, as [`woken_again_after_failed_starts`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndedTurn {
+    /// Whose turn it was.
+    pub member: MemberId,
+    /// Whether it failed without ever starting ([`is_never_started`]).
+    pub never_started: bool,
+    /// When it ended.
+    pub ended_at: Option<Millis>,
+}
+
+/// Whether an item is woken again for the member of its newest ended turn (`ended`, newest
+/// first) after that member's turns on it never started (the runner could not start the
+/// member's runtime), at `now`: once [`wake_again_after`] has passed since the newest ended,
+/// for an item that is to do, being done or in review, while the member is at work and the
+/// item still waits on them: in review, for its reviewer (anyone but its holder); otherwise,
+/// for its holder. A turn that never started is no failure of the work: the item neither counts
+/// one nor climbs.
+#[must_use]
+pub fn woken_again_after_failed_starts(
+    ended: &[EndedTurn],
+    status: TaskStatus,
+    holder: Option<MemberId>,
+    at_work: bool,
+    now: Millis,
+) -> bool {
+    if !matches!(
+        status,
+        TaskStatus::Todo | TaskStatus::Doing | TaskStatus::InReview
+    ) {
+        return false;
+    }
+    let Some(last) = ended.first() else {
+        return false;
+    };
+    let in_a_row = ended
+        .iter()
+        .take_while(|r| r.member == last.member && r.never_started)
+        .count();
+    let Some(ended_at) = last.ended_at.filter(|_| in_a_row > 0) else {
+        return false;
+    };
+    if now < ended_at + wake_again_after(in_a_row) {
+        return false;
+    }
+    let still_its = match status {
+        TaskStatus::InReview => holder != Some(last.member),
+        _ => holder == Some(last.member),
+    };
+    still_its && at_work
+}
+
 /// How many of a run's `attempts` count against its retries, given how many times the platform
 /// `interrupted` it: all but the first interruption's.
 #[must_use]
@@ -198,6 +250,47 @@ pub fn cached_share(fresh: i64, read: i64, written: i64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_whose_turns_never_started_is_woken_again_for_its_member_after_a_wait() {
+        let bo = MemberId(1);
+        let never = |at| EndedTurn {
+            member: bo,
+            never_started: true,
+            ended_at: Some(at),
+        };
+        let ended = [never(1_000), never(500)];
+        let wait = wake_again_after(2);
+        let woken = |status, holder, at_work, now| {
+            woken_again_after_failed_starts(&ended, status, holder, at_work, now)
+        };
+        assert!(!woken(TaskStatus::Doing, Some(bo), true, 1_000 + wait - 1));
+        assert!(woken(TaskStatus::Doing, Some(bo), true, 1_000 + wait));
+        assert!(
+            !woken(TaskStatus::Doing, Some(MemberId(2)), true, 1_000 + wait),
+            "moved on"
+        );
+        assert!(
+            !woken(TaskStatus::Doing, Some(bo), false, 1_000 + wait),
+            "not at work"
+        );
+        assert!(
+            woken(TaskStatus::InReview, Some(MemberId(2)), true, 1_000 + wait),
+            "its reviewer"
+        );
+        assert!(!woken(TaskStatus::Done, Some(bo), true, 1_000 + wait));
+        let started = [EndedTurn {
+            never_started: false,
+            ..never(1_000)
+        }];
+        assert!(!woken_again_after_failed_starts(
+            &started,
+            TaskStatus::Doing,
+            Some(bo),
+            true,
+            Millis::MAX / 2
+        ));
+    }
 
     #[test]
     fn the_share_read_from_the_cache_is_of_all_the_input() {

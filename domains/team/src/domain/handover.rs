@@ -61,6 +61,133 @@ pub const fn out_of_room(brain: Brain, claude_code: bool, metered: i64) -> bool 
     !claude_code && metered.saturating_mul(2) >= prompt_budget_tokens(brain)
 }
 
+/// How many times an item goes on with one member in a fresh turn after its turn ran out of
+/// room keeping no new work; the next time is one of its failures, and the count starts again.
+/// A turn that kept new work starts the count again (ADR 0142, amended 2026-10-31).
+pub const CONTINUES_MOST: u32 = 3;
+
+/// How many times in all an item goes on with one member after turns that ran out of room,
+/// new work kept or not; the next time is one of its failures, and the count starts again. The
+/// loops' money caps bound it too: this keeps one item from taking a member's every turn.
+pub const CONTINUES_IN_ALL: u32 = 12;
+
+/// How many of an item's turns that ran out of room are remembered, newest kept (review of
+/// 31 Oct: the list grew without bound). Four a failure, three failures a rank and five ranks
+/// come to sixty: a list this long covers an item's whole climb.
+pub const RUNS_KEPT: usize = 64;
+
+/// An item's continuations (ADR 0142, amended 2026-10-30): with whom, how many in a row kept no
+/// new work since the count last started, how many in all, the turn that ran out of room and
+/// has not ended yet, and every turn of it HQ judged out of room ([`out_of_room`]), the one
+/// flag a thread's view reads. HQ loads and saves it; the rules are here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Continued {
+    /// The member the counts are for.
+    pub member: i64,
+    /// Continuations in a row that kept no new work.
+    pub n: u32,
+    /// Continuations in all.
+    pub total: u32,
+    /// The turn that ran out of room and has not ended yet.
+    pub pending: Option<i64>,
+    /// The newest [`RUNS_KEPT`] turns that ran out of room.
+    pub runs: Vec<i64>,
+}
+
+/// What comes of a work turn that ran out of room, once it has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Continuation {
+    /// The member goes on in a fresh turn, with a handover saying why.
+    GoesOn(String),
+    /// One of the item's failures, said as how its turns ran out of room; the counts start
+    /// again.
+    Failure(String),
+}
+
+impl Continued {
+    /// `run` ran out of room: it is pending, and remembered among the newest [`RUNS_KEPT`].
+    pub fn ran_out(&mut self, run: i64) {
+        self.pending = Some(run);
+        self.runs.push(run);
+        let over = self.runs.len().saturating_sub(RUNS_KEPT);
+        self.runs.drain(..over);
+    }
+
+    /// `member`'s turn `run` has ended: whether it is the one pending, which it no longer is.
+    /// The counts are a member's: another's start them again.
+    pub fn ended(&mut self, run: i64, member: i64) -> bool {
+        if self.pending != Some(run) {
+            return false;
+        }
+        self.pending = None;
+        if self.member != member {
+            self.member = member;
+            self.n = 0;
+            self.total = 0;
+        }
+        true
+    }
+
+    /// After a work turn that ran out of room, while the item is still its member's: a turn
+    /// that kept new work was making progress and starts the in-a-row count again; turns go on
+    /// up to [`CONTINUES_MOST`] in a row without new work and [`CONTINUES_IN_ALL`] in all, and
+    /// past either it is one of the item's failures and the counts start again.
+    pub fn after_work(&mut self, kept_new_work: bool) -> Continuation {
+        if kept_new_work {
+            self.n = 0;
+        }
+        if self.n < CONTINUES_MOST && self.total < CONTINUES_IN_ALL {
+            self.total += 1;
+            if kept_new_work {
+                return Continuation::GoesOn(format!(
+                    "its turn ran out of room having kept new work, continuation {} in all",
+                    self.total
+                ));
+            }
+            self.n += 1;
+            return Continuation::GoesOn(format!(
+                "its turn ran out of room, continuation {} of {CONTINUES_MOST}",
+                self.n
+            ));
+        }
+        let said = if self.total >= CONTINUES_IN_ALL {
+            format!("{CONTINUES_IN_ALL} continuations in all")
+        } else {
+            format!("{} times without keeping new work", CONTINUES_MOST + 1)
+        };
+        self.n = 0;
+        self.total = 0;
+        Continuation::Failure(said)
+    }
+
+    /// After a reviewer's turn that ran out of room (review of 31 Oct): the reviewer goes on in
+    /// a fresh review up to [`CONTINUES_MOST`] times, said as which continuation it is; the
+    /// next time, `None`, the owner is asked, and the count starts again.
+    pub fn after_review(&mut self) -> Option<u32> {
+        if self.n < CONTINUES_MOST {
+            self.n += 1;
+            return Some(self.n);
+        }
+        self.n = 0;
+        None
+    }
+}
+
+/// Whether turn `run` kept new work on its item: of the item's branches (oldest first), one it
+/// recorded, submitted or kept in progress, whose head is not the head the item's branch had
+/// before. HQ's record decides, not the turn's word.
+#[must_use]
+pub fn kept_new_work(branches: &[super::Branch], run: i64) -> bool {
+    let Some(first) = branches.iter().position(|b| b.run.0 == run) else {
+        return false;
+    };
+    let Some(newest) = branches.iter().rfind(|b| b.run.0 == run) else {
+        return false;
+    };
+    let before = first.checked_sub(1).map(|i| branches[i].head.as_str());
+    before != Some(newest.head.as_str())
+}
+
 /// How every handover begins: in a thread, it is how one is known.
 pub const START: &str = "Handover of #";
 /// The line that ends a handover.
@@ -413,6 +540,63 @@ mod tests {
             assert!(line.contains("not checked"), "{told}");
             assert!(told.chars().count() <= chars_for(brain), "{told}");
         }
+    }
+
+    #[test]
+    fn only_the_newest_turns_out_of_room_are_remembered() {
+        let mut kept = Continued::default();
+        for run in 1..=100 {
+            kept.ran_out(run);
+        }
+        assert_eq!(kept.pending, Some(100));
+        assert_eq!(kept.runs.len(), RUNS_KEPT);
+        assert_eq!(kept.runs.first(), Some(&(100 - RUNS_KEPT as i64 + 1)));
+    }
+
+    #[test]
+    fn a_turn_out_of_room_goes_on_three_times_in_a_row_and_twelve_in_all() {
+        let mut kept = Continued::default();
+        kept.ran_out(7);
+        assert!(!kept.ended(6, 1), "not the pending turn");
+        assert!(kept.ended(7, 1));
+        for n in 1..=CONTINUES_MOST {
+            assert_eq!(
+                kept.after_work(false),
+                Continuation::GoesOn(format!(
+                    "its turn ran out of room, continuation {n} of {CONTINUES_MOST}"
+                ))
+            );
+        }
+        assert_eq!(
+            kept.after_work(false),
+            Continuation::Failure("4 times without keeping new work".to_owned())
+        );
+        assert_eq!((kept.n, kept.total), (0, 0), "the counts start again");
+        for _ in 0..CONTINUES_IN_ALL {
+            assert!(matches!(kept.after_work(true), Continuation::GoesOn(_)));
+        }
+        assert_eq!(
+            kept.after_work(true),
+            Continuation::Failure("12 continuations in all".to_owned())
+        );
+        kept.n = 2;
+        kept.ran_out(8);
+        assert!(kept.ended(8, 2));
+        assert_eq!(
+            (kept.member, kept.n),
+            (2, 0),
+            "another member's counts start afresh"
+        );
+    }
+
+    #[test]
+    fn a_review_out_of_room_goes_on_three_times_then_asks_the_owner() {
+        let mut kept = Continued::default();
+        assert_eq!(kept.after_review(), Some(1));
+        assert_eq!(kept.after_review(), Some(2));
+        assert_eq!(kept.after_review(), Some(3));
+        assert_eq!(kept.after_review(), None);
+        assert_eq!(kept.n, 0);
     }
 
     fn post<'a>(author: &'a str, text: &'a str, out_of_room: bool) -> ThreadPost<'a> {

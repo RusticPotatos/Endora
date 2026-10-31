@@ -102,15 +102,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         live: &[Option<TaskId>],
         now: Millis,
     ) -> Done<()> {
-        use crate::domain::TaskStatus;
         let members = self.store.members()?;
         for task in tasks {
-            if !matches!(
-                task.status,
-                TaskStatus::Todo | TaskStatus::Doing | TaskStatus::InReview
-            ) || live.contains(&Some(task.id))
-                || !self.store.held_wakes(task.id)?.is_empty()
-            {
+            if live.contains(&Some(task.id)) || !self.store.held_wakes(task.id)?.is_empty() {
                 continue;
             }
             let mut ended: Vec<Run> = self
@@ -123,25 +117,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let Some(last) = ended.first() else {
                 continue;
             };
-            let never = |r: &&Run| {
-                r.member == last.member
-                    && r.status == RunStatus::Failed
-                    && runs::is_never_started(&r.end_reason)
-            };
-            let in_a_row = ended.iter().take_while(never).count();
-            let Some(ended_at) = last.ended_at.filter(|_| in_a_row > 0) else {
-                continue;
-            };
-            if now < ended_at + runs::wake_again_after(in_a_row) {
-                continue;
-            }
-            let holder = task.owner.or(task.assignee);
-            let still_its = match task.status {
-                TaskStatus::InReview => holder != Some(last.member),
-                _ => holder == Some(last.member),
-            };
+            let seen: Vec<runs::EndedTurn> = ended
+                .iter()
+                .map(|r| runs::EndedTurn {
+                    member: r.member,
+                    never_started: r.status == RunStatus::Failed
+                        && runs::is_never_started(&r.end_reason),
+                    ended_at: r.ended_at,
+                })
+                .collect();
             let at_work = members.iter().any(|m| m.id == last.member && m.at_work());
-            if !still_its || !at_work || self.in_a_scenario(task.id)? {
+            if !runs::woken_again_after_failed_starts(
+                &seen,
+                task.status,
+                task.holder(),
+                at_work,
+                now,
+            ) || self.in_a_scenario(task.id)?
+            {
                 continue;
             }
             let reason = self
