@@ -456,6 +456,29 @@ impl CapabilitySettingsRepository for ConfigStore {
             .map_err(backend)?;
         Ok(())
     }
+
+    fn set_settings(
+        &self,
+        capability_id: &str,
+        values: &[(&str, &str)],
+    ) -> Result<(), RepositoryError> {
+        let sealed = values
+            .iter()
+            .map(|(key, value)| Ok((*key, self.db.seal(value)?)))
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let mut conn = self.db.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        for (key, value) in sealed {
+            tx.execute(
+                "INSERT OR REPLACE INTO capability_settings (capability_id, key, value) \
+                 VALUES (?1, ?2, ?3)",
+                params![capability_id, key, value],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
 }
 
 impl CapabilityConfigRepository for ConfigStore {
@@ -1013,6 +1036,25 @@ mod tests {
         };
         AutonomyEnvelopeRepository::set(&store, &widened).unwrap();
         assert_eq!(AutonomyEnvelopeRepository::get(&store).unwrap(), widened);
+    }
+
+    #[test]
+    fn settings_set_together_are_kept_together() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ConfigStore::new(db);
+        store
+            .set_settings("credits", &[("a", "1"), ("b", "2")])
+            .unwrap();
+        let mut all = store.all_settings().unwrap();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                ("credits".to_owned(), "a".to_owned(), "1".to_owned()),
+                ("credits".to_owned(), "b".to_owned(), "2".to_owned()),
+            ]
+        );
     }
 
     #[test]
