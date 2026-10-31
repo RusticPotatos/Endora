@@ -17,7 +17,7 @@ The record is one document: `docs/proposals/baseline-experiment-2026-10-28.md`.
 Keep it current as you go, never in a scratch file alone.
 
 Arguments: `start`, `tick`, `judge <task>`, `close`, `next`. With none, find where the current
-round stands (step 3's status) and do the next due step.
+round stands (step 2's status) and do the next due step.
 
 ## Standing rules (from the owner; never relaxed by a round)
 
