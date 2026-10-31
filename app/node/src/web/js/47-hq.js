@@ -861,6 +861,10 @@ function hqTinted(img, color) {
 }
 
 const HQ_PIXEL = "8px Silkscreen, monospace";
+// The open floor's side walls (rows `top` to `bottom`, `w` pixels thick), and the front door in
+// the right one: its frame, in pixels, on the wall's face beside the lobby.
+const HQ_SIDE = { top: 7, bottom: 15, w: 5 };
+function hqDoorRect() { return { x: HQ_W - HQ_SIDE.w - 5, y: Math.round(HQ_P.door.y * HQ_T), w: HQ_SIDE.w + 5, h: 2.5 * HQ_T }; }
 
 function hqPaintRoom() {
   const T = HQ_T, P = HQ_P, C = HQ_C, W = HQ_W, H = HQ_H;
@@ -936,8 +940,21 @@ function hqPaintRoom() {
   g.fillStyle = "#b8a68a"; g.fillRect(17.8 * T, 15.6 * T, 2.2 * T, 3); g.fillRect(17.8 * T, 16.4 * T, 2.2 * T, 3);
   const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
   for (let i = 0; i < 8; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(17.8 * T + 2 + i * 4.4, 15.6 * T - 5 + (i % 2) * 13, 3, 5); }
-  // The front door, on the floor's right wall.
-  g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
+  // The open floor's side walls, between the rooms along the back and those along the bottom,
+  // and the front door set in the right one, in its frame, with a mat before it (the owner saw
+  // the door floating on the floor, away from any wall).
+  const sideTop = HQ_SIDE.top * T, sideH = (HQ_SIDE.bottom - HQ_SIDE.top) * T, D = hqDoorRect();
+  for (const sx of [0, W - HQ_SIDE.w]) {
+    g.fillStyle = C.wall; g.fillRect(sx, sideTop, HQ_SIDE.w, sideH);
+    g.fillStyle = C.trim; g.fillRect(sx === 0 ? HQ_SIDE.w - 1 : sx, sideTop, 1, sideH);
+  }
+  g.fillStyle = "#8a6a4a"; g.fillRect(D.x - 16, D.y + 7, 14, D.h - 12);
+  g.fillStyle = "#a5825c"; g.fillRect(D.x - 14, D.y + 9, 10, D.h - 16);
+  g.fillStyle = C.shadow; g.fillRect(D.x - 2, D.y + 2, 2, D.h);
+  g.fillStyle = "#3d3a44"; g.fillRect(D.x, D.y, D.w, D.h);
+  g.fillStyle = "#9fd3f0"; g.fillRect(D.x + 2, D.y + 3, D.w - 3, D.h - 6);
+  g.fillStyle = "#cfeaf8"; g.fillRect(D.x + 2, D.y + 3, 1, D.h - 6);
+  g.fillStyle = C.lamp; g.fillRect(D.x + 2, D.y + Math.round(D.h / 2), 2, 3);
   return bg;
 }
 
@@ -1258,7 +1275,7 @@ function hqDraw() {
   const lx = P.lever.x * T, ly = P.lever.y * T, up = !snap.stopped;
   ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
   ctx.fillStyle = "#9aa"; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
-  if ((HQ.doorFlash || 0) > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
+  if ((HQ.doorFlash || 0) > 0) { const D = hqDoorRect(); ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(D.x - 6, D.y - 4, D.w + 6, D.h + 8); }
   // A ping-pong ball between the two at the table.
   if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
   hqDrawGames(ctx, snap);

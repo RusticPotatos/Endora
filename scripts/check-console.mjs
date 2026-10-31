@@ -1408,6 +1408,12 @@ if (failures.length) {
       if (!at("rgba(185,140,240,.55)").includes(`${11 * 16 + 1},${4 * 16 + 1}`)) fail("hq: the rug is not drawn flat where the data has it");
       if (!filled.some((f) => f.x === 26 * 16 + 2 && f.y === 5 && f.w === 12 && f.h === 17)) fail("hq: the poster is not drawn on the wall where the data has it");
       if (!at("#b8a68a").includes(`${14 * 16 + 1},${3 * 16 + 1}`)) fail("hq: a kind of thing with no picture is not drawn as a plain box");
+      // The front door is set in the right wall, framed, beside the lobby (the owner saw it
+      // floating on the floor, away from any wall).
+      const door = runInContext(`(() => { const D = hqDoorRect(), lobby = HQ_P.lobby;
+        return { right: D.x + D.w, top: D.y, bottom: D.y + D.h, x: D.x, wall: [HQ_SIDE.top * HQ_T, HQ_SIDE.bottom * HQ_T], lobby: (lobby.cy + 0.5) * HQ_T, w: HQ_W }; })()`, context);
+      const framed = filled.some((f) => f.style === "#3d3a44" && f.x === door.x && f.y === door.top);
+      if (door.right !== door.w || door.top < door.wall[0] || door.bottom > door.wall[1] || door.lobby < door.top || door.lobby > door.bottom || !framed) fail(`hq: the front door is not framed in the right wall by the lobby: ${JSON.stringify(door)} framed=${framed}`);
       filled.length = 0;
       runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 12; hqPlacePeople(); hqDraw();`, context);
       if (at("rgba(127,178,255,.55)").join() !== `${12 * 16 + 1},${3 * 16 + 3}`) fail("hq: a thing moved in the data is not moved on screen");
