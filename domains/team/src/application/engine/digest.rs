@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 
 use super::{Done, Engine};
 use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
-use crate::domain::chain::Decision;
 use crate::domain::desk;
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -22,14 +21,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "text": d.text, "at": d.at,
             "also": self.store.attached(d.id.0)?.iter().map(|(t, _)| t.0).collect::<Vec<_>>(),
         });
-        // The CEO's decision for the board, in its three parts (ADR 0111).
-        if let Some(decided) = (d.kind == "decision")
-            .then(|| Decision::read(&d.text))
-            .flatten()
-        {
-            item["decision"] = json!({ "decision": decided.decision,
-                "recommendation": decided.recommendation, "why": decided.why });
-        }
         // The criterion of its task a request for the owner's yes serves, as it was asked
         // (ADR 0124, amended). An approval from before it was asked for has none to show.
         if d.kind == "approval" {

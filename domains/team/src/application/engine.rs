@@ -13,7 +13,6 @@ use super::ports::{
     WorkerAdapter,
 };
 use super::scorecard;
-use crate::domain::chain::Decision;
 use crate::domain::cut::cut;
 use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::history::InputOrigin;
@@ -236,10 +235,6 @@ fn one_line(text: &str, most: usize) -> String {
 pub enum Asked {
     /// On the owner's desk, as this item.
     Desk(crate::domain::DeskId),
-    /// To this reviewer first, as a draft in the task's thread.
-    Review(MemberId),
-    /// Up the chain of command, to this member, in the task's thread (ADR 0111).
-    Up(MemberId),
 }
 
 /// The engine.
@@ -2605,7 +2600,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         for d in self.store.desk()? {
-            if !matches!(d.kind.as_str(), "question" | "approval" | "decision")
+            if !matches!(d.kind.as_str(), "question" | "approval")
                 || d.status != "waiting"
             {
                 continue;
@@ -2771,11 +2766,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         let words = cut(words.trim(), 4000);
-        if found.kind == "decision" {
-            self.board_decides(&found, decision, &words)?;
-            // The board's one word on the same decision from other tasks (ADR 0124).
-            return self.answer_the_same_asks(item, decision, &words);
-        }
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, &words);
         }
@@ -2788,33 +2778,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.decide_held_lock(&found, decision, &words)?;
         self.answer_the_same_asks(item, decision, &words)
-    }
-
-    /// The board's word on the CEO's decision (ADR 0111): in the task's thread as the owner's,
-    /// with what they wrote, and the CEO woken to act on it.
-    fn board_decides(&self, found: &DeskItem, verdict: &str, words: &str) -> Done<()> {
-        let said = match verdict {
-            "approve" => "The board approves",
-            "decline" => "The board declines",
-            "answer" if !words.is_empty() => "The board answers",
-            _ => return Err(EngineError::Unknown("decision for this item")),
-        };
-        let task = found.task.ok_or(EngineError::Unknown("task"))?;
-        let decision = Decision::read(&found.text).map_or_else(String::new, |d| d.decision);
-        let mut text = format!("{said}: {decision}");
-        if !words.is_empty() {
-            text.push_str(&format!("\n{words}"));
-        }
-        self.post_held_lock(Author::Owner, task, &text)?;
-        self.store.set_desk_status(found.id, verdict)?;
-        self.emit(
-            EventKind::DeskDecided,
-            json!({ "item": found.id.0, "kind": found.kind, "decision": verdict }),
-        )?;
-        if let Some(ceo) = found.member {
-            self.wake_held_lock(ceo, Some(task), WakeReason::ProposalDecided)?;
-        }
-        Ok(())
     }
 
     /// A desk item still waiting for the owner.

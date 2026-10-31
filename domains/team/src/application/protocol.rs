@@ -834,18 +834,7 @@ fn tool_ask_owner<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .ask_owner_citing(run.id, text, &cited)
         .map_err(|e| said(&e))?
     {
-        super::engine::Asked::Up(to) => {
-            let to = engine
-                .store()
-                .members()
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|m| m.id == to)
-                .map_or_else(|| "the one above you".to_owned(), |m| m.name);
-            Ok(format!("It is with {to}, in the task's thread, and this turn has ended: stop now. You are woken when they answer."))
-        }
         super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
-        super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
     }
 }
 

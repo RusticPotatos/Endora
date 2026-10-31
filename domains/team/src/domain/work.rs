@@ -452,8 +452,6 @@ pub enum Refusal {
     Conversation(&'static str),
     /// Not in Endora's public library.
     NotADoc,
-    /// A decision for the board says what is to be decided, what the CEO recommends, and why.
-    NotADecision,
     /// A name another member already has, or none.
     NotAName,
     /// An open task under the same goal is already about these containers: one task a
@@ -664,9 +662,6 @@ impl fmt::Display for Refusal {
             ),
             Self::NotAName => f.write_str(
                 "a member's name is one to 40 characters, and no other member's",
-            ),
-            Self::NotADecision => f.write_str(
-                "a decision for the board gives `decision` (what is to be decided), `recommendation` (what you recommend) and `why`, each in a sentence or two",
             ),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting for an answer; end your turn",

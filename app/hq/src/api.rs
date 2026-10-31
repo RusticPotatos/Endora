@@ -1608,10 +1608,7 @@ mod tests {
         let st = state(false);
         let (run, task) = a_turn_starts(&st);
         let endora_team::application::Asked::Desk(asked) =
-            st.hq.ask_owner(run, "Which cables first?").unwrap()
-        else {
-            panic!("no reviewer: straight to the desk");
-        };
+            st.hq.ask_owner(run, "Which cables first?").unwrap();
         let app = app(st.clone());
         let decide = |body: &str| call("POST", &format!("/v1/desk/{}", asked.0), Some(TOKEN), body);
         let res = app
@@ -3599,10 +3596,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let (run, _) = a_turn_starts(&st);
         let endora_team::application::Asked::Desk(asked) =
-            st.hq.ask_owner(run, "Restart `Crappy_Cray`?").unwrap()
-        else {
-            panic!("no reviewer: straight to the desk");
-        };
+            st.hq.ask_owner(run, "Restart `Crappy_Cray`?").unwrap();
         let item = st
             .hq
             .store()
