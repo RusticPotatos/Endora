@@ -227,8 +227,11 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         let mut on_the_way: Vec<String> = Vec::new();
         for _ in 0..setup.most_rounds {
             let said = model.ask(&talk)?;
-            // Its words are part of what the turn said, its last ones too.
-            talk.said(&said);
+            // Its words are part of what the turn said, its last ones too. A result it now reads
+            // as a stub is answered in full if asked for again.
+            for key in talk.said(&said) {
+                answered.forget(&key);
+            }
             if said.limit_reached {
                 return Err(Stopped::Failed(
                     "the model reached its token limit; its incomplete reply cannot finish the turn or execute tool calls".to_owned(),
@@ -1030,6 +1033,7 @@ pub(crate) struct Reply {
 
 /// The conversation with the model, in the API the relay speaks: the instructions, the
 /// briefing, each round's answer and what each call came to.
+#[derive(Clone)]
 struct Talk {
     api: Api,
     system: String,
@@ -1037,7 +1041,24 @@ struct Talk {
     tools: Vec<Value>,
     /// How hard Claude tries, when HQ said.
     effort: Option<String>,
+    /// How many of the newest results the model reads whole, when its old ones are cut: a
+    /// house turn's. `None` reads every result whole (Claude's, whose prompt is cached).
+    keep_whole: Option<usize>,
+    /// The results cut, by call id: what the model reads in their place from now on. The
+    /// conversation itself, which HQ keeps, stays whole.
+    cut: std::collections::HashMap<String, String>,
 }
+
+/// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
+/// worker cannot tell the NAS's model, the Mac and DeepSeek apart (the node's relay routes
+/// them), so all three keep the slow machines' two.
+const HOUSE_KEEPS_WHOLE: usize = 2;
+
+/// A result no longer than this is never cut: its stub would save next to nothing.
+const CUT_PAST: usize = 600;
+
+/// The most of a gist, or of a call's arguments, a stub says.
+const STUB_SAYS_AT_MOST: usize = 120;
 
 impl Talk {
     /// A conversation that starts with the instructions and the briefing, offering `offered`.
@@ -1050,6 +1071,8 @@ impl Talk {
                 system: String::new(),
                 tools: functions(offered),
                 effort: None,
+                keep_whole: Some(HOUSE_KEEPS_WHOLE),
+                cut: std::collections::HashMap::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1057,6 +1080,8 @@ impl Talk {
                 messages: vec![briefing],
                 tools: anthropic_tools(offered),
                 effort: None,
+                keep_whole: None,
+                cut: std::collections::HashMap::new(),
             },
         }
     }
@@ -1107,7 +1132,7 @@ impl Talk {
     fn body(&self, model: &str) -> Value {
         if self.api == Api::OpenAi {
             return json!({ "model": model, "max_tokens": MOST_A_HOUSE_REPLY,
-                           "messages": self.messages, "tools": self.tools });
+                           "messages": self.as_read(), "tools": self.tools });
         }
         let mut body = json!({
             "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,
@@ -1128,9 +1153,70 @@ impl Talk {
         }
     }
 
-    /// The model's answer, kept as it said it.
-    fn said(&mut self, said: &Said) {
+    /// The model's answer, kept as it said it. On a house turn, the results it has now replied
+    /// to that are not among the newest it keeps whole are cut from what it reads next: the
+    /// calls cut, as the repeat guard knows them (`tool {args}`), so that one asked again is
+    /// answered in full.
+    fn said(&mut self, said: &Said) -> Vec<String> {
         self.messages.push(said.message.clone());
+        let Some(keep) = self.keep_whole else {
+            return Vec::new();
+        };
+        // Every result so far comes before this reply, so it has been replied to: a result is
+        // only ever cut here, never before the model has read it whole and answered.
+        let results: Vec<&Value> = self
+            .messages
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        let older = results.len().saturating_sub(keep);
+        let mut newly = Vec::new();
+        for result in &results[..older] {
+            let id = result["tool_call_id"].as_str().unwrap_or("").to_owned();
+            let text = result["content"].as_str().unwrap_or("");
+            if self.cut.contains_key(&id) || text.chars().count() <= CUT_PAST {
+                continue;
+            }
+            let (tool, args) = self.call_of(&id);
+            self.cut.insert(id, stub(&tool, &args, text));
+            newly.push(format!("{tool} {args}"));
+        }
+        newly
+    }
+
+    /// The tool and arguments of the call with `id`, as the model asked for it.
+    fn call_of(&self, id: &str) -> (String, Value) {
+        let call = self
+            .messages
+            .iter()
+            .filter_map(|m| m["tool_calls"].as_array())
+            .flatten()
+            .find(|c| c["id"].as_str() == Some(id));
+        let Some(call) = call else {
+            return (String::new(), json!({}));
+        };
+        let tool = call["function"]["name"].as_str().unwrap_or("").to_owned();
+        let args = arguments(&call["function"]["arguments"]).unwrap_or_else(|_| json!({}));
+        (tool, args)
+    }
+
+    /// The conversation as the model reads it next: each result cut read as its stub.
+    fn as_read(&self) -> Vec<Value> {
+        if self.cut.is_empty() {
+            return self.messages.clone();
+        }
+        self.messages
+            .iter()
+            .map(|m| {
+                let stub = m["tool_call_id"].as_str().and_then(|id| self.cut.get(id));
+                let Some(stub) = stub else {
+                    return m.clone();
+                };
+                let mut m = m.clone();
+                m["content"] = json!(stub);
+                m
+            })
+            .collect()
     }
 
     /// What each call came to: OpenAI's one message a call; Anthropic's one user message with
@@ -1157,6 +1243,44 @@ impl Talk {
         self.messages
             .push(json!({ "role": "user", "content": results }));
     }
+}
+
+/// What a house turn reads in place of an old result (ADR 0142, amended 2026-10-30): the call,
+/// its receipt, its size and its first meaningful line, and how to read it whole again. A
+/// receipt keeps only the start of a result, so the way back is the same call, not the receipt.
+fn stub(tool: &str, args: &Value, text: &str) -> String {
+    let receipt = text
+        .trim_end()
+        .strip_suffix(')')
+        .and_then(|t| t.rsplit_once(" (receipt r"))
+        .map(|(_, id)| id)
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        .map_or_else(String::new, |id| format!(" (receipt r{id})"));
+    let gist = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.chars().any(char::is_alphanumeric))
+        .unwrap_or("");
+    format!(
+        "[An older result, cut to save room: {tool} {}{receipt}, {} characters, which began \"{}\". \
+         To read it whole again, call {tool} again with the same arguments.]",
+        at_most(&args.to_string(), STUB_SAYS_AT_MOST),
+        text.chars().count(),
+        at_most(gist, STUB_SAYS_AT_MOST)
+    )
+}
+
+/// `text` on one line, cut to `most` characters.
+fn at_most(text: &str, most: usize) -> String {
+    let one_line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if one_line.chars().count() <= most {
+        return one_line;
+    }
+    let kept: String = one_line.chars().take(most).collect();
+    format!("{kept}…")
 }
 
 /// A tool call's arguments. In OpenAI's format they are a JSON object written as text; an
@@ -1190,6 +1314,17 @@ pub(crate) struct Answered {
     /// What the worker already asked for the model before its first round (the claim): the
     /// model asking the same is told what HQ said, once, without asking HQ again.
     given: std::collections::HashMap<String, String>,
+}
+
+impl Answered {
+    /// Forgets what a call said, once the model reads it only as a stub: asked again, it is
+    /// sent again and answered in full, not told it already has the result.
+    fn forget(&mut self, key: &str) {
+        self.said.remove(key);
+        if self.last.as_deref() == Some(key) {
+            self.last = None;
+        }
+    }
 }
 
 /// Runs one tool call the model asked for, and gives what the model reads back, and whether
@@ -2459,8 +2594,19 @@ mod tests {
             "chess move, its three calls: {whole} bytes (~{} tokens)",
             whole / 4
         );
-        let (worked, _) = first_call_of(&hq, work);
+        let (worked, talk) = first_call_of(&hq, work);
         said("task turn", &worked);
+        // Round 3: a ten-call turn on the task, its old results read as stubs.
+        let mut whole_results = talk.clone();
+        whole_results.keep_whole = None;
+        let before = ten_calls_on_the_lab(whole_results);
+        let after = ten_calls_on_the_lab(talk);
+        eprintln!(
+            "task turn, ten calls: {before} bytes (~{} tokens) with every result whole, {after} \
+             (~{} tokens) with old ones stubbed",
+            before / 4,
+            after / 4
+        );
 
         // A move starts with HQ's core, its game and the way to the rest, and is not told the
         // lab's rules it has no tool for yet.
@@ -2494,6 +2640,85 @@ mod tests {
             "a task turn's first call: {}",
             worked.body
         );
+        // Measured when this came (2026-10-30): 478,129 bytes with every result whole, 298,407
+        // with old ones stubbed (about 119,500 to 74,600 tokens); each call's instructions,
+        // tools and briefing, about 12 KB, are the floor. At most two thirds of what it was.
+        assert!(after * 3 <= before * 2, "ten calls: {after} of {before}");
+    }
+
+    /// The bytes of every call of a ten-call turn on an unhealthy container, after its first:
+    /// the lab's status, its logs (a house model's 40 lines, and the 100 asked for), the
+    /// standards, the branch's diff, a restart, then a word in the thread.
+    fn ten_calls_on_the_lab(mut talk: Talk) -> usize {
+        let status = format!(
+            "{} (receipt r101)",
+            (0..40)
+                .map(|i| format!(
+                    "app{i}: running, healthy, up 3 days, image example/app{i}:1.{i}, cpu 0.{i}%, \
+                     memory {i}0 MB of 512 MB, restarts 0"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let diff = format!(
+            "Document d12, part 1 of 2: the branch's diff against develop.\n{}",
+            (0..160)
+                .map(|i| format!(
+                    "+    - name: Set the owner of /data/tv/Show {i} to the media user"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let calls: [(&str, Value, String); 10] = [
+            ("homelab_status", json!({}), status.clone()),
+            (
+                "container_logs",
+                json!({ "container": "sonarr" }),
+                a_log("sonarr", 40, 102),
+            ),
+            (
+                "container_logs",
+                json!({ "container": "prowlarr" }),
+                a_log("prowlarr", 40, 103),
+            ),
+            (
+                "container_logs",
+                json!({ "container": "sonarr", "lines": 100 }),
+                a_log("sonarr", 100, 104),
+            ),
+            (
+                "read_doc",
+                json!({ "path": "docs/standards.md" }),
+                "Standards: every change is tested first and reviewed.\n".repeat(150),
+            ),
+            ("read_document", json!({ "document": 12 }), diff),
+            (
+                "homelab_status",
+                json!({ "why": "again" }),
+                status.replace("r101", "r105"),
+            ),
+            (
+                "restart_container",
+                json!({ "container": "sonarr" }),
+                "Restarted sonarr: it is running. (receipt r106)".to_owned(),
+            ),
+            (
+                "container_logs",
+                json!({ "container": "sonarr", "why": "after" }),
+                a_log("sonarr", 40, 107),
+            ),
+            (
+                "post",
+                json!({ "text": "Sonarr could not write its imports." }),
+                "Posted.".to_owned(),
+            ),
+        ];
+        let mut read = 0;
+        for (i, (tool, args, text)) in calls.iter().enumerate() {
+            round(&mut talk, &format!("c{i}"), tool, args, text);
+            read += talk.body("local").to_string().len();
+        }
+        read
     }
 
     /// A house turn with no task (a chess move, a look round) whose lab tools are to be found is
@@ -2728,5 +2953,206 @@ mod tests {
         assert!(!said.contains("sec"), "{said}");
         assert!(said.chars().count() <= SAYS_AT_MOST);
         assert_eq!(quiet("HQ answered 500", ""), "HQ answered 500");
+    }
+
+    /// One round of a house turn: the model calls `tool` with `args`, and is answered `text`.
+    /// What the model's reply cut, by call.
+    fn round(talk: &mut Talk, id: &str, tool: &str, args: &Value, text: &str) -> Vec<String> {
+        let cut = talk.said(&Said {
+            text: String::new(),
+            calls: Vec::new(),
+            message: json!({ "role": "assistant", "content": null, "tool_calls": [{
+                "id": id, "type": "function",
+                "function": { "name": tool, "arguments": args.to_string() } }] }),
+            limit_reached: false,
+        });
+        talk.answered(vec![(
+            json!(id),
+            Reply {
+                text: text.to_owned(),
+                refused: false,
+                asked: false,
+                moved_on: false,
+            },
+        )]);
+        cut
+    }
+
+    /// A container's log as the node gives it: `lines` lines, then its receipt.
+    fn a_log(container: &str, lines: usize, receipt: usize) -> String {
+        let mut log = format!("The newest {lines} lines of {container}'s log:\n");
+        for i in 0..lines {
+            log.push_str(&format!(
+                "2026-10-30T12:{:02}:{:02}Z {container}[Error] Import failed for \
+                 /data/tv/Show {i}/Season 1/episode {i}.mkv: permission denied (uid 1000)\n",
+                i / 60,
+                i % 60
+            ));
+        }
+        format!("{} (receipt r{receipt})", log.trim_end())
+    }
+
+    /// The results a house turn's next call reads.
+    fn what_is_read(talk: &Talk) -> Vec<String> {
+        talk.body("local")["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Round 3 of the gap-closing ladder, an old result read as a stub (ADR 0142, amended
+    /// 2026-10-30): once the model has replied after a result, and it is not among the newest
+    /// two, a house turn reads a line about it in its place, which says how to read it again.
+    #[test]
+    fn a_house_turn_reads_its_old_results_as_stubs() {
+        let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
+        let logs = a_log("sonarr", 40, 41);
+        let sonarr = json!({ "container": "sonarr" });
+        round(&mut talk, "c0", "container_logs", &sonarr, &logs);
+        round(
+            &mut talk,
+            "c1",
+            "homelab_status",
+            &json!({}),
+            &a_log("status", 30, 42),
+        );
+        let standards = json!({ "path": "docs/standards.md" });
+        round(
+            &mut talk,
+            "c2",
+            "read_doc",
+            &standards,
+            &"Standards.\n".repeat(200),
+        );
+        // The model has not replied to the third yet: all three are read whole.
+        assert!(what_is_read(&talk).iter().all(|r| r.len() > 1_000));
+        let cut = round(
+            &mut talk,
+            "c3",
+            "post",
+            &json!({ "text": "Looking." }),
+            "Posted.",
+        );
+        // Replied to all three: the oldest is cut, the newest two of them kept whole.
+        assert_eq!(cut, [format!("container_logs {sonarr}")]);
+        let read = what_is_read(&talk);
+        let stub = &read[0];
+        assert!(stub.len() < 600, "{stub}");
+        for part in [
+            "container_logs",
+            "{\"container\":\"sonarr\"}",
+            "(receipt r41)",
+            &format!("{} characters", logs.chars().count()),
+            "The newest 40 lines of sonarr's log:",
+            "call container_logs again with the same arguments",
+        ] {
+            assert!(stub.contains(part), "{part:?} not in {stub}");
+        }
+        assert!(read[1].len() > 1_000 && read[2].len() > 1_000);
+        // A short result is never cut: its stub would be no shorter.
+        assert_eq!(read[3], "Posted.");
+        // Cut once and for good: a later round cuts the next and leaves this as it was.
+        let cut = round(
+            &mut talk,
+            "c4",
+            "post",
+            &json!({ "text": "Still." }),
+            "Posted.",
+        );
+        assert_eq!(cut, ["homelab_status {}"]);
+        assert_eq!(&what_is_read(&talk)[0], stub);
+        // What HQ keeps of the conversation is whole.
+        assert!(talk.as_text().contains("12:00:39Z sonarr[Error]"));
+    }
+
+    #[test]
+    fn a_result_the_model_has_not_replied_to_is_never_cut() {
+        let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
+        round(
+            &mut talk,
+            "c0",
+            "post",
+            &json!({ "text": "Looking." }),
+            "Posted.",
+        );
+        let calls: Vec<Value> = (0..4)
+            .map(|i| {
+                json!({ "id": format!("c{}", i + 1), "type": "function",
+                        "function": { "name": "container_logs",
+                            "arguments": json!({ "container": format!("app{i}") }).to_string() } })
+            })
+            .collect();
+        talk.said(&Said {
+            text: String::new(),
+            calls: Vec::new(),
+            message: json!({ "role": "assistant", "content": null, "tool_calls": calls }),
+            limit_reached: false,
+        });
+        talk.answered(
+            (0..4)
+                .map(|i| {
+                    let reply = Reply {
+                        text: a_log(&format!("app{i}"), 40, 50 + i),
+                        refused: false,
+                        asked: false,
+                        moved_on: false,
+                    };
+                    (json!(format!("c{}", i + 1)), reply)
+                })
+                .collect(),
+        );
+        // Four results of one round, none replied to: all four whole, past the newest two.
+        assert_eq!(
+            what_is_read(&talk)
+                .iter()
+                .filter(|r| r.len() > 1_000)
+                .count(),
+            4
+        );
+    }
+
+    /// Claude's prompt is cached up to its last block, so cutting an old result would make every
+    /// later round write the rest again: its turns read every result whole, as before.
+    #[test]
+    fn a_claude_turn_reads_every_result_whole() {
+        let mut talk = Talk::new(Api::Anthropic, "Rules.".into(), "Your turn.".into(), &[]);
+        for i in 0..5 {
+            let id = format!("c{i}");
+            let cut = talk.said(&Said {
+                text: String::new(),
+                calls: Vec::new(),
+                message: json!({ "role": "assistant", "content": [{ "type": "tool_use",
+                    "id": id, "name": "container_logs", "input": { "container": "sonarr" } }] }),
+                limit_reached: false,
+            });
+            assert!(cut.is_empty());
+            talk.answered(vec![(
+                json!(id),
+                Reply {
+                    text: a_log("sonarr", 40, 41),
+                    refused: false,
+                    asked: false,
+                    moved_on: false,
+                },
+            )]);
+        }
+        let body = talk.body("claude-sonnet-5-5").to_string();
+        assert_eq!(body.matches("permission denied").count(), 5 * 40);
+    }
+
+    /// A call whose result was cut, asked again, is sent again and answered in full: never told
+    /// it already has what it now reads only as a stub.
+    #[test]
+    fn a_call_whose_result_was_cut_is_not_answered_as_already_had() {
+        let mut answered = Answered::default();
+        let key = "container_logs {\"container\":\"sonarr\"}".to_owned();
+        answered.said.insert(key.clone(), "the log".to_owned());
+        answered.last = Some(key.clone());
+        answered.forget(&key);
+        assert!(!answered.said.contains_key(&key));
+        assert!(answered.last.is_none());
     }
 }

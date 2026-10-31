@@ -222,3 +222,37 @@ had to be found again. The work restarted instead of continuing.
   news); it carries members' words, so a turn told it is marked as having read input of unknown
   origin. It is posted on the item's thread as Endora's, so the owner sees what was handed over.
 - **Not a member's own note.** A member's handover note at a restart (ADR 0134) is unchanged.
+
+## Amended 2026-10-30: old tool results read as stubs on the house's models
+
+A work turn makes 5 to 15 model calls and each resends the whole conversation, so measured
+turns read 110,000 to 200,000 prompt tokens, mostly old tool results (container logs, the
+lab's status, a branch's diff) sent again on every later call. On the Mac's model, reading
+about 100 tokens a second, that alone ran calls into the relay's timeout.
+
+- **An old result becomes a stub.** In the worker's own loop (`app/worker/src/turn.rs`), once
+  the model has replied after a result, and the result is not among the newest two, the next
+  calls read one line in its place: the tool and its arguments (cut to 120 characters), the
+  receipt the node gave it (`(receipt r41)`), its size in characters, the first line with
+  anything in it, and that calling the same tool with the same arguments reads it whole again.
+  A result of 600 characters or fewer is never cut. A result is cut once, and stays cut; a
+  result the model has not replied to (one of several in its last round) is never cut.
+- **The way back is the call, not the receipt.** HQ keeps only the start of a result in a
+  receipt (300 characters), and has no tool to read one, so the stub does not promise the
+  receipt holds it whole. A call asked for again after its result was cut is sent again and
+  answered in full: the repeat guard forgets it rather than saying it was already had.
+- **Kept whole where it is kept.** What HQ keeps of the conversation (ADR 0129) is the whole
+  conversation; only what the model reads is cut.
+- **Only house turns.** The worker cannot tell the NAS's model, the Mac and DeepSeek apart (the
+  node's relay routes them by member), so all three keep the slow machines' two. Claude turns
+  are unchanged: the worker caches Claude's whole prompt with its breakpoint on the last block,
+  so cutting a result would change the prefix of every later round and make each round write
+  again everything after the cut (at a write's price) rather than read it from the cache (at a
+  tenth). Claude Code's runtime is out of scope.
+
+Measured on the engine's real briefing and tools for a task turn and ten realistic calls (the
+lab's status twice, four container logs of 40 and 100 lines, the standards, a branch's diff, a
+restart and a post; the worker's test `a_house_turns_first_call_is_sized_to_the_turn`, bytes of
+the relay's bodies after the first call, about four a token): 478,129 bytes with every result
+whole, 298,407 with old ones stubbed, about 119,500 to 74,600 tokens. About 12 KB a call is the
+floor, the instructions, the tools and the briefing.
