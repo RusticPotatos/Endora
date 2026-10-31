@@ -497,8 +497,14 @@ done. Defects are numbered so the next round's changes can name them.
   times, 920 four). Fixed on `r3-wakes`: one question per item waits on the desk; another is
   refused with the reason, HQ's own is added to the waiting card. Round 1's repeats each came
   after an answer, which this does not stop.
-- [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
-  record); cause unknown.
+- [x] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
+  record). *Diagnosed 31 Oct: the NAS's Watchtower recreates containers on new images every
+  night at 03:00, and failed nightly on `endora-docker-observer`. Endora's parts fixed on
+  `r3-watchtower`: every Endora container is labelled out of Watchtower (the compose services,
+  held by the parity check, and the runner's containers), and `homelab_status` says when each
+  container was last recreated on a new image, with a line such as "Updated last night by
+  Watchtower: sonarr, nzbget (03:24)" (ADR 0106, amended 2026-10-31). Not yet merged or
+  released; Watchtower's own schedule is ansible-nas's.*
 - [x] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
