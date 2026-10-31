@@ -569,6 +569,10 @@ are seen; quotes count only against the item's own receipts. The other six are f
    member; HEADS DOWN overlaps a plant; the chess table's lower seat covers the board.
 9. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
    free; switch only if about twice as fast on a large turn.
+10. [x] What each model cost, compared over time (owner, 31 Oct): on the `r3-cost-by-model`
+   branch, a fold on the Money card (Manage) with a row per brain a turn ran on, its turns,
+   spend, cost a turn and share for the last 7 days and the 7 before, and which way it went;
+   computed in HQ's scorecard (`by_model`). Not yet merged or released.
 
 ### The owner's
 
