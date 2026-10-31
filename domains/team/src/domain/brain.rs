@@ -115,13 +115,6 @@ impl Brain {
         !self.house()
     }
 
-    /// Whether it is a Claude, paid from the owner's Anthropic credit (and so from the plan's
-    /// grant, which sizes the day's pool: ADR 0113, amended 2026-10-31).
-    #[must_use]
-    pub const fn claude(self) -> bool {
-        matches!(self, Self::Opus | Self::Sonnet | Self::Haiku)
-    }
-
     /// Whether the brain is a model in the house, whose context is smaller than Claude's and
     /// whose turns cost nothing: the node's own model, or the owner's Mac (ADR 0130).
     #[must_use]
@@ -131,7 +124,9 @@ impl Brain {
 
     /// Whether the brain is a Claude, which speaks Anthropic's API: Opus, Sonnet or Haiku. Not
     /// every cloud brain is one: DeepSeek is reached through the node's local relay, in
-    /// OpenAI's shape, so Claude Code cannot run it (ADR 0117, amended 2026-10-31).
+    /// OpenAI's shape, so Claude Code cannot run it (ADR 0117, amended 2026-10-31). A Claude is
+    /// also paid from the owner's Anthropic credit, and so from the plan's grant, which sizes
+    /// the day's pool (ADR 0113, amended 2026-10-31).
     #[must_use]
     pub const fn claude(self) -> bool {
         matches!(self, Self::Opus | Self::Sonnet | Self::Haiku)
