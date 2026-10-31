@@ -5,6 +5,9 @@
 Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
 Amended 2026-10-31 by the owner: accepted work reaches the fork without a card, and HQ may merge
 develop behind a setting (see the last section).
+Amended 2026-10-31 by the one-team clean-up (ADR 0142, "What goes"): the check after a deploy is
+retired. There is no Deployed card (kind `deploy`), no check of the lab after one, and no
+`deploy_check` card; the section on it below is history.
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 [0106](0106-team-contracts.md) (two more contracts, `repo_checkout` and `repo_submit`, for a
@@ -358,8 +361,7 @@ amends [0142](0142-one-team-of-loops.md)'s "plus ready PRs" on the desk. Scenari
   merges each pushed branch into the fork's develop: a fast-forward when develop has not moved,
   else one merge commit authored by Endora HQ with its trailer; a conflict merges nothing and is
   listed for the owner's hand. Never a force, never `main` or `master`, never upstream, and only
-  branches HQ pushed under this rule. The owner's "Deployed" card, where there is one (not in the
-  loops, ADR 0142), follows a merge rather than a push, since develop is what the playbook runs. The setting stays off while the baseline experiment's rounds run
+  branches HQ pushed under this rule. The setting stays off while the baseline experiment's rounds run
   (the fork's develop is frozen at ee878f7); the owner, or the assistant, turns it on when they
   end.
 - **The cards come back on a setting.** With `delivery_cards` on, accepted work puts the "Ready

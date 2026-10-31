@@ -596,9 +596,9 @@ function hqTeamLabel(lead, wingLeads) {
   return `${(wingLeads || []).includes(lead.id) ? "Engineering" : "Ops"} · ${lead.name}`;
 }
 
-// The teams, from the snapshot alone (ADR 0119): a lead and those who report to it, up the
-// chain; members with no lead above them but the CEO join the first team; the CEO sits in its
-// office, outside every team. Within a team the lead first, then those at work, then those on
+// The teams, from the snapshot alone (ADR 0119): one team since the one-team clean-up (ADR
+// 0142), nobody reporting to anybody, so every member but the CEO and the leads joins the first
+// lead's team; the CEO sits in its office, outside every team. Within a team the lead first, then those at work, then those on
 // furlough, whose desks stay and are drawn empty. With no lead at all there is one team.
 function hqTeams(members) {
   const wingLeads = ((HQ.snap && HQ.snap.wing) || {}).leads || [];
@@ -608,10 +608,7 @@ function hqTeams(members) {
   const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
   if (!leads.length) return rest.length ? [{ lead: null, label: "Team", people: rest }] : [];
   const teams = leads.map((l) => ({ lead: l, label: hqTeamLabel(l, wingLeads), people: [] }));
-  for (const m of rest) {
-    const lead = hqLeadOf(m, members);
-    (teams.find((t) => lead && t.lead.id === lead.id) || teams[0]).people.push(m);
-  }
+  teams[0].people.push(...rest);
   for (const t of teams) {
     t.people = [t.lead].concat(t.people.filter((m) => !m.furloughed), t.people.filter((m) => m.furloughed));
   }
@@ -1907,19 +1904,6 @@ function hqBrainTag(brain) {
 function hqWaitingFor(m) {
   const turn = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.member === m.id && r.status === "queued" && /^waiting for /.test(r.why || ""));
   return turn ? turn.why : "";
-}
-
-// The lead a member works under: the nearest lead up whom it reports to, or none when the
-// chain reaches the CEO (or nobody) first.
-function hqLeadOf(m, members) {
-  let up = members.find((o) => o.id === m.reports_to);
-  for (let hops = 0; up && hops < members.length; hops++) {
-    if (up.role === "lead") return up;
-    if (up.role === "ceo") return null;
-    const next = up.reports_to;
-    up = members.find((o) => o.id === next);
-  }
-  return null;
 }
 
 // One member on the team board, on one line (the owner's notes of 31 Oct): its name, the model

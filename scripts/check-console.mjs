@@ -524,19 +524,19 @@ if (failures.length) {
     HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000,
         sized: { by: "credit", why: "Sized from the Claude credit: $70.23 left, 18 days to the 18th." } },
-      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
+      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
-                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], reports_to: 1, rescues: 2,
+                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], rescues: 2,
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
                 { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], rescues: null, brain: "local", brains: [] },
                 { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] },
                 // The engineering wing (ADR 0115): its lead and a developer, who sit in the wing.
-                { id: 6, name: "Kit", role: "lead", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 5, brain: "claude-sonnet-5-5", brains: [] },
-                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], reports_to: 6, brain: "claude-haiku-5-5", brains: [] },
+                { id: 6, name: "Kit", role: "lead", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-sonnet-5-5", brains: [] },
+                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], brain: "claude-haiku-5-5", brains: [] },
                 // Elastic staffing (ADR 0118): a developer on furlough, who keeps her place.
-                { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], reports_to: 6, brain: "claude-haiku-5-5", brains: [] }],
+                { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-haiku-5-5", brains: [] }],
       wing: { goal: "Improve the lab", leads: [6], members: [6, 7] },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
       // The team's world (ADR 0122): sections by stage, the timeline and the derived pages;
@@ -1446,10 +1446,10 @@ if (failures.length) {
         seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
     })()`, context);
     if (layout.pods.map((p) => p.label).join("|") !== "Ops · Ada|Engineering · Kit") fail(`hq: the pods are not the roster's teams: ${layout.pods.map((p) => p.label)}`);
-    // Cy and Dee have no lead above them but the CEO, so they join the first pod; Zed, retired
-    // (on furlough), leaves the floor (ADR 0142).
-    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4") fail(`hq: the first pod is not Ada, Bo, Cy and Dee: ${layout.pods[0].desks.map((d) => d[2])}`);
-    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6,7") fail(`hq: the second pod is not Kit and Rae, with Zed retired: ${layout.pods[1].desks.map((d) => d[2])}`);
+    // One team (ADR 0142): nobody reports to anybody, so every member but the CEO and the leads
+    // joins the first pod; Zed, retired (on furlough), leaves the floor.
+    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4,7") fail(`hq: the first pod is not Ada, Bo, Cy, Dee and Rae: ${layout.pods[0].desks.map((d) => d[2])}`);
+    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6") fail(`hq: the second pod is not Kit alone, with Zed retired: ${layout.pods[1].desks.map((d) => d[2])}`);
     if (layout.seats[5].pod !== -1) fail("hq: the CEO sits in a pod");
     const [podA, podB] = layout.pods;
     if (!(podA.x + podA.width < podB.x)) fail("hq: the pods are not side by side");
@@ -1458,18 +1458,19 @@ if (failures.length) {
     if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
     // Two to a row, each sitting in the aisle at its own desk's end, facing its computer (the
     // owner saw a member at work standing beside an empty desk).
-    if (layout.seats[1].work.join() !== "8,9,left" || layout.seats[2].work.join() !== "9,9,right") fail(`hq: the two of a row do not sit facing their own desks: ${layout.seats[1].work} ${layout.seats[2].work}`);
-    // The teams are the snapshot's: a third lead is a third pod, a fourth that will not fit goes below, none leaves the band.
+    if (layout.seats[1].work.join() !== "9,9,left" || layout.seats[2].work.join() !== "10,9,right") fail(`hq: the two of a row do not sit facing their own desks: ${layout.seats[1].work} ${layout.seats[2].work}`);
+    // The teams are the snapshot's: a third lead is a third pod, one that will not fit goes below, none leaves the band.
     const grown = runInContext(`(() => {
-      const members = HQ.snap.members.concat([{ id: 9, name: "Ned", role: "lead", reports_to: 5 }, { id: 10, name: "Pia", role: "developer", reports_to: 9 }]);
-      const three = hqLayout(members), four = hqLayout(members.concat([{ id: 11, name: "Oz", role: "lead", reports_to: 5 }]));
+      // The leads and the CEO, so the first pod is one row: Pia, reporting to nobody, joins it.
+      const members = HQ.snap.members.filter((m) => ["lead", "ceo"].includes(m.role)).concat([{ id: 9, name: "Ned", role: "lead" }, { id: 10, name: "Pia", role: "developer" }]);
+      const three = hqLayout(members), four = hqLayout(members.concat([{ id: 11, name: "Oz", role: "lead" }, { id: 12, name: "Uma", role: "lead" }]));
       const rows = (l) => l.pods.flatMap((p) => p.desks.map((d) => d.x + "," + d.y));
       return { labels: three.pods.map((p) => p.label), of: [three.seats[9].pod, three.seats[10].pod], right: Math.max(...three.pods.map((p) => p.x + p.width)),
         four: four.pods.map((p) => [p.x, p.y]), unique: new Set(rows(four)).size === rows(four).length,
         inside: four.pods.every((p) => p.desks.every((d) => d.y + 2 <= 14)) };
     })()`, context);
-    if (grown.labels.join("|") !== "Ops · Ada|Engineering · Kit|Ops · Ned" || grown.of.join() !== "2,2" || grown.right > 28) fail(`hq: a third team does not make a third pod: ${JSON.stringify(grown)}`);
-    if (grown.four.length !== 4 || grown.four[3].join() !== "1,12" || !grown.unique || !grown.inside) fail(`hq: a fourth team does not wrap below inside the band: ${JSON.stringify(grown)}`);
+    if (grown.labels.join("|") !== "Ops · Ada|Engineering · Kit|Ops · Ned" || grown.of.join() !== "2,0" || grown.right > 28) fail(`hq: a third team does not make a third pod: ${JSON.stringify(grown)}`);
+    if (grown.four.length !== 5 || grown.four[4].join() !== "1,10" || !grown.unique || !grown.inside) fail(`hq: a team that will not fit does not wrap below inside the band: ${JSON.stringify(grown)}`);
     const inside = runInContext(`(() => {
       const In = (r, s) => s.cx >= r.x && s.cx < r.x + r.w && s.cy >= r.y && s.cy < r.y + r.h;
       const M = HQ_ROOMS.meeting, O = HQ_ROOMS.ceo;

@@ -89,9 +89,6 @@ pub enum EventKind {
     CheckDone,
     /// The owner had a branch pushed to the fork, or it failed (ADR 0115).
     BranchPushed,
-    /// The owner said a pushed branch is deployed; the lab routine's member checks it (ADR
-    /// 0115, amended).
-    BranchDeployed,
     /// A member challenged another to chess, and the game began.
     ChessStarted,
     /// A move was played in a game of chess.
@@ -158,7 +155,6 @@ impl EventKind {
             Self::BranchSubmitted => "branch.submitted",
             Self::CheckDone => "check.done",
             Self::BranchPushed => "branch.pushed",
-            Self::BranchDeployed => "branch.deployed",
             Self::ChessStarted => "chess.started",
             Self::ChessMoved => "chess.moved",
             Self::ChessEnded => "chess.ended",

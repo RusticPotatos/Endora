@@ -1886,12 +1886,12 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
     }
 
-    /// The check after a deploy (ADR 0115, amended): HQ names the lab's three reads as all the
-    /// turn may use, and the node offers and runs those alone. An act, a branch, the fork's
-    /// docs, the lab's map or any bridged tool is refused here, before it runs, whatever the
-    /// model was told; a refusal is kept as a receipt that failed.
+    /// A turn on a project that lists its tools (the Holodeck plan's phase 4): HQ names the
+    /// lab's three reads as all the turn may use, and the node offers and runs those alone. An
+    /// act, a branch, the fork's docs, the lab's map or any bridged tool is refused here, before
+    /// it runs, whatever the model was told; a refusal is kept as a receipt that failed.
     #[tokio::test]
-    async fn a_deploy_checks_turn_is_given_the_lab_reads_and_refused_everything_else() {
+    async fn a_turn_narrowed_to_the_lab_reads_is_refused_everything_else() {
         use super::super::relay::tests::fake;
         let (hq_url, seen) = fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => (

@@ -2658,10 +2658,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("privacy", "send_back" | "push_anyway") => {
                 self.decide_held(found, decision == "push_anyway")?;
             }
-            (
-                "push" | "notice" | "deploy_check" | "needs_owner" | "privacy",
-                "seen" | "dismiss",
-            )
+            ("push" | "notice" | "needs_owner" | "privacy", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss") => {}
