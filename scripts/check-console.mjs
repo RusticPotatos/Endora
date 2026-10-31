@@ -1345,8 +1345,9 @@ if (failures.length) {
     const every = layout.pods.flatMap((p) => p.desks.map((d) => `${d[0]},${d[1]}`));
     if (new Set(every).size !== every.length) fail("hq: two members share a desk");
     if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
-    // Two to a row, standing in the aisle between their desks, facing each other.
-    if (layout.seats[1].work.join() !== "8,9,right" || layout.seats[2].work.join() !== "9,9,left") fail(`hq: the two of a row do not face each other: ${layout.seats[1].work} ${layout.seats[2].work}`);
+    // Two to a row, each sitting in the aisle at its own desk's end, facing its computer (the
+    // owner saw a member at work standing beside an empty desk).
+    if (layout.seats[1].work.join() !== "8,9,left" || layout.seats[2].work.join() !== "9,9,right") fail(`hq: the two of a row do not sit facing their own desks: ${layout.seats[1].work} ${layout.seats[2].work}`);
     // The teams are the snapshot's: a third lead is a third pod, a fourth that will not fit goes below, none leaves the band.
     const grown = runInContext(`(() => {
       const members = HQ.snap.members.concat([{ id: 9, name: "Ned", role: "lead", reports_to: 5 }, { id: 10, name: "Pia", role: "developer", reports_to: 9 }]);
@@ -1365,13 +1366,13 @@ if (failures.length) {
         In(O, HQ_CEO.work), In(O, HQ_CEO.rest), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
     })()`, context);
     if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the CEO's office is not where its seats and door are: ${inside}`);
-    const written = [], filled = [];
+    const written = [], filled = [], order = [];
     const ctx = {
       fillStyle: "", strokeStyle: "", font: "",
-      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); },
+      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); order.push({ rect: this.fillStyle }); },
       strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
       save() {}, restore() {}, translate() {}, scale() {},
-      fillText(text) { written.push(String(text)); },
+      fillText(text) { written.push(String(text)); order.push({ text: String(text) }); },
       measureText: (text) => ({ width: String(text).length * 6 }),
     };
     const canvas = () => ({ ...element(), width: 0, height: 0, getContext: () => ctx });
@@ -1389,6 +1390,16 @@ if (failures.length) {
       if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
       if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
+      // Every name, the people's and the rooms', is written on its own light plate after all
+      // that stands on the floor, so no sofa, plant or checkerboard hides it (the owner read
+      // "RAE" as "RAB", and "BO" was under a sofa).
+      {
+        const lastThing = Math.max(...order.map((o, i) => (o.rect === "#7d6bb0" || o.rect === "#b8a68a" ? i : -1)));
+        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "BOARD ROOM", "CEO", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
+        const plated = (name) => { const i = order.findLastIndex((o) => o.text === name); return i > lastThing && order[i - 1] && /^rgba\(255,253,246/.test(order[i - 1].rect || ""); };
+        const bare = names.filter((n) => !plated(n));
+        if (bare.length) fail(`hq: these names are not on a plate over the furniture: ${bare}`);
+      }
       // Everything on the floor is drawn from the snapshot's office: the tank's water where the
       // data puts the tank, and elsewhere once the data moves it.
       const at = (style) => filled.filter((f) => f.style === style).map((f) => f.x + "," + f.y);
@@ -1397,6 +1408,23 @@ if (failures.length) {
       if (!at("rgba(185,140,240,.55)").includes(`${11 * 16 + 1},${4 * 16 + 1}`)) fail("hq: the rug is not drawn flat where the data has it");
       if (!filled.some((f) => f.x === 26 * 16 + 2 && f.y === 5 && f.w === 12 && f.h === 17)) fail("hq: the poster is not drawn on the wall where the data has it");
       if (!at("#b8a68a").includes(`${14 * 16 + 1},${3 * 16 + 1}`)) fail("hq: a kind of thing with no picture is not drawn as a plain box");
+      // No plant covers the task board or reaches through a room's glass (a palm by the board hid
+      // a sticky note and the CEO's name): the default layout's palm, a plant under the board.
+      const plants = runInContext(`(() => {
+        const T = HQ_T, B = HQ_P.board, O = HQ_ROOMS.ceo, board = { x: B.x * T - 2, y: 3, w: B.w * T + 4, h: 26 };
+        const room = { x: O.x * T, y: O.y * T, w: O.w * T, h: O.h * T };
+        const palm = hqPlantRect({ x: 19, y: 3, w: 1, h: 1 }, 32, 48), low = hqPlantRect({ x: 10, y: 2, w: 1, h: 1 }, 16, 32);
+        const free = hqPlantRect({ x: 4, y: 12, w: 1, h: 1 }, 16, 32);
+        return [!hqOverlaps(palm, board), !hqOverlaps(palm, room), palm.y + palm.h === 4 * T, !hqOverlaps(low, board),
+          free.w === 16 && free.h === 32 && free.x === 4 * T];
+      })()`, context);
+      if (plants.some((ok) => !ok)) fail(`hq: a plant covers the task board or reaches into a room: ${plants}`);
+      // The front door is set in the right wall, framed, beside the lobby (the owner saw it
+      // floating on the floor, away from any wall).
+      const door = runInContext(`(() => { const D = hqDoorRect(), lobby = HQ_P.lobby;
+        return { right: D.x + D.w, top: D.y, bottom: D.y + D.h, x: D.x, wall: [HQ_SIDE.top * HQ_T, HQ_SIDE.bottom * HQ_T], lobby: (lobby.cy + 0.5) * HQ_T, w: HQ_W }; })()`, context);
+      const framed = filled.some((f) => f.style === "#3d3a44" && f.x === door.x && f.y === door.top);
+      if (door.right !== door.w || door.top < door.wall[0] || door.bottom > door.wall[1] || door.lobby < door.top || door.lobby > door.bottom || !framed) fail(`hq: the front door is not framed in the right wall by the lobby: ${JSON.stringify(door)} framed=${framed}`);
       filled.length = 0;
       runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 12; hqPlacePeople(); hqDraw();`, context);
       if (at("rgba(127,178,255,.55)").join() !== `${12 * 16 + 1},${3 * 16 + 3}`) fail("hq: a thing moved in the data is not moved on screen");
@@ -1405,6 +1433,25 @@ if (failures.length) {
       const world = runInContext(`(() => { const b = HQ.world.blocked, [first, , , last] = HQ.pods[0].desks, w = HQ.seats[1].work;
         return [b.has("8,3"), b.has("17,18"), b.has("18,18"), !b.has("11,4"), b.has(first.x + "," + first.y), b.has(last.x + "," + last.y), b.has("22,3"), !b.has(w.cx + "," + w.cy)]; })()`, context);
       if (world.some((ok) => !ok)) fail(`hq: the floor's things and desks are not what blocks the way: ${world}`);
+      // A member sits where it rests and works (the owner saw people standing behind the sofas
+      // and beside an empty desk): on a couch it is drawn in front of the couch, seated; at work
+      // its computer is on the desk's end where it sits, its chair beside it.
+      const seated = runInContext(`(() => {
+        HQ_IMG.PC_FRONT_OFF = { width: 16, height: 32 };
+        const furn = hqFurniture(); delete HQ_IMG.PC_FRONT_OFF;
+        const couch = furn.find((f) => f.item && f.item.kind === "couch");
+        const spot = hqWanderSpots().find((s) => s.sit === "couch");
+        const p = { x: spot.x * HQ_T, y: spot.y * HQ_T, path: [], at: spot, working: false };
+        const pcs = furn.filter((f) => f.pcOf !== undefined), desks = HQ.pods[0].desks;
+        const pcOf = (id) => pcs.find((f) => f.pcOf === id), deskOf = (id) => desks.find((d) => d.member === id);
+        const work = (id) => HQ.seats[id].work;
+        return [hqSits(p) === "couch", hqDepth(p) > couch.base, hqFrame(p).frame === 3,
+          // Ada's desk is on the left of the aisle, Bo's on the right: each one's computer at the aisle end.
+          pcOf(1).x >= (deskOf(1).x + 1.5) * HQ_T, pcOf(2).x < (deskOf(2).x + 1.5) * HQ_T,
+          work(1).sit === "desk" && work(1).cx === deskOf(1).x + 3 && work(2).cx === deskOf(2).x - 1,
+          furn.filter((f) => f.draw && !f.item && !f.key).length >= desks.length];
+      })()`, context);
+      if (seated.some((ok) => !ok)) fail(`hq: a member does not sit on the couch, or at its own desk by its computer: ${seated}`);
       // Nobody walks through glass or furniture: from the ping-pong table to Mara's desk, in by
       // her open door; to the head of the meeting table, in by its door.
       const paths = runInContext(`(() => {
@@ -1416,6 +1463,28 @@ if (failures.length) {
           hqPathCells(from, hqAt(3, 3)) === null, hqPathCells(from, from).length === 0];
       })()`, context);
       if (paths.some((ok) => !ok)) fail(`hq: a walk goes through glass or furniture, or not by the open door: ${paths}`);
+      // Where the team's things close every way to a spot, nobody walks straight through them:
+      // they go round, as near as they can, and step on only at the end. And a spot before a
+      // thing that something else now stands on is not offered.
+      const shut = runInContext(`(() => {
+        const items = HQ.snap.office.items, keep = items.slice();
+        items.push({ id: 90, kind: "plant", x: 4, y: 10, w: 1, h: 1 }, { id: 91, kind: "plant", x: 6, y: 10, w: 1, h: 1 },
+          { id: 92, kind: "plant", x: 5, y: 9, w: 1, h: 1 }, { id: 93, kind: "plant", x: 5, y: 11, w: 1, h: 1 },
+          { id: 94, kind: "coffee_machine", x: 2, y: 12, w: 1, h: 1 }, { id: 95, kind: "plant", x: 2, y: 13, w: 1, h: 1 });
+        HQ.world = hqWorld();
+        const p = { x: 9 * HQ_T, y: 9.5 * HQ_T, path: [] };
+        hqWalk(p, hqAt(5, 10));
+        const steps = p.path.map((c) => Math.round(c.x / HQ_T) + "," + Math.round(c.y / HQ_T + 0.5));
+        const through = steps.slice(0, -1).some((k) => HQ.world.blocked.has(k));
+        const offered = hqWanderSpots().some((s) => s.cx === 2 && s.cy === 13), none = hqPathCells(hqAt(9, 10), hqAt(5, 10)) === null;
+        // A step at a time, one cell to the next, never a straight line across the floor.
+        const cells = steps.map((k) => k.split(",").map(Number));
+        const apart = (i) => Math.abs(cells[i][0] - cells[i - 1][0]) + Math.abs(cells[i][1] - cells[i - 1][1]);
+        const stepwise = cells.length > 2 && cells.every((c, i) => !i || apart(i) === 1 || (i === cells.length - 1 && apart(i) <= 2));
+        items.length = 0; items.push(...keep); HQ.world = hqWorld();
+        return [none, !through, stepwise, steps[steps.length - 1] === "5,10", !offered];
+      })()`, context);
+      if (shut.some((ok) => !ok)) fail(`hq: a walk to a shut-in spot cuts through furniture, or a covered spot is offered: ${shut}`);
       // Working at a desk, or elsewhere when the work is: another team's project, a task a tester
       // checks, a project the CEO leads (her door); Mara herself stays in her office.
       const visits = runInContext(`(() => {
@@ -1500,6 +1569,24 @@ if (failures.length) {
       stubs.document.createElement = createElement;
       runInContext(`HQ_BG = null; HQ_FURN = []; HQ.people = {}; HQ.snap = JSON.parse(${JSON.stringify(saved)});`, context);
     }
+  }
+  // A speech bubble never stops in the middle of a word (the owner's phone showed "the position
+  // is from a que"): it wraps whole words to two lines, and what does not fit ends in "...".
+  {
+    const said = runInContext(`(() => {
+      const w = (s) => s.length * 6;
+      return { short: hqShort("The position is from a queue I read earlier today, before the backup ran"),
+        two: hqWrap("the position is from a queue i read earlier", w, 140),
+        cut: hqWrap("the position is from a queue i read earlier today before the backup ran", w, 124),
+        one: hqWrap("ok", w, 124), long: hqWrap("supercalifragilisticexpialidocious-and-more", w, 60) };
+    })()`, context);
+    const words = "the position is from a queue i read earlier today before the backup ran".split(" ");
+    const whole = (line) => line.replace(/\.\.\.$/, "").split(" ").every((x) => words.includes(x));
+    if (!said.short.endsWith("...") || !whole(said.short) || said.short.length > 47) fail(`hq: a long line is not cut at a whole word: ${said.short}`);
+    if (said.two.length !== 2 || said.two.some((l) => l.length * 6 > 140) || said.two.join(" ") !== "the position is from a queue i read earlier") fail(`hq: a bubble does not wrap to two lines: ${JSON.stringify(said.two)}`);
+    if (said.cut.length !== 2 || !said.cut[1].endsWith("...") || !said.cut.every(whole) || said.cut.some((l) => l.length * 6 > 124)) fail(`hq: a bubble too long for two lines is not cut at a word: ${JSON.stringify(said.cut)}`);
+    if (said.one.join() !== "ok") fail(`hq: a short bubble is not one line: ${said.one}`);
+    if (said.long.length !== 1 || said.long[0].length * 6 > 60 || !said.long[0].endsWith("...")) fail(`hq: one word too long for a bubble is not cut to fit: ${said.long}`);
   }
   // Games in the office (ADR 0121): a pool table and a chess table on the floor, kept in the
   // places the rules of the office keep for them; leaderboards, the last five results and the

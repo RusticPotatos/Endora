@@ -43,7 +43,7 @@ worked with whom, and nothing in it could change without a code change and a dep
    rule as the roster; members with no lead above them but the CEO join the first pod). A pod is
    a cluster of desks, two to a row, one for every member of the team, labelled as the roster
    labels the team ("Ops · Ada", "Engineering · Kit"). Between the two desks of a row is an
-   aisle where their members stand facing each other. The layout is computed from the snapshot
+   aisle where their members sit, each on a chair at its own desk's end by its computer. The layout is computed from the snapshot
    on every refresh: a hire grows a pod, a third lead makes a third pod, and a team of more than
    six goes three to a row. A member on furlough keeps its desk, drawn empty with a small "away"
    card, after those at work. The walled wing and the four anonymous desks are gone; the board

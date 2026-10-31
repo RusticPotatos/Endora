@@ -81,20 +81,20 @@ const HQ_ROOMS = {
 const HQ_MEETING = {
   table: { x: 12, y: 16 },
   head: hqAt(12, 16, { room: "meeting", dir: "down" }),
-  chairs: [hqAt(12, 18, { room: "meeting", dir: "up" }), hqAt(13, 18, { room: "meeting", dir: "up" })],
+  chairs: [hqAt(12, 18, { room: "meeting", dir: "up", sit: "chair" }), hqAt(13, 18, { room: "meeting", dir: "up", sit: "chair" })],
 };
 // The CEO's desk in its own office, where it works, and the sofa where it rests.
 const HQ_CEO = {
   desk: { x: 21, y: 3 },
   work: hqAt(22, 3, { room: "ceo", dir: "down", desk: true }),
-  rest: hqAt(25, 5, { room: "ceo", dir: "down" }),
+  rest: hqAt(25, 5, { room: "ceo", dir: "down", sit: "couch" }),
 };
 // Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
 // ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
 // from what stands on the floor now (`hqWanderSpots`).
 const HQ_WANDER = [
   hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
-  hqAt(26, 18, { dir: "up" }), hqAt(27, 18, { dir: "up" }), hqAt(17, 17, { dir: "up" }),
+  hqAt(26, 18, { dir: "up", sit: "chair" }), hqAt(27, 18, { dir: "up", sit: "chair" }), hqAt(17, 17, { dir: "up" }),
   // The pool table's two sides and the chess table's two seats: two idle members at a pair play.
   hqAt(29, 17, { dir: "up", pool: "L" }), hqAt(31, 17, { dir: "up", pool: "R" }),
   hqAt(23, 16, { dir: "down", chess: "W" }), hqAt(23, 18, { dir: "up", chess: "B" }),
@@ -527,9 +527,48 @@ function hqTell(e, live, older) {
 
 function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.role === "ceo"); }
 
-// A bubble holds a few words: a status change keeps only what was said about it.
-function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
+// A bubble holds a few words: a status change keeps only what was said about it. A longer line
+// stops at the last whole word that fits, with an ellipsis, never in the middle of one (the
+// owner's phone showed "the position is from a que").
+const HQ_SAY_MOST = 44;
+function hqShort(text) {
+  const said = String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().replace(/\s+/g, " ").trim();
+  return said.length <= HQ_SAY_MOST ? said : hqEllipsis(said, (s) => s.length <= HQ_SAY_MOST);
+}
 function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
+// The longest run of whole words of `text` that, with "..." after it, still `fits`. A first word
+// too long on its own is cut, as there is nothing better to show.
+function hqEllipsis(text, fits) {
+  const words = String(text).split(" ");
+  let kept = "";
+  for (const w of words) {
+    const next = kept ? kept + " " + w : w;
+    if (!fits(next + "...")) break;
+    kept = next;
+  }
+  if (kept) return kept.replace(/[\s,.;:–-]+$/, "") + "...";
+  let cut = words[0] || "";
+  while (cut.length > 1 && !fits(cut + "...")) cut = cut.slice(0, -1);
+  return cut + "...";
+}
+// A bubble's lines: the words wrapped to `most` pixels wide (`width` measures a line), at most
+// `lines` of them, the last ending in an ellipsis when the words do not all fit.
+function hqWrap(text, width, most, lines = 2) {
+  const words = String(text || "").split(" ").filter(Boolean), out = [], fits = (s) => width(s) <= most;
+  let i = 0;
+  while (i < words.length && out.length < lines) {
+    // The last line takes the rest, cut short with an ellipsis if it must be.
+    if (out.length === lines - 1) {
+      const rest = words.slice(i).join(" ");
+      out.push(fits(rest) ? rest : hqEllipsis(rest, fits));
+      break;
+    }
+    let line = words[i++];
+    while (i < words.length && fits(line + " " + words[i])) line += " " + words[i++];
+    out.push(fits(line) ? line : hqEllipsis(line, fits));
+  }
+  return out;
+}
 
 // A team's name, on the roster and over its pod alike: Engineering for the engineering wing's
 // lead, Ops for any other.
@@ -562,7 +601,8 @@ function hqTeams(members) {
 // The pods and the seats (ADR 0119): one pod for each team, side by side from the left of the
 // open floor with no walls between, each a cluster of desks two to a row, a desk for every
 // member of the team. A desk is three tiles by two; between the two desks of a row is an
-// aisle where their members stand facing each other, one above the other's visitors. A pod
+// aisle where their members sit, each on a chair at its own desk's end, facing its computer
+// (the owner: "stands next to an empty desk"), back to back with the other. A pod
 // that would not fit in the row starts a new one below; none ever leaves the band the rules
 // of the office keep clear. Everything comes from the members: no name is in this.
 function hqLayout(members) {
@@ -585,12 +625,14 @@ function hqLayout(members) {
     team.people.forEach((m, i) => {
       const col = i % cols, row = Math.floor(i / cols);
       const dx = x + col * (P.desk.w + P.aisle), dy = top + row * P.desk.h;
-      const stand = cols === 1 ? dx + P.desk.w : col === 0 ? dx + P.desk.w : dx - 1;
-      const dir = cols === 1 ? "down" : col === 0 ? "right" : "left";
+      // Which end of the desk its member sits at: the aisle's, facing the desk.
+      const side = cols === 1 || col === 0 ? "right" : "left";
+      const stand = side === "right" ? dx + P.desk.w : dx - 1;
+      const dir = side === "right" ? "left" : "right";
       seats[m.id] = {
-        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id },
+        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id, side },
         // A visitor stands on the desk's outer side, away from where its member sits.
-        work: hqAt(stand, dy + 1, { dir, desk: true }),
+        work: hqAt(stand, dy + 1, { dir, desk: true, sit: "desk" }),
         visit: cols === 1 || col === 0 ? hqAt(dx - 1, dy + 1, { dir: "right" }) : hqAt(dx + P.desk.w, dy + 1, { dir: "left" }),
         pod: pods.length,
       };
@@ -717,11 +759,13 @@ function hqCalm() {
 // (the couches' seats, the bean bag, a spot before the coffee machine, the fish tank, the
 // whiteboard and the shelf), so a thing the team moved moves where people gather.
 function hqWanderSpots() {
-  const spots = HQ_WANDER.slice();
-  for (const it of hqItems()) {
-    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down" }), hqAt(it.x + 1, it.y, { dir: "down" }));
+  const spots = HQ_WANDER.slice(), items = hqItems();
+  // A spot before a thing that something else now stands on is not one: nobody stands in a plant.
+  const covered = (x, y) => items.some((o) => o.kind !== "rug" && !o.wall && x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h);
+  for (const it of items) {
+    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down", sit: "couch" }), hqAt(it.x + 1, it.y, { dir: "down", sit: "couch" }));
     else if (it.kind === "bean_bag") spots.push(hqAt(it.x, it.y, { dir: "down" }));
-    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
+    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind) && !covered(it.x, it.y + 1)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
   }
   return spots;
 }
@@ -771,7 +815,8 @@ function hqWorld() {
 
 // The cells from where a member stands to a spot, the way round what is in the way: a search
 // over the floor's cells a step at a time. `null` if there is no way; empty if already there.
-function hqPathCells(from, to) {
+// With `near`, where there is no way it is the way to the reachable cell nearest the spot.
+function hqPathCells(from, to, near) {
   const W = HQ.world || hqWorld(), key = (x, y) => x + "," + y, goal = key(to.cx, to.cy);
   const prev = new Map([[key(from.cx, from.cy), null]]), queue = [[from.cx, from.cy]];
   for (let at = 0; at < queue.length && !prev.has(goal); at++) {
@@ -783,19 +828,27 @@ function hqPathCells(from, to) {
       prev.set(k, [x, y]); queue.push([nx, ny]);
     }
   }
-  if (!prev.has(goal)) return null;
+  let end = [to.cx, to.cy];
+  if (!prev.has(goal)) {
+    if (!near) return null;
+    const far = (k) => { const [x, y] = k.split(",").map(Number); return Math.abs(x - to.cx) + Math.abs(y - to.cy); };
+    end = [...prev.keys()].reduce((best, k) => (far(k) < far(best) ? k : best)).split(",").map(Number);
+  }
   const cells = [];
-  for (let c = [to.cx, to.cy]; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
+  for (let c = end; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
   return cells;
 }
 
 // The way from where a member is to a spot, out of the room they are in by its open door,
 // round the desks and the furniture, in by the door of the room the spot is in. Nobody walks
-// through glass. Where there is no way, they go straight.
+// through glass or furniture: where the team's things have closed every way to a spot, they
+// walk as near as they can, and only then step onto it.
 function hqWalk(p, spot) {
   const T = HQ_T, from = { cx: Math.round(p.x / T), cy: Math.round(p.y / T + 0.5) };
-  const cells = hqPathCells(from, spot);
-  p.path = cells ? cells.map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T })) : [{ x: spot.x * T, y: spot.y * T }];
+  const cells = hqPathCells(from, spot, true).map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T }));
+  const last = cells[cells.length - 1], there = { x: spot.x * T, y: spot.y * T };
+  if (!last || last.x !== there.x || last.y !== there.y) cells.push(there);
+  p.path = cells;
 }
 
 // An errand's end: once there, a member says what they came to say, waits, and goes back.
@@ -819,6 +872,10 @@ function hqTinted(img, color) {
 }
 
 const HQ_PIXEL = "8px Silkscreen, monospace";
+// The open floor's side walls (rows `top` to `bottom`, `w` pixels thick), and the front door in
+// the right one: its frame, in pixels, on the wall's face beside the lobby.
+const HQ_SIDE = { top: 7, bottom: 15, w: 5 };
+function hqDoorRect() { return { x: HQ_W - HQ_SIDE.w - 5, y: Math.round(HQ_P.door.y * HQ_T), w: HQ_SIDE.w + 5, h: 2.5 * HQ_T }; }
 
 function hqPaintRoom() {
   const T = HQ_T, P = HQ_P, C = HQ_C, W = HQ_W, H = HQ_H;
@@ -849,7 +906,8 @@ function hqPaintRoom() {
   // The whiteboard: the task board.
   g.fillStyle = C.boardEdge; g.fillRect(P.board.x * T - 2, 3, P.board.w * T + 4, 26); g.fillStyle = C.board; g.fillRect(P.board.x * T, 5, P.board.w * T, 22);
   g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
-  if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, 7 * T - 2, 1);
+  // The hanging plant between the sign and the board, clear of both.
+  if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, P.board.x * T - 22, 1);
   // The CEO's painting, on the wall of its office.
   if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 22.2 * T, 0);
   // Glass rooms: the board room, the CEO's office and the server closet along the wall, the
@@ -894,15 +952,43 @@ function hqPaintRoom() {
   g.fillStyle = "#b8a68a"; g.fillRect(17.8 * T, 15.6 * T, 2.2 * T, 3); g.fillRect(17.8 * T, 16.4 * T, 2.2 * T, 3);
   const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
   for (let i = 0; i < 8; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(17.8 * T + 2 + i * 4.4, 15.6 * T - 5 + (i % 2) * 13, 3, 5); }
-  // The front door, on the floor's right wall.
-  g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
-  // Labels.
-  g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
-  g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
-  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 15 * T + 9); g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("KITCHEN", 24.6 * T, HQ_ROWS * T - 4); g.fillText("LOUNGE", 16.3 * T, HQ_ROWS * T - 4);
+  // The open floor's side walls, between the rooms along the back and those along the bottom,
+  // and the front door set in the right one, in its frame, with a mat before it (the owner saw
+  // the door floating on the floor, away from any wall).
+  const sideTop = HQ_SIDE.top * T, sideH = (HQ_SIDE.bottom - HQ_SIDE.top) * T, D = hqDoorRect();
+  for (const sx of [0, W - HQ_SIDE.w]) {
+    g.fillStyle = C.wall; g.fillRect(sx, sideTop, HQ_SIDE.w, sideH);
+    g.fillStyle = C.trim; g.fillRect(sx === 0 ? HQ_SIDE.w - 1 : sx, sideTop, 1, sideH);
+  }
+  g.fillStyle = "#8a6a4a"; g.fillRect(D.x - 16, D.y + 7, 14, D.h - 12);
+  g.fillStyle = "#a5825c"; g.fillRect(D.x - 14, D.y + 9, 10, D.h - 16);
+  g.fillStyle = C.shadow; g.fillRect(D.x - 2, D.y + 2, 2, D.h);
+  g.fillStyle = "#3d3a44"; g.fillRect(D.x, D.y, D.w, D.h);
+  g.fillStyle = "#9fd3f0"; g.fillRect(D.x + 2, D.y + 3, D.w - 3, D.h - 6);
+  g.fillStyle = "#cfeaf8"; g.fillRect(D.x + 2, D.y + 3, 1, D.h - 6);
+  g.fillStyle = C.lamp; g.fillRect(D.x + 2, D.y + Math.round(D.h / 2), 2, 3);
   return bg;
+}
+
+// A word on a small light plate, so it reads on any floor and over any furniture (the owner
+// read "RAE" as "RAB" across the checkerboard, and the rooms' names were faint).
+function hqTag(g, text, x, y, fg = "rgba(31,29,41,.9)", bg = "rgba(255,253,246,.78)") {
+  const w = Math.ceil(g.measureText(text).width);
+  g.fillStyle = bg; g.fillRect(x - 2, y - 7, w + 3, 9);
+  g.fillStyle = fg; g.fillText(text, x, y);
+  return { x: x - 2, y: y - 7, w: w + 3, h: 9 };
+}
+function hqOverlaps(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
+
+// The rooms' names, drawn over what stands in them so nothing covers a name.
+// Returns where they are, for the people's names to keep clear of.
+function hqRoomLabels(g) {
+  const T = HQ_T, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = HQ_P.engine;
+  g.font = HQ_PIXEL;
+  return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "CEO", O.x * T + 5, O.y * T + 9),
+    hqTag(g, "SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4), hqTag(g, "MEETING", M.x * T + 5, (M.y + M.h) * T - 4),
+    hqTag(g, "PING-PONG", 4, 15 * T + 9, "#ffffff", "rgba(31,29,41,.45)"),
+    hqTag(g, "KITCHEN", 28.3 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
 }
 
 // The things on the floor now, from the snapshot's office (ADR 0119): where each stands, how
@@ -923,13 +1009,33 @@ function hqPot(g, it, leaf) {
   const x = it.x * HQ_T, y = it.y * HQ_T;
   g.fillStyle = "#b5651d"; g.fillRect(x + 4, y + 10, 8, 6); g.fillStyle = leaf; g.fillRect(x + 3, y + 2, 10, 9);
 }
+// Where a plant's picture goes: its pot on its tile, its leaves above. Leaves never cover the
+// task board on the back wall (a palm by it hid a sticky note), so a plant under the board is
+// drawn smaller, to fit below it; and none reaches through the glass of a room it is not in (the
+// same palm hid the CEO's name). -> { x, y, w, h } in pixels.
+function hqPlantRect(it, w, h) {
+  const T = HQ_T, B = HQ_P.board, bottom = (it.y + 1) * T, boardLow = 29;
+  let x = it.x * T + 8 - w / 2;
+  if (x < (B.x + B.w) * T + 2 && x + w > B.x * T - 2 && bottom - h < boardLow) {
+    const fit = Math.max(16, bottom - boardLow);
+    w = Math.round((w * fit) / h); h = fit; x = it.x * T + 8 - Math.round(w / 2);
+  }
+  for (const r of [HQ_P.boardRoom, HQ_ROOMS.ceo, HQ_P.engine, HQ_ROOMS.meeting]) {
+    const inside = it.x >= r.x && it.x < r.x + r.w && it.y >= r.y && it.y < r.y + r.h;
+    if (inside || bottom - h >= (r.y + r.h) * T || bottom <= r.y * T) continue;
+    if (it.x < r.x) x = Math.min(x, r.x * T - w);
+    else if (it.x >= r.x + r.w) x = Math.max(x, (r.x + r.w) * T);
+  }
+  return { x: Math.round(x), y: bottom - h, w, h };
+}
+function hqPlant(g, key, it, w, h) { const r = hqPlantRect(it, w, h); return hqSprite(g, key, r.x, r.y, r.w, r.h); }
 // How each kind of thing is drawn, at its tile. Plants, the couch and the shelf use the office's
 // art; for the kinds with none, a small pixel shape. Each is given the 2D context and the item.
 const HQ_ITEM_ART = {
-  plant: (g, it) => hqSprite(g, "PLANT", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#3f9b5b"),
-  fern: (g, it) => hqSprite(g, "PLANT_2", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#5fbf7a"),
-  cactus: (g, it) => hqSprite(g, "CACTUS", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#6aa84f"),
-  palm: (g, it) => hqSprite(g, "LARGE_PLANT", it.x * HQ_T - 8, (it.y + 1) * HQ_T - 48) || hqPot(g, it, "#2e8b57"),
+  plant: (g, it) => hqPlant(g, "PLANT", it, 16, 32) || hqPot(g, it, "#3f9b5b"),
+  fern: (g, it) => hqPlant(g, "PLANT_2", it, 16, 32) || hqPot(g, it, "#5fbf7a"),
+  cactus: (g, it) => hqPlant(g, "CACTUS", it, 16, 32) || hqPot(g, it, "#6aa84f"),
+  palm: (g, it) => hqPlant(g, "LARGE_PLANT", it, 32, 48) || hqPot(g, it, "#2e8b57"),
   couch: (g, it) => {
     if (hqSprite(g, "SOFA_FRONT", it.x * HQ_T, it.y * HQ_T)) return;
     g.fillStyle = "#7d6bb0"; g.fillRect(it.x * HQ_T, it.y * HQ_T + 2, it.w * HQ_T, 14); g.fillStyle = "#9a89c9"; g.fillRect(it.x * HQ_T + 2, it.y * HQ_T, it.w * HQ_T - 4, 6);
@@ -1003,8 +1109,12 @@ const HQ_ITEM_ART = {
   },
 };
 // A kind this screen has no picture for yet is drawn as a plain box, so nothing vanishes.
+// A thing against a side wall stands just inside it, not half in the wall nor cut by the edge.
 function hqDrawItem(g, it) {
-  (HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); }))(g, it);
+  const draw = HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); });
+  const by = !it.wall && it.y >= HQ_SIDE.top && it.y < HQ_SIDE.bottom ? (it.x === 0 ? HQ_SIDE.w - 1 : it.x + it.w === HQ_COLS ? 1 - HQ_SIDE.w : 0) : 0;
+  if (!by) { draw(g, it); return; }
+  g.save(); g.translate(by, 0); draw(g, it); g.restore();
 }
 
 function hqFurniture() {
@@ -1016,7 +1126,10 @@ function hqFurniture() {
   for (const pod of HQ.pods) {
     for (const d of pod.desks) {
       f("DESK_FRONT", d.x * T, d.y * T);
-      f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pcOf: d.member });
+      // The computer at the end its member sits at, and the member's chair beside it, in the aisle.
+      f("PC_FRONT_OFF", d.x * T + (d.side === "left" ? 4 : (d.w - 1) * T - 4), d.y * T - 6, { lift: 0.5, pcOf: d.member });
+      const cx = d.side === "left" ? d.x - 1 : d.x + d.w, cy = d.y + 1;
+      out.push({ base: (cy + 0.5) * T - 0.5, draw: (g) => hqDeskChair(g, cx, cy, d.side === "left" ? "right" : "left") });
       const away = members.find((x) => x.id === d.member && x.furloughed);
       if (away) out.push({ base: d.y * T + 33, draw: (g) => hqAwayCard(g, d) });
     }
@@ -1049,6 +1162,16 @@ function hqFurniture() {
     out.push({ base: (it.y + it.h) * T, item: it, draw: (g) => hqDrawItem(g, it) });
   }
   return out;
+}
+
+// A desk chair seen from the side, in a cell of the aisle, for someone facing `dir` (towards the
+// desk): the seat under them and the back behind them. Drawn just before whoever sits on it.
+function hqDeskChair(g, cx, cy, dir) {
+  const x = cx * HQ_T, y = cy * HQ_T, back = dir === "left" ? x + 13 : x + 1, seat = dir === "left" ? x + 5 : x + 3;
+  g.fillStyle = HQ_C.shadow; g.fillRect(x + 3, y + 5, 10, 2);
+  g.fillStyle = "#3b4048"; g.fillRect(seat + 3, y + 1, 2, 5); g.fillRect(seat, y + 5, 8, 1);
+  g.fillStyle = "#4f7f6a"; g.fillRect(seat, y - 2, 8, 3); g.fillRect(back, y - 12, 2, 11);
+  g.fillStyle = "#6aa186"; g.fillRect(seat, y - 2, 8, 1); g.fillRect(back, y - 12, 2, 1);
 }
 
 // The card on an empty desk: its member is away on furlough (ADR 0118), and keeps the desk.
@@ -1124,8 +1247,18 @@ function hqFrame(p) {
   const pool = hqPool(), chess = hqChessPair();
   if (pool && pool.includes(p)) return { dir, frame: Math.floor(HQ.t / 2 + (at.pool === "L" ? 0 : 1)) % 2 ? 3 : 0 };
   if (chess && chess.includes(p)) return { dir, frame: 5 + (Math.floor(HQ.t * 1.5) % 2) };
-  return { dir, frame: p.paused ? 1 : 0 };
+  return { dir, frame: hqSits(p) ? 3 : p.paused ? 1 : 0 };
 }
+
+// What a member is sitting on, if anything: a couch, a chair or its desk's chair, once there.
+function hqSits(p) { return !p.path.length && p.at && p.at.sit ? p.at.sit : ""; }
+// How far down a seated member is drawn from where they would stand: on a couch, into its seat,
+// in front of its back (the owner saw people standing behind the sofas).
+const HQ_SIT_DY = { couch: 6, chair: 0, desk: 0 };
+function hqSitDy(p) { return HQ_SIT_DY[hqSits(p)] || 0; }
+// Where a member falls in the drawing's depth order: by their feet, and someone on a couch just
+// after it, so they sit in front of its back rather than behind it.
+function hqDepth(p) { return hqSits(p) === "couch" ? (p.at.cy + 1) * HQ_T + 0.5 : p.y + 16 + hqSitDy(p); }
 
 // When idle, who says what.
 const HQ_IDLE = { researcher: "zZ", reviewer: "heads down", lead: "", developer: "" };
@@ -1166,26 +1299,26 @@ function hqDraw() {
   ctx.font = HQ_PIXEL;
   for (const pod of HQ.pods) {
     ctx.fillStyle = "rgba(255,255,255,.12)"; ctx.fillRect(pod.x * T - 4, pod.y * T - 18, pod.width * T + 8, pod.rows * HQ_POD.desk.h * T + 20);
-    ctx.fillStyle = "rgba(31,29,41,.7)"; ctx.fillText(String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9);
+    hqTag(ctx, String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9, "rgba(31,29,41,.85)", "rgba(255,253,246,.55)");
   }
   // The burn gauge: today's spend against the pool's day.
   const pool = snap.pool || { per_day: 1, committed: 0 }, fill = Math.min(1, (pool.committed || 0) / Math.max(1, pool.per_day));
   const jx = P.jar.x * T, jy = P.jar.y * T, hgt = 30;
   ctx.fillStyle = "#ffffff"; ctx.fillRect(jx, jy, 8, hgt); ctx.strokeStyle = C.trim; ctx.strokeRect(jx - 0.5, jy - 0.5, 9, hgt + 1);
   ctx.fillStyle = fill > .85 ? C.red : fill > .6 ? C.lamp : C.green; ctx.fillRect(jx + 1, jy + hgt - Math.round(hgt * fill), 6, Math.round(hgt * fill));
-  ctx.font = HQ_PIXEL; ctx.fillStyle = "rgba(31,29,41,.65)"; ctx.fillText("BURN", jx + 12, jy + hgt);
+  ctx.font = HQ_PIXEL; hqTag(ctx, "BURN", jx + 12, jy + hgt);
   // The kill switch on the board room's glass.
   const lx = P.lever.x * T, ly = P.lever.y * T, up = !snap.stopped;
   ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
   ctx.fillStyle = "#9aa"; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
-  if ((HQ.doorFlash || 0) > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
+  if ((HQ.doorFlash || 0) > 0) { const D = hqDoorRect(); ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(D.x - 6, D.y - 4, D.w + 6, D.h + 8); }
   // A ping-pong ball between the two at the table.
   if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
   hqDrawGames(ctx, snap);
   // People and furniture, in depth order.
   const people = Object.values(HQ.people);
   const items = HQ_FURN.map((f) => ({ base: f.base, f }));
-  for (const p of people) items.push({ base: p.y + 16, p });
+  for (const p of people) items.push({ base: hqDepth(p), p });
   items.sort((a, b) => a.base - b.base);
   for (const it of items) {
     if (it.p) { hqDrawPerson(ctx, it.p); continue; }
@@ -1197,13 +1330,18 @@ function hqDraw() {
     }
     if (HQ_IMG[key]) ctx.drawImage(HQ_IMG[key], Math.round(it.f.x), Math.round(it.f.y));
   }
-  // Names under their people; at a pod's aisle they run out over their own desk, so the two
-  // who face each other do not write over one another.
+  const placed = hqRoomLabels(ctx);
+  // Names under their people, each on its plate over everything on the floor; at a pod's aisle
+  // they run out over their own desk, so the two sitting back to back do not overlap. A name
+  // that would cover a room's name or another's goes over its person's head instead.
   ctx.font = HQ_PIXEL;
-  for (const p of people) {
+  for (const p of people.slice().sort((a, b) => hqDepth(a) - hqDepth(b))) {
     const name = String(p.name || "").toUpperCase(), at = p.at || {}, w = Math.ceil(ctx.measureText(name).width);
-    const x = at.desk && at.dir === "right" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "left" ? Math.round(p.x) : Math.round(p.x) + 1;
-    ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(name, x, Math.round(p.y) + 24);
+    const x = Math.max(2, Math.min(HQ_W - w - 2, at.desk && at.dir === "left" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "right" ? Math.round(p.x) : Math.round(p.x) + 8 - Math.round(w / 2)));
+    const top = Math.round(p.y) + hqSitDy(p);
+    const under = top + 24, over = top - 18, clear = (y) => !placed.some((r) => hqOverlaps(r, { x: x - 2, y: y - 7, w: w + 3, h: 9 }));
+    p.nameOver = !clear(under) && clear(over);
+    placed.push(hqTag(ctx, name, x, p.nameOver ? over : under));
   }
   // Decisions waiting on the board room table.
   (snap.desk || []).slice(0, 5).forEach((n, i) => {
@@ -1264,15 +1402,24 @@ function hqBubble(ctx, p) {
   if (!text) return;
   const quiet = !said && !doing;
   ctx.font = HQ_PIXEL;
-  const tw = Math.ceil(ctx.measureText(text).width) + 6, x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.round(p.y - 30);
-  ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, 10);
-  ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + 10, tw, 1); ctx.fillRect(Math.round(p.x + 7), y + 10, 2, 2);
-  ctx.fillStyle = quiet ? "#6b6577" : "#1f1d29"; ctx.fillText(text, x + 3, y + 8);
+  // Up to two lines of whole words, over the speaker's head and inside the scene.
+  const lines = hqWrap(text, (s) => ctx.measureText(s).width, HQ_BUBBLE_W);
+  const tw = Math.ceil(Math.max(...lines.map((l) => ctx.measureText(l).width))) + 6, th = lines.length * 9 + 1;
+  // Above the name, when the name is over the head.
+  const lift = p.nameOver ? 10 : 0;
+  const x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.max(1, Math.round(p.y + hqSitDy(p) - 20 - lift - th));
+  ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, th);
+  ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + th, tw, 1);
+  ctx.fillRect(Math.round(Math.min(x + tw - 3, Math.max(x + 1, p.x + 7))), y + th, 2, 2);
+  ctx.fillStyle = quiet ? "#6b6577" : "#1f1d29";
+  lines.forEach((l, i) => ctx.fillText(l, x + 3, y + 8 + i * 9));
 }
+// How wide a bubble's line may run, in the office's pixels: about twenty characters.
+const HQ_BUBBLE_W = 124;
 
 function hqDrawPerson(ctx, p) {
-  const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y);
-  ctx.fillStyle = HQ_C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3);
+  const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y) + hqSitDy(p);
+  if (!hqSits(p)) { ctx.fillStyle = HQ_C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3); }
   if (img) {
     const { dir, frame } = hqFrame(p), row = dir === "up" ? 1 : dir === "down" ? 0 : 2;
     if (dir === "left") { ctx.save(); ctx.translate(x + 16, 0); ctx.scale(-1, 1); ctx.drawImage(img, frame * 16, row * 32, 16, 32, 0, y - 16, 16, 32); ctx.restore(); }
