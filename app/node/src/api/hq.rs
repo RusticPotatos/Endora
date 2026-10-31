@@ -449,28 +449,6 @@ pub(super) async fn hq_rename(
 }
 
 #[derive(Deserialize)]
-pub(super) struct HqHouseLog {
-    #[serde(default)]
-    log: String,
-}
-
-/// The owner rewrites the house log, which the CEO keeps and the CEO and the lead read every
-/// turn (ADR 0111).
-pub(super) async fn hq_house_log(
-    State(state): State<AppState>,
-    Json(req): Json<HqHouseLog>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/house".to_owned(),
-        Some(json!({ "log": req.log })),
-    )
-    .await?;
-    record(&state, "you rewrote the house log");
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
 pub(super) struct HqWhy {
     #[serde(default)]
     why: String,
@@ -1009,7 +987,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_renames_a_member_and_rewrites_the_house_log_through_the_node() {
+    async fn the_owner_renames_a_member_through_the_node() {
         let (url, seen) = fake(Arc::new(|path, _| {
             if path.ends_with("/name") {
                 return (
@@ -1031,14 +1009,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(renamed.0["name"], "Jane Doe");
-        let _ = hq_house_log(
-            State(state.clone()),
-            Json(HqHouseLog {
-                log: "- 17 Oct: the NAS has 16 GB.".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1047,28 +1017,18 @@ mod tests {
             .collect();
         assert_eq!(
             sent,
-            [
-                (
-                    "/v1/members/5/name".to_owned(),
-                    json!({ "name": "Jane Doe" })
-                ),
-                (
-                    "/v1/house".to_owned(),
-                    json!({ "log": "- 17 Oct: the NAS has 16 GB." })
-                ),
-            ]
+            [(
+                "/v1/members/5/name".to_owned(),
+                json!({ "name": "Jane Doe" })
+            ),]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
             .map(|r| r.summary().to_owned())
             .collect();
-        for line in [
-            "HQ: you renamed member 5 to Jane Doe",
-            "HQ: you rewrote the house log",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
+        let line = "HQ: you renamed member 5 to Jane Doe";
+        assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
     }
 
     #[tokio::test]

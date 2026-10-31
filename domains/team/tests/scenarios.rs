@@ -142,8 +142,6 @@ struct Office {
     /// What the engine last refused, as the member or the owner reads it; `None` when the
     /// last thing asked was done.
     refused: Option<String>,
-    /// Whether HQ seeded its house log the last time it started.
-    seeded: Option<bool>,
     /// The engineering wing, once seeded (ADR 0115).
     wing: Option<Wing>,
     /// The clock the engine reads, for steps that let days pass.
@@ -199,7 +197,6 @@ impl Default for Office {
             projects: HashMap::new(),
             turns: HashMap::new(),
             refused: None,
-            seeded: None,
             wing: None,
             answer: None,
             wakes_at_ask: 0,
@@ -829,30 +826,6 @@ fn scorecard_waste(w: &mut Office, dollars: f64) {
         json!(micros(dollars)),
         "{card}"
     );
-}
-
-// --- The house log --------------------------------------------------------------------------
-
-#[when("HQ starts with an empty house log")]
-#[when("the owner clears the house log and HQ starts again")]
-fn hq_starts(w: &mut Office) {
-    if w.seeded.is_some() {
-        w.hq.set_house_log("").expect("the owner clears the log");
-    }
-    w.seeded = Some(w.hq.seed_house_log().expect("HQ starts"));
-}
-
-#[then(expr = "the house log says {string}")]
-fn house_log_says(w: &mut Office, text: String) {
-    assert_eq!(w.seeded, Some(true), "HQ did not seed the log");
-    let log = w.hq.house_log().expect("the store answers");
-    assert!(log.contains(&text), "the house log:\n{log}");
-}
-
-#[then("the house log stays empty")]
-fn house_log_empty(w: &mut Office) {
-    assert_eq!(w.seeded, Some(false), "HQ seeded the log again");
-    assert_eq!(w.hq.house_log().expect("the store answers"), "");
 }
 
 // --- The engineering wing (ADR 0115) --------------------------------------------------------

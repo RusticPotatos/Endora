@@ -14,6 +14,7 @@ use super::ports::{
 };
 use super::scorecard;
 use crate::domain::cut::cut;
+use crate::domain::docs;
 use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::history::InputOrigin;
 use crate::domain::mac::{self, MacFacts};
@@ -30,7 +31,6 @@ use crate::domain::{
     MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason,
 };
-use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
@@ -88,8 +88,6 @@ pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
 
 /// Where HQ keeps the house log (ADR 0111).
 const HOUSE_LOG: &str = "house_log";
-/// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
-const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 /// Where HQ keeps who wrote a routine's words: `owner` or `system` (ADR 0138 A2b).
 const ROUTINE_ORIGIN: &str = "routine_origin:";
 
@@ -671,60 +669,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "was": found.name, "name": name }),
         )?;
         Ok(name)
-    }
-
-    // ---- the house log (ADR 0111) ---------------------------------------------------------
-
-    /// The house log: empty when nothing is in it.
-    pub fn house_log(&self) -> Done<String> {
-        Ok(self.store.setting(HOUSE_LOG)?.unwrap_or_default())
-    }
-
-    fn keep_house_log(&self, log: &str, by: &str, said: serde_json::Value) -> Done<()> {
-        self.store.set_setting(HOUSE_LOG, log)?;
-        let mut about = json!({ "by": by, "length": log.chars().count() });
-        if let (Some(about), Some(said)) = (about.as_object_mut(), said.as_object()) {
-            about.extend(said.clone());
-        }
-        self.emit(EventKind::HouseNoted, about)
-    }
-
-    /// Endora seeds the house log with how this lab is built ([`house::lab_built`]), once, and
-    /// only when it is empty: what the CEO or the owner wrote is never overwritten, and a log
-    /// the owner cleared later stays clear. Said in the feed as Endora's. Returns whether it
-    /// was seeded now.
-    pub fn seed_house_log(&self) -> Done<bool> {
-        let _held = self.held();
-        if self.store.setting(HOUSE_LOG_SEEDED)?.is_some() {
-            return Ok(false);
-        }
-        self.store.set_setting(HOUSE_LOG_SEEDED, "1")?;
-        if !self.house_log()?.trim().is_empty() {
-            return Ok(false);
-        }
-        self.keep_house_log(
-            &house::lab_built(),
-            "Endora",
-            json!({ "entry": endora_kernel::lab::LAB_BUILT_TITLE, "seeded": true }),
-        )?;
-        Ok(true)
-    }
-
-    /// The owner rewrites the house log on HQ's screen; empty clears it. Once the house log is
-    /// the house page's timeline (ADR 0122), it is kept read-only for a release: refused.
-    ///
-    /// # Errors
-    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`] once moved; a store failure.
-    pub fn set_house_log(&self, log: &str) -> Done<()> {
-        let _held = self.held();
-        if self.world_migrated()? {
-            return Err(EngineError::Refused(Refusal::World(
-                crate::domain::world::WorldRefusal::HouseLogRetired,
-            )));
-        }
-        let log = house::rewritten(log).map_err(EngineError::Refused)?;
-        self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
     }
 
     /// A member's turn reads one of Endora's public library (its records, plans, drafts and

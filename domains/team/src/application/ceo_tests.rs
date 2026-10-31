@@ -10,7 +10,6 @@ use serde_json::json;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext};
 use super::protocol::call;
-use crate::application::event_ports::EventStore;
 use crate::domain::{GoalId, MemberId, Priority, Refusal, Role, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -103,46 +102,6 @@ fn use_tool(
 ) -> Result<String, String> {
     let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
     call(hq, &run, &member, tool, args)
-}
-
-#[test]
-fn endora_seeds_the_house_log_with_how_the_lab_is_built_once_and_only_when_it_is_empty() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    assert!(hq.seed_house_log().unwrap(), "an empty log is seeded");
-    let log = hq.house_log().unwrap();
-    assert!(
-        log.starts_with("How this lab is built:\n- The home lab is managed by ansible-nas"),
-        "{log}"
-    );
-    assert!(
-        log.contains("homelab_map") && log.contains("behind gluetun"),
-        "{log}"
-    );
-    assert_eq!(log.lines().count(), 4, "a title and a line a sentence");
-    let noted = hq
-        .store()
-        .events_after(0)
-        .unwrap()
-        .into_iter()
-        .rfind(|e| e.kind == "house.noted")
-        .unwrap();
-    assert_eq!(noted.data["by"], "Endora", "said in the feed as Endora's");
-    assert_eq!(noted.data["entry"], "How this lab is built");
-    // Once: the owner clears it, and it stays clear.
-    hq.set_house_log("").unwrap();
-    assert!(!hq.seed_house_log().unwrap());
-    assert_eq!(hq.house_log().unwrap(), "");
-    // A log with text in it is never overwritten.
-    let other = engine(&clock);
-    other.set_house_log("- 17 Oct: The NAS has 16 GB.").unwrap();
-    assert!(!other.seed_house_log().unwrap());
-    assert_eq!(other.house_log().unwrap(), "- 17 Oct: The NAS has 16 GB.");
-    other.set_house_log("").unwrap();
-    assert!(
-        !other.seed_house_log().unwrap(),
-        "seeded or not, only ever the first time"
-    );
 }
 
 #[test]

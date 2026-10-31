@@ -78,7 +78,6 @@ pub fn app(state: State) -> Router {
         .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
         .route("/v1/members/{id}/name", post(rename))
-        .route("/v1/house", post(house_log))
         // The owner as landlord of the office (ADR 0119): undo the last change, reset it to the
         // layout it began with, and veto an open proposal. The team's own proposals and votes
         // come through the worker's door.
@@ -475,22 +474,6 @@ async fn rename(
     let hq = state.hq.clone();
     let name = blocking(move || hq.rename(MemberId(id), &req.name)).await?;
     Ok(Json(json!({ "member": id, "name": name })))
-}
-
-#[derive(Deserialize)]
-struct HouseLog {
-    #[serde(default)]
-    log: String,
-}
-
-/// The owner rewrites the house log, which the CEO keeps; empty clears it.
-async fn house_log(
-    Extract(state): Extract<State>,
-    Json(req): Json<HouseLog>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.set_house_log(&req.log)).await?;
-    Ok(Json(json!({ "kept": true })))
 }
 
 #[derive(Deserialize)]
@@ -3459,7 +3442,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_renames_a_member_and_edits_the_house_log_through_the_node() {
+    async fn the_owner_renames_a_member_through_the_node() {
         let st = state(false);
         let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
         let app = app(st.clone());
@@ -3475,17 +3458,6 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(json_of(res).await["name"], "Jane Doe");
-        let res = app
-            .clone()
-            .oneshot(call(
-                "POST",
-                "/v1/house",
-                Some(TOKEN),
-                r#"{"log":"- 17 Oct: the NAS has 16 GB."}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
         let snap = json_of(
             app.clone()
                 .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
@@ -3493,10 +3465,14 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(snap["house_log"], "- 17 Oct: the NAS has 16 GB.");
         assert_eq!(snap["members"][0]["name"], "Jane Doe");
         let unsigned = app
-            .oneshot(call("POST", "/v1/house", None, r#"{"log":""}"#))
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/name", lead.0),
+                None,
+                r#"{"name":"X"}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);

@@ -403,8 +403,6 @@ pub enum Refusal {
     },
     /// A goal's notes have no room for one more lesson.
     NotesFull,
-    /// The house log has no room for one more line.
-    HouseLogFull,
     /// What the team's world refuses (ADR 0122): its pages, stages, stories and handovers.
     World(super::world::WorldRefusal),
     /// What the guards against how agent teams fail refuse (ADR 0124).
@@ -598,9 +596,6 @@ impl fmt::Display for Refusal {
                  Claude alone"
             ),
             Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
-            Self::HouseLogFull => f.write_str(
-                "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
-            ),
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
             Self::History(refused) => refused.fmt(f),
