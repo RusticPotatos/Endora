@@ -649,6 +649,26 @@ fn opening(
     if claude_searches {
         talk.search_for_all_but(&CLAUDE_LOADS);
     }
+    // What it starts with and what it may bring in, by name, for the conversation HQ keeps.
+    let (later, now): (Vec<&Value>, Vec<&Value>) =
+        talk.tools.iter().partition(|t| t["defer_loading"] == true);
+    let name = |t: &&Value| {
+        t["function"]["name"]
+            .as_str()
+            .or_else(|| t["name"].as_str())
+            .map(str::to_owned)
+    };
+    let held_back: Vec<String> = later
+        .iter()
+        .filter_map(name)
+        .chain(
+            deferred
+                .iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_owned)),
+        )
+        .collect();
+    talk.given_tools =
+        crate::transcript::tools(&now.iter().filter_map(name).collect::<Vec<_>>(), &held_back);
     let rules_later = lab_found_later.then(|| lab_rules(on_the_node));
     Opening {
         talk,
@@ -1274,6 +1294,9 @@ struct Talk {
     /// they are read whole, until they are cut. The conversation itself, which HQ keeps, holds
     /// the raw result.
     gists: std::collections::HashMap<String, String>,
+    /// The tools it started with and those held back, by name, as the conversation HQ keeps
+    /// begins (`transcript::tools`): what the model was given, for the owner's replay.
+    given_tools: String,
 }
 
 /// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
@@ -1301,6 +1324,7 @@ impl Talk {
                 keep_whole: Some(HOUSE_KEEPS_WHOLE),
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
+                given_tools: String::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1311,6 +1335,7 @@ impl Talk {
                 keep_whole: None,
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
+                given_tools: String::new(),
             },
         }
     }
@@ -1393,10 +1418,11 @@ impl Talk {
 
     /// The conversation so far as plain text (ADR 0129), in the shape of the API it was held in.
     fn as_text(&self) -> String {
-        match self.api {
+        let said = match self.api {
             Api::OpenAi => crate::transcript::openai(&self.messages),
             Api::Anthropic => crate::transcript::anthropic(&self.system, &self.messages),
-        }
+        };
+        format!("{}{said}", self.given_tools)
     }
 
     /// The model's answer, kept as it said it. On a house turn, the results it has now replied
@@ -3504,6 +3530,45 @@ mod tests {
     /// not told the lab's rules for tools it does not have yet: it is told they are there, and
     /// how to bring them in. A turn with a task, or one whose tools are all listed, is told them
     /// in full, as before.
+    /// The conversation HQ keeps names the tools the turn started with, and those it was told
+    /// it could bring in, so the owner sees what the model was given; never their schemas.
+    #[test]
+    fn the_kept_conversation_names_the_tools_the_turn_started_with() {
+        let many: Vec<Value> = (0..20)
+            .map(|i| json!({ "name": format!("tool_{i}"), "description": "Read a thing." }))
+            .chain(
+                CORE.iter()
+                    .map(|t| json!({ "name": t, "description": "HQ's." })),
+            )
+            .collect();
+        for api in [Api::OpenAi, Api::Anthropic] {
+            let Opening { talk, .. } = opening(
+                api,
+                many.clone(),
+                "Your task: x".to_owned(),
+                &[],
+                true,
+                false,
+                false,
+            );
+            let kept = talk.as_text();
+            let parts: Vec<&str> = kept.split("--- ").collect();
+            let up_front = parts
+                .iter()
+                .find(|p| p.starts_with("tools ---"))
+                .expect("tools");
+            let later = parts
+                .iter()
+                .find(|p| p.starts_with("tools: held back ---"))
+                .expect("held back");
+            assert!(up_front.contains("\npost\n"), "{api:?} {kept}");
+            assert!(later.contains("\ntool_7\n"), "{api:?} {kept}");
+            assert!(!up_front.contains("\ntool_7\n"), "{api:?} {kept}");
+            assert!(!kept.contains("Read a thing."), "no schema is kept: {kept}");
+            assert!(kept.contains("--- user ---\nYour task: x"), "{kept}");
+        }
+    }
+
     #[test]
     fn a_house_turn_is_told_the_labs_rules_where_its_tools_are_up_front() {
         let lab: Vec<String> = LAB_TOOLS.iter().map(|t| (*t).to_owned()).collect();
