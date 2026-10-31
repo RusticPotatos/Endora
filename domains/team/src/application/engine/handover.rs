@@ -1,8 +1,9 @@
 //! HQ's handover in the loops (ADR 0142, amended 2026-10-30): when an item changes hands (a
 //! climb after three failures, a paused or away member's hand-up, a reviewer's send-back), HQ
 //! composes from the record what the next member needs to continue rather than start over
-//! ([`handover::compose`]), keeps it for that member's briefings on the item, and posts it on
-//! the item's thread as Endora's, so the owner sees what was handed over.
+//! ([`handover::compose`]) and posts it on the item's thread as Endora's, so the owner sees
+//! what was handed over. The thread is its one record: the newest handover there is what the
+//! member's briefings on the item carry.
 //!
 //! The same note continues an item with the same member when the worker ended its turn at its
 //! prompt's budget (ADR 0142, amended 2026-10-30, after Ralph: every pass fits one fresh context
@@ -92,26 +93,16 @@ impl Continued {
     }
 }
 
-/// Where an item's latest handover is kept: `{to, text}`.
-fn handover_key(task: TaskId) -> String {
-    format!("loop_handover:{}", task.0)
-}
-
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The item goes to `to` (the lock held): its handover is composed within `to`'s model's
-    /// size, kept for `to`'s briefings on it, and posted on its thread.
+    /// size and posted on its thread, where `to`'s briefings on it find it.
     pub(super) fn hand_over(&self, task: TaskId, to: MemberId, why: &str) -> Done<()> {
         let to = self.member(to)?;
         let composed = handover::compose(
             &self.handover_of(task, &to, why)?,
             handover::chars_for(to.brain),
         );
-        let text = composed.trim_end();
-        self.store.set_setting(
-            &handover_key(task),
-            &serde_json::json!({ "to": to.id.0, "text": text }).to_string(),
-        )?;
-        self.post_held_lock(Author::Endora, task, text)
+        self.post_held_lock(Author::Endora, task, composed.trim_end())
     }
 
     /// What the record says of an item for its handover to `to`. Only this item's record:
@@ -266,7 +257,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(task) = run.task else {
             return Ok(false);
         };
-        Ok(self.continued(task)?.runs.contains(&run.id.0))
+        Ok(self.out_of_room_runs(task)?.contains(&run.id.0))
     }
 
     /// After a turn that ran out of room has ended (the lock held): while the item is still its
@@ -409,28 +400,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.ask_about_the_item(task, None, &text)
     }
 
-    /// The handover kept for `member` on `task`, as it was posted, while the item is still
-    /// `member`'s.
+    /// The handover for `member` on `task`, as it was posted: the item's newest, when it went
+    /// to `member` and the item is still theirs.
     pub(super) fn handover_kept_for(&self, member: MemberId, task: TaskId) -> Done<Option<String>> {
-        let Some(kept) = self.setting_json::<serde_json::Value>(&handover_key(task))? else {
+        let Some(text) = self.handover_on(task)? else {
             return Ok(None);
         };
-        if kept["to"].as_i64() != Some(member.0) {
+        let member = self.member(member)?;
+        if !handover::is_to(&text, task.0, &member.name) {
             return Ok(None);
         }
         let found = self.task(task)?;
-        if found.owner.or(found.assignee) != Some(member) {
+        if found.owner.or(found.assignee) != Some(member.id) {
             return Ok(None);
         }
-        Ok(kept["text"].as_str().map(str::to_owned))
+        Ok(Some(text))
     }
 
-    /// The item's latest handover, whoever it went to: what HQ handed on of it, for its
-    /// reviewer.
+    /// The item's newest handover on its thread, whoever it went to: what HQ handed on of it,
+    /// for its reviewer.
     pub(super) fn handover_on(&self, task: TaskId) -> Done<Option<String>> {
         Ok(self
-            .setting_json::<serde_json::Value>(&handover_key(task))?
-            .and_then(|kept| kept["text"].as_str().map(str::to_owned)))
+            .store
+            .thread(task)?
+            .into_iter()
+            .rfind(|p| handover::is_handover(&p.author, &p.text))
+            .map(|p| p.text))
+    }
+
+    /// The item's turns HQ judged out of room ([`Self::out_of_room_in`]): the one flag the
+    /// thread view and [`Self::ran_out_of_room`] read.
+    pub(super) fn out_of_room_runs(&self, task: TaskId) -> Done<Vec<i64>> {
+        Ok(self.continued(task)?.runs)
     }
 
     /// A briefing's handover section: the item's latest handover, when it was to this turn's

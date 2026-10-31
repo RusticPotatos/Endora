@@ -418,7 +418,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Only the newest handover says where the work stands: older ones, and the last words
         // of turns that ran out of room before it, stay in the record and out of the briefing
         // (ADR 0142, amended 2026-10-31).
-        let seen = Self::thread_seen(thread);
+        let seen = self.thread_seen(task.id, thread)?;
         let since_seen: Vec<handover::Seen> = thread
             .iter()
             .zip(&seen)
@@ -451,15 +451,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(said)
     }
 
-    /// How a turn reads each post of a thread ([`handover::thread_view`]).
+    /// How a turn reads each post of `task`'s thread ([`handover::thread_view`]): a post is of a
+    /// turn out of room when its run is one HQ judged so.
     pub(crate) fn thread_seen(
+        &self,
+        task: TaskId,
         thread: &[crate::application::history_ports::PostInput],
-    ) -> Vec<handover::Seen> {
-        let posts: Vec<(&str, &str)> = thread
+    ) -> Done<Vec<handover::Seen>> {
+        let runs = self.out_of_room_runs(task)?;
+        let posts: Vec<handover::ThreadPost<'_>> = thread
             .iter()
-            .map(|p| (p.post.author.as_str(), p.post.text.as_str()))
+            .map(|p| handover::ThreadPost {
+                author: &p.post.author,
+                text: &p.post.text,
+                out_of_room: matches!(p.origin,
+                    crate::domain::history::InputOrigin::Run(run) if runs.contains(&run.0)),
+            })
             .collect();
-        handover::thread_view(&posts)
+        Ok(handover::thread_view(&posts))
     }
 
     /// The thread as `my_turn` shows it: its newest `most` posts a turn reads, each read with
@@ -480,7 +489,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Option<String>,
     )> {
         let thread = self.all_authored_posts(task)?;
-        let seen = Self::thread_seen(&thread);
+        let seen = self.thread_seen(task, &thread)?;
         let told = self.handover_kept_for(member, task)?;
         let left_out = handover::left_out_said(&seen);
         let mut shown: Vec<crate::application::history_ports::PostInput> = thread

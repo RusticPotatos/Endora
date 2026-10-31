@@ -1035,7 +1035,8 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
 /// D12 (ADR 0142, amended 2026-10-31): item 937's turns lost what they wrote in the sandbox
 /// each time they ran out of room. Now, when a turn in the workbench ends at its budget, the
 /// worker commits what /work/repo holds to the task's branch and sends it to the node marked
-/// as work in progress, and its last word says where it is kept.
+/// as work in progress. Where it is kept is said once, by HQ's handover from its record; the
+/// last word does not say it again.
 #[test]
 fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
     let dir = std::env::temp_dir().join(format!("endora-wip-{}", std::process::id()));
@@ -1112,10 +1113,7 @@ fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
         .unwrap();
     assert_eq!(last["continues"], json!(true), "{last}");
     let text = last["text"].as_str().unwrap();
-    assert!(
-        text.contains("Its work in progress is kept on hq/task-7-work at"),
-        "{text}"
-    );
+    assert!(!text.contains("hq/task-7-work"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

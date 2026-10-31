@@ -411,7 +411,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
 /// bundles it, and sends it to the node's `repo_submit` marked `wip`, which takes it by a
 /// submission's rules and keeps it for the next turn, unchecked. Only the worker sets the mark:
 /// a model's `repo_submit` is built from its branch and words alone. Nothing reaches the fork.
-/// Returns what to say of it in the last word; `None` when there was nothing to keep.
+/// Returns what to say of it in the last word: only that it could not be kept, since HQ's
+/// handover says where kept work is; `None` otherwise.
 fn keep_work(node: &Node<'_>, dir: &Path, task: i64) -> Option<String> {
     let not_kept = |why: &str| {
         Some(format!(
@@ -434,11 +435,9 @@ fn keep_work(node: &Node<'_>, dir: &Path, task: i64) -> Option<String> {
         "why": "work in progress, kept as the turn's prompt reached its budget",
         "bundle": base64::engine::general_purpose::STANDARD.encode(&bytes),
     });
+    // Kept, it is HQ's handover that says where, from HQ's record of the branch.
     match node.call(REPO_SUBMIT, &sent) {
-        Ok((_, Outcome::Done, _)) => Some(format!(
-            "Its work in progress is kept on {branch} at {}: the next turn checks it out.",
-            &head[..12.min(head.len())]
-        )),
+        Ok((_, Outcome::Done, _)) => None,
         Ok((said, _, _)) => not_kept(&said),
         Err(_) => not_kept("the node did not take it"),
     }
