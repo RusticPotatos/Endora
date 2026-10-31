@@ -697,13 +697,33 @@ impl Mirror {
                 ));
             }
         }
-        let names = text(git(&self.dir, &["diff", "--name-only", &base, &head], &[])?);
-        if let Some(touched) = names.lines().find(|l| forbidden_path(l)) {
+        // Both sides of a move (a rename is listed by its new name alone otherwise), and every
+        // name as it is (git quotes one outside ASCII otherwise), so no owner's file is missed.
+        let names = text(git(
+            &self.dir,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                &base,
+                &head,
+            ],
+            &[],
+        )?);
+        let changed: Vec<String> = names
+            .split('\0')
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if let Some(touched) = changed.iter().find(|l| forbidden_path(l)) {
             return Err(format!(
                 "{branch} touches {touched}, which holds the owner's own values: never edit, cite or copy from group_vars/*.yml, host_vars or an inventory. Drop that change and submit again"
             ));
         }
-        let files = names.lines().filter(|l| !l.is_empty()).count();
+        let files = changed.len();
         // Commits that change nothing (an empty one, a change undone) are no branch to review:
         // a probe with no file in it was accepted, checked, and would have been offered.
         if files == 0 {
@@ -732,11 +752,6 @@ impl Mirror {
             minus += cols.next().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
         }
         let stat = text(git(&self.dir, &["diff", "--stat=100", &base, &head], &[])?);
-        let changed: Vec<String> = names
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(str::to_owned)
-            .collect();
         // A file the head does not have (a role with no defaults) is simply not handed over.
         let texts = read_for_checks(&changed)
             .into_iter()
@@ -1277,6 +1292,40 @@ mod tests {
             s.mirror.stored(3, "hq/task-3-a", "0000000").is_none(),
             "nothing refused is kept"
         );
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// The owner's values may not leave by a side door (ADR 0115): a branch that moves
+    /// `group_vars/all.yml` elsewhere touches it, though git lists a move by its new name, and a
+    /// file under `group_vars/` with a name outside ASCII is still under `group_vars/`, though
+    /// git quotes such a name.
+    #[test]
+    fn a_branch_that_moves_an_owners_file_or_names_one_outside_ascii_is_refused() {
+        let s = scene("side-door");
+        run(&s.work, &["checkout", "-q", "main"]);
+        std::fs::create_dir_all(s.work.join("group_vars")).unwrap();
+        std::fs::write(s.work.join("group_vars/all.yml"), "---\nlab_domain: x\n").unwrap();
+        run(&s.work, &["add", "."]);
+        commit(&s.work, "the owner's values", "John Doe <john@example.com>");
+        run(
+            &s.work,
+            &["push", "-q", s.fork.to_str().unwrap(), "HEAD:main"],
+        );
+        let later = 2 * REFRESH_MS;
+        run(&s.work, &["checkout", "-q", "-B", "hq/task-3-move", "main"]);
+        run(&s.work, &["mv", "group_vars/all.yml", "roles/all.yml"]);
+        commit(&s.work, TRAILED, HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-move"), "hq/task-3-move", 3, later)
+            .unwrap_err();
+        assert!(why.contains("touches group_vars/all.yml"), "{why}");
+        s.branch("hq/task-3-accent", "group_vars/\u{e9}.yml", TRAILED, HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-accent"), "hq/task-3-accent", 3, later)
+            .unwrap_err();
+        assert!(why.contains("touches group_vars/\u{e9}.yml"), "{why}");
         let _ = std::fs::remove_dir_all(&s.root);
     }
 

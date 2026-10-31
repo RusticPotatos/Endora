@@ -323,22 +323,95 @@ pub fn scope(changed: &[String], task_words: &str) -> Scope {
 }
 
 /// The files a diff changes, from its `diff --git a/x b/y` lines: what a branch recorded before
-/// the node told HQ its file names is read from its document.
+/// the node told HQ its file names is read from its document. Both sides of each, so a file
+/// moved out of a forbidden folder is still one the branch touches, and a name git quoted (one
+/// outside ASCII, or with a quote in it) as the name it is.
 #[must_use]
 pub fn changed_in_diff(diff: &str) -> Vec<String> {
     let mut changed: Vec<String> = Vec::new();
     for line in diff.lines() {
-        let Some(rest) = line.strip_prefix("diff --git a/") else {
+        let Some(rest) = line.strip_prefix("diff --git ") else {
             continue;
         };
-        let Some((_, b)) = rest.split_once(" b/") else {
+        let Some((a, b)) = header_sides(rest) else {
             continue;
         };
-        if !changed.iter().any(|c| c == b) {
-            changed.push(b.to_owned());
+        for side in [a, b] {
+            if !changed.contains(&side) {
+                changed.push(side);
+            }
         }
     }
     changed
+}
+
+/// The two paths of a `diff --git` header after its words, each without its `a/` or `b/`.
+fn header_sides(rest: &str) -> Option<(String, String)> {
+    let (a, b) = if rest.starts_with('"') {
+        let (a, after) = unquoted(rest)?;
+        let after = after.strip_prefix(' ')?;
+        let b = if after.starts_with('"') {
+            unquoted(after)?.0
+        } else {
+            after.to_owned()
+        };
+        (a, b)
+    } else if let Some(at) = rest.find(" \"b/") {
+        (rest[..at].to_owned(), unquoted(&rest[at + 1..])?.0)
+    } else {
+        // Unquoted on both sides: a name may hold " b/" itself, so the split that gives the
+        // same name on both sides is the one, and otherwise (a move) the first.
+        let splits: Vec<usize> = rest.match_indices(" b/").map(|(i, _)| i).collect();
+        let at = splits
+            .iter()
+            .copied()
+            .find(|&i| rest[..i].strip_prefix("a/") == Some(&rest[i + 3..]))
+            .or_else(|| splits.first().copied())?;
+        (rest[..at].to_owned(), rest[at + 1..].to_owned())
+    };
+    Some((
+        a.strip_prefix("a/")?.to_owned(),
+        b.strip_prefix("b/")?.to_owned(),
+    ))
+}
+
+/// A name git quoted (`"..."`, C escapes and octal bytes) as it is, and what follows it.
+fn unquoted(quoted: &str) -> Option<(String, &str)> {
+    let body = quoted.strip_prefix('"')?;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((String::from_utf8_lossy(&bytes).into_owned(), &body[i + 1..])),
+            '\\' => {
+                let (_, e) = chars.next()?;
+                let byte = match e {
+                    'a' => 7,
+                    'b' => 8,
+                    't' => b'\t',
+                    'n' => b'\n',
+                    'v' => 11,
+                    'f' => 12,
+                    'r' => b'\r',
+                    '0'..='7' => {
+                        let mut n = u32::from(e) - u32::from('0');
+                        for _ in 0..2 {
+                            let (_, d) = chars.next()?;
+                            n = n * 8 + d.to_digit(8)?;
+                        }
+                        u8::try_from(n).ok()?
+                    }
+                    other => u8::try_from(other).ok()?,
+                };
+                bytes.push(byte);
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    None
 }
 
 /// Whether a task's criteria ask for a README that lists every default.
@@ -822,7 +895,38 @@ mod tests {
     fn a_diff_says_its_files() {
         let diff = "diff --git a/roles/a/README.md b/roles/a/README.md\n+x\n\
                     diff --git a/old.md b/new.md\n";
-        assert_eq!(changed_in_diff(diff), vec!["roles/a/README.md", "new.md"]);
+        assert_eq!(
+            changed_in_diff(diff),
+            vec!["roles/a/README.md", "old.md", "new.md"]
+        );
+    }
+
+    /// A move out of `group_vars/` is a change to it, and a name git quoted (one outside
+    /// ASCII, or with a quote in it) is read as the name it is.
+    #[test]
+    fn a_diff_says_both_sides_of_a_move_and_quoted_names_unquoted() {
+        let diff = "diff --git a/group_vars/all.yml b/roles/all.yml\n\
+                    similarity index 100%\n\
+                    rename from group_vars/all.yml\n\
+                    rename to roles/all.yml\n\
+                    diff --git \"a/group_vars/\\303\\251.yml\" \"b/group_vars/\\303\\251.yml\"\n\
+                    +x\n\
+                    diff --git \"a/docs/say \\\"hi\\\".md\" \"b/docs/say \\\"hi\\\".md\"\n";
+        let changed = changed_in_diff(diff);
+        assert_eq!(
+            changed,
+            vec![
+                "group_vars/all.yml",
+                "roles/all.yml",
+                "group_vars/\u{e9}.yml",
+                "docs/say \"hi\".md"
+            ]
+        );
+        let s = scope(&changed, "");
+        assert_eq!(
+            s.forbidden,
+            vec!["group_vars/all.yml", "group_vars/\u{e9}.yml"]
+        );
     }
 
     #[test]
