@@ -454,3 +454,75 @@ What round 2 shows already, by the evidence:
   workflow runs on push only for main and develop, so no run came, and HQ never noticed.
 - **Questions are still the house model's habit.** Bo put its finished 935 finding on the desk
   as a question twice instead of asking for review.
+
+## Open issues and next steps (kept current)
+
+The one list of what is open, kept up to date as rounds run. Ticked items say where they were
+done. Defects are numbered so the next round's changes can name them.
+
+### Defects found in round 2, not yet fixed
+
+- [ ] **D1. A model change can leave a member unable to start.** Rae was moved to DeepSeek with
+  the runtime still Claude Code; every turn failed from 21:18 to 00:2x. HQ should refuse a model
+  whose runtime the runner cannot start, or set the runtime with it.
+- [ ] **D2. A failed start does not wake the item's holder again.** Rae's items sat until a note
+  on each thread at 00:47.
+- [ ] **D3. A blocked item at the top rank keeps waking its member.** Kit was woken on 938 about
+  every 11 minutes after it was blocked and judged, about $0.39; set aside by hand.
+- [ ] **D4. A released tool is not offered until a loop lists it.** `image_tags` shipped but was
+  not in the ansible-nas loop's tools until 02:2x. A new contract should reach the loops that
+  can use it, or the release check should say which loops lack it.
+- [ ] **D5. The NAS's model posts finished work as a desk question** instead of asking for
+  review (935, twice; 938, once).
+- [ ] **D6. HQ cannot get a CI run on its branches and does not notice.** The fork's workflow
+  runs on push only for main and develop. Either the workflow runs on `hq/*` branches, or HQ
+  reports that a CI criterion cannot be met.
+- [ ] **D7. Paid reviews are most of the cost.** $1.90 of round 2's first $2.97 was Sonnet and
+  Opus reviewing; Kit spent $3.00 of a day's pool by 08:15.
+- [ ] **D8. The house model's turns end at the budget with little to show.** Bo's 929 turns hit
+  the 240 KB budget in 7 or 8 calls each; after three such passes the item climbed.
+- [ ] **D9. The pool is a constant.** $95 a month in code; the Claude credit that expires on the
+  18th cannot be spent without daily top-ups (see Next steps).
+- [ ] **D10. A blocked item asks the owner again** about every half hour (round 1: 915 five
+  times, 920 four).
+- [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
+  record); cause unknown.
+
+### From the review of round 2's code (31 Oct), not yet fixed
+
+Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
+are seen; quotes count only against the item's own receipts. Still open, on the `review-fixes`
+branch when finished:
+- [ ] Credits: a renewal from the console view runs outside the ledger's lock.
+- [ ] Credits: a first grant entered with only a balance counts it all as grant.
+- [ ] Stubbed results are keyed by the model server's call id, which a server may reuse.
+- [ ] A Mac away for a while can block an item for good when it is the only rank above.
+- [ ] A reviewer's turn that runs out of room is never continued.
+- [ ] Minor: a balance read inside the ledger lock; a blocking lock on the async thread; an
+  unbounded list of continued runs.
+
+### Next steps, in order
+
+1. [ ] Finish round 2 (936 and 937 open) and judge them.
+2. [ ] Each morning while work is queued, top up the day's pool by about $4 (owner, 31 Oct),
+   until the pool follows the credit.
+3. [ ] Build HQ's daily pool from the Claude credit left and the days to its renewal (owner,
+   31 Oct; D9).
+4. [ ] Merge, gate and release the waiting local work: the rest of the review fixes; a stable
+   prompt opening and a lessons list per loop; the owner's scenarios for round 2's changes; the
+   one-team clean-up (ADR 0142's "What goes").
+5. [ ] Pick round 3's changes from D1 to D10 by cost and effect (D7, D6, D3 and D2 first), then
+   run round 3 with the same ten tasks.
+6. [ ] Re-run Claude Code's ten tasks as ten fresh sessions, as the method says; needs the owner
+   to start them from the desktop app.
+7. [ ] Office scene leftovers: a bubble covers the TEAM label; a name tag floats above its
+   member; HEADS DOWN overlaps a plant; the chess table's lower seat covers the board.
+8. [ ] Benchmark the Mac's 14B against the 27B (`scripts/bench-model.py`) when the laptop is
+   free; switch only if about twice as fast on a large turn.
+
+### The owner's
+
+- [ ] Decide on round 3's changes once round 2 is judged.
+- [ ] Merge the ansible-nas branches HQ and the sessions pushed, after setting the vault values
+  they now require (minio, nextcloud).
+- [ ] Restore Rae to the Mac and turn its busy switch off when the laptop is free again.
