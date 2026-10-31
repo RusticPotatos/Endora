@@ -523,7 +523,7 @@ yet**: its window starts when the owner runs the fork's playbook (D11), and it j
 | 5 | 951 | | | | | |
 | 6 | 952 | | | | | |
 | 7 | 953 | | | | | |
-| 8 | (after its window) | | | | | |
+| 8 | (after its window: 31 Oct 21:00 UTC to 3 Nov 21:00 UTC) | | | | | |
 | 9 | 954 | | | | | |
 | 10 | 955 | | | | | |
 
@@ -591,8 +591,10 @@ done. Defects are numbered so the next round's changes can name them.
   when each container was last recreated on a new image ("Updated last night by Watchtower:
   sonarr, nzbget (03:24)"; ADR 0106, amended 2026-10-31). The fork's part is the branch
   `fix/vpn-stack-out-of-watchtower` (the VPN stack labelled out, pinned, updated together by the
-  playbook, gluetun first): the owner runs `make run-remote TAGS=gluetun`, and task 8's window
-  starts then.*
+  playbook, gluetun first). *Applied by the owner on 31 Oct at 21:00 UTC (17:00 EDT): gluetun on
+  v3.41.3, healthy, WireGuard up; prowlarr, deluge, nzbget and flaresolverr on the new gluetun and
+  out of Watchtower, all on pinned images. Task 8's clean window runs from then to 3 Nov 21:00 UTC
+  (16:00 EST; the clocks change on 1 Nov).*
 - [x] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
