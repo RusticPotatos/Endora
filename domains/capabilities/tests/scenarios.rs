@@ -1,7 +1,8 @@
 //! The bridge's scenarios (docs/testing.md): the owner's words in `features/*.feature`, run
 //! against the bridge's policy as the node composes it (`app/node/src/api/bridge.rs`): each
 //! capability or tool server's tool is a candidate, the node asks the policy which are offered,
-//! and a call is resolved against that same list.
+//! and a call is resolved against that same list. The team's lookup of an image's tags and
+//! Claude's monthly credit have their own files.
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
@@ -22,7 +23,22 @@ struct Bridge {
     offered: Vec<Bridged>,
     /// Why the last call was refused, or `None` when it was allowed.
     refused: Option<String>,
+    /// The public registries, faked: no network.
+    registries: registry::Registries,
+    /// What the last lookup of an image's tags answered.
+    answer: Option<serde_json::Value>,
+    /// Claude's credit as the node keeps it.
+    credit: credit::Credit,
 }
+
+/// The lookup of an image's tags in its registry (ADR 0106, amended 2026-10-30), in its own
+/// file.
+#[path = "scenarios/registry.rs"]
+mod registry;
+
+/// Claude's monthly credit (the owner, 2026-10-30), in its own file.
+#[path = "scenarios/credit.rs"]
+mod credit;
 
 impl Bridge {
     /// A candidate as the node makes one: ready, the owner's stance on it, and whether it
