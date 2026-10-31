@@ -7,7 +7,8 @@ rather than inventing a spot.
 
 Things landed in the wrong place because there was no map: the Mac's model setup went first
 onto the team's screen, then under Settings beside sign-in, when every other model already
-lived in AI. Each placement was reasonable on its own; none asked where models live.
+lived in AI; its card and busy switch stayed on HQ until the owner asked, on 31 Oct, why the Mac
+had its own place there. Each placement was reasonable on its own; none asked where models live.
 
 ## The console (the web app)
 
@@ -17,7 +18,7 @@ Settings.
 
 | Destination | What belongs there | What does not |
 |---|---|---|
-| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch, Mac busy) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
+| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
 | **Home lab** | The lab's containers, logs, jobs, now | Credentials (Vault), models (AI) |
 | **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
@@ -27,7 +28,7 @@ Settings.
 
 | Section | What belongs there |
 |---|---|
-| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees, and what is left with each paid provider (Claude's balance as the Console shows it, the thresholds; the balances themselves are chips on HQ). A new model or model host goes here |
+| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees, and what is left with each paid provider (Claude's balance as the Console shows it, the thresholds; the balances themselves are chips on HQ). The Mac's card, beside the house's Everyday models: its state, the Mac busy switch and its setup (HQ says only a word of its state where a member's brain is named, "Mac (busy)"). A new model or model host goes here |
 | Connections | Outside services and tool servers Endora talks to (Home Assistant, the lab's services) |
 | Tools | What the team's turns may use from the house, and which ask you first (each skill's stance, ADR 0108) |
 | Your sign-in | Your password, authenticator, script tokens |
@@ -58,7 +59,7 @@ Settings.
   the team and hiring, the money and credits (with what each model cost by week, a fold on the
   Money card), what the team may do on the home lab, what the
   team knows — the world's pages and the house — and the office with its games), **Health** (how
-  the team and the lab are doing: the Mac and its busy switch, the scorecard and outcomes, the
+  the team and the lab are doing: the scorecard and outcomes, the
   turns that failed with a link to the Home lab, and the live activity). The office animation
   plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new

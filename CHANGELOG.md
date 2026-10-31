@@ -33,6 +33,11 @@ tagged release.
 
 ### Changed
 
+- **The Mac's card moves from HQ to Settings, AI** ([ADR 0130](docs/adr/0130-the-macs-brain.md),
+  amended 2026-10-31). Its state, the turns waiting for it, the helper's last word and the **Mac
+  busy** switch join its setup in one card beside the house's Everyday models. HQ has no Mac card
+  or chip; where a member's brain is named it says the Mac's state in a word, "Mac (busy)".
+
 - **HQ's daily pool follows the Claude credit** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md),
   amended 2026-10-31). Today's base pool is what is left of the plan's grant spread over the days
   until it renews, counting today, never less than the floor ($95 a month over 30 days) nor more

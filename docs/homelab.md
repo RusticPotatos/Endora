@@ -289,8 +289,8 @@ reading and status work use it when it is free and the NAS's model when it is no
 Mac stays yours: the model is loaded only while the Mac is **plugged in** and **Mac busy** is
 off, and a turn runs on it only after you have been **idle** (ten minutes unless you change it),
 one at a time. On battery, or with Mac busy on, the model is unloaded and its memory (about
-15 GB) comes back. Mac busy is a switch on the HQ screen of the console, so you can flip it from
-your phone.
+15 GB) comes back. Mac busy is a switch on the Mac's card in the console's Settings, AI, so you
+can flip it from your phone.
 
 A small helper on the Mac, run by launchd every 30 seconds, reads the power source and your idle
 time, tells the node, and loads or unloads the model. It touches no other process.
@@ -340,11 +340,11 @@ time, tells the node, and loads or unloads the model. It touches no other proces
 7. A member works with the **Mac** unless you choose the house's model instead (roster, tap the
    member, *Work*), or when hiring (*works with*).
 
-The card says *Free: the team may use it* when all of it holds, and otherwise why: *Not heard
-from lately* (the helper is not running, or the node cannot be reached), *Mac busy is on*, *On
-battery*, *the model is loading*, or *You are using it*. A turn waiting for the Mac says so in
-its replay and on the roster. Without the helper the Mac is "not heard from" and nothing runs on
-it.
+The Mac's card in Settings, AI says *Free: the team may use it* when all of it holds, and
+otherwise why: *Not heard from lately* (the helper is not running, or the node cannot be
+reached), *Mac busy is on*, *On battery*, *the model is loading*, or *You are using it*. A turn
+waiting for the Mac says so in its replay and on the roster. Without the helper the Mac is "not
+heard from" and nothing runs on it.
 
 To check by hand, on the Mac: `sh ~/Library/Application\ Support/Endora/mac-brain/endora-mac-brain.sh`
 runs one pass. `make mac-brain-test` tests the helper against stubs, on any machine.

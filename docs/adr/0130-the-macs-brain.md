@@ -207,3 +207,12 @@ for the owner to have been idle ten minutes, and with nearly all of the team's w
 the whole team stopped whenever the owner used it. The idle wait now defaults to none (0) and may
 be set from 0 to a day; a wait the owner sets still holds as before. On battery and "Mac busy"
 still hold the Mac, and one turn runs on it at a time.
+
+## Amendment (2026-10-31): the Mac's card is in Settings, AI
+
+The owner's word: "i honestly dont know why mac has its own tab". The **The Mac** card leaves the
+HQ screen. Its state and reason, the turns waiting for it, the helper's last word and the **Mac
+busy** switch join its setup in one card in Settings, AI, beside the house's models, where every
+model lives ([where-things-go](../where-things-go.md)). HQ says only a word of its state where a
+member's brain is named ("Work: Mac (busy)"). How the Mac works, and what the node is asked, do
+not change.
