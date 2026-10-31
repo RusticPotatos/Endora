@@ -12,6 +12,7 @@ const REPLAY = {
   runs: null,          // the turns read back (one for a run), oldest first; null while loading
   at: 0,               // which of them is shown
   error: "",
+  given: false,        // whether what each turn was given opens unfolded (from a task's turn)
 };
 
 // A long excerpt or post is folded past this many characters: its start shows, the rest opens.
@@ -150,7 +151,7 @@ function replayParts(text) {
 function replayTalk(t, member) {
   const who = { user: "told", system: "rules", assistant: member ? member.name : "model", thinking: "thought", call: "call", result: "result", note: "note" };
   const tags = { user: "brief", system: "brief", assistant: "post", thinking: "note", call: "call", result: "call", note: "note" };
-  const parts = replayParts(t.text).map((p) => {
+  const parts = replayParts(t.text).filter((p) => p.kind !== "tools").map((p) => {
     const long = p.kind === "user" || p.kind === "system";
     const body = long
       ? `<details class="hq-replay-told"><summary>${esc(p.kind === "system" ? "The rules it was given" : "The briefing it was given")}</summary><pre>${esc(p.body)}</pre></details>`
@@ -164,6 +165,61 @@ function replayTalk(t, member) {
   const cut = t.cut ? `<p class="hq-note">This conversation was longer than HQ keeps: its middle was cut, and the cut is marked.</p>` : "";
   const until = t.kept_until ? `<p class="hq-note">HQ keeps it until ${esc(new Date(t.kept_until).toLocaleDateString())}; after that only the handover notes and last words remain.</p>` : "";
   return `<section class="hq-card"><h2>What was said</h2><p class="hq-who">${facts.join(" · ")}</p>${cut}<ol class="hq-replay-line">${parts.join("") || `<li class="hq-empty">Nothing was said.</li>`}</ol>${until}</section>`;
+}
+
+// A text's size as a prompt counts it: its bytes, and about a token for every four characters,
+// as HQ reckons a briefing's (`situations::tokens`).
+function replaySize(text) {
+  const t = String(text == null ? "" : text);
+  return `${new TextEncoder().encode(t).length} bytes · about ${Math.ceil([...t].length / 4)} tokens`;
+}
+
+// The handover in a briefing (ADR 0142): from "Handover of #" to the line that ends it, as HQ
+// writes it (`domain::handover`). The briefing without it, and it.
+function replayHandover(briefing) {
+  const from = briefing.indexOf("Handover of #"), end = "(End of the handover.)";
+  const to = from < 0 ? -1 : briefing.indexOf(end, from);
+  if (to < 0) return [briefing, ""];
+  return [`${briefing.slice(0, from)}[the handover, below]${briefing.slice(to + end.length)}`, briefing.slice(from, to + end.length)];
+}
+
+// What a turn was given (the owner's notes of 31 Oct): its first call's prompt as the model
+// received it, from the conversation HQ keeps (ADR 0129), each section folded with its size:
+// the instructions, the tools by name, the briefing (its first message) and the handover in it.
+// The node has scrubbed every word of it of secrets on the way here. What HQ did not keep, it
+// says.
+function replayGiven(r) {
+  const t = r.transcript, parts = t ? replayParts(t.text) : [];
+  const first = (kind, name) => parts.find((p) => p.kind === kind && (name == null || p.name === name));
+  const system = first("system"), user = first("user"), upFront = first("tools", ""), held = first("tools", "held back");
+  const told = (r.moments || []).find((m) => m.kind === "briefing");
+  const briefing = user ? user.body : told ? String(told.text || "") : "";
+  const [rest, handover] = replayHandover(briefing);
+  const names = (p) => (p ? p.body.split("\n").filter((n) => n.trim()) : []);
+  const now = names(upFront), later = names(held);
+  const section = (title, size, inner) => `<li><details class="hq-replay-part"><summary>${title} <span class="hq-who">${esc(size)}</span></summary>${inner}</details></li>`;
+  const text = (s) => `<pre>${esc(s)}</pre>`;
+  const list = (all) => `<span class="hq-replay-names">${all.map((n) => `<code>${esc(n)}</code>`).join("")}</span>`;
+  const sections = [];
+  if (system) sections.push(section("The instructions", replaySize(system.body), text(system.body)));
+  if (now.length || later.length) {
+    const said = [...now, ...later].join("\n");
+    sections.push(section(`The tools: ${now.length} at the start${later.length ? ` · ${later.length} held back` : ""}`, replaySize(said),
+      `${list(now)}${later.length ? `<p class="hq-who">Held back, brought in when it asked:</p>${list(later)}` : ""}`));
+  }
+  if (briefing) sections.push(section(user ? "The first message: the briefing" : "The briefing, from HQ&#39;s record", replaySize(rest), text(rest)));
+  if (handover) sections.push(section("The handover", replaySize(handover), text(handover)));
+  const missing = [];
+  if (!t) missing.push("HQ keeps no conversation for this turn (it keeps one for 30 days, from turns since ADR 0129), so its instructions and tools are not shown.");
+  if (t && t.runtime === "claude-code") missing.push("The instructions Claude Code itself starts with are not kept: only the rules Endora added to them.");
+  if (t && !system) missing.push("Its instructions were not kept.");
+  if (t && !upFront && !held) missing.push("The tools it was offered were not kept: turns before 31 Oct 2026 did not record them.");
+  missing.push("Of the tools, only their names are kept, never their descriptions or schemas.");
+  const whole = [system && system.body, [...now, ...later].join("\n"), briefing].filter(Boolean).join("\n");
+  return `<section class="hq-card"><details class="hq-replay-given"${REPLAY.given ? " open" : ""}><summary>What it was given</summary>
+    <p class="hq-who">Its first prompt as the model received it, ${esc(replaySize(whole))}. Anything shaped like a secret is replaced with [redacted].</p>
+    <ul class="hq-replay-parts">${sections.join("") || `<li class="hq-empty">Nothing of it was kept.</li>`}</ul>
+    ${missing.map((m) => `<p class="hq-note">${esc(m)}</p>`).join("")}</details></section>`;
 }
 
 // A turn's header: who, why, what it came to, what it cost, how long.
@@ -205,6 +261,7 @@ function viewReplay() {
   const byTime = r.by_time ? `<p class="hq-note">This turn ran before HQ named each event's turn: what is marked "matched by time" was matched by its member, its task and when it happened.</p>` : "";
   return shell(`${task ? `<p class="hq-who">${hqKey(task.id)} · ${esc(task.title)}</p>` : ""}${steps}
     <section class="hq-card">${replayHead(r)}</section>
+    ${replayGiven(r)}
     <section class="hq-card"><h2>What happened</h2>${byTime}<ol class="hq-replay-line">${moments || `<li class="hq-empty">Nothing recorded.</li>`}</ol></section>
     ${r.transcript ? replayTalk(r.transcript, r.member) : ""}
     ${steps}`);
@@ -212,11 +269,14 @@ function viewReplay() {
 
 // The links into Replay, for the HQ screen: from a run line, and from a task card.
 function replayRunLink(run, text) { return `<button class="hq-link" data-act="replay:run:${Number(run)}">${text}</button>`; }
+// What a turn on a task was given, opened unfolded in its replay.
+function replayGivenLink(run) { return `<button class="hq-link" data-act="replay:given:${Number(run)}">What it was given</button>`; }
 function replayTaskLink(task) { return `<div class="hq-row"><button class="hq-btn" data-act="replay:task:${Number(task)}">Replay this task</button></div>`; }
 
 async function replayDispatch(verb, noun, id) {
   if (!(verb === "replay")) return false;
-  if (noun === "run" || noun === "task") { go("replay", `${noun}-${Number(id)}`); return true; }
+  if (noun === "run" || noun === "task") { REPLAY.given = false; go("replay", `${noun}-${Number(id)}`); return true; }
+  if (noun === "given") { REPLAY.given = true; go("replay", `run-${Number(id)}`); return true; }
   if (noun === "step" && REPLAY.runs) {
     REPLAY.at = Math.min(Math.max(0, REPLAY.at + (id === "next" ? 1 : -1)), REPLAY.runs.length - 1);
     render(); window.scrollTo(0, 0); return true;

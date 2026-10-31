@@ -78,6 +78,7 @@ const stubs = {
   AbortController,
   Blob,
   TextDecoder,
+  TextEncoder,
   btoa: (binary) => Buffer.from(binary, "binary").toString("base64"),
   requestAnimationFrame: (fn) => setTimeout(fn, 0),
   // Nothing may reach the network from a build check.
@@ -2154,6 +2155,58 @@ if (failures.length) {
   }
   if (!/<span class="hq-replay-tag">refused<\/span>/.test(talk)) fail("replay: a refused call's result is not marked refused");
   if (talk.indexOf("What happened") > talk.indexOf("What was said")) fail("replay: the conversation comes before what happened");
+  // What it was given (the owner's notes of 31 Oct): each turn's first prompt as the model
+  // received it, collapsed by section with its size in bytes and rough tokens, the tools by name
+  // only, the handover apart, every word text, and plainly what HQ did not keep.
+  const given = { runtime: "worker", brain: "local", tier: "internal", est_tokens: 99, cut: false,
+    text: "--- tools ---\npost\nclaim\n--- tools: held back ---\ncontainer_logs\n--- system ---\nRules: é <b>x</b>\n" +
+      "--- user ---\nYou are Bo.\nYour task: EL-7\nHandover of #7 from Al: <i>half done</i>\n(End of the handover.)\nThe key is [redacted].\n" +
+      "--- assistant ---\nOn it.\n--- user ---\nA later message." };
+  runInContext(`REPLAY.runs[1].transcript = ${JSON.stringify(given)}; REPLAY.given = false;`, context);
+  const shut = runInContext("viewReplay()", context);
+  if (!shut.includes('<details class="hq-replay-given"><summary>What it was given</summary>')) fail("replay: a turn does not offer what it was given, folded");
+  runInContext("REPLAY.given = true;", context);
+  const g = runInContext("viewReplay()", context);
+  const card = g.slice(g.indexOf('<details class="hq-replay-given"'), g.indexOf("</details></section>", g.indexOf('<details class="hq-replay-given"')));
+  for (const said of ['<details class="hq-replay-given" open>', "The instructions", "Rules: é &lt;b&gt;x&lt;/b&gt;", "18 bytes · about 5 tokens",
+    "2 at the start · 1 held back", "<code>post</code>", "<code>claim</code>", "<code>container_logs</code>", "The first message: the briefing",
+    "Your task: EL-7", "The key is [redacted].", "The handover", "Handover of #7 from Al: &lt;i&gt;half done&lt;/i&gt;",
+    "only their names", "replaced with [redacted]"]) {
+    if (!card.includes(said)) fail(`replay: what a turn was given does not show ${said}`);
+  }
+  if ((card.match(/<details class="hq-replay-part">/g) || []).length !== 4) fail("replay: what a turn was given is not four folded sections");
+  if (card.includes("A later message") || card.includes("On it.")) fail("replay: what a turn was given holds more than its first message");
+  for (const raw of ["<b>x</b>", "<i>half done"]) if (g.includes(raw)) fail(`replay: ${raw} in what a turn was given became markup`);
+  if (/<span class="hq-replay-tag">tools<\/span>/.test(g)) fail("replay: the tools list is shown again as something said");
+  // A Claude Code turn, and one from before the tools were kept: what is missing is said.
+  runInContext(`REPLAY.runs[1].transcript = { runtime: "claude-code", brain: "sonnet", est_tokens: 9, cut: false,
+    text: "--- user ---\\nYou are Bo.\\n--- note ---\\nClaude Code keeps no session." };`, context);
+  const cc = runInContext("viewReplay()", context);
+  for (const said of ["The instructions Claude Code itself starts with are not kept", "Its instructions were not kept", "The tools it was offered were not kept"]) {
+    if (!cc.includes(said)) fail(`replay: a turn missing part of its prompt does not say ${said}`);
+  }
+  // A turn whose conversation HQ no longer keeps: the briefing from HQ's own record, and why.
+  runInContext("delete REPLAY.runs[1].transcript;", context);
+  const old = runInContext("viewReplay()", context);
+  for (const said of ["HQ keeps no conversation for this turn", "&lt;/pre&gt;&lt;img src=b onerror=alert(11)&gt;"]) {
+    if (!old.slice(old.indexOf("hq-replay-given")).includes(said)) fail(`replay: a turn with no kept conversation does not show ${said} in what it was given`);
+  }
+  // Each turn on a task offers it from the task, and opens it unfolded; a member's turns do not.
+  runInContext("REPLAY.given = false;", context);
+  const taskCard = runInContext("viewHQ()", context);
+  if (!taskCard.includes('data-act="replay:given:2"') || !taskCard.includes("What it was given")) fail("replay: a turn on a task does not offer what it was given");
+  // Where it goes, without loading it (the task's link above already proved the loading).
+  await runInContext('__keepGo = go; go = (v, id) => { NAV = { v, id }; }; dispatch("replay:given:2")', context);
+  runInContext("go = __keepGo;", context);
+  if (runInContext("NAV.v + ' ' + NAV.id + ' ' + REPLAY.given", context) !== "replay run-2 true") fail("replay: what a turn was given does not open its replay unfolded");
+  runInContext(`REPLAY.kind = "task"; REPLAY.id = 7; REPLAY.error = ""; REPLAY.at = 1; REPLAY.runs = [turn(1, true), turn(2, false)]; REPLAY.given = false; NAV = { v: "replay", id: "task-7" };`, context);
+  {
+    const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+    const names = (css.match(/\n\s*\.hq-replay-names \{[^}]*\}/) || [""])[0];
+    if (!/flex-wrap:\s*wrap/.test(names) || !/min-width:\s*0/.test(names)) fail("styles: a turn's tool names do not wrap on a phone");
+    const code = (css.match(/\n\s*\.hq-replay-names code \{[^}]*\}/) || [""])[0];
+    if (!/overflow-wrap:\s*anywhere/.test(code)) fail("styles: a long tool name runs off a phone");
+  }
   runInContext("delete REPLAY.runs[1].transcript;", context);
   if (/<details class="hq-replay-told" open/.test(last)) fail("replay: what the member was told is not folded");
   if (!/data-act="replay:step:next" disabled/.test(last)) fail("replay: the latest turn offers a next one");
@@ -2176,6 +2229,7 @@ if (failures.length) {
   if (one.includes("replay:step:") || !one.includes("Replay R2")) fail("replay: a single run's replay offers stepping or lacks its title");
   runInContext('REPLAY.kind = ""; REPLAY.id = 0; REPLAY.runs = null; REPLAY.error = ""; HQ.snap = null; HQ.selected = null; NAV = { v: "home" };', context);
   console.log("replay: a run and a task's turns read back, stepped in order, the briefing folded, and every word stays text");
+  console.log("replay: each turn on a task shows what it was given, by section with sizes, and says what was not kept");
 }
 
 // Speakers (ADR 0104): every source offers its speakers to tap, never the device's own; a wire

@@ -441,6 +441,12 @@
   .hq-card .hq-replay-told summary { color: var(--hq-violet); text-decoration: underline dotted; }
   .hq-replay-told pre { font: 11.5px var(--hq-mono); max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 8px; background: var(--hq-panel-2); border-radius: 4px; }
   .hq-replay-fold summary { overflow-wrap: anywhere; }
+  .hq-card .hq-replay-given > summary { display: list-item; font: inherit; color: var(--hq-violet); cursor: pointer; margin: 0; }
+  .hq-replay-parts { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+  .hq-card .hq-replay-part summary { display: list-item; font: inherit; letter-spacing: normal; color: inherit; margin: 0; cursor: pointer; overflow-wrap: anywhere; }
+  .hq-replay-part pre { font: 11.5px var(--hq-mono); max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 8px; background: var(--hq-panel-2); border-radius: 4px; }
+  .hq-replay-names { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; margin-top: 4px; }
+  .hq-replay-names code { font: 11px var(--hq-mono); padding: 1px 5px; border: 1px solid var(--hq-line); border-radius: 3px; overflow-wrap: anywhere; max-width: 100%; }
   .hq-replay-fold[open] summary { color: var(--hq-muted); }
   @media (min-width: 720px) { .hq-replay-moment { grid-template-columns: 70px 64px minmax(0, 1fr); } .hq-replay-tag { grid-column: 2; grid-row: 1; padding-top: 2px; } .hq-replay-body { grid-column: 3; grid-row: 1; } }
   /* Games in the office (ADR 0121): a chess board of 64 squares, light and dark, with the pieces as letters. */
