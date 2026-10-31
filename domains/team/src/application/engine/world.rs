@@ -16,8 +16,8 @@ use crate::domain::{EventKind, MemberId, Millis, Refusal, RunId};
 /// The day of `at` with its year, in the owner's time: `17 Oct 2026`.
 pub(super) fn day_with_year(at: Millis, offset_minutes: i64) -> String {
     let day = crate::domain::money::day_of(at, offset_minutes);
-    let (year, _, _) = crate::domain::lessons::civil(day);
-    let (d, m) = crate::domain::lessons::day_and_month(day);
+    let (year, _, _) = crate::domain::dates::civil(day);
+    let (d, m) = crate::domain::dates::day_and_month(day);
     format!("{d} {m} {year}")
 }
 
@@ -104,7 +104,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some((fixed, was)) = crate::domain::house::corrected_year(text, today) else {
             return Ok(text.to_owned());
         };
-        let (now, _, _) = crate::domain::lessons::civil(today);
+        let (now, _, _) = crate::domain::dates::civil(today);
         self.emit(
             EventKind::WorldChanged,
             json!({ "what": "year corrected", "by": who, "in": what, "was": was, "now": now }),

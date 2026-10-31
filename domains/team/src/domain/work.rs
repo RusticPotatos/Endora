@@ -401,8 +401,6 @@ pub enum Refusal {
         /// What was asked for.
         asked: String,
     },
-    /// A goal's notes have no room for one more lesson.
-    NotesFull,
     /// What the team's world refuses (ADR 0122): its pages, stages, stories and handovers.
     World(super::world::WorldRefusal),
     /// What the guards against how agent teams fail refuse (ADR 0124).
@@ -595,7 +593,6 @@ impl fmt::Display for Refusal {
                 "this member runs on the worker, not {asked:?}: Claude Code is for a member on \
                  Claude alone"
             ),
-            Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
             Self::History(refused) => refused.fmt(f),

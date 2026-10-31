@@ -25,7 +25,7 @@ fn without_date(entry: &str) -> Option<&str> {
         matches!(parts.as_slice(), [y, m, d] if y.len() == 4 && digits(y, 4) && digits(m, 2) && digits(d, 2))
     };
     let words: Vec<&str> = entry.splitn(6, ' ').collect();
-    let month = super::lessons::is_month;
+    let month = super::dates::is_month;
     // How many words the date takes: an ISO date, a day and a month, or a month and a day.
     let mut took = match words.as_slice() {
         [first, ..] if iso(bare(first)) => 1,
@@ -75,7 +75,7 @@ pub fn corrected_year(text: &str, today: i64) -> Option<(String, i64)> {
             .flatten()
     };
     let month_of = |w: &str| {
-        super::lessons::is_month(w).then(|| {
+        super::dates::is_month(w).then(|| {
             const SHORT: [&str; 12] = [
                 "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
             ];
@@ -112,7 +112,7 @@ pub fn corrected_year(text: &str, today: i64) -> Option<(String, i64)> {
         return None;
     }
     let (month, day) = (u32::try_from(month).ok()?, u32::try_from(day).ok()?);
-    let (this_year, _, _) = super::lessons::civil(today);
+    let (this_year, _, _) = super::dates::civil(today);
     let away = |y: i64| (super::world_migration::days_from_civil(y, month, day) - today).abs();
     let nearest = (this_year - 1..=this_year + 1).min_by_key(|y| away(*y))?;
     if away(nearest) > 3 || nearest == year {

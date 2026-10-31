@@ -34,6 +34,7 @@ use crate::domain::{
 
 mod allowance;
 mod areas;
+mod days;
 mod digest;
 mod discipline;
 mod drain;
@@ -62,7 +63,6 @@ mod runaway;
 mod running;
 mod runtime;
 mod scenario;
-mod staffing;
 mod waking;
 mod wing;
 mod world;
