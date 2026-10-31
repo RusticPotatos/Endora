@@ -77,3 +77,29 @@ fn ordinary_log_lines_are_left_alone() {
         assert_eq!(scrub_secrets(line), line);
     }
 }
+
+#[test]
+fn a_links_credentials_are_replaced_and_its_place_kept() {
+    for (line, kept) in [
+        (
+            "cloning https://jane:hunter2@git.example.com/repo.git now\n",
+            "cloning https://[redacted]@git.example.com/repo.git now\n",
+        ),
+        (
+            "db at postgres://admin:p%40ss@192.168.1.10:5432/app",
+            "db at postgres://[redacted]@192.168.1.10:5432/app",
+        ),
+        (
+            "\"url\": \"https://hunter2@example.com\"",
+            "\"url\": \"https://[redacted]@example.com\"",
+        ),
+    ] {
+        assert_eq!(scrub_secrets(line), kept, "{line}");
+    }
+    for line in [
+        "see https://example.com/a@b and mail jane@example.com",
+        "https://example.com/?q=a:b@c",
+    ] {
+        assert_eq!(scrub_secrets(line), line);
+    }
+}

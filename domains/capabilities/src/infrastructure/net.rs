@@ -444,7 +444,7 @@ pub fn scrub_secrets(text: &str) -> String {
         let begins = line.contains("-----BEGIN") && line.contains("PRIVATE KEY");
         let ends = line.contains("-----END") && line.contains("PRIVATE KEY");
         if !in_a_key && !begins {
-            out.push_str(&scrub_line(line));
+            out.push_str(&scrub_line(&hide_link_credentials(line)));
             continue;
         }
         if !in_a_key {
@@ -502,6 +502,37 @@ fn names_a_secret(name: &str) -> bool {
                     .iter()
                     .any(|sep| name.ends_with(&format!("{sep}{w}")))
         })
+}
+
+/// A line with the credentials of each link in it (`https://user:password@host`) replaced: what
+/// comes between `://` and the last `@` before the link's host ends. The scheme and the host
+/// stay, so the line still says where it went.
+fn hide_link_credentials(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains("://") || !line.contains('@') {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find("://") {
+        let (before, after) = rest.split_at(at + 3);
+        out.push_str(before);
+        let host_ends = after
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '\'' | '<' | '>')
+            })
+            .unwrap_or(after.len());
+        let authority = &after[..host_ends];
+        match authority.rfind('@') {
+            Some(user_ends) => {
+                out.push_str("[redacted]");
+                out.push_str(&authority[user_ends..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = &after[host_ends..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
 }
 
 /// One line of [`scrub_secrets`].
