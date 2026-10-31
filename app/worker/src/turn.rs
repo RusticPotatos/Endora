@@ -2464,14 +2464,7 @@ mod tests {
 
         // A move is offered its turn and its game (HQ narrows a downtime turn to those, 30 Oct),
         // and the way to anything else, and is not told the lab's rules it has no tool for.
-        assert_eq!(
-            moved.offered,
-            [
-                "my_turn",
-                "chess",
-                FIND_TOOLS
-            ]
-        );
+        assert_eq!(moved.offered, ["my_turn", "chess", FIND_TOOLS]);
         // A turn on a task has its lab tools and the way to ask the owner up front.
         for tool in [
             "ask_owner",
