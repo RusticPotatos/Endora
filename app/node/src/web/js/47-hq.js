@@ -527,9 +527,48 @@ function hqTell(e, live, older) {
 
 function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.role === "ceo"); }
 
-// A bubble holds a few words: a status change keeps only what was said about it.
-function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
+// A bubble holds a few words: a status change keeps only what was said about it. A longer line
+// stops at the last whole word that fits, with an ellipsis, never in the middle of one (the
+// owner's phone showed "the position is from a que").
+const HQ_SAY_MOST = 44;
+function hqShort(text) {
+  const said = String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().replace(/\s+/g, " ").trim();
+  return said.length <= HQ_SAY_MOST ? said : hqEllipsis(said, (s) => s.length <= HQ_SAY_MOST);
+}
 function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
+// The longest run of whole words of `text` that, with "..." after it, still `fits`. A first word
+// too long on its own is cut, as there is nothing better to show.
+function hqEllipsis(text, fits) {
+  const words = String(text).split(" ");
+  let kept = "";
+  for (const w of words) {
+    const next = kept ? kept + " " + w : w;
+    if (!fits(next + "...")) break;
+    kept = next;
+  }
+  if (kept) return kept.replace(/[\s,.;:–-]+$/, "") + "...";
+  let cut = words[0] || "";
+  while (cut.length > 1 && !fits(cut + "...")) cut = cut.slice(0, -1);
+  return cut + "...";
+}
+// A bubble's lines: the words wrapped to `most` pixels wide (`width` measures a line), at most
+// `lines` of them, the last ending in an ellipsis when the words do not all fit.
+function hqWrap(text, width, most, lines = 2) {
+  const words = String(text || "").split(" ").filter(Boolean), out = [], fits = (s) => width(s) <= most;
+  let i = 0;
+  while (i < words.length && out.length < lines) {
+    // The last line takes the rest, cut short with an ellipsis if it must be.
+    if (out.length === lines - 1) {
+      const rest = words.slice(i).join(" ");
+      out.push(fits(rest) ? rest : hqEllipsis(rest, fits));
+      break;
+    }
+    let line = words[i++];
+    while (i < words.length && fits(line + " " + words[i])) line += " " + words[i++];
+    out.push(fits(line) ? line : hqEllipsis(line, fits));
+  }
+  return out;
+}
 
 // A team's name, on the roster and over its pod alike: Engineering for the engineering wing's
 // lead, Ops for any other.
@@ -1264,11 +1303,18 @@ function hqBubble(ctx, p) {
   if (!text) return;
   const quiet = !said && !doing;
   ctx.font = HQ_PIXEL;
-  const tw = Math.ceil(ctx.measureText(text).width) + 6, x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.round(p.y - 30);
-  ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, 10);
-  ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + 10, tw, 1); ctx.fillRect(Math.round(p.x + 7), y + 10, 2, 2);
-  ctx.fillStyle = quiet ? "#6b6577" : "#1f1d29"; ctx.fillText(text, x + 3, y + 8);
+  // Up to two lines of whole words, over the speaker's head and inside the scene.
+  const lines = hqWrap(text, (s) => ctx.measureText(s).width, HQ_BUBBLE_W);
+  const tw = Math.ceil(Math.max(...lines.map((l) => ctx.measureText(l).width))) + 6, th = lines.length * 9 + 1;
+  const x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.max(1, Math.round(p.y - 20 - th));
+  ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, th);
+  ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + th, tw, 1);
+  ctx.fillRect(Math.round(Math.min(x + tw - 3, Math.max(x + 1, p.x + 7))), y + th, 2, 2);
+  ctx.fillStyle = quiet ? "#6b6577" : "#1f1d29";
+  lines.forEach((l, i) => ctx.fillText(l, x + 3, y + 8 + i * 9));
 }
+// How wide a bubble's line may run, in the office's pixels: about twenty characters.
+const HQ_BUBBLE_W = 124;
 
 function hqDrawPerson(ctx, p) {
   const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y);

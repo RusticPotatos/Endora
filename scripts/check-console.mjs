@@ -1501,6 +1501,24 @@ if (failures.length) {
       runInContext(`HQ_BG = null; HQ_FURN = []; HQ.people = {}; HQ.snap = JSON.parse(${JSON.stringify(saved)});`, context);
     }
   }
+  // A speech bubble never stops in the middle of a word (the owner's phone showed "the position
+  // is from a que"): it wraps whole words to two lines, and what does not fit ends in "...".
+  {
+    const said = runInContext(`(() => {
+      const w = (s) => s.length * 6;
+      return { short: hqShort("The position is from a queue I read earlier today, before the backup ran"),
+        two: hqWrap("the position is from a queue i read earlier", w, 140),
+        cut: hqWrap("the position is from a queue i read earlier today before the backup ran", w, 124),
+        one: hqWrap("ok", w, 124), long: hqWrap("supercalifragilisticexpialidocious-and-more", w, 60) };
+    })()`, context);
+    const words = "the position is from a queue i read earlier today before the backup ran".split(" ");
+    const whole = (line) => line.replace(/\.\.\.$/, "").split(" ").every((x) => words.includes(x));
+    if (!said.short.endsWith("...") || !whole(said.short) || said.short.length > 47) fail(`hq: a long line is not cut at a whole word: ${said.short}`);
+    if (said.two.length !== 2 || said.two.some((l) => l.length * 6 > 140) || said.two.join(" ") !== "the position is from a queue i read earlier") fail(`hq: a bubble does not wrap to two lines: ${JSON.stringify(said.two)}`);
+    if (said.cut.length !== 2 || !said.cut[1].endsWith("...") || !said.cut.every(whole) || said.cut.some((l) => l.length * 6 > 124)) fail(`hq: a bubble too long for two lines is not cut at a word: ${JSON.stringify(said.cut)}`);
+    if (said.one.join() !== "ok") fail(`hq: a short bubble is not one line: ${said.one}`);
+    if (said.long.length !== 1 || said.long[0].length * 6 > 60 || !said.long[0].endsWith("...")) fail(`hq: one word too long for a bubble is not cut to fit: ${said.long}`);
+  }
   // Games in the office (ADR 0121): a pool table and a chess table on the floor, kept in the
   // places the rules of the office keep for them; leaderboards, the last five results and the
   // chess games in the Office card; a board in the panel when the chess table is tapped; and the
