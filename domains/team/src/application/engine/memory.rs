@@ -5,6 +5,7 @@
 
 use super::{Done, Engine};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
+use crate::domain::relevance::Relevance;
 use crate::domain::situations::{self, Briefed, Composed, Facts, Piece, Situation, Weight};
 use crate::domain::world::{HOUSE, Section, Stage};
 use crate::domain::world_migration::TimelineLine;
@@ -160,6 +161,32 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((situation, composed))
     }
 
+    /// What a turn's item names, to weigh the world's lines against (ADR 0142, amended
+    /// 2026-10-30): its title, description and criteria, and its project's title. `None` for a
+    /// turn about no task, or with none to brief (downtime), which are told as before.
+    pub(super) fn item_relevance(&self, run: &Run) -> Done<Option<Relevance>> {
+        let Some(task) = run.task else {
+            return Ok(None);
+        };
+        if self.reason_for(run)? == crate::domain::WakeReason::Downtime.name() {
+            return Ok(None);
+        }
+        let task = self.task(task)?;
+        let project = match task.project {
+            Some(id) => self
+                .store
+                .projects()?
+                .into_iter()
+                .find(|p| p.id == id)
+                .map(|p| p.title),
+            None => None,
+        };
+        let mut texts: Vec<&str> = vec![&task.title, &task.description];
+        texts.extend(task.criteria.iter().map(|c| c.text.as_str()));
+        texts.extend(project.as_deref());
+        Ok(Some(Relevance::of_item(&texts)))
+    }
+
     /// When the member's last turn before `run` started.
     fn last_turn_of(&self, member: &Member, run: &Run) -> Done<Option<Millis>> {
         Ok(self
@@ -208,13 +235,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 Weight::Core,
             ));
         }
-        pieces.extend(self.house_pieces(member, situation, last)?);
-        // How the lab is built, for every member (ADR 0142).
-        pieces.push(Piece::new(
-            "world:lab",
-            self.lab_said(),
-            Weight::Recommended,
-        ));
+        let relevance = self.item_relevance(run)?;
+        pieces.extend(self.house_pieces(member, situation, last, relevance.as_ref())?);
+        // How the lab is built, for every member (ADR 0142); on an item, its lines about it.
+        let lab = match &relevance {
+            Some(relevance) => self.lab_said_about(relevance),
+            None => self.lab_said(),
+        };
+        pieces.push(Piece::new("world:lab", lab, Weight::Recommended));
         Ok(pieces)
     }
 
@@ -299,12 +327,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The house page's pieces for a member: the CEO and the leads its current sections (canon
     /// first) and what its timeline gained since their last turn, or its newest lines while it
-    /// has no sections; everyone else its canon, and in a fresh start its insights too.
+    /// has no sections; everyone else its canon, and in a fresh start its insights too. On an
+    /// item (`relevance`), only the sections and new timeline lines that name what it names,
+    /// whatever their stage short of an observation, and where the rest is read.
     fn house_pieces(
         &self,
         member: &Member,
         situation: Situation,
         last: Option<Millis>,
+        relevance: Option<&Relevance>,
     ) -> Done<Vec<Piece>> {
         let mut pieces = Vec::new();
         let keeps_house = matches!(member.role, Role::Ceo | Role::Lead);
@@ -338,12 +369,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     || s.written_by == "the owner"
                     || *stage == Stage::Canon
                     || (situation == Situation::Fresh && *stage == Stage::Insight)
+                    || (relevance.is_some() && *stage == Stage::Insight)
             })
             .collect();
-        if !keeps_house && shown.is_empty() {
-            return Ok(pieces);
+        // On an item, the sections that name what it names, by what a briefing shows of them,
+        // and one line for the rest.
+        let (shown, left) = match relevance {
+            Some(r) => r.keep(shown, |(s, _, _)| format!("{} {}", s.heading, s.headline)),
+            None => (shown, 0),
+        };
+        if !shown.is_empty() || (keeps_house && relevance.is_none()) {
+            let header = if relevance.is_some() {
+                "The house page (world:house), its sections about this item:\n"
+            } else {
+                header
+            };
+            pieces.push(Piece::new("world:house", header, Weight::Core));
         }
-        pieces.push(Piece::new("world:house", header, Weight::Core));
         for (s, stage, said) in &shown {
             let weight = match stage {
                 Stage::Canon => Weight::Core,
@@ -356,26 +398,44 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 weight,
             ));
         }
+        if left > 0 {
+            pieces.push(Piece::new(
+                "world:house",
+                format!(
+                    "The house page has {left} more sections, not about this item: read_world \
+                     world:house.\n"
+                ),
+                Weight::Core,
+            ));
+        }
         if !keeps_house {
             return Ok(pieces);
         }
         let timeline = self.store.timeline(HOUSE.slug)?;
-        let line = |l: &TimelineLine| self.timeline_said(l);
         if current.is_empty() {
             pieces.extend(self.house_without_sections(member, &timeline));
             return Ok(pieces);
         }
-        if let Some(last) = last {
-            let new: Vec<String> = timeline.iter().filter(|l| l.at > last).map(line).collect();
-            if !new.is_empty() {
-                let mut text = String::from("New on its timeline since your last turn:\n");
-                text.extend(new);
-                pieces.push(Piece::new(
-                    "world:house timeline",
-                    text,
-                    Weight::Recommended,
-                ));
-            }
+        let Some(last) = last else {
+            return Ok(pieces);
+        };
+        let new: Vec<String> = timeline
+            .iter()
+            .filter(|l| l.at > last)
+            .map(|l| self.timeline_said(l))
+            .collect();
+        let (new, _) = match relevance {
+            Some(r) => r.keep(new, String::clone),
+            None => (new, 0),
+        };
+        if !new.is_empty() {
+            let mut text = String::from("New on its timeline since your last turn:\n");
+            text.extend(new);
+            pieces.push(Piece::new(
+                "world:house timeline",
+                text,
+                Weight::Recommended,
+            ));
         }
         Ok(pieces)
     }

@@ -231,14 +231,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// A member's map, composed within its size: a short one for a turn on the NAS's model, a
     /// longer one for the Mac's large context, the longest for Claude.
+    ///
+    /// On a turn on an item, only what is about it (ADR 0142, amended 2026-10-30): its project's
+    /// and its goal's pages, the house, lab and team pages a line each, and the sections of other
+    /// pages that name what it names. The house's sections are told with the house, not here.
     pub(super) fn map_for(&self, member: &Member, run: &Run) -> Done<map::MapText> {
         let cap = map::chars_for(member.brain);
-        let entries = self
-            .map_facts(run.task)?
-            .iter()
-            .map(map::Fact::entry)
-            .collect();
-        let composed = map::compose(entries, cap);
+        let facts = self.map_facts(run.task)?;
+        let entries: Vec<map::Entry> = facts.iter().map(map::Fact::entry).collect();
+        let composed = match self.item_relevance(run)? {
+            None => map::compose(entries, cap),
+            Some(relevance) => {
+                let own: Vec<String> = [
+                    self.project_of(run.task)?.map(PageKey::Project),
+                    run.task
+                        .map(|t| self.task(t))
+                        .transpose()?
+                        .map(|t| PageKey::Goal(t.goal)),
+                ]
+                .into_iter()
+                .flatten()
+                .map(PageKey::slug)
+                .collect();
+                let lines: Vec<&str> = facts.iter().map(|f| f.line.as_str()).collect();
+                let named = relevance.among(&lines);
+                let about: Vec<bool> = facts
+                    .iter()
+                    .zip(named)
+                    .map(|(f, named)| {
+                        let page = PageKey::parse(&f.page);
+                        if own.contains(&f.page) {
+                            return true;
+                        }
+                        if f.section {
+                            return named && page != Some(PageKey::House);
+                        }
+                        named || !matches!(page, Some(PageKey::Project(_) | PageKey::Goal(_)))
+                    })
+                    .collect();
+                map::compose_about(
+                    entries,
+                    &about,
+                    cap,
+                    "Left off as not about this item: other pages and their sections (read_world \
+                     with a page's address, or world:house).",
+                )
+            }
+        };
         for address in &composed.kept {
             let Some((page, anchor)) = address
                 .strip_prefix("world:")

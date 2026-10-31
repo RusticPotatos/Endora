@@ -208,6 +208,27 @@ const MAP_HEADER: &str =
 /// to say a thing is missing.
 #[must_use]
 pub fn compose(entries: Vec<Entry>, cap: usize) -> MapText {
+    compose_with(entries, cap, "")
+}
+
+/// The map of a turn on an item (ADR 0142, amended 2026-10-30): only the entries `about` it,
+/// composed within `cap` as [`compose`] does, and one line, `pointer`, saying where the rest is.
+/// What is not about the item is not named address by address: the map would grow with the
+/// world. An entry `about` does not cover is kept.
+#[must_use]
+pub fn compose_about(entries: Vec<Entry>, about: &[bool], cap: usize, pointer: &str) -> MapText {
+    let is_about = |i: usize| about.get(i).copied().unwrap_or(true);
+    let left = (0..entries.len()).any(|i| !is_about(i));
+    let kept: Vec<Entry> = entries
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| is_about(*i))
+        .map(|(_, e)| e)
+        .collect();
+    compose_with(kept, cap, if left { pointer } else { "" })
+}
+
+fn compose_with(entries: Vec<Entry>, cap: usize, pointer: &str) -> MapText {
     let mut kept = vec![true; entries.len()];
     let footer = |kept: &[bool]| {
         let off: Vec<&str> = entries
@@ -223,6 +244,10 @@ pub fn compose(entries: Vec<Entry>, cap: usize) -> MapText {
                  does what).\n",
                 off.join(", ")
             ));
+        }
+        if !pointer.is_empty() {
+            text.push_str(pointer.trim_end());
+            text.push('\n');
         }
         text.push_str("Found where something lives that is not here? Add it with add_to_map.\n");
         text.push_str(MAP_END);
@@ -407,6 +432,32 @@ mod tests {
         for claude in [Brain::Sonnet, Brain::Haiku, Brain::Opus] {
             assert_eq!(chars_for(claude), MAP_CHARS, "{claude:?}");
         }
+    }
+
+    #[test]
+    fn an_item_s_map_keeps_what_is_about_it_and_says_once_where_the_rest_is() {
+        let entries = vec![
+            Entry::new("world:project/1", "Project: the fork", Weight::Core),
+            Entry::new("world:house#media", "Media: jellyfin", Weight::Recommended),
+            Entry::new("world:house#vpn", "VPN: gluetun", Weight::Recommended),
+        ];
+        let map = compose_about(
+            entries.clone(),
+            &[true, false, true],
+            MAP_CHARS,
+            "The rest: read_world world:house.",
+        );
+        assert_eq!(map.kept, vec!["world:project/1", "world:house#vpn"]);
+        assert!(map.left_off.is_empty(), "{:?}", map.left_off);
+        assert!(!map.text.contains("world:house#media"), "{}", map.text);
+        assert!(
+            map.text.contains("The rest: read_world world:house.\n"),
+            "{}",
+            map.text
+        );
+        // All of it about the item: no pointer.
+        let all = compose_about(entries, &[true; 3], MAP_CHARS, "The rest: elsewhere.");
+        assert!(!all.text.contains("The rest"), "{}", all.text);
     }
 
     #[test]

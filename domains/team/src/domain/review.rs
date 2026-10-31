@@ -37,6 +37,33 @@ pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. 
     citing your receipts per criterion: your pass closes it. Send it back with exactly what does not \
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
 
+/// The most of a branch's diff a reviewer's briefing carries, in characters (ADR 0142, amended
+/// 2026-10-30): a little on the house's models, which pay for every line on every call, more on
+/// Claude; the whole diff is a `read_document` away, and the branch a `repo_checkout`.
+#[must_use]
+pub const fn diff_chars_for(brain: super::Brain) -> usize {
+    if brain.cloud() { 12_000 } else { 2_400 }
+}
+
+/// The most of a branch's changed files a reviewer's briefing names.
+pub const FILES_MOST: usize = 20;
+
+/// A diff within `most` characters, cut at a line's end, and whether it was cut.
+#[must_use]
+pub fn diff_within(diff: &str, most: usize) -> (String, bool) {
+    if diff.chars().count() <= most {
+        return (diff.to_owned(), false);
+    }
+    let mut kept = String::new();
+    for line in diff.split_inclusive('\n') {
+        if kept.chars().count() + line.chars().count() > most {
+            break;
+        }
+        kept.push_str(line);
+    }
+    (kept, true)
+}
+
 /// Whether work needs the gate (tests, lint and build on a runner) before a review can close
 /// it: everything but a routine's task and work under a goal the home lab's routine serves,
 /// which change no code.
@@ -218,6 +245,21 @@ pub fn checked(text: &str, lab: Option<&[String]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_diff_is_cut_at_a_line_s_end_within_its_size() {
+        let diff = "+one\n+two\n+three\n";
+        assert_eq!(diff_within(diff, 100), (diff.to_owned(), false));
+        assert_eq!(diff_within(diff, 10), ("+one\n+two\n".to_owned(), true));
+        assert_eq!(diff_within(diff, 3), (String::new(), true));
+    }
+
+    #[test]
+    fn the_house_s_models_read_less_of_a_diff_than_claude() {
+        use super::super::Brain;
+        assert!(diff_chars_for(Brain::Local) < diff_chars_for(Brain::Sonnet));
+        assert_eq!(diff_chars_for(Brain::Local), diff_chars_for(Brain::Mac));
+    }
 
     fn lab() -> Vec<String> {
         ["sonarr", "radarr", "owntone-spotify", "quirky_hopper"]

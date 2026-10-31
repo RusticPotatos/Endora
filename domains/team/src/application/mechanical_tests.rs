@@ -238,7 +238,8 @@ fn work_reaching_review_is_checked_mechanically_and_the_reviewer_is_told() {
     assert!(woken(&hq, t.rae, fix, WakeReason::ReviewRequested));
     hq.tell_mac(true, "ready");
     let rae = turn_of(&hq, t.rae);
-    // Shown once, in the thread's news, and pointed to where the review is asked.
+    // Shown once, in full where the review is asked: the review's briefing carries no thread
+    // history (ADR 0142, amended 2026-10-30).
     assert_eq!(
         rae.told.matches(crate::domain::mechanical::HEADER).count(),
         1,
@@ -247,7 +248,8 @@ fn work_reaching_review_is_checked_mechanically_and_the_reviewer_is_told() {
     );
     assert!(
         rae.told
-            .contains("HQ's mechanical checks of this work are in the thread above. These are facts HQ measured"),
+            .contains("covers 1 of 3 defaults. Not named: media_data.")
+            && rae.told.contains("These are facts HQ measured"),
         "{}",
         rae.told
     );
