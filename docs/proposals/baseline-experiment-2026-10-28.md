@@ -416,10 +416,16 @@ kept). Started 30 Oct 22:50 EDT as HQ tasks 929 to 938 (task 8 is 938).
 | 6 | 934 | Yes (both database passwords' literal defaults gone, read from vault variables; an assert stops the play with a clear message when either is empty; the docs say how to set them in the vault; molecule gets marked test-only values; no new lint findings; pushed as `hq/task-934-nextcloud-no-secret-default`. Reviewed by Mara) | $0.78 | 506 min (about four of them waiting on the day's pool) | 0 | |
 | 7 | 935 | Yes (TheRARBG and The Pirate Bay, quoted from both apps and rechecked in their logs; the 429s are Prowlarr's own disabling after HTTP/2 connection failures to the upstream, also rechecked, with the DNS link labelled a hypothesis; a gluetun DNS change with its expected effect and a check, and disabling the two indexers in Prowlarr as the fallback; nothing changed by HQ, no restart in its record. Bo, Rae, Ada; reviewed by Kit) | $0.44 | 64 min to first ready, passed review at 08:18 | 2 | |
 | 8 | 938 | No (blocked honestly: the window's logs are gone, as expected after round 1; made no lab change) | $0.38 | blocked after ~4 h | 2 | |
-| 9 | 936 | | | | | |
-| 10 | 937 | | | | | |
+| 9 | 936 | No (blocked honestly: the sandbox is offline and `repo_checkout` refuses `main`, so upstream could not be read (D13); nothing pushed or merged) | $0.16 | blocked at 09:31 | 1 | |
+| 10 | 937 | Yes (rule `nas-secret-default` in `tests/lint_rules` with fixtures and tests: a literal fails, a vault reference and an empty default pass; rechecked, 12 tests pass; on `warn_list`, so it reports today's 29 offenders as warnings while ansible-lint's failures stay develop's 14; no new yamllint findings; pushed as `hq/task-937-secret-defaults`. Over twelve turns lost to the budget first (D12); finished by Mara) | $3.34 | 651 min (about four of them waiting on the day's pool) | 1 | |
 
-**Where round 2 stands (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
+**Round 2's result (31 Oct, 10:00 EDT): 7 of 10 accepted** (round 1: 3; round 0: 1; Claude
+Code: 10). 7 interventions, $7.93 on the ten tasks; the owner topped up the day's pool twice
+($6.66). The three not accepted: 932 lacked a CI run it could not trigger (D6); 938's window has
+left the logs and cannot be met by any later round; 936 could not read upstream (D13). The
+paragraphs below were written at 03:30, part-way:
+
+**Where round 2 stood (31 Oct, 03:30 EDT, 4 h 40 min in): 2 accepted, 2 not accepted, 6 open,
 and stopped on money.** The day's pool (about $3.33, the $100 a month over 30 days) was spent by
 02:44: $2.97 on round 2 (Kit's reviews $1.30, Rae $0.85, Mara's reviews $0.60, Ada $0.22; Bo free)
 and $0.19 on league chess. Every open item's next turn waits for the budget, which comes back at
@@ -440,7 +446,7 @@ counted as an intervention:
 | Claude Code (28 Oct) | 10 | 0 | tokens only | the bar |
 | Round 0, HQ (28 Oct) | 1 | many | | blocked by missing tools, restarts on a read-only task |
 | Round 1, HQ (30 Oct) | 3 | 7 counted | | one item at a time; five tasks never started |
-| Round 2, HQ (30–31 Oct) | 2 so far, 6 open | 5 so far | $2.97 by 03:30 | items side by side; two READMEs accepted in 142 min each (round 1: 82 and 461 min) |
+| Round 2, HQ (30–31 Oct) | **7** | 7 | $7.93 on the ten tasks | items side by side; the registry tool; all ten judged by 10:00 on 31 Oct, about 11 hours in, four of them waiting on the day's pool |
 
 What round 2 shows already, by the evidence:
 - **Side by side works.** Six of ten tasks were worked within four hours; round 1 started five
@@ -454,6 +460,36 @@ What round 2 shows already, by the evidence:
   workflow runs on push only for main and develop, so no run came, and HQ never noticed.
 - **Questions are still the house model's habit.** Bo put its finished 935 finding on the desk
   as a question twice instead of asking for review.
+
+### Round 3, proposed (31 Oct, for the owner)
+
+Round 2 reached 7 of 10. Of the three left, one can no longer be met by any round, so 10 of 10
+needs a decision about task 8 first.
+
+**Built and gated on the local branch `round3-local`** (2,171 unit tests, 110 scenarios):
+- D1, D4: a model change keeps a member able to start; a checkout brings `image_tags`.
+- D2, D3, D10: what wakes an item (a never-started turn is retried, a blocked item wakes nobody,
+  one question per item).
+- D9: the day's pool sized from the Claude credit left and the days to its renewal.
+- D12, in progress: a long item reads the newest handover and keeps its work across turns.
+
+**For the owner to decide:**
+1. **Task 8 (gluetun's restart).** Its window ended 29 Oct and has left the logs, so no round can
+   pass it. Approved 31 Oct: a fresh window is already running, since the restart timer is off
+   (gluetun, prowlarr and deluge up since 30 Oct 03:09 EDT with no restart). It closes 2 Nov
+   03:09 EDT, 72 hours like the first; task 8 then runs in both arms at once with the new dates,
+   before the logs roll over.
+2. **D7, reviews.** Sonnet and Opus reviews were most of the cost. Proposed: the member one rank
+   up reviews, but never above Haiku unless the work came from Haiku or above; HQ's mechanical
+   checks carry the rest.
+3. **D6, CI.** Proposed: the fork's workflow also runs on `hq/*` branches (a fork change, made
+   when the rounds end and develop may move), and until then HQ says when a CI criterion cannot
+   be met rather than finishing without it.
+4. **D13, upstream.** Proposed: a read-only mirror of upstream ansible-nas on the node that
+   `repo_checkout` may check out, so 936 can be done.
+5. **The rest of round 2's review fixes, the stable prompt opening with a lessons list, and the
+   owner's scenarios for round 2's changes** were left part-done by their agents; they are
+   restarted and join `round3-local` before release.
 
 ## Open issues and next steps (kept current)
 
@@ -508,14 +544,19 @@ done. Defects are numbered so the next round's changes can name them.
   times, 920 four). Fixed on `r3-wakes`: one question per item waits on the desk; another is
   refused with the reason, HQ's own is added to the waiting card. Round 1's repeats each came
   after an answer, which this does not stop.
-- [x] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
-  record). *Diagnosed 31 Oct: the NAS's Watchtower recreates containers on new images every
-  night at 03:00, and failed nightly on `endora-docker-observer`. Endora's parts fixed on
-  `r3-watchtower`: every Endora container is labelled out of Watchtower (the compose services,
-  held by the parity check, and the runner's containers), and `homelab_status` says when each
-  container was last recreated on a new image, with a line such as "Updated last night by
-  Watchtower: sonarr, nzbget (03:24)" (ADR 0106, amended 2026-10-31). Not yet merged or
-  released; Watchtower's own schedule is ansible-nas's.*
+- [ ] **D11. Lab: containers are recreated every night by Watchtower.** Diagnosed 31 Oct (read-only):
+  Watchtower runs at 03:00 (`--schedule 0 0 3 * * * --cleanup`) and recreates every container on a
+  `:latest` tag with a newer image; on 31 Oct it recreated six, sonarr and nzbget among them, at
+  03:24. It also recreated gluetun on 19, 20 and 30 Oct, and on 15 and 16 Oct failed with "joining
+  network namespace of container: No such container": prowlarr, deluge and nzbget share gluetun's
+  network by container id. Likely the cause of the VPN stalls the 2-hourly restart works around,
+  and it puts restarts into task 8's window. *Endora's parts done on `r3-watchtower` (released
+  with round 3): every Endora container is labelled out of Watchtower, and `homelab_status` says
+  when each container was last recreated on a new image ("Updated last night by Watchtower:
+  sonarr, nzbget (03:24)"; ADR 0106, amended 2026-10-31). The fork's part is the branch
+  `fix/vpn-stack-out-of-watchtower` (the VPN stack labelled out, pinned, updated together by the
+  playbook, gluetun first): the owner runs `make run-remote TAGS=gluetun`, and task 8's window
+  starts then.*
 - [x] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
