@@ -759,11 +759,13 @@ function hqCalm() {
 // (the couches' seats, the bean bag, a spot before the coffee machine, the fish tank, the
 // whiteboard and the shelf), so a thing the team moved moves where people gather.
 function hqWanderSpots() {
-  const spots = HQ_WANDER.slice();
-  for (const it of hqItems()) {
+  const spots = HQ_WANDER.slice(), items = hqItems();
+  // A spot before a thing that something else now stands on is not one: nobody stands in a plant.
+  const covered = (x, y) => items.some((o) => o.kind !== "rug" && !o.wall && x >= o.x && x < o.x + o.w && y >= o.y && y < o.y + o.h);
+  for (const it of items) {
     if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down", sit: "couch" }), hqAt(it.x + 1, it.y, { dir: "down", sit: "couch" }));
     else if (it.kind === "bean_bag") spots.push(hqAt(it.x, it.y, { dir: "down" }));
-    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
+    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind) && !covered(it.x, it.y + 1)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
   }
   return spots;
 }
@@ -813,7 +815,8 @@ function hqWorld() {
 
 // The cells from where a member stands to a spot, the way round what is in the way: a search
 // over the floor's cells a step at a time. `null` if there is no way; empty if already there.
-function hqPathCells(from, to) {
+// With `near`, where there is no way it is the way to the reachable cell nearest the spot.
+function hqPathCells(from, to, near) {
   const W = HQ.world || hqWorld(), key = (x, y) => x + "," + y, goal = key(to.cx, to.cy);
   const prev = new Map([[key(from.cx, from.cy), null]]), queue = [[from.cx, from.cy]];
   for (let at = 0; at < queue.length && !prev.has(goal); at++) {
@@ -825,19 +828,27 @@ function hqPathCells(from, to) {
       prev.set(k, [x, y]); queue.push([nx, ny]);
     }
   }
-  if (!prev.has(goal)) return null;
+  let end = [to.cx, to.cy];
+  if (!prev.has(goal)) {
+    if (!near) return null;
+    const far = (k) => { const [x, y] = k.split(",").map(Number); return Math.abs(x - to.cx) + Math.abs(y - to.cy); };
+    end = [...prev.keys()].reduce((best, k) => (far(k) < far(best) ? k : best)).split(",").map(Number);
+  }
   const cells = [];
-  for (let c = [to.cx, to.cy]; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
+  for (let c = end; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
   return cells;
 }
 
 // The way from where a member is to a spot, out of the room they are in by its open door,
 // round the desks and the furniture, in by the door of the room the spot is in. Nobody walks
-// through glass. Where there is no way, they go straight.
+// through glass or furniture: where the team's things have closed every way to a spot, they
+// walk as near as they can, and only then step onto it.
 function hqWalk(p, spot) {
   const T = HQ_T, from = { cx: Math.round(p.x / T), cy: Math.round(p.y / T + 0.5) };
-  const cells = hqPathCells(from, spot);
-  p.path = cells ? cells.map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T })) : [{ x: spot.x * T, y: spot.y * T }];
+  const cells = hqPathCells(from, spot, true).map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T }));
+  const last = cells[cells.length - 1], there = { x: spot.x * T, y: spot.y * T };
+  if (!last || last.x !== there.x || last.y !== there.y) cells.push(there);
+  p.path = cells;
 }
 
 // An errand's end: once there, a member says what they came to say, waits, and goes back.

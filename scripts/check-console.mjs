@@ -1463,6 +1463,28 @@ if (failures.length) {
           hqPathCells(from, hqAt(3, 3)) === null, hqPathCells(from, from).length === 0];
       })()`, context);
       if (paths.some((ok) => !ok)) fail(`hq: a walk goes through glass or furniture, or not by the open door: ${paths}`);
+      // Where the team's things close every way to a spot, nobody walks straight through them:
+      // they go round, as near as they can, and step on only at the end. And a spot before a
+      // thing that something else now stands on is not offered.
+      const shut = runInContext(`(() => {
+        const items = HQ.snap.office.items, keep = items.slice();
+        items.push({ id: 90, kind: "plant", x: 4, y: 10, w: 1, h: 1 }, { id: 91, kind: "plant", x: 6, y: 10, w: 1, h: 1 },
+          { id: 92, kind: "plant", x: 5, y: 9, w: 1, h: 1 }, { id: 93, kind: "plant", x: 5, y: 11, w: 1, h: 1 },
+          { id: 94, kind: "coffee_machine", x: 2, y: 12, w: 1, h: 1 }, { id: 95, kind: "plant", x: 2, y: 13, w: 1, h: 1 });
+        HQ.world = hqWorld();
+        const p = { x: 9 * HQ_T, y: 9.5 * HQ_T, path: [] };
+        hqWalk(p, hqAt(5, 10));
+        const steps = p.path.map((c) => Math.round(c.x / HQ_T) + "," + Math.round(c.y / HQ_T + 0.5));
+        const through = steps.slice(0, -1).some((k) => HQ.world.blocked.has(k));
+        const offered = hqWanderSpots().some((s) => s.cx === 2 && s.cy === 13), none = hqPathCells(hqAt(9, 10), hqAt(5, 10)) === null;
+        // A step at a time, one cell to the next, never a straight line across the floor.
+        const cells = steps.map((k) => k.split(",").map(Number));
+        const apart = (i) => Math.abs(cells[i][0] - cells[i - 1][0]) + Math.abs(cells[i][1] - cells[i - 1][1]);
+        const stepwise = cells.length > 2 && cells.every((c, i) => !i || apart(i) === 1 || (i === cells.length - 1 && apart(i) <= 2));
+        items.length = 0; items.push(...keep); HQ.world = hqWorld();
+        return [none, !through, stepwise, steps[steps.length - 1] === "5,10", !offered];
+      })()`, context);
+      if (shut.some((ok) => !ok)) fail(`hq: a walk to a shut-in spot cuts through furniture, or a covered spot is offered: ${shut}`);
       // Working at a desk, or elsewhere when the work is: another team's project, a task a tester
       // checks, a project the CEO leads (her door); Mara herself stays in her office.
       const visits = runInContext(`(() => {
