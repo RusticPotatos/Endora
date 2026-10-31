@@ -9,7 +9,7 @@ Feature: A request for the owner's yes says what it serves
   Background:
     Given Ada is the lead
     And Linus is the developer
-    And Linus works with the Mac
+    And Linus thinks with "Mac"
     And the goal "Keep the home lab healthy"
 
   # Seed: ask_approval taking a request with no `serves` fails the refusal step; one that puts

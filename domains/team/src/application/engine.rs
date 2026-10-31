@@ -13,8 +13,8 @@ use super::ports::{
     WorkerAdapter,
 };
 use super::scorecard;
-use crate::domain::chain::Decision;
 use crate::domain::cut::cut;
+use crate::domain::docs;
 use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::history::InputOrigin;
 use crate::domain::mac::{self, MacFacts};
@@ -31,12 +31,11 @@ use crate::domain::{
     MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason,
 };
-use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
+mod days;
 mod delivery;
-mod deploy;
 mod digest;
 mod discipline;
 mod drain;
@@ -47,7 +46,7 @@ mod guards;
 mod handover;
 mod health;
 mod history;
-mod kinds;
+mod lab_tools;
 mod league;
 mod lessons;
 mod lineage;
@@ -65,7 +64,6 @@ mod runaway;
 mod running;
 mod runtime;
 mod scenario;
-mod staffing;
 mod waking;
 mod wing;
 mod world;
@@ -75,9 +73,8 @@ pub use evidence::Called;
 pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
-pub use projects::{LAB_UPKEEP, Proposal};
 pub use runtime::ModelSet;
-pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -93,8 +90,6 @@ pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
 
 /// Where HQ keeps the house log (ADR 0111).
 const HOUSE_LOG: &str = "house_log";
-/// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
-const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 /// Where HQ keeps who wrote a routine's words: `owner` or `system` (ADR 0138 A2b).
 const ROUTINE_ORIGIN: &str = "routine_origin:";
 
@@ -238,10 +233,6 @@ fn one_line(text: &str, most: usize) -> String {
 pub enum Asked {
     /// On the owner's desk, as this item.
     Desk(crate::domain::DeskId),
-    /// To this reviewer first, as a draft in the task's thread.
-    Review(MemberId),
-    /// Up the chain of command, to this member, in the task's thread (ADR 0111).
-    Up(MemberId),
 }
 
 /// The engine.
@@ -318,7 +309,6 @@ struct Placement {
     brain: Brain,
     amount: Micros,
     kind: turns::TurnKind,
-    fell_back: bool,
 }
 
 /// What the screen's task rows are read against; see [`Engine::board`].
@@ -497,23 +487,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// The Claude a turn's judgment is paid on (its pinned brain if that is a Claude, or the
-    /// member's), and what it may reserve there ([`Self::reservable`]).
-    fn paid_on(
-        &self,
-        run: &Run,
-        member: &Member,
-        (kind, pinned): (turns::TurnKind, Option<Brain>),
-        league: bool,
-        project: Option<ProjectId>,
-    ) -> Done<(Brain, Option<Micros>)> {
-        let brain = pinned
-            .filter(|b| b.cloud())
-            .unwrap_or_else(|| member.judgment_brain());
-        let asked = self.reservable(run, member, (kind, brain), league, project)?;
-        Ok((brain, asked))
-    }
-
     /// What a member could have reserved for a turn of judgment now, on work in `project` if
     /// any, if anything. Only a turn of judgment is asked (ADR 0131): work runs on the house's
     /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
@@ -633,88 +606,45 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self.store.set_paused(member, paused)?)
     }
 
-    /// The owner sets a brain of a member's (ADR 0109, 0131), by its name, to the slot it belongs
-    /// to: a Claude its role may use is the brain it judges with, the house's model (`local`) or
-    /// the Mac (`mac`) the brain it works with. The other is left as it is. The next turn starts
-    /// with it. The node asks HQ on every call, so a turn already running is held to it at
-    /// once. Returns the brain set.
+    /// The owner sets a member's model (ADR 0109, 0142), by its name: every turn of the member's
+    /// runs on it, whatever woke it. The node asks HQ on every call, so a turn already running is
+    /// held to it at once. Returns the brain set.
     ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// one its role may not think with; a store failure.
-    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// The owner sets a member's model (ADR 0142), by its name: every turn of the member's runs
-    /// on it, whatever woke it. Any member may be any model; a title is a name only. A member
-    /// whose runtime cannot run the new model is put back on Endora's worker, and the answer
-    /// says so (ADR 0117, amended 2026-10-31).
+    /// Any member may be any model; a title is a name only.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
     /// a name that is not a model Endora has; a store failure.
+    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        self.brain_set_held_lock(&found, brain)
+    }
+
+    /// The owner sets a member's model from the console (ADR 0142), as [`Self::set_brain`] does.
+    /// A member whose runtime cannot run the new model is put back on Endora's worker, and the
+    /// answer says so (ADR 0117, amended 2026-10-31).
+    ///
+    /// # Errors
+    /// As [`Self::set_brain`].
     pub fn set_model(&self, member: MemberId, brain: &str) -> Done<ModelSet> {
         let _held = self.held();
         let found = self.member(member)?;
-        let brain = Brain::from_name(brain).ok_or_else(|| {
-            EngineError::Refused(Refusal::NotABrain {
-                role: found.role,
-                asked: brain.to_owned(),
-            })
-        })?;
-        self.store.set_model(found.id, brain)?;
+        let brain = self.brain_set_held_lock(&found, brain)?;
+        let said = self.runtime_after_model(&found, brain)?;
+        Ok(ModelSet { brain, said })
+    }
+
+    /// Records a model set (the lock held), and says it in the feed.
+    fn brain_set_held_lock(&self, found: &Member, brain: &str) -> Done<Brain> {
+        let brain = Brain::named(brain).map_err(EngineError::Refused)?;
+        self.store.set_brain(found.id, brain)?;
         self.emit(
             EventKind::BrainSet,
             json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
                     "slot": "model" }),
         )?;
-        let said = self.runtime_after_model(&found, brain)?;
-        Ok(ModelSet { brain, said })
-    }
-
-    /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or
-    /// `local`, the house's own models. Claude never does the work. The next turn of work
-    /// starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not one of the house's models; a store failure.
-    pub fn set_work_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_work(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
         Ok(brain)
-    }
-
-    /// The owner sets the Claude a member judges with (ADR 0131), by its name. Every member
-    /// has one: Haiku until the owner says otherwise (the CEO, Sonnet). The next turn of
-    /// judgment starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not a Claude its role may use; a store failure.
-    pub fn set_judgment_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_judgment(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// Records a brain set (the lock held): in the slot it belongs to, and said in the feed.
-    fn brain_set_held_lock(&self, found: &Member, brain: Brain) -> Done<()> {
-        self.store.set_brain(found.id, brain)?;
-        self.emit(
-            EventKind::BrainSet,
-            json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
-                    "slot": if brain.house() { "work" } else { "judgment" } }),
-        )
     }
 
     /// The owner renames a member: one to 40 characters on one line, and no other member's
@@ -741,103 +671,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "was": found.name, "name": name }),
         )?;
         Ok(name)
-    }
-
-    // ---- the house log (ADR 0111) ---------------------------------------------------------
-
-    /// The house log: empty when nothing is in it.
-    pub fn house_log(&self) -> Done<String> {
-        Ok(self.store.setting(HOUSE_LOG)?.unwrap_or_default())
-    }
-
-    fn keep_house_log(&self, log: &str, by: &str, said: serde_json::Value) -> Done<()> {
-        self.store.set_setting(HOUSE_LOG, log)?;
-        let mut about = json!({ "by": by, "length": log.chars().count() });
-        if let (Some(about), Some(said)) = (about.as_object_mut(), said.as_object()) {
-            about.extend(said.clone());
-        }
-        self.emit(EventKind::HouseNoted, about)
-    }
-
-    /// Endora seeds the house log with how this lab is built ([`house::lab_built`]), once, and
-    /// only when it is empty: what the CEO or the owner wrote is never overwritten, and a log
-    /// the owner cleared later stays clear. Said in the feed as Endora's. Returns whether it
-    /// was seeded now.
-    pub fn seed_house_log(&self) -> Done<bool> {
-        let _held = self.held();
-        if self.store.setting(HOUSE_LOG_SEEDED)?.is_some() {
-            return Ok(false);
-        }
-        self.store.set_setting(HOUSE_LOG_SEEDED, "1")?;
-        if !self.house_log()?.trim().is_empty() {
-            return Ok(false);
-        }
-        self.keep_house_log(
-            &house::lab_built(),
-            "Endora",
-            json!({ "entry": endora_kernel::lab::LAB_BUILT_TITLE, "seeded": true }),
-        )?;
-        Ok(true)
-    }
-
-    /// The owner rewrites the house log on HQ's screen; empty clears it. Once the house log is
-    /// the house page's timeline (ADR 0122), it is kept read-only for a release: refused.
-    ///
-    /// # Errors
-    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`] once moved; a store failure.
-    pub fn set_house_log(&self, log: &str) -> Done<()> {
-        let _held = self.held();
-        if self.world_migrated()? {
-            return Err(EngineError::Refused(Refusal::World(
-                crate::domain::world::WorldRefusal::HouseLogRetired,
-            )));
-        }
-        let log = house::rewritten(log).map_err(EngineError::Refused)?;
-        self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
-    }
-
-    /// A turn of the CEO's adds a dated line to the house page's timeline (ADR 0122; before
-    /// it, to the house log). Returns the line.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`] for anyone else; [`EngineError::Unknown`]
-    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`].
-    pub fn note_house(&self, run: RunId, entry: &str) -> Done<String> {
-        let _held = self.held();
-        let (run, ceo) = self.the_ceos_turn(run)?;
-        if entry.trim().is_empty() {
-            return Err(EngineError::Unknown("entry for the house page's timeline"));
-        }
-        let line = self.note_house_line(&run, &ceo, entry)?;
-        if let Some(task) = run.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(line)
-    }
-
-    /// A turn of the CEO's once rewrote the house log whole. The house log is the house page
-    /// now (ADR 0122): refused, saying what to use instead, for one release.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`].
-    pub fn rewrite_house(&self, run: RunId, _log: &str) -> Done<usize> {
-        let _held = self.held();
-        self.the_ceos_turn(run)?;
-        Err(EngineError::Refused(Refusal::World(
-            crate::domain::world::WorldRefusal::HouseLogRetired,
-        )))
-    }
-
-    /// A running turn of the CEO's, and the CEO.
-    fn the_ceos_turn(&self, run: RunId) -> Done<(Run, Member)> {
-        let run = self.running(run)?;
-        let member = self.member(run.member)?;
-        if member.role != Role::Ceo {
-            return Err(EngineError::Refused(Refusal::OnlyTheCeo));
-        }
-        Ok((run, member))
     }
 
     /// A member's turn reads one of Endora's public library (its records, plans, drafts and
@@ -886,11 +719,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
         self.set_goal_authored_held_lock(title, reason, InputOrigin::Owner)
-    }
-
-    fn set_generated_goal(&self, title: &str, reason: &str) -> Done<GoalId> {
-        let _held = self.held();
-        self.set_goal_authored_held_lock(title, reason, InputOrigin::Unknown)
     }
 
     fn set_goal_authored_held_lock(
@@ -997,10 +825,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .map_err(EngineError::Refused)?;
         }
         let task = NewTask { project, ..task };
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
         if let (Author::Member(from), Some(to)) = (by, task.assignee) {
             if from != to {
-                let (from, to) = (self.member(from)?, self.member(to)?);
-                work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+                return Err(EngineError::Refused(Refusal::NotBelow));
             }
         }
         if let Some(to) = task.assignee {
@@ -1145,17 +973,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether a turn may act on `task`: its own task and the sub-tasks under it, at any
     /// depth. Writing reaches further: the task its own hangs from, and any task whose thread
-    /// names the member (`@name`, as a wake reads it). The lead and the CEO may act on any task
-    /// in a goal they lead; a team has one of each, which lead every goal.
+    /// names the member (`@name`, as a wake reads it).
     ///
     /// # Errors
     /// [`EngineError::Refused`] with [`Refusal::OutOfReach`] when it may not.
     fn reach(&self, run: &Run, task: TaskId, writing: bool) -> Done<()> {
         let target = self.task(task)?;
         let member = self.member(run.member)?;
-        if member.role.leads() {
-            return Ok(());
-        }
         if let Some(own) = run.task {
             if self.under(target.id, own)? {
                 return Ok(());
@@ -1571,16 +1395,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The team's reviewer: the first member with the reviewer's role, if there is one.
-    fn reviewer(&self) -> Done<Option<Member>> {
-        Ok(self
-            .store
-            .members()?
-            .into_iter()
-            .filter(|m| m.role == Role::Reviewer)
-            .min_by_key(|m| m.id))
-    }
-
     /// Work was moved to review by its owner: the reviewer is woken to look at it. With no
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
@@ -1814,17 +1628,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
         // Accepted work is listed, not carded, unless the owner put the cards back (ADR 0115,
-        // amended 2026-10-31); what a researcher found is still the owner's to read.
-        let researched = match current.owner {
-            Some(worker) => self.member(worker)?.role == Role::Researcher,
-            None => false,
-        };
-        if current.parent.is_none() && (researched || self.cards_back()?) {
-            let (kind, says) = if researched {
-                ("ready_to_read", "Ready to read")
-            } else {
-                ("ready_to_merge", "Ready to merge")
-            };
+        // amended 2026-10-31).
+        if current.parent.is_none() && self.cards_back()? {
+            let (kind, says) = ("ready_to_merge", "Ready to merge");
             let desk = self.store.add_desk(
                 kind,
                 Some(task),
@@ -2355,9 +2161,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
-        // What deciding a turn's kind reads, once for the tick (ADR 0131).
-        let wakes = self.store.wakes()?;
-        let known = self.known_for_kinds()?;
         // What the caps on a runaway read, once for the tick and kept up as turns start (ADR
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
@@ -2387,37 +2190,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            // What the turn needs is decided here, from why it was asked for (ADR 0131), and
-            // never by the member: judgment runs only on the member's Claude, work on the best
-            // free work brain it is allowed on. A turn that has nowhere it may run waits where
-            // it is, and says why. It is never given another brain; an alarm out of budget is
-            // the one exception, and acts at once.
-            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
-            // side is paid from the league's capped project alone.
-            let league = self.league_brain_of(run.task)?;
             // A member is its model (ADR 0142): every turn of its runs there, whatever woke it.
-            // A member still split between a Claude and a house model is placed as before.
-            let pinned = league.or((member.brain == member.work_brain).then_some(member.brain));
+            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
+            // side is paid from the league's capped project alone. A turn that cannot run there
+            // now waits where it is, and says why; it is never given another brain.
+            let league = self.league_brain_of(run.task)?;
+            let brain = league.unwrap_or(member.brain);
+            let kind = turns::TurnKind::on(brain);
             // A scenario's turn is bounded by its world, not its player's day (ADR 0133, amended).
             let in_a_world = match run.task {
                 Some(task) => self.in_a_scenario(task)?,
                 None => false,
             };
-            let need = match pinned {
-                Some(brain) => turns::Need::pinned(brain),
-                None => self.need_of_run(&run, &member, &wakes, &known),
-            };
-            let (judgment_brain, asked) = self.paid_on(
-                &run,
-                &member,
-                (need.kind, pinned),
-                league.is_some(),
-                project,
-            )?;
+            let asked = self.reservable(&run, &member, (kind, brain), league.is_some(), project)?;
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
-                work_brain: member.work_brain,
-                judgment_brain,
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
                 free_turns_today: if in_a_world {
@@ -2426,9 +2213,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     starts.free_turns_of(&run)
                 },
             };
-            let (brain, amount, fell_back) = match turns::place(need, &facts) {
-                turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
-                turns::Placed::Fallback(brain) => (brain, 0, true),
+            let (brain, amount) = match turns::place(brain, &facts) {
+                turns::Placed::On(brain) => (brain, asked.unwrap_or(0)),
                 turns::Placed::Waits(wait) => {
                     self.say_why_it_waits(&mut run, wait.words())?;
                     continue;
@@ -2445,8 +2231,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let placed = Placement {
                 brain,
                 amount,
-                kind: need.kind,
-                fell_back,
+                kind,
             };
             if self.launch(run, &member, &placed, now)? {
                 started += 1;
@@ -2491,7 +2276,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             brain,
             amount,
             kind,
-            fell_back,
         } = *placed;
         let on = Member {
             brain,
@@ -2515,7 +2299,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task: run.task,
             told: run.told.clone(),
             token: self.store.issue_token(run.id)?,
-            effort: self.effort_of(&on),
         };
         if let Err(why) = self.runner.start(&context) {
             let why = runs::never_started_said(&format!("could not start: {}", why.0));
@@ -2530,9 +2313,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "reserved": amount, "reason": self.reason_for(&run)?,
                     "kind": kind.label(), "brain": brain.name() }),
         )?;
-        if fell_back {
-            self.alarm_on_the_house(&run, member, brain)?;
-        }
         Ok(true)
     }
 
@@ -2614,9 +2394,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         for d in self.store.desk()? {
-            if !matches!(d.kind.as_str(), "question" | "approval" | "decision")
-                || d.status != "waiting"
-            {
+            if !matches!(d.kind.as_str(), "question" | "approval") || d.status != "waiting" {
                 continue;
             }
             if d.member == Some(member) && d.task == Some(task) {
@@ -2780,11 +2558,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         let words = cut(words.trim(), 4000);
-        if found.kind == "decision" {
-            self.board_decides(&found, decision, &words)?;
-            // The board's one word on the same decision from other tasks (ADR 0124).
-            return self.answer_the_same_asks(item, decision, &words);
-        }
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, &words);
         }
@@ -2797,33 +2570,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         self.decide_held_lock(&found, decision, &words)?;
         self.answer_the_same_asks(item, decision, &words)
-    }
-
-    /// The board's word on the CEO's decision (ADR 0111): in the task's thread as the owner's,
-    /// with what they wrote, and the CEO woken to act on it.
-    fn board_decides(&self, found: &DeskItem, verdict: &str, words: &str) -> Done<()> {
-        let said = match verdict {
-            "approve" => "The board approves",
-            "decline" => "The board declines",
-            "answer" if !words.is_empty() => "The board answers",
-            _ => return Err(EngineError::Unknown("decision for this item")),
-        };
-        let task = found.task.ok_or(EngineError::Unknown("task"))?;
-        let decision = Decision::read(&found.text).map_or_else(String::new, |d| d.decision);
-        let mut text = format!("{said}: {decision}");
-        if !words.is_empty() {
-            text.push_str(&format!("\n{words}"));
-        }
-        self.post_held_lock(Author::Owner, task, &text)?;
-        self.store.set_desk_status(found.id, verdict)?;
-        self.emit(
-            EventKind::DeskDecided,
-            json!({ "item": found.id.0, "kind": found.kind, "decision": verdict }),
-        )?;
-        if let Some(ceo) = found.member {
-            self.wake_held_lock(ceo, Some(task), WakeReason::ProposalDecided)?;
-        }
-        Ok(())
     }
 
     /// A desk item still waiting for the owner.
@@ -2917,10 +2663,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             // The wing (ADR 0115): a branch to push.
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
-            // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
-            ("deploy", "deployed" | "not_deploying") => {
-                self.decide_deploy(found, decision == "deployed")?;
-            }
             // The runaway tripwire's card (ADR 0133): resume the team, which answers the card
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
@@ -3188,10 +2930,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- routines, alarms and check-backs (ADR 0107) -------------------------------------
 
     /// The routine whose last task this is, if any: the one task a routine has open.
-    /// Whether a task is a check its member closes itself: a routine's, or the check after a
-    /// deploy (ADR 0107; 0115, amended). A check changes no code.
+    /// Whether a task is a check its member closes itself: a routine's (ADR 0107). A check
+    /// changes no code.
     fn is_a_check(&self, task: TaskId) -> Done<bool> {
-        Ok(self.routine_of(task)?.is_some() || self.deploy_check_of(task)?.is_some())
+        Ok(self.routine_of(task)?.is_some())
     }
 
     fn routine_of(&self, task: TaskId) -> Done<Option<Routine>> {
@@ -3833,26 +3575,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // On furlough (ADR 0118): when it began, and when it ended if it has.
                 "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
                 "recalled_at": m.recalled_at,
-                // What it thinks with, and what the owner may choose for its role (ADR 0109).
+                // What it thinks with, and what the owner may choose (ADR 0109, 0142).
                 "brain": m.brain.name(),
-                "brains": Brain::choices(m.role).into_iter()
+                "brains": Brain::all().into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
-                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
-                // model), and the Claude it judges with, each with what the owner may choose.
-                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
                 "rank": m.brain.rank(),
-                "work_brains": Brain::work_choices().into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                "judgment_brain": m.judgment_brain().name(),
-                "judgment_brain_label": m.judgment_brain().label(),
-                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
                 // What runs its turns (ADR 0117), and whether Claude Code may.
-                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
-                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
+                "runtime": self.store.runtime_of(m.id)?.effective(m.brain).name(),
+                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.brain),
                 // Only its judgment is paid: the pool is shared by the members' claims.
                 "per_day": self.per_day(m, paid, pool_day),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
@@ -3968,9 +3699,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 }
 
-/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus in either
-/// seat (ADR 0142), its role's cap otherwise.
+/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus (ADR 0142),
+/// forty cents otherwise.
 fn most_a_turn_for(member: &Member) -> Micros {
-    money::most_a_turn_of(member.role, member.brain)
-        .max(money::most_a_turn_of(member.role, member.work_brain))
+    money::most_a_turn_of(member.brain)
 }

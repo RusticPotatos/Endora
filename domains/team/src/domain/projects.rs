@@ -7,7 +7,7 @@
 //! a cap fits in the pool, and when a project has spent its cap.
 
 use super::money::{DOLLAR, Micros};
-use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
+use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, TaskId};
 
 /// Of its cap, the share a project may spend before the owner hears of it, once a month.
 pub const WARN_PERCENT: i64 = 80;
@@ -184,29 +184,6 @@ pub struct Project {
     pub updated_at: Millis,
 }
 
-/// Whether a member in `role` may lead a project.
-///
-/// # Errors
-/// [`Refusal::NotAProjectLead`] for anyone but a lead or the CEO.
-pub const fn may_lead(role: Role) -> Result<(), Refusal> {
-    if role.leads() {
-        return Ok(());
-    }
-    Err(Refusal::NotAProjectLead)
-}
-
-/// Whether a member in `role` may propose a project: a lead, who spots the pattern in its
-/// area; the CEO decides proposals and makes none (ADR 0120).
-///
-/// # Errors
-/// [`Refusal::OnlyLeadsPropose`] for anyone but a lead.
-pub const fn may_propose(role: Role) -> Result<(), Refusal> {
-    if matches!(role, Role::Lead) {
-        return Ok(());
-    }
-    Err(Refusal::OnlyLeadsPropose)
-}
-
 /// Whether a task, or a routine, under `goal` may be put in a project serving `serves`, which
 /// is now `status`.
 ///
@@ -353,7 +330,7 @@ pub fn read_dollars(text: &str) -> Option<Micros> {
 
 /// The tools a project's work is given, when the owner narrows them (the Holodeck plan's phase
 /// 4): kept as one setting a project, a JSON list of tool names, or `null` for none. A turn on
-/// the project's work is given these and its own four ([`super::deploy::HQ_TOOLS`]) alone;
+/// the project's work is given these and its own four ([`super::lab_tools::HQ_TOOLS`]) alone;
 /// with no list, what its role and brain give it, as before.
 #[must_use]
 pub fn tools_key(id: ProjectId) -> String {
@@ -428,23 +405,9 @@ mod tests {
         // Only reads come with a tool: never one of the lab's acts, nor a submission.
         for (_, with) in COMES_WITH {
             for read in with {
-                assert!(!super::super::deploy::LAB_ACTS.contains(read), "{read}");
+                assert!(!super::super::lab_tools::LAB_ACTS.contains(read), "{read}");
                 assert_ne!(*read, "repo_submit");
             }
-        }
-    }
-
-    #[test]
-    fn a_lead_or_the_ceo_leads_a_project_and_only_a_lead_proposes_one() {
-        for role in [Role::Ceo, Role::Lead] {
-            assert!(may_lead(role).is_ok(), "{role:?}");
-        }
-        // Leads propose; the CEO decides (ADR 0120).
-        assert!(may_propose(Role::Lead).is_ok());
-        assert_eq!(may_propose(Role::Ceo), Err(Refusal::OnlyLeadsPropose));
-        for role in [Role::Developer, Role::Researcher, Role::Reviewer] {
-            assert_eq!(may_lead(role), Err(Refusal::NotAProjectLead));
-            assert_eq!(may_propose(role), Err(Refusal::OnlyLeadsPropose));
         }
     }
 

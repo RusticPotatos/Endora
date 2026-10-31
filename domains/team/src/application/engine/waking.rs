@@ -6,7 +6,7 @@ use crate::domain::routines;
 use crate::domain::turns;
 use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::{
-    Brain, EventKind, Member, MemberId, Millis, Receipt, Refusal, Role, RunId, RunStatus, TaskId,
+    Brain, EventKind, Member, MemberId, Millis, Receipt, Refusal, RunId, RunStatus, TaskId,
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 use serde_json::json;
@@ -89,7 +89,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let project = self.project_of(task)?;
         Ok(WakeSituation {
             waits_for_review,
-            not_for_the_ceo: member.role == Role::Ceo && !reason.reaches_the_ceo(),
             project_paused: self.held_by_owner(project)?,
             stopped: self.store.stopped()?,
             paused: member.paused,
@@ -100,7 +99,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             live: self.live_turns(
                 member.id,
                 task,
-                self.need_of_wake(member, reason)?.kind == turns::TurnKind::Judgment,
+                turns::TurnKind::on(member.brain) == turns::TurnKind::Judgment,
             )?,
             already_held,
             nothing_to_do,
@@ -133,15 +132,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.bring_forward(task)?;
         }
         let situation = self.situation(&who, task, reason)?;
-        let decision = match task {
-            // The check after a deploy has one turn (ADR 0115, amended): once its verdict is
-            // given, nothing wakes it again.
-            Some(task) if self.deploy_check_given(task)? => {
-                WakeDecision::Refuse(wakes::Refused::Checked)
-            }
-            _ => wakes::decide(member, &situation),
-        };
-        Ok(decision)
+        Ok(wakes::decide(member, &situation))
     }
 
     pub(super) fn wake_held_lock(

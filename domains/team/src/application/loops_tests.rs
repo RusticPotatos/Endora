@@ -123,7 +123,7 @@ fn members_are_ranked_by_their_model() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let rae = hq.hire("Rae", Role::Developer, 10, 2, 0).unwrap();
-    hq.set_model(rae, "mac").unwrap();
+    hq.set_brain(rae, "mac").unwrap();
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["members"][0]["rank"], 5, "{}", snap["members"][0]);
 }
@@ -193,7 +193,7 @@ fn five(hq: &Hq<'_>) -> Five {
     let g = goal(hq);
     let seat = |name: &str, model: &str, role: Role| {
         let id = hq.hire(name, role, 10, 2, 0).unwrap();
-        hq.set_model(id, model).unwrap();
+        hq.set_brain(id, model).unwrap();
         id
     };
     let mara = seat("Mara", "opus", Role::Ceo);
@@ -487,35 +487,6 @@ fn while_the_mac_is_away_its_member_is_passed_over_and_its_items_go_up() {
         Some(f2.ada),
         "started above the away Mac"
     );
-}
-
-/// Before the members are models, the loops give nothing out: the team works as before.
-#[test]
-fn without_model_members_no_loop_gives_out_work() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = hq(&clock);
-    let g = goal(&hq);
-    let lead = hq.hire("Ada", Role::Lead, 10, 2, 0).unwrap();
-    let p = hq
-        .add_project(g, "ansible-nas", "the fork", lead, None)
-        .unwrap();
-    let t = hq
-        .add_task(
-            Author::Owner,
-            NewTask {
-                goal: g,
-                project: Some(p),
-                parent: None,
-                title: "Fix the lint".to_owned(),
-                description: String::new(),
-                assignee: None,
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )
-        .unwrap();
-    hq.tick().unwrap();
-    assert_eq!(assignee(&hq, t), None);
 }
 
 fn turn_of(hq: &Hq<'_>, member: MemberId) -> super::ports::RunContext {
@@ -958,9 +929,8 @@ fn the_team_becomes_one_team_of_five_ranked_models() {
         ("Bo", Brain::Local),
     ] {
         let m = by(name);
-        assert_eq!((m.brain, m.work_brain), (brain, brain), "{name}");
+        assert_eq!(m.brain, brain, "{name}");
         assert_eq!(m.role, Role::Developer, "{name}: no titles in the code");
-        assert_eq!(m.reports_to, None, "{name}: no reporting lines");
         assert!(m.at_work(), "{name}");
     }
     for name in ["Cy", "Dee", "Zed"] {
@@ -1106,23 +1076,6 @@ fn in_the_loops_a_notice_never_waits_on_the_desk() {
     assert_ne!(found.status, "waiting", "{found:?}");
 }
 
-/// Outside the loops a notice waits, as before.
-#[test]
-fn outside_the_loops_a_notice_waits() {
-    let clock = Hands(AtomicI64::new(NOON));
-    let hq = hq(&clock);
-    hq.hire("Ada", Role::Lead, 10, 2, 0).unwrap();
-    let id = hq.notice(None, "A restart cut 1 turn.").unwrap();
-    let found = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .find(|d| d.id == id)
-        .unwrap();
-    assert_eq!(found.status, "waiting");
-}
-
 /// The map (ADR 0142): a member who finds where something lives adds one line; another who adds
 /// the same line confirms it; every later briefing shows the most confirmed first; a line nobody
 /// confirms for 30 days fades; the owner sees each line and how often it was confirmed.
@@ -1220,7 +1173,7 @@ fn a_member_s_model_survives_a_restart() {
             Settings::default(),
         );
         let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
-        hq.set_model(bo, "local").unwrap();
+        hq.set_brain(bo, "local").unwrap();
         bo
     };
     let again = SqliteTeamStore::open(&path).unwrap();
@@ -1230,10 +1183,7 @@ fn a_member_s_model_survives_a_restart() {
         .into_iter()
         .find(|m| m.id == bo)
         .unwrap();
-    assert_eq!(
-        (found.brain, found.work_brain),
-        (Brain::Local, Brain::Local)
-    );
+    assert_eq!(found.brain, Brain::Local);
     let _ = std::fs::remove_file(&path);
 }
 

@@ -21,13 +21,12 @@ use endora_team::application::event_ports::EventStore;
 use endora_team::application::protocol::call;
 use endora_team::application::{
     Author, Clock, Engine, NewRoutine, NewTask, RunContext, Settings, Submission, TeamStore,
-    WingSeeded,
 };
-use endora_team::domain::money::{DAY_MS, DOLLAR};
+use endora_team::domain::money::DOLLAR;
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
-    Criterion, DeskId, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus,
-    Receipt, Role, TaskId, WakeReason,
+    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt, Role,
+    TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
@@ -148,10 +147,8 @@ struct Office {
     /// What the engine last refused, as the member or the owner reads it; `None` when the
     /// last thing asked was done.
     refused: Option<String>,
-    /// Whether HQ seeded its house log the last time it started.
-    seeded: Option<bool>,
     /// The engineering wing, once seeded (ADR 0115).
-    wing: Option<WingSeeded>,
+    wing: Option<Wing>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
     /// What the record last answered a member (ADR 0129), and how many wakes there were when
@@ -205,7 +202,6 @@ impl Default for Office {
             projects: HashMap::new(),
             turns: HashMap::new(),
             refused: None,
-            seeded: None,
             wing: None,
             answer: None,
             wakes_at_ask: 0,
@@ -484,11 +480,12 @@ fn owner_hands_in_project(w: &mut Office, name: String, title: String, project: 
     .expect("the owner may hand out what they like");
 }
 
-#[given(expr = "{word} hands {word} the task {string} under {string}")]
-#[when(expr = "{word} hands {word} the task {string} under {string}")]
-fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent: String) {
+/// A member splits a task off one it holds: its own, since a member hands work to nobody
+/// (ADR 0142).
+#[given(expr = "{word} splits off the task {string} under {string}")]
+#[when(expr = "{word} splits off the task {string} under {string}")]
+fn member_splits_off(w: &mut Office, by: String, title: String, parent: String) {
     let by = w.member(&by);
-    let to = w.member(&to);
     let goal = w.goal();
     let parent = w.task(&parent);
     w.add_task(
@@ -499,7 +496,7 @@ fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent
             parent: Some(parent),
             title,
             description: String::new(),
-            assignee: Some(to),
+            assignee: Some(by),
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
@@ -838,49 +835,66 @@ fn scorecard_waste(w: &mut Office, dollars: f64) {
     );
 }
 
-// --- The house log --------------------------------------------------------------------------
-
-#[when("HQ starts with an empty house log")]
-#[when("the owner clears the house log and HQ starts again")]
-fn hq_starts(w: &mut Office) {
-    if w.seeded.is_some() {
-        w.hq.set_house_log("").expect("the owner clears the log");
-    }
-    w.seeded = Some(w.hq.seed_house_log().expect("HQ starts"));
-}
-
-#[then(expr = "the house log says {string}")]
-fn house_log_says(w: &mut Office, text: String) {
-    assert_eq!(w.seeded, Some(true), "HQ did not seed the log");
-    let log = w.hq.house_log().expect("the store answers");
-    assert!(log.contains(&text), "the house log:\n{log}");
-}
-
-#[then("the house log stays empty")]
-fn house_log_empty(w: &mut Office) {
-    assert_eq!(w.seeded, Some(false), "HQ seeded the log again");
-    assert_eq!(w.hq.house_log().expect("the store answers"), "");
-}
-
 // --- The engineering wing (ADR 0115) --------------------------------------------------------
 
-/// HQ seeds the wing as it does on start: Kit the lead, Rae and Zed the developers, the goal
-/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task.
-#[given("the engineering wing")]
-fn the_wing(w: &mut Office) {
-    let seeded =
-        w.hq.seed_wing()
-            .expect("HQ seeds the wing")
-            .expect("not seeded yet");
-    for m in w.hq.store().members().expect("the store answers") {
-        w.members.entry(m.name.clone()).or_insert(m.id);
-    }
-    w.projects
-        .insert("ansible-nas clean-up".to_owned(), seeded.project);
-    w.wing = Some(seeded);
+/// The wing's goal, its project, and the lead's first task, the plan.
+#[derive(Debug)]
+struct Wing {
+    goal: GoalId,
+    project: ProjectId,
+    task: TaskId,
 }
 
-/// A member's first turn, the one HQ queues when it seeds the wing (Kit's, on the plan), is over.
+/// The wing: Kit the lead on Claude Sonnet, Rae and Zed the developers on Claude Haiku, the goal
+/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task, the plan.
+#[given("the engineering wing")]
+fn the_wing(w: &mut Office) {
+    let kit =
+        w.hq.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
+            .expect("Kit is hired");
+    w.hq.set_brain(kit, "claude-sonnet-5-5")
+        .expect("Kit thinks with Sonnet");
+    w.members.insert("Kit".to_owned(), kit);
+    for (name, look) in [("Rae", 2), ("Zed", 4)] {
+        let id =
+            w.hq.hire(name, Role::Developer, Role::Developer.share(), 2, look)
+                .expect("the developer is hired");
+        w.hq.set_brain(id, "claude-haiku-5-5")
+            .expect("the developer thinks with Haiku");
+        w.members.insert(name.to_owned(), id);
+    }
+    let goal =
+        w.hq.set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
+            .expect("the wing's goal is set");
+    let project =
+        w.hq.add_project(goal, endora_team::domain::wing::WING_PROJECT, "", kit, None)
+            .expect("the wing's project is made");
+    let task =
+        w.hq.add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the clean-up".to_owned(),
+                description: String::new(),
+                assignee: Some(kit),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Three branches are proposed", false)],
+        )
+        .expect("Kit is given the plan");
+    w.projects
+        .insert("ansible-nas clean-up".to_owned(), project);
+    w.wing = Some(Wing {
+        goal,
+        project,
+        task,
+    });
+}
+
+/// A member's first turn, the one the plan queues (Kit's, on the plan), is over.
 /// The Mac takes one turn at a time (ADR 0131), and the scenario is about the others'.
 #[given(expr = "{word}'s planning turn is over")]
 fn planning_turn_is_over(w: &mut Office, name: String) {
@@ -889,47 +903,17 @@ fn planning_turn_is_over(w: &mut Office, name: String) {
     w.tick();
 }
 
-fn wing(w: &Office) -> &WingSeeded {
+fn wing(w: &Office) -> &Wing {
     w.wing.as_ref().expect("the scenario has the wing")
 }
 
-#[given(expr = "{word} hands {word} the task {string} in the wing")]
-fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
-    hand_in_the_wing(
-        w,
-        &by,
-        &to,
-        title,
-        vec![Criterion::new("The branch passes its checks", false)],
-    );
-}
-
-/// As above, with what done means as the owner wrote it: a line of the step's table each.
-#[given(expr = "{word} hands {word} the task {string} in the wing, with the criteria")]
-fn wing_hands_with_criteria(
-    w: &mut Office,
-    by: String,
-    to: String,
-    title: String,
-    step: &cucumber::gherkin::Step,
-) {
-    let criteria: Vec<Criterion> = step
-        .table
-        .as_ref()
-        .expect("the criteria are the step's table")
-        .rows
-        .iter()
-        .map(|row| Criterion::new(&row[0], false))
-        .collect();
-    hand_in_the_wing(w, &by, &to, title, criteria);
-}
-
-fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria: Vec<Criterion>) {
-    let by = w.member(by);
-    let to = w.member(to);
+/// The owner hands a member of the wing a task under the plan, with the wing's criterion.
+#[given(expr = "the owner hands {word} the task {string} in the wing")]
+fn wing_hands(w: &mut Office, to: String, title: String) {
+    let to = w.member(&to);
     let (goal, project, plan) = (wing(w).goal, wing(w).project, wing(w).task);
     w.hq.add_task_with(
-        Author::Member(by),
+        Author::Owner,
         NewTask {
             goal,
             project: Some(project),
@@ -940,9 +924,9 @@ fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria:
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
-        &criteria,
+        &[Criterion::new("The branch passes its checks", false)],
     )
-    .expect("the lead hands work on");
+    .expect("the owner hands work out");
 }
 
 /// The head the node's record of a submission has in these scenarios, and the base under it.
@@ -987,169 +971,6 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
     .expect("the node's receipt of the submission");
 }
 
-// --- The check after a deploy (ADR 0115, amended) ----------------------------------------------
-
-/// The routine that takes the home lab's alarms, the member's, in a project it leads.
-#[given(expr = "the lab's routine is {word}'s, in {string}")]
-fn lab_routine_is(w: &mut Office, name: String, project: String) {
-    let lead = w.member(&name);
-    let goal = w.goal();
-    let project =
-        w.hq.add_project(goal, &project, "", lead, None)
-            .expect("the owner adds the project");
-    w.hq.add_routine(
-        Author::Owner,
-        NewRoutine {
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            goal,
-            project: Some(project),
-            assignee: lead,
-            every_ms: 7 * DAY_MS,
-            on_lab_trouble: true,
-        },
-    )
-    .expect("the owner adds the routine");
-}
-
-/// The tester and the lead have done their part, and the owner had the branch pushed: the node
-/// says it pushed it. On the owner's card, as an owner who put the cards back has it (ADR 0115,
-/// amended 2026-10-31); without the cards, see `accepted-work-reaches-the-fork.feature`.
-#[when(expr = "{string} is accepted and pushed")]
-fn accepted_and_pushed(w: &mut Office, title: String) {
-    let task = w.task(&title);
-    w.hq.set_delivery(Some(true), None)
-        .expect("the owner's setting is kept");
-    w.hq.store()
-        .set_task_status(task, endora_team::domain::TaskStatus::Done)
-        .expect("the store answers");
-    w.hq.offer_push(task).expect("the push is offered");
-    let push = newest_card(w, "push");
-    w.hq.decide(push, "approve").expect("the owner approves");
-    let branch =
-        w.hq.push_asked(push)
-            .expect("the store answers")
-            .expect("asked");
-    w.hq.push_outcome(push, true, &format!("Pushed {} to the fork.", branch.name))
-        .expect("the node's word is taken");
-}
-
-/// The newest desk item of `kind`, whatever its status.
-fn newest_card(w: &Office, kind: &str) -> DeskId {
-    w.hq.store()
-        .desk()
-        .expect("the store answers")
-        .into_iter()
-        .filter(|d| d.kind == kind)
-        .map(|d| d.id)
-        .max_by_key(|id| id.0)
-        .unwrap_or_else(|| panic!("no {kind} card"))
-}
-
-#[then(expr = "the owner's desk asks whether {string} is deployed")]
-fn desk_asks_deployed(w: &mut Office, branch: String) {
-    let items = w.waiting_on_desk("deploy");
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert!(items[0].text.contains(&branch), "{}", items[0].text);
-}
-
-#[when("the owner says it is deployed")]
-fn owner_says_deployed(w: &mut Office) {
-    let card = newest_card(w, "deploy");
-    let said = w.hq.decide(card, "deployed");
-    w.note(said);
-}
-
-/// The member's turn on that task: other turns under way end first, as the Mac takes one at a
-/// time; the worker claims the task before the model's first round.
-#[when(expr = "{word}'s turn on {string} starts")]
-fn turn_on_starts(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let id = w.member(&name);
-    for _ in 0..8 {
-        w.tick();
-        let started = w.hq.runner().started();
-        if let Some(context) = started
-            .iter()
-            .rfind(|c| c.member == id && c.task == Some(task))
-            .cloned()
-        {
-            w.turns.insert(name.clone(), context);
-            w.use_tool(&name, "claim", &json!({ "task": task.0 }));
-            return;
-        }
-        for other in started {
-            w.hq.runner().finish(other.run, true);
-        }
-    }
-    panic!("{name}'s turn on {title:?} never started");
-}
-
-#[then(expr = "{word}'s turn is offered {string} alone")]
-fn offered_alone(w: &mut Office, name: String, tools: String) {
-    let context = w.turns.get(&name).expect("the turn started").clone();
-    let (run, member) =
-        w.hq.turn_of(&context.token)
-            .expect("the store answers")
-            .expect("a running turn");
-    let mut offered: Vec<String> =
-        endora_team::application::protocol::tools_in(&w.hq, &run, &member)
-            .as_array()
-            .expect("a list")
-            .iter()
-            .filter_map(|t| t["name"].as_str().map(str::to_owned))
-            .collect();
-    offered.sort();
-    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
-    assert_eq!(offered, wanted);
-}
-
-#[then(expr = "{word}'s turn may use the lab's {string} alone, with no shell")]
-fn lab_reads_alone(w: &mut Office, name: String, tools: String) {
-    let run = w.turns.get(&name).expect("the turn started").run;
-    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
-    assert_eq!(
-        w.hq.lab_tools_of(run).expect("the store answers"),
-        Some(wanted)
-    );
-    assert!(!w.hq.may_use_a_shell(run).expect("the store answers"));
-}
-
-#[when(expr = "{word} uses {string} in her turn")]
-fn uses_in_turn(w: &mut Office, name: String, tool: String) {
-    w.use_tool(
-        &name,
-        &tool,
-        &json!({ "title": "Restart deluge", "assignee": "Dee" }),
-    );
-}
-
-/// The node's reading of the lab, kept as the turn's receipt, cited to close the check.
-#[when(expr = "{word} reads the lab and closes {string}, citing her reading")]
-fn reads_and_closes(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let context = w.turns.get(&name).expect("the turn started").clone();
-    let reading =
-        w.hq.record_receipt(
-            &context.token,
-            &Called {
-                tool: "homelab_status".to_owned(),
-                args: String::new(),
-                excerpt: "every container running (healthy)".to_owned(),
-                ok: true,
-                act: false,
-                confidential: false,
-            },
-        )
-        .expect("the node's receipt");
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "done", "reason": "the lab is healthy",
-                 "evidence": [[format!("r{reading}")]] }),
-    );
-}
-
 #[then(expr = "the last post in {string} starts {string}")]
 fn last_post_starts(w: &mut Office, title: String, start: String) {
     let task = w.task(&title);
@@ -1160,14 +981,6 @@ fn last_post_starts(w: &mut Office, title: String, start: String) {
             .pop()
             .expect("something was posted");
     assert!(last.text.starts_with(&start), "{}", last.text);
-}
-
-#[then(expr = "the owner's desk holds a {string} card saying {string}")]
-fn desk_card_saying(w: &mut Office, kind: String, text: String) {
-    let items = w.waiting_on_desk(&kind);
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert!(items[0].text.contains(&text), "{}", items[0].text);
-    assert!(!items[0].text.contains("healthy"), "{}", items[0].text);
 }
 
 /// As above, with the line the check job gives: both counts, and the verdict against develop.
@@ -1229,29 +1042,14 @@ fn task_is(w: &mut Office, title: String, status: String) {
     assert_eq!(found.status.name(), status);
 }
 
-#[given(expr = "the owner hires {word} as a {word} under {word}")]
-#[when(expr = "the owner hires {word} as a {word} under {word}")]
-fn owner_hires(w: &mut Office, name: String, role: String, under: String) {
+#[given(expr = "the owner hires {word} as a {word}")]
+#[when(expr = "the owner hires {word} as a {word}")]
+fn owner_hires(w: &mut Office, name: String, role: String) {
     let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
-    let manager = w.member(&under);
-    let hired = w.hq.hire_by_owner(&name, role, "local", Some(manager));
+    let hired = w.hq.hire_by_owner(&name, role, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }
-}
-
-#[then(expr = "{word} reports to {word}")]
-fn reports_to(w: &mut Office, name: String, manager: String) {
-    let id = w.member(&name);
-    let manager = w.member(&manager);
-    let found =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired");
-    assert_eq!(found.reports_to, Some(manager));
 }
 
 #[then(expr = "it is refused for {string}")]
@@ -1401,6 +1199,25 @@ fn feed_says(w: &mut Office, said: String) {
 #[given("downtime is on")]
 fn downtime_on(w: &mut Office) {
     w.hq.set_downtime(true);
+}
+
+#[then(expr = "{word}'s turn is offered {string} alone")]
+fn offered_alone(w: &mut Office, name: String, tools: String) {
+    let context = w.turns.get(&name).expect("the turn started").clone();
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    let mut offered: Vec<String> =
+        endora_team::application::protocol::tools_in(&w.hq, &run, &member)
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+    offered.sort();
+    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
+    assert_eq!(offered, wanted);
 }
 
 #[given("a tick passes")]

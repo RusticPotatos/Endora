@@ -229,64 +229,6 @@ fn question(hq: &Hq<'_>) -> crate::application::ports::DeskItem {
 }
 
 #[test]
-fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let (hq, s, context) = started(&clock);
-    let (run, me) = turn(&hq, &context.token);
-    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
-    call(
-        &hq,
-        &run,
-        &me,
-        "post",
-        &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
-    )
-    .unwrap();
-    assert!(
-        !hq.store()
-            .wakes()
-            .unwrap()
-            .iter()
-            .any(|wake| wake.member != s.dev)
-    );
-    hq.post(Author::Owner, s.task, "@Grace please inspect the list")
-        .unwrap();
-    // The owner's explicit request waits for his turn to end. She is the tester, whose work is the
-    // Mac's (ADR 0131), and the node says it is free.
-    hq.tell_mac(true, "ready");
-    hq.runner().finish(context.run, true);
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    let grace = hq
-        .runner()
-        .started()
-        .into_iter()
-        .find(|c| c.member != s.dev)
-        .expect("Grace's turn on the task");
-    let (her_run, her) = turn(&hq, &grace.token);
-    assert_eq!(her_run.task, Some(s.task));
-    call(
-        &hq,
-        &her_run,
-        &her,
-        "ask_owner",
-        &json!({ "text": "Is the list for watches only?" }),
-    )
-    .unwrap();
-    let asked = question(&hq);
-    assert_eq!(asked.member, Some(her.id), "the desk knows who asked");
-    hq.runner().finish(grace.run, true);
-    hq.tick().unwrap();
-    hq.decide(asked.id, "seen").unwrap();
-    let woke = hq.store().wakes().unwrap().into_iter().next_back().unwrap();
-    assert_eq!(
-        (woke.member, woke.task),
-        (her.id, Some(s.task)),
-        "Grace asked, so Grace is woken, not Linus whose task it is"
-    );
-}
-
-#[test]
 fn the_owner_answers_a_question_in_its_thread_and_then_the_member_is_woken() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, s, context) = started(&clock);
@@ -416,7 +358,6 @@ fn asking_the_owner_ends_the_turn_and_its_token_does_nothing_more() {
 /// A goal's tasks as a tree, with Linus's turn on `own`: `parent` above it, `child` and
 /// `grandchild` below, and `other` beside, in the same goal.
 struct Tree {
-    lead: MemberId,
     dev: MemberId,
     parent: TaskId,
     own: TaskId,
@@ -454,7 +395,6 @@ fn tree(hq: &Hq<'_>) -> Tree {
     let grandchild = add(Some(child), "Sort by brand", None);
     let other = add(None, "Write the help page", None);
     Tree {
-        lead,
         dev,
         parent,
         own,
@@ -513,37 +453,6 @@ fn a_turn_acts_on_its_own_task_and_below_and_writes_above_or_where_it_was_named(
         .unwrap();
     post(t.other).unwrap();
     assert!(use_tool("claim", json!({ "task": t.other.0 })).is_err());
-}
-
-#[test]
-fn the_lead_acts_on_any_task_in_its_goal_but_never_sets_done() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let hq = Engine::new(
-        SqliteTeamStore::in_memory().unwrap(),
-        SimulatedRunner::new(4),
-        &clock,
-        Settings::default(),
-    );
-    let t = tree(&hq);
-    let lead = next_turn(&hq, t.lead);
-    let (run, me) = turn(&hq, &lead.token);
-    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
-    use_tool("claim", json!({ "task": t.other.0 })).unwrap();
-    use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "blocked", "reason": "waiting on the owner" }),
-    )
-    .unwrap();
-    use_tool(
-        "post",
-        json!({ "task": t.grandchild.0, "text": "Brand first." }),
-    )
-    .unwrap();
-    let done = use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "done", "reason": "finished" }),
-    );
-    assert!(done.unwrap_err().contains("gate"));
 }
 
 #[test]

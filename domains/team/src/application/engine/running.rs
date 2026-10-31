@@ -2,7 +2,6 @@
 
 use super::{COLLEAGUE_HELP, Done, Engine, EngineError, STANDARDS};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
-use crate::domain::effort::{self, Effort};
 use crate::domain::handover;
 use crate::domain::mac;
 use crate::domain::review;
@@ -19,11 +18,6 @@ const OWNER_LINE_MOST: usize = 300;
 use serde_json::json;
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    /// How hard the member's Claude tries this turn (see [`effort::effort_for`]).
-    pub(super) fn effort_of(&self, member: &Member) -> Option<Effort> {
-        effort::effort_for(member.brain, member.role, effort::Weight::Ordinary)
-    }
-
     pub(super) fn reason_for(&self, run: &Run) -> Done<&'static str> {
         Ok(self.store.wake(run.wake)?.map_or("", |w| w.reason.name()))
     }
@@ -93,8 +87,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if status == RunStatus::Succeeded {
             self.after_out_of_room(&run)?;
         }
-        // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
-        self.after_a_deploy_check(&run)?;
         Ok(())
     }
 

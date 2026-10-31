@@ -5,10 +5,25 @@
 
 use cucumber::{given, then, when};
 
+use endora_team::application::desk_ports::DeskStore;
 use endora_team::application::wing_ports::WingStore;
 use endora_team::application::{Delivered, Found};
 
-use super::{Office, newest_card};
+use endora_team::domain::DeskId;
+
+use super::Office;
+
+/// The newest desk item of `kind`, whatever its status.
+fn newest_card(w: &Office, kind: &str) -> DeskId {
+    w.hq.store()
+        .desk()
+        .expect("the store answers")
+        .into_iter()
+        .filter(|d| d.kind == kind)
+        .map(|d| d.id)
+        .max_by_key(|id| id.0)
+        .unwrap_or_else(|| panic!("no {kind} card"))
+}
 
 impl Office {
     /// The branch HQ recorded under `name`.

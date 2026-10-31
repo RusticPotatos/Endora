@@ -19,10 +19,6 @@ pub trait OfficeStore {
         by: &str,
         at: Millis,
     ) -> Stored<i64>;
-    /// Moves an item.
-    fn move_office_item(&self, id: i64, x: i64, y: i64) -> Stored<()>;
-    /// Takes an item away.
-    fn remove_office_item(&self, id: i64) -> Stored<()>;
     /// Makes the office exactly these items, numbers kept: for an undo and a reset.
     fn replace_office_items(&self, items: &[office::Item]) -> Stored<()>;
     // ---- games in the office (ADR 0121) ---------------------------------------------------

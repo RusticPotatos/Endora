@@ -347,11 +347,8 @@ function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
 // What was really spent apart from what is only held for turns: a free local turn holds money
 // while it runs and spends none.
 function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars(m.held)} held ${perDay}`; }
-// What a member spends. With two brains (ADR 0131) only its judgment, on Claude, is paid from the
-// pool; its work, on the Mac or the house's model, costs nothing. (An HQ before that named one
-// brain, and a member on a house model took no share of the pool, ADR 0111.)
+// What a member spends: a member is its model (ADR 0142), and the house's models cost nothing.
 function hqMemberMoney(m) {
-  if (m.work_brain) return `${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)} · its work costs nothing`;
   return m.brain === "mac" ? "the owner's Mac: costs nothing, runs only while the Mac is free" : m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`);
 }
 // A role as the owner reads it.
@@ -448,7 +445,7 @@ function hqLogEntry(e) {
     "routine.posted": ["wake", `Alarm into ${key}: ${d.said}`],
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
-    "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : "works"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
+    "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : d.slot === "work" ? "works" : "thinks"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
     // The CEO and the chain of command (ADR 0111).
     "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
@@ -527,7 +524,6 @@ function hqTell(e, live) {
   if (e.kind === "task.claimed" && p) hqSay(p, "checkout " + key);
   if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
   if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
-  const ceo = hqCeo(), boss = ceo && HQ.people[ceo.id];
   // A member's question woke the one it went to: the one who asked, if between turns, goes to
   // them (the CEO's open door, or the desk of someone on a team) and waits there until their
   // turn on it is over.
@@ -546,14 +542,8 @@ function hqTell(e, live) {
   if (e.kind === "office.proposed" && p) hqSay(p, "an idea for the office");
   // A match of ping-pong or pool was played: the two walk to the table and say how it went.
   if (e.kind === "game.played") hqPlayMatch(d);
-  // The CEO's decision for the board: it takes it to the board room's door, and back.
-  if (e.kind === "desk.added" && d.kind === "decision" && boss) {
-    boss.errand = { kind: "board", hold: 2.5, say: "for the board", spot: { ...HQ_P.boardDoor, dir: "up" } };
-    hqGo(boss);
-  }
 }
 
-function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.role === "ceo"); }
 
 // A bubble holds a few words: a status change keeps only what was said about it. A longer line
 // stops at the last whole word that fits, with an ellipsis, never in the middle of one (the
@@ -1571,7 +1561,6 @@ const HQ_DESK_HELP = {
   question: "A member is asking you. Type an answer if you like, then Answer & wake sends it and wakes them; Dismiss closes it unanswered.",
   notice: "Only to know of. Seen or Dismiss clears it.",
   approval: "A member wants to run exactly what is shown, once. Approve runs it; Decline runs nothing.",
-  decision: "The CEO asks the board to choose. Approve or Decline, or Answer in your own words; your words go in the task for the CEO.",
   project_cap: "The CEO asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
   project_budget: "This project spent its monthly cap, so its paid work waits. Raise the cap (type the new amount) to go on now; Wait for next month lets it resume when the month turns.",
   rounds: "This work was sent back three times. Accept as done closes it; Send it back gives it one more round.",
@@ -1580,8 +1569,6 @@ const HQ_DESK_HELP = {
   out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
   tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
-  deploy: "Deployed once you have merged the branch and run the playbook: the lab's routine member then checks the lab once, reading health, logs and metrics only. Won't deploy closes this with no check.",
-  deploy_check: "The check after a deploy did not show the lab healthy: it found a problem, or could not tell. Seen or Dismiss clears it; the change's thread has the details.",
   privacy: "The privacy scan found something personal-looking in an accepted branch, so nothing was pushed. Send it back has the team take it out; Push it anyway pushes it as it is, if what was found is not yours.",
   needs_owner: "An accepted change needs something from you before it is deployed, such as a vault value it now reads. Done once you have set it; Dismiss clears it.",
 };
@@ -1599,9 +1586,6 @@ const HQ_DESK_CHOICES = {
   // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
   // what the card shows, once; declining runs nothing.
   approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
-  // The CEO's decision for the board (ADR 0111): approve, decline, or answer in words; what
-  // the owner writes goes in the task's thread, and the CEO is woken to act on it.
-  decision: [["approve", "Approve", "ok"], ["decline", "Decline", "no"], ["answer", "Answer", ""]],
   // A cap the CEO asks for a project (ADR 0113): granted as asked, or at what the owner
   // writes; or not at all, and the project runs on the pool's limits alone.
   project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
@@ -1621,10 +1605,6 @@ const HQ_DESK_CHOICES = {
   out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
   // The runaway tripwire stopped the team (ADR 0133): resume it, or look first.
   tripwire: [["resume", "Resume the team", "ok"], ["seen", "Seen", ""]],
-  // The check after a deploy (ADR 0115, amended): the owner's word that a pushed branch is
-  // deployed starts one read-only check of the lab; its verdict, when not healthy, comes back.
-  deploy: [["deployed", "Deployed", "ok"], ["not_deploying", "Won't deploy", "no"]],
-  deploy_check: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
   // Accepted work without a card (ADR 0115, amended 2026-10-31): a branch the privacy scan
   // held, and a change that needs something of the owner.
   privacy: [["send_back", "Send it back", "ok"], ["push_anyway", "Push it anyway", "no"]],
@@ -1713,16 +1693,13 @@ document.body.addEventListener("input", (ev) => {
 // choices. Every word goes through esc: they are a member's.
 function hqNeed(s, d) {
   const choices = hqDeskChoices(d);
-  const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
-  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, shown)}
+  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, d.text)}
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}</p>
       ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
-      ${d.kind === "decision" ? hqDecision(d.decision) : ""}
-      ${d.kind === "deploy" && /^https:\/\/github\.com\//.test(String(d.branch_url || "")) ? `<p><a href="${esc(d.branch_url)}" target="_blank" rel="noopener noreferrer">Open the pull request on GitHub</a></p>` : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
-      ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
+      ${d.kind === "question" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
       ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
       ${d.kind === "out_for_day" && hqPoolSpent(s) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up the pool first</button></div>` : ""}
@@ -1902,7 +1879,7 @@ function viewHQ() {
         ${hqNotes(s)}
         ${hqProjects(s)}
         ${hqAccepted(s)}
-        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm(s))}</section>
+        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section>
         ${hqContracts(s.contracts)}
         ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
         ${hqOffice(s) ? hqFold("office", "Office", "the floor and its games", hqOffice(s)) : ""}`)}
@@ -1919,14 +1896,6 @@ function viewHQ() {
 function hqBrainTag(brain) {
   const b = String(brain || "local");
   return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b.includes("deepseek") ? "DeepSeek" : b === "mac" ? "Mac" : "Local";
-}
-
-// A member's two brains (ADR 0131), in a few words: "Work: Mac (busy) · Judgment: Sonnet". The
-// Mac's word of state is all HQ says of it; its card is in Settings → AI (the owner, 31 Oct).
-function hqBrainsTag(m) {
-  const tag = (b) => hqBrainTag(b) + (b === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : "");
-  if (!m.work_brain) return tag(m.brain);
-  return `Work: ${tag(m.work_brain)} · Judgment: ${tag(m.judgment_brain || m.brain)}`;
 }
 
 // What a member's turn waits for, in the owner's words, if one waits (ADR 0131): for budget,
@@ -1959,11 +1928,11 @@ function hqRosterLine(m) {
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">
-      <p class="hq-who">${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
+      <p class="hq-who">${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainTag(m.brain) + (m.brain === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : ""))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
   return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <small>${esc(hqBrainTag(m.work_brain || m.brain))} · ${doing}</small> <span>${money}</span></button>${controls}</li>`;
+      <small>${esc(hqBrainTag(m.brain))} · ${doing}</small> <span>${money}</span></button>${controls}</li>`;
 }
 
 // The team board: a line a member, no groups (ADR 0142: ranked models, no roles or reporting
@@ -2080,23 +2049,17 @@ function hqBundleOf(d) {
   return m ? m[1] : "";
 }
 
-// The owner hires (ADR 0115, 0131): a name, a role, what the member works with (the Mac or the
-// house's model) and the Claude it judges with, and whom it reports to. HQ decides the rules
-// (one CEO, a Claude the role may use) and refuses the rest; this only asks.
-function hqHireForm(s) {
+// The owner hires (ADR 0115, 0142): a name, a title (a name only) and the model it is. HQ
+// refuses a model it does not have; this only asks.
+function hqHireForm() {
   const roles = [["developer", "Developer"], ["lead", "Lead"], ["researcher", "Researcher"], ["reviewer", "Tester"], ["ceo", "CEO"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const works = [["mac", "Mac"], ["local", "Local"]]
+  const brains = [["local", "Local"], ["mac", "Mac"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"], ["deepseek-flash", "DeepSeek Flash"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"]]
-    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
   return `<h3>Hire</h3><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
-      <select id="hq-hire-role" aria-label="Role">${roles}</select>
-      <label>works with <select id="hq-hire-work" aria-label="What the member works with">${works}</select></label>
-      <label>judges with <select id="hq-hire-judgment" aria-label="The Claude the member judges with">${judges}</select></label>
-      <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
+      <select id="hq-hire-role" aria-label="Title">${roles}</select>
+      <label>thinks with <select id="hq-hire-brain" aria-label="The model the member is">${brains}</select></label>
       <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div>`;
 }
 
@@ -2111,30 +2074,14 @@ function hqDocuments(t) {
   return `<div class="hq-evidence"><h3>Branches and documents</h3>${rows ? `<ul class="hq-thread">${rows}</ul>` : ""}${shown}</div>`;
 }
 
-// What a member thinks with (ADR 0109): the house's own model, or a Claude its role may use,
-// as HQ lists them for it. The one it has is pressed; each other is a tap away.
+// What a member thinks with (ADR 0109, 0142): its one model, of those HQ lists. The one it has
+// is pressed; each other is a tap away.
 function hqBrains(m) {
-  // Two brains (ADR 0131): what it works with, and the Claude it judges with. Every member has
-  // both, so neither can be taken away, only changed.
-  if (m.work_brains) {
-    const pick = (act, current, b) => `<button class="hq-btn${b.name === current ? " ok" : ""}" aria-pressed="${b.name === current ? "true" : "false"}"
-      data-act="hq:${act}:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
-    return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} works with">Work: ${m.work_brains.map((b) => pick("workbrain", m.work_brain, b)).join("")}</div>
-      <div class="hq-row" role="group" aria-label="The Claude ${esc(m.name)} judges with">Judgment: ${(m.judgment_brains || []).map((b) => pick("judge", m.judgment_brain, b)).join("")}</div>`;
-  }
   const brains = m.brains || [];
   if (brains.length < 2) return "";
   const btn = (b) => `<button class="hq-btn${b.name === m.brain ? " ok" : ""}" aria-pressed="${b.name === m.brain ? "true" : "false"}"
     data-act="hq:brain:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
   return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} thinks with">Brain: ${brains.map(btn).join("")}</div>`;
-}
-
-// The CEO's decision for the board (ADR 0111), in its three parts: every word is the CEO's,
-// so all of it is escaped.
-function hqDecision(c) {
-  if (!c) return "";
-  return `<dl class="hq-kv"><dt>Decision</dt><dd>${esc(c.decision)}</dd>
-    <dt>Recommendation</dt><dd>${esc(c.recommendation)}</dd><dt>Why</dt><dd>${esc(c.why)}</dd></dl>`;
 }
 
 // A project's title, by its id.
@@ -2300,22 +2247,14 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
-// The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
-// every turn. The owner reads it here and may rewrite it.
+// The old house log (ADR 0111), the CEO's: read-only, as the house page is where the house is
+// kept now (ADR 0122, 0142).
 function hqHouse(s) {
   const log = s.house_log || "";
-  // Once its lines are on the house page's timeline (ADR 0122), the old log is read-only.
-  if (s.world && s.world.migrated) {
-    if (!log.trim()) return "";
-    return `<details class="hq-card"><summary>The old house log (read-only)</summary>
+  if (!log.trim()) return "";
+  return `<section class="hq-card"><h2>The old house log (read-only)</h2>
       <p class="hq-note">Its lines are on the house page's timeline, in the World card.</p>
-      <pre class="hq-doc">${esc(log)}</pre></details>`;
-  }
-  return `<section class="hq-card"><h2>House log</h2>
-    <p class="hq-note">Kept by the CEO; the CEO and the lead read it every turn.</p>
-    <textarea id="hq-house" rows="6" maxlength="6000" aria-label="The house log"
-      placeholder="Nothing yet: the CEO adds what it learns about the house">${esc(log)}</textarea>
-    <div class="hq-row"><button class="hq-btn ok" data-act="hq:house:save">Save the house log</button></div></section>`;
+      <pre class="hq-doc">${esc(log)}</pre></section>`;
 }
 
 // ---- The owner's Mac as a brain (ADR 0130) ---------------------------------------------------
@@ -2576,7 +2515,7 @@ function hqSelected() {
     return `<div class="hq-sel">${esc(m.name)} · ${esc(hqRole(m.role))}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
-      <dt>Brain</dt><dd>${m.work_brain ? esc(hqBrainsTag(m)) : esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
+      <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id, "member-" + m.id)}`;
   }
   if (sel.type === "item") {
@@ -2643,11 +2582,11 @@ async function hqDispatch(verb, noun, id, arg) {
   if (noun === "feed") return hqFeedAct(id);
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member
-    // wakes; so do the board's words on the CEO's decision.
+    // wakes.
     const box = document.getElementById(`hq-answer-${id}`);
     const item = ((HQ.snap && HQ.snap.desk) || []).find((d) => d.id === Number(id));
     const amount = item && (item.kind === "project_cap" || item.kind === "project_budget" || item.kind === "out_for_day");
-    const takesWords = arg === "seen" || amount || (item && item.kind === "decision");
+    const takesWords = arg === "seen" || amount;
     const answer = takesWords && box ? box.value.trim() : "";
     if (arg === "answer" && !answer) { flash("Write your answer first.", "warn"); return true; }
     if (arg === "raise" && !answer) { flash("Write the new cap first, in dollars a month.", "warn"); return true; }
@@ -2683,23 +2622,6 @@ async function hqDispatch(verb, noun, id, arg) {
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
-  // Two brains (ADR 0131): what a member works with (the Mac or the house's model, free), and
-  // the Claude it judges with, which is paid from the pool and reads what it is shown.
-  if (noun === "workbrain") {
-    const m = hqMember(Number(id)), b = ((m && m.work_brains) || []).find((x) => x.name === arg);
-    if (!m || !b || m.work_brain === arg) return true;
-    try { await api("POST", `/v1/hq/members/${id}/work-brain`, { work_brain: arg }); flash(`${m.name} works with ${b.label}.`, "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  if (noun === "judge") {
-    const m = hqMember(Number(id)), b = ((m && m.judgment_brains) || []).find((x) => x.name === arg);
-    if (!m || !b || m.judgment_brain === arg) return true;
-    if (!confirm(`${m.name} will judge with ${b.label}: each decision turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results included; Restricted ones stay home). Go ahead?`)) return true;
-    try { await api("POST", `/v1/hq/members/${id}/judgment-brain`, { judgment_brain: arg }); flash(`${m.name} judges with ${b.label}.`, "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
   // The owner renames a member: HQ keeps names apart, as members are named in threads.
   if (noun === "rename") {
     const m = hqMember(Number(id)); if (!m) return true;
@@ -2709,15 +2631,13 @@ async function hqDispatch(verb, noun, id, arg) {
     catch (e) { flash("Couldn't rename: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
-  // The owner hires (ADR 0115, 0131): HQ refuses a second CEO or a Claude the role may not use.
+  // The owner hires (ADR 0115, 0142): HQ refuses a model it does not have.
   if (noun === "hire") {
     const name = val("hq-hire-name");
     const role = (document.getElementById("hq-hire-role") || {}).value || "developer";
-    const work_brain = (document.getElementById("hq-hire-work") || {}).value || "mac";
-    const judgment_brain = (document.getElementById("hq-hire-judgment") || {}).value || null;
-    const to = Number((document.getElementById("hq-hire-to") || {}).value || 0) || null;
+    const brain = (document.getElementById("hq-hire-brain") || {}).value || "local";
     if (!name) { flash("Give the new member a name.", "warn"); return true; }
-    try { await api("POST", "/v1/hq/members", { name, role, work_brain, judgment_brain, reports_to: to }); flash(`${name} joined the team.`, "ok"); }
+    try { await api("POST", "/v1/hq/members", { name, role, brain }); flash(`${name} joined the team.`, "ok"); }
     catch (e) { flash("Couldn't hire: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
@@ -2788,13 +2708,6 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The team's world (ADR 0122): make a piece canon, demote canon, or download it all.
   if (noun === "world") return hqWorldAct(id, arg);
-  // The owner rewrites the CEO's house log; empty clears it.
-  if (noun === "house") {
-    const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";
-    try { await api("POST", "/v1/hq/house", { log }); flash("House log saved.", "ok"); }
-    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
 
   // A goal's notes for the team; empty clears them.
   if (noun === "note") {

@@ -159,7 +159,7 @@ fn a_tasks_project_serves_its_goal_and_a_sub_task_stays_in_its_parents() {
         &hq,
         &context,
         "create_task",
-        &json!({ "title": "Restart sonarr", "description": "and watch it", "assignee": "Linus",
+        &json!({ "title": "Restart sonarr", "description": "and watch it",
                  "criteria": [{ "text": "sonarr is running", "live": true }] }),
     )
     .unwrap();

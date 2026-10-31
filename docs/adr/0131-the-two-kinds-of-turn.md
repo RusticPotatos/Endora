@@ -8,7 +8,9 @@ Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Builds
 [0130](0130-the-macs-brain.md) (the Mac's brain and the queued turn that waits for it), and on
 the constitution's "models propose, code authorizes". Amends 0109, 0119 and 0130 (see their
 notes). Built: everything below, and the owner's scenarios in
-`domains/team/features/the-two-brains.feature`.
+`domains/team/features/the-two-brains.feature`. Retired 2026-10-30 by
+[0142](0142-one-team-of-loops.md): a member is its model, and what is left of those scenarios is
+`domains/team/features/a-member-is-its-model.feature`.
 
 Amended 2026-10-19, after review, in five places, each marked below: every member has a Claude to
 judge with (Haiku until the owner says otherwise), so a judgment turn never waits for a brain it

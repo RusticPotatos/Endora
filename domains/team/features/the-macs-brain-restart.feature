@@ -6,6 +6,7 @@ Feature: A turn waiting for the Mac survives HQ restarting
     Given HQ keeps its team in a file
     And Mara is the CEO
     And Zed is the tester
+    And Zed thinks with "Mac"
     And the goal "Keep the home lab healthy"
     And the node says the Mac is not ready: "owner active"
     And Zed has the task "Cap sonarr's memory"

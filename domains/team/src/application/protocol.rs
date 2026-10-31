@@ -353,25 +353,18 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         up_front(&mut play);
         list.push(play);
     }
-    // The check after a deploy is offered its four tools alone (ADR 0115, amended); a turn on
-    // the work of a project that lists its tools, those four and the list (the Holodeck plan's
-    // phase 4).
-    if woken_for != Some(crate::domain::WakeReason::Downtime)
-        && engine.lab_tools_of(run.id).ok().flatten().is_some()
+    // A turn on the work of a project that lists its tools is offered HQ's four and the list
+    // (the Holodeck plan's phase 4); a downtime turn is not narrowed here.
+    if let Some(given) = engine
+        .lab_tools_of(run.id)
+        .ok()
+        .flatten()
+        .filter(|_| woken_for != Some(crate::domain::WakeReason::Downtime))
     {
-        let given = if engine.in_deploy_check(run.id).unwrap_or(true) {
-            Vec::new()
-        } else {
-            engine
-                .lab_tools_of(run.id)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-        };
         if !given.iter().any(|g| g == crate::domain::projects::TEAM) {
             list.retain(|t| {
                 t["name"].as_str().is_some_and(|n| {
-                    crate::domain::deploy::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
+                    crate::domain::lab_tools::HQ_TOOLS.contains(&n) || given.iter().any(|g| g == n)
                 })
             });
         }
@@ -553,14 +546,6 @@ fn refusal<S: TeamStore, W: WorkerAdapter, C: Clock>(
     // Downtime makes no work (ADR 0119): the tools that would are refused in its turns.
     if MAKES_WORK.contains(&tool) && engine.in_downtime(run.id).map_err(|e| said(&e))? {
         return Ok(Some(Refusal::InDowntime.to_string()));
-    }
-    // The check after a deploy reads the lab and closes its check, and nothing more (ADR 0115,
-    // amended): refused here, whatever the model was told.
-    if let Some(refusal) = engine
-        .deploy_check_refuses(run.id, tool, args)
-        .map_err(|e| said(&e))?
-    {
-        return Ok(Some(refusal));
     }
     // A scenario is closed by its world, never by a member's word (the Holodeck plan's phase 5).
     if let Some(refusal) = engine.scenario_refuses(tool, args).map_err(|e| said(&e))? {
@@ -834,18 +819,7 @@ fn tool_ask_owner<S: TeamStore, W: WorkerAdapter, C: Clock>(
         .ask_owner_citing(run.id, text, &cited)
         .map_err(|e| said(&e))?
     {
-        super::engine::Asked::Up(to) => {
-            let to = engine
-                .store()
-                .members()
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .find(|m| m.id == to)
-                .map_or_else(|| "the one above you".to_owned(), |m| m.name);
-            Ok(format!("It is with {to}, in the task's thread, and this turn has ended: stop now. You are woken when they answer."))
-        }
         super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
-        super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
     }
 }
 

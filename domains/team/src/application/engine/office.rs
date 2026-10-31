@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
-use super::{Done, Engine, EngineError};
+use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::office;
-use crate::domain::{Member, MemberId, Millis, Refusal, Role, RunId, WakeId, WakeReason};
+use crate::domain::{Member, MemberId, Millis, RunId, WakeId, WakeReason};
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
 const OFFICE_SEEDED: &str = "office_seeded";
@@ -27,9 +27,7 @@ pub(super) struct Downtimes {
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the office as data ---------------------------------------------------------------
 
-    /// Puts the default layout on the floor, once: what the office has always had, as items
-    /// the team may move. Returns whether it did. What the team removes later does not come
-    /// back.
+    /// Puts the default layout on the floor, once. Returns whether it did.
     pub fn seed_office(&self) -> Done<bool> {
         let _held = self.held();
         if self.store.setting(OFFICE_SEEDED)?.is_some() {
@@ -45,13 +43,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Replaces the floor with the default layout, new numbers and all.
     fn lay_out_the_default(&self) -> Done<()> {
-        let fresh = office::apply(&[], &office::default_layout())
-            .map_err(|r| EngineError::Refused(Refusal::Office(r)))?;
         self.store.replace_office_items(&[])?;
         let now = self.clock.now();
-        for item in fresh {
-            self.store
-                .add_office_item(item.kind, item.x, item.y, "endora", now)?;
+        for (kind, x, y) in office::default_layout() {
+            self.store.add_office_item(kind, x, y, "endora", now)?;
         }
         Ok(())
     }
@@ -60,10 +55,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn office_items(&self) -> Done<Vec<office::Item>> {
         Ok(self.store.office_items()?)
     }
-
-    // ---- deciding together --------------------------------------------------------------
-
-    // ---- the owner as landlord ----------------------------------------------------------
 
     // ---- downtime ----------------------------------------------------------------------
 
@@ -114,10 +105,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let today = self.today().to_string();
         let members = self.store.members()?;
         let mut waiting: Vec<&Member> = Vec::new();
-        for member in members
-            .iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work())
-        {
+        for member in members.iter().filter(|m| m.at_work()) {
             if self.store.setting(&downtime_day(member.id))?.as_deref() != Some(today.as_str()) {
                 waiting.push(member);
             }
@@ -190,8 +178,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
     // ---- what the screen shows ------------------------------------------------------------
 
-    /// The office as the HQ screen shows it: the things, the catalog, the open proposals and
-    /// the last few settled, and whether the owner can undo.
+    /// The office as the HQ screen shows it: the floor's size and the things on it.
     pub(super) fn office_shown(&self) -> Done<serde_json::Value> {
         let items = self.store.office_items()?;
         Ok(json!({

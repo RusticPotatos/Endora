@@ -356,16 +356,10 @@ pub fn app(state: AppState) -> Router {
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
         .route("/v1/hq/members/{id}/model", post(hq_set_model))
-        .route("/v1/hq/members/{id}/work-brain", post(hq_set_work_brain))
-        .route(
-            "/v1/hq/members/{id}/judgment-brain",
-            post(hq_set_judgment_brain),
-        )
         // What runs a member's turns (ADR 0117).
         .route("/v1/hq/members/{id}/runtime", post(hq_set_runtime))
         // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).
         .route("/v1/hq/members/{id}/name", post(hq_rename))
-        .route("/v1/hq/house", post(hq_house_log))
         // The team's world (ADR 0122): the owner reads it, downloads it, and alone makes
         // something canon or demotes it.
         .route("/v1/hq/world", get(hq_world))

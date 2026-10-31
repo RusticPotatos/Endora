@@ -24,7 +24,7 @@ pub mod world_ports;
 pub use crate::domain::delivery::Found;
 pub use engine::{
     Asked, Author, Delivered, Deliveries, Due, Engine, EngineError, Fired, KeptBranch, ModelSet,
-    Proposal, Recorded, Settings, Submission, TickReport, WingSeeded,
+    Recorded, Settings, Submission, TickReport,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 

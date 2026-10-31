@@ -283,7 +283,8 @@ fn a_turn_on_the_mac_has_a_longer_map_and_a_bigger_briefing_than_one_on_the_nas(
             .unwrap();
     }
     hq.migrate_map().unwrap();
-    // The node says the Mac is free, so Linus's work runs on it: a large context, its own limits.
+    // Linus is the Mac, and the node says it is free: a large context, its own limits.
+    hq.set_brain(t.linus, "mac").unwrap();
     hq.tell_mac(true, "ready");
     let (linus, _) = working(&hq, t.goal, t.linus, &wide_item());
     assert_eq!(

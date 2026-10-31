@@ -50,7 +50,7 @@ fn team(hq: &Hq<'_>) -> Team {
         .unwrap();
     let seat = |name: &str, model: &str, role: Role| {
         let id = hq.hire(name, role, 10, 2, 0).unwrap();
-        hq.set_model(id, model).unwrap();
+        hq.set_brain(id, model).unwrap();
         id
     };
     let mara = seat("Mara", "opus", Role::Ceo);

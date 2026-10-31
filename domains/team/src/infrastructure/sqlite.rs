@@ -268,7 +268,7 @@ const RUNTIME_COLUMNS: [(&str, &str); 2] = [
 
 /// The columns a store made before turns had a kind (ADR 0131) gains: a member's work brain and
 /// the brain a turn ran on, both empty. A turn's empty brain is read as unknown (it ran before
-/// turns had one); a member's is filled in at open, see [`give_two_brains`].
+/// turns had one); a member's is no longer read (ADR 0142).
 const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs", "brain TEXT")];
 
 /// The column a store made before the platform's interruptions were told from a worker's
@@ -316,25 +316,6 @@ const RETIRED_CONVERSATIONS: &str = "
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
       OR key LIKE 'coordination_asked:%' OR key = 'guards_ceremony';
 ";
-
-/// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
-/// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
-/// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
-/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Only a member
-/// that has no work brain yet is touched, so a second start changes nothing and the owner's later
-/// choice is never overwritten: a member that is one model (ADR 0142) keeps it.
-fn give_two_brains(conn: &Connection) -> Stored<()> {
-    conn.execute_batch(
-        "UPDATE members SET
-             work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END,
-             brain = CASE
-                 WHEN brain IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5') THEN brain
-                 WHEN role = 'ceo' THEN 'claude-sonnet-5-5'
-                 ELSE 'claude-haiku-5-5' END
-         WHERE work_brain IS NULL;",
-    )
-    .map_err(backend)
-}
 
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
@@ -468,7 +449,6 @@ impl SqliteTeamStore {
         {
             add_column(&conn, table, column)?;
         }
-        give_two_brains(&conn)?;
         // A project's month is read on every wake and turn about its work, each row with its
         // turn's reservation: by run and by project, not by reading the whole ledger each time;
         // the reservation itself by an index of the reserves alone.
@@ -687,19 +667,18 @@ impl TeamStore for SqliteTeamStore {
         look: u8,
     ) -> Stored<MemberId> {
         let conn = self.conn()?;
-        // A new member judges with the owner's cheap Claude and works with the Mac, until the
-        // owner says otherwise (ADR 0131).
+        // A new member is the house's own model until the owner says otherwise. The work brain
+        // column of the members once split in two (ADR 0131) is kept in step, unread.
         conn.execute(
             "INSERT INTO members (name, role, share_percent, slots, look, brain, work_brain)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 name,
                 role.name(),
                 share_percent,
                 slots,
                 look,
-                Brain::default_judgment(role).name(),
-                Brain::Mac.name()
+                Brain::default().name()
             ],
         )
         .map_err(backend)?;
@@ -710,8 +689,8 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
-                 furloughed_at, recalled_at, work_brain FROM members ORDER BY id",
+                "SELECT id, name, role, share_percent, slots, paused, look, brain, \
+                 furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -719,17 +698,8 @@ impl TeamStore for SqliteTeamStore {
                 let role: String = r.get(2)?;
                 let role = Role::from_name(&role).unwrap_or(Role::Developer);
                 // A member is its model (ADR 0142): the brain stored, whichever it is. One the
-                // store does not know is the cheap Claude its role may use.
-                let stored = Brain::from_name(&r.get::<_, String>(7)?);
-                let brain = stored.unwrap_or(Brain::default_judgment(role));
-                // A member never given a work brain works with the house's brain it is, or the
-                // Mac.
-                let work_brain = r
-                    .get::<_, Option<String>>(11)?
-                    .as_deref()
-                    .and_then(Brain::from_name)
-                    .or(stored.filter(|b| b.house()))
-                    .unwrap_or(Brain::Mac);
+                // store does not know is the house's own model.
+                let brain = Brain::from_name(&r.get::<_, String>(7)?).unwrap_or_default();
                 Ok(Member {
                     id: MemberId(r.get(0)?),
                     name: r.get(1)?,
@@ -739,10 +709,8 @@ impl TeamStore for SqliteTeamStore {
                     paused: r.get::<_, i64>(5)? != 0,
                     look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
                     brain,
-                    work_brain,
-                    reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
-                    furloughed_at: r.get(9)?,
-                    recalled_at: r.get(10)?,
+                    furloughed_at: r.get(8)?,
+                    recalled_at: r.get(9)?,
                 })
             })
             .map_err(backend)?;
@@ -769,46 +737,10 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
-                params![member.0, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn set_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
-        // The brain named goes to the slot it belongs to (ADR 0131): a house model is the work
-        // brain and a Claude the judgment brain, and each leaves the other as it is.
-        if brain.house() {
-            return self.set_work_brain(member, brain);
-        }
-        self.conn()?
-            .execute(
-                "UPDATE members SET brain = ?2, work_brain = COALESCE(work_brain, 'mac')
-                 WHERE id = ?1",
-                params![member.0, brain.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_model(&self, member: MemberId, brain: Brain) -> Stored<()> {
         self.conn()?
             .execute(
                 "UPDATE members SET brain = ?2, work_brain = ?2 WHERE id = ?1",
-                params![member.0, brain.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_work_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET work_brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
             )
             .map_err(backend)?;
@@ -837,16 +769,6 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET runtime = ?2 WHERE id = ?1",
                 params![member.0, runtime.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET reports_to = ?2 WHERE id = ?1",
-                params![member.0, to.map(|t| t.0)],
             )
             .map_err(backend)?;
         Ok(())
@@ -1498,7 +1420,7 @@ mod tests {
     use crate::application::office_ports::OfficeStore;
     use crate::application::receipt_ports::ReceiptStore;
     use crate::application::run_ports::RunStore;
-    use crate::application::schedule_ports::ScheduleStore;
+
     use crate::application::wing_ports::WingStore;
     use crate::domain::{Branch, Check};
 
@@ -1740,7 +1662,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
     }
 
     #[test]
-    fn a_store_made_before_projects_gains_their_columns_and_its_home_lab_work_one_project() {
+    fn a_store_made_before_projects_gains_their_columns_and_a_projects_ledger() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
@@ -1773,49 +1695,26 @@ CREATE TABLE IF NOT EXISTS check_backs (
             Noon,
             crate::application::Settings::default(),
         );
-        let made = hq.migrate_projects().unwrap().expect("made");
-        assert_eq!(hq.migrate_projects(), Ok(None), "once");
-        let projects = hq.store().projects().unwrap();
-        assert_eq!(projects.len(), 1);
-        let upkeep = &projects[0];
-        assert_eq!(
-            (
-                upkeep.id,
-                upkeep.title.as_str(),
-                upkeep.goal,
-                upkeep.lead,
-                upkeep.status,
-                upkeep.cap
-            ),
-            (
-                made,
-                crate::application::engine::LAB_UPKEEP,
-                GoalId(1),
-                MemberId(2),
-                ProjectStatus::Active,
-                None
+        let made = hq
+            .store()
+            .add_project(
+                &crate::application::ports::NewProject {
+                    goal: GoalId(1),
+                    title: "Home lab upkeep".to_owned(),
+                    reason: String::new(),
+                    lead: MemberId(2),
+                    status: ProjectStatus::Active,
+                    cap: None,
+                    asked_cap: None,
+                    created_by: "owner".to_owned(),
+                    proposer: None,
+                    proposed_in: None,
+                    evidence: Vec::new(),
+                },
+                NOON,
             )
-        );
-        let routines: Vec<Option<ProjectId>> = hq
-            .store()
-            .routines()
-            .unwrap()
-            .iter()
-            .map(|r| r.project)
-            .collect();
-        assert_eq!(routines, [Some(made), None], "the CEO's review stays out");
-        let tasks: Vec<Option<ProjectId>> = hq
-            .store()
-            .tasks()
-            .unwrap()
-            .iter()
-            .map(|t| t.project)
-            .collect();
-        assert_eq!(
-            tasks,
-            [Some(made), None, None],
-            "open work of its goal only"
-        );
+            .unwrap();
+        hq.store().set_task_project(TaskId(1), Some(made)).unwrap();
         // The old ledger row is no project's; a new turn's rows are its task's project's; and
         // nothing in the ledger may be changed.
         let (from, until) = crate::domain::projects::month_around(NOON);
@@ -1896,12 +1795,6 @@ INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VA
         assert_eq!(
             (rae.furloughed(), rae.furloughed_at, rae.name.as_str()),
             (true, Some(77), "Rae")
-        );
-        store.recall_member(MemberId(3), 99).unwrap();
-        let rae = store.members().unwrap().remove(2);
-        assert_eq!(
-            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
-            (false, Some(77), Some(99))
         );
         // A second furlough starts afresh.
         store.furlough_member(MemberId(3), 120).unwrap();
@@ -2452,99 +2345,39 @@ CREATE TABLE IF NOT EXISTS projects (
         path
     }
 
-    /// Each member's (judgment brain, work brain), by name.
-    fn brains_of(store: &SqliteTeamStore) -> Vec<(String, String)> {
-        store
-            .members()
-            .unwrap()
-            .iter()
-            .map(|m| (m.brain.name().to_owned(), m.work_brain.name().to_owned()))
-            .collect()
-    }
-
-    fn want(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(j, w)| ((*j).to_owned(), (*w).to_owned()))
-            .collect()
-    }
-
     #[test]
-    fn a_store_from_before_turns_had_kinds_gains_two_brains_once_and_loses_no_choice() {
+    fn a_store_from_before_turns_had_kinds_keeps_each_members_model() {
         let path = a_file_from_before_turns_had_a_kind();
         let store = SqliteTeamStore::open(&path).unwrap();
-        // A house model or the Mac stays as the work brain, and the member judges with the
-        // owner's cheap Claude (the CEO, Sonnet); a Claude stays the judgment brain and the
-        // member works with the Mac; a brain the store does not know is read as none given.
-        let migrated = want(&[
-            ("claude-sonnet-5-5", "mac"),
-            ("claude-haiku-5-5", "local"),
-            ("claude-haiku-5-5", "mac"),
-            ("claude-haiku-5-5", "mac"),
-            ("claude-sonnet-5-5", "local"),
-            ("claude-haiku-5-5", "mac"),
-        ]);
-        assert_eq!(brains_of(&store), migrated);
-        // It was written, not just read: no member's brain is the house's any more.
-        {
-            let conn = store.conn().unwrap();
-            let houses: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members WHERE brain IN ('local', 'mac')",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(houses, 0);
-            let none: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members WHERE work_brain IS NULL",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(none, 0);
-        }
-        // The owner's later choices are kept, and opening the file again changes nothing.
-        let members = store.members().unwrap();
-        store.set_work_brain(members[0].id, Brain::Local).unwrap();
-        store.set_brain(members[1].id, Brain::Sonnet).unwrap();
+        // A member is its model (ADR 0142): opening the file splits nobody in two, and a brain
+        // the store does not know is read as the house's own model.
+        let brains = |store: &SqliteTeamStore| -> Vec<Brain> {
+            store.members().unwrap().iter().map(|m| m.brain).collect()
+        };
+        let kept = [
+            Brain::Sonnet,
+            Brain::Local,
+            Brain::Mac,
+            Brain::Haiku,
+            Brain::Local,
+            Brain::Local,
+        ];
+        assert_eq!(brains(&store), kept);
         drop(store);
-        let again = SqliteTeamStore::open(&path).unwrap();
-        let mut chosen = migrated;
-        chosen[0].1 = "local".to_owned();
-        chosen[1].0 = "claude-sonnet-5-5".to_owned();
-        assert_eq!(brains_of(&again), chosen);
-        drop(again);
+        assert_eq!(brains(&SqliteTeamStore::open(&path).unwrap()), kept);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn each_brain_goes_to_its_own_slot_and_a_new_member_has_the_defaults() {
+    fn a_new_member_is_the_houses_model_until_the_owner_sets_its_model() {
         let store = SqliteTeamStore::in_memory().unwrap();
         let ada = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let ceo = store.add_member("Mara Roe", Role::Ceo, 35, 1, 0).unwrap();
-        let of = |store: &SqliteTeamStore, at: usize| {
-            let m = store.members().unwrap().remove(at);
-            (m.brain, m.work_brain)
-        };
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac), "a new member");
-        assert_eq!(
-            of(&store, 1),
-            (Brain::Sonnet, Brain::Mac),
-            "the CEO's cheapest"
-        );
-        // A house model is the work brain, and leaves the Claude it judges with alone.
-        store.set_brain(ada, Brain::Local).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Local));
-        store.set_work_brain(ada, Brain::Mac).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac));
-        // A Claude is the judgment brain, and leaves the work brain alone.
-        store.set_work_brain(ada, Brain::Local).unwrap();
+        let brain = |store: &SqliteTeamStore| store.members().unwrap()[0].brain;
+        assert_eq!(brain(&store), Brain::Local);
         store.set_brain(ada, Brain::Sonnet).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Sonnet, Brain::Local));
-        store.set_brain(ceo, Brain::Opus).unwrap();
-        assert_eq!(of(&store, 1), (Brain::Opus, Brain::Mac));
+        assert_eq!(brain(&store), Brain::Sonnet);
+        store.set_brain(ada, Brain::Mac).unwrap();
+        assert_eq!(brain(&store), Brain::Mac);
     }
 
     #[test]

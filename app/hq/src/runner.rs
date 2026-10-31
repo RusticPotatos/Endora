@@ -143,7 +143,8 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),
-            "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
+            // How hard Claude tries: its model's own (the roles that named one are gone).
+            "effort": serde_json::Value::Null,
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.
             "runtime": runtime.name(),
             "shell": shell,

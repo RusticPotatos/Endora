@@ -1,21 +1,17 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and a check job queued for the dev node; the check's result as a receipt that
 //! wakes the submitter (or sends failed work back); the owner's push offered on the desk once
-//! the work passes review, and what came of it; hiring by the owner; the wing seeded once; and
-//! documents members read. Every rule is code: branch names, who is woken, what closes.
+//! the work passes review, and what came of it; hiring by the owner; and documents members read. Every rule is code: branch names, who is woken, what closes.
 
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
-use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::application::ports::{Clock, DeskItem, TeamStore, WorkerAdapter};
+use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
-    Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
-    MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
+    Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role, RunId,
+    TaskId, TaskStatus, WakeReason,
 };
-
-/// Set once HQ has seeded the wing, so it is never seeded again.
-const WING_SEEDED: &str = "wing_seeded";
 
 /// The most a document holds: the diff shown (64 KB) and its stat.
 pub const DOCUMENT_MOST: usize = 72 * 1024;
@@ -36,10 +32,6 @@ fn document_part(document: &Document, part: usize) -> String {
         document.id, document.task, document.title
     )
 }
-
-/// The wing's first task, for its lead.
-pub const WING_FIRST_TASK: &str =
-    "Plan the clean-up: read the fork's docs and propose the first three branches";
 
 /// A branch as the node took it (ADR 0115), told to HQ with the turn's token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,21 +85,6 @@ pub struct KeptBranch {
     /// The default branch's head it sits on.
     pub base: String,
     /// The task it was submitted for.
-    pub task: TaskId,
-}
-
-/// What seeding the wing made.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WingSeeded {
-    /// The wing's goal.
-    pub goal: GoalId,
-    /// Its first project.
-    pub project: ProjectId,
-    /// Its lead.
-    pub lead: MemberId,
-    /// Its developers.
-    pub developers: Vec<MemberId>,
-    /// Its first task, for the lead.
     pub task: TaskId,
 }
 
@@ -591,18 +568,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if asked != branch.member && self.member(asked)?.at_work() {
             self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
         }
-        // The tester only for work already in review, which she may be waiting on, and only
-        // the one review wakes: before it, a pass gave her nothing to judge (18-19 Oct, eight
-        // such turns, five asking the lead what to do).
-        if task.status != TaskStatus::InReview {
-            return Ok(());
-        }
-        if let Some(tester) = self
-            .reviewer()?
-            .filter(|m| m.at_work() && m.id != branch.member)
-        {
-            self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
-        }
         Ok(())
     }
 
@@ -854,105 +819,63 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "receipt": receipt, "member": branch.member.0 }),
         )?;
         self.wake_held_lock(branch.member, Some(task), WakeReason::ProposalDecided)?;
-        // Pushed: the owner says when it is deployed, and the lab is checked (ADR 0115, amended).
-        if ok {
-            self.offer_deploy(task, &branch)?;
-        }
         Ok(())
     }
 
     // ---- hiring (ADR 0115) ---------------------------------------------------------------
 
-    /// The owner hires a member: a name, a role, a brain its role may think with, and whom it
-    /// reports to (its role's default when `None`). The brain named goes to the slot it belongs
-    /// to (ADR 0131): a Claude is the brain it judges with, a house model the brain it works
-    /// with; the other has its default (Haiku to judge with, the Mac to work with). The team
-    /// has one CEO. Said in the feed as the owner's.
+    /// The owner hires a member: a name, a title (a name only, ADR 0142) and its model. Nobody
+    /// reports to anyone. Said in the feed as the owner's.
     ///
     /// # Errors
-    /// [`Refusal::OnlyOneCeo`], [`Refusal::NotAName`], [`Refusal::NotABrain`],
-    /// [`EngineError::Unknown`] for a manager that is no member; a store failure.
-    pub fn hire_by_owner(
-        &self,
-        name: &str,
-        role: Role,
-        brain: &str,
-        reports_to: Option<MemberId>,
-    ) -> Done<MemberId> {
-        self.hire_by_owner_with(name, role, Some(brain), None, None, reports_to)
+    /// [`Refusal::NotAName`], [`Refusal::NotABrain`]; a store failure.
+    pub fn hire_by_owner(&self, name: &str, role: Role, brain: &str) -> Done<MemberId> {
+        self.hire_by_owner_with(name, role, Some(brain))
     }
 
-    /// As [`Self::hire_by_owner`], naming each brain apart as well (ADR 0131): the one it works
-    /// with, the Mac or the house's model, and the Claude it judges with. Each slot not named is
-    /// its default.
+    /// As [`Self::hire_by_owner`], the brain named or not: one not named is the house's model.
     ///
     /// # Errors
-    /// As [`Self::hire_by_owner`]; [`Refusal::NotABrain`] for a work brain that is not a house
-    /// model, or a judgment brain that is not a Claude the role may use.
+    /// As [`Self::hire_by_owner`].
     pub fn hire_by_owner_with(
         &self,
         name: &str,
         role: Role,
         brain: Option<&str>,
-        work: Option<&str>,
-        judgment: Option<&str>,
-        reports_to: Option<MemberId>,
     ) -> Done<MemberId> {
         let _held = self.held();
-        // Each is checked for the slot it is named for, then set like any brain named.
-        if let Some(w) = work {
-            Brain::for_work(role, w).map_err(EngineError::Refused)?;
-        }
-        if let Some(j) = judgment {
-            Brain::for_judgment(role, j).map_err(EngineError::Refused)?;
-        }
-        let named: Vec<&str> = [brain, work, judgment].into_iter().flatten().collect();
-        self.hire_held_lock(name, role, &named, reports_to, "owner")
+        self.hire_held_lock(name, role, brain, "owner")
     }
 
-    /// Hires a member (the lock held), with the brains named: each goes to the slot it belongs
-    /// to, and the slot not named has its default. A blank name is none.
+    /// Hires a member (the lock held), on the brain named. A blank name or brain is none.
     fn hire_held_lock(
         &self,
         name: &str,
         role: Role,
-        brains: &[&str],
-        reports_to: Option<MemberId>,
+        brain: Option<&str>,
         by: &str,
     ) -> Done<MemberId> {
         let members = self.store.members()?;
-        if role == Role::Ceo && members.iter().any(|m| m.role == Role::Ceo) {
-            return Err(EngineError::Refused(Refusal::OnlyOneCeo));
-        }
         let name = super::one_line(name, 41);
         let taken = members.iter().any(|m| m.name.eq_ignore_ascii_case(&name));
         if name.is_empty() || name.chars().count() > 40 || taken {
             return Err(EngineError::Refused(Refusal::NotAName));
         }
-        let named = brains
-            .iter()
+        let named = brain
             .filter(|b| !b.trim().is_empty())
-            .map(|b| Brain::for_role(role, b))
-            .collect::<Result<Vec<Brain>, _>>()
+            .map(Brain::named)
+            .transpose()
             .map_err(EngineError::Refused)?;
-        if let Some(to) = reports_to {
-            if role == Role::Ceo || !members.iter().any(|m| m.id == to) {
-                return Err(EngineError::Refused(Refusal::NotAManager));
-            }
-        }
-        let manager = reports_to;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
         let id = self.store.add_member(&name, role, role.share(), 2, look)?;
-        for brain in named {
+        if let Some(brain) = named {
             self.store.set_brain(id, brain)?;
         }
-        self.store.set_reports_to(id, manager)?;
         let hired = self.member(id)?;
         self.emit(
             EventKind::MemberHired,
             json!({ "member": id.0, "name": name, "role": role.name(),
-                    "brain": hired.brain.name(), "work_brain": hired.work_brain.name(),
-                    "reports_to": manager.map(|m| m.0), "by": by }),
+                    "brain": hired.brain.name(), "by": by }),
         )?;
         Ok(id)
     }
@@ -966,7 +889,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .iter()
-            .filter(|m| m.role != Role::Ceo && leads.contains(&m.id))
+            .filter(|m| leads.contains(&m.id))
             .map(|m| m.id)
             .collect())
     }
@@ -976,14 +899,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
     /// for anyone outside the wing.
     pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
-        if !matches!(member.role, Role::Lead | Role::Developer) {
-            return Ok("");
-        }
         if !self.wing_members()?.contains(&member.id) {
             return Ok("");
-        }
-        if member.role == Role::Lead {
-            return Ok(wing::FORK_RULES_LEAD);
         }
         Ok(wing::FORK_RULES)
     }
@@ -1013,131 +930,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect())
     }
 
-    // ---- the wing, seeded once (ADR 0115) --------------------------------------------------
-
-    /// Seeds the wing, once (a setting remembers it), for HQ started with the demo off: the
-    /// owner's goal "Improve the lab" with the wing's notes for the team, the project
-    /// "ansible-nas clean-up" led by Kit, Kit (a lead on Claude Sonnet, reporting to the
-    /// CEO), Rae and Zed (developers on Claude Haiku, reporting to Kit), and Kit's first task,
-    /// to plan the clean-up. What is already there (by name or title) is kept, not made again.
-    ///
-    /// # Errors
-    /// What the engine refuses, or a store failure.
-    pub fn seed_wing(&self) -> Done<Option<WingSeeded>> {
-        if self.store.setting(WING_SEEDED)?.is_some() {
-            return Ok(None);
-        }
-        let goal = match self
-            .store
-            .goals()?
-            .into_iter()
-            .find(|g| g.title.trim().eq_ignore_ascii_case(WING_GOAL) && g.status != GoalStatus::Dropped)
-        {
-            Some(goal) => goal.id,
-            None => self.set_generated_goal(
-                WING_GOAL,
-                "The wing cleans up the lab's ansible-nas fork, one reviewed branch at a time; the owner merges.",
-            )?,
-        };
-        if self.store.goal_note(goal)?.trim().is_empty() {
-            self.set_goal_note(goal, WING_NOTE)?;
-        }
-        let (lead, developers) = self.wing_staff()?;
-        let project = match self
-            .store
-            .projects()?
-            .into_iter()
-            .find(|p| p.goal == goal && p.title.eq_ignore_ascii_case(WING_PROJECT))
-        {
-            Some(p) => p.id,
-            None => self.add_project(
-                goal,
-                WING_PROJECT,
-                "The fork's roles and docs, tidied one branch at a time; the owner merges each.",
-                lead,
-                None,
-            )?,
-        };
-        let task = match self
-            .store
-            .tasks()?
-            .into_iter()
-            .find(|t| t.project == Some(project) && t.title == WING_FIRST_TASK)
-        {
-            Some(t) => t.id,
-            None => self.add_task_with(
-                Author::Owner,
-                NewTask {
-                    goal,
-                    project: Some(project),
-                    parent: None,
-                    title: WING_FIRST_TASK.to_owned(),
-                    description: "Read the fork's docs (ansible_nas_doc: roles, website/docs) and \
-                        check out its default branch (repo_checkout) to see how it is laid out. \
-                        Then post a plan: the first three branches, each named hq/task-N-<slug>, \
-                        what each changes and why it is safe. Hand each to a developer as a \
-                        sub-task with criteria once the owner has read the plan."
-                        .to_owned(),
-                    assignee: Some(lead),
-                    priority: Priority::Normal,
-                    waits_on: Vec::new(),
-                },
-                &[
-                    Criterion::new(
-                        "The plan cites the fork's files it read, by receipt (ansible_nas_doc or repo_checkout)",
-                        false,
-                    ),
-                    Criterion::new(
-                        "Three branches are proposed, each named hq/task-N-<slug>, with what each changes and why",
-                        false,
-                    ),
-                ],
-            )?,
-        };
-        self.store.set_setting(WING_SEEDED, "1")?;
-        Ok(Some(WingSeeded {
-            goal,
-            project,
-            lead,
-            developers,
-            task,
-        }))
-    }
-
-    /// The wing's lead, Kit on Claude Sonnet, and its developers, Rae and Zed on Claude Haiku:
-    /// each hired unless one of that name is already on the team.
-    fn wing_staff(&self) -> Done<(MemberId, Vec<MemberId>)> {
-        let named = |name: &str| -> Done<Option<MemberId>> {
-            Ok(self
-                .store
-                .members()?
-                .into_iter()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .map(|m| m.id))
-        };
-        let lead = match named("Kit")? {
-            Some(id) => id,
-            None => {
-                let id = self.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)?;
-                self.set_brain(id, Brain::Sonnet.name())?;
-                id
-            }
-        };
-        let mut developers = Vec::new();
-        for (name, look) in [("Rae", 2), ("Zed", 4)] {
-            let id = match named(name)? {
-                Some(id) => id,
-                None => {
-                    let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
-                    self.set_brain(id, Brain::Haiku.name())?;
-                    id
-                }
-            };
-            developers.push(id);
-        }
-        Ok((lead, developers))
-    }
-
     // ---- documents ---------------------------------------------------------------------
 
     /// A document of the turn's own work (its task, the tasks under it, or the one above),
@@ -1162,9 +954,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         {
             reach.push(parent);
         }
-        // The CEO and a lead read any document: they accept the work.
-        let member = self.member(turn.member)?;
-        if !member.role.leads() && !reach.contains(&document.task) {
+        if !reach.contains(&document.task) {
             return Err(EngineError::Refused(Refusal::NotADocument));
         }
         self.inherit_input_from(run, document.run)?;

@@ -13,15 +13,15 @@ Feature: An alarm is a moment, not the state now
 
   Scenario: One task a problem
     Given Ada has the task "Check the home lab"
-    And Ada hands Linus the task "Diagnose and fix exited deluge, nzbget, prowlarr" under "Check the home lab"
-    When Ada hands Linus the task "Confirm state and restart deluge, nzbget, prowlarr" under "Diagnose and fix exited deluge, nzbget, prowlarr"
+    And Ada splits off the task "Diagnose and fix exited deluge, nzbget, prowlarr" under "Check the home lab"
+    When Ada splits off the task "Confirm state and restart deluge, nzbget, prowlarr" under "Check the home lab"
     Then it is refused: "#2 already covers this (deluge, nzbget, prowlarr): add to it with post in #2, rather than a second task"
     And the team still has 2 tasks
 
   Scenario: Another container is another problem
     Given Ada has the task "Check the home lab"
-    And Ada hands Linus the task "Diagnose and fix exited deluge, nzbget, prowlarr" under "Check the home lab"
-    When Ada hands Linus the task "Look at sonarr" under "Check the home lab"
+    And Ada splits off the task "Diagnose and fix exited deluge, nzbget, prowlarr" under "Check the home lab"
+    When Ada splits off the task "Look at sonarr" under "Check the home lab"
     Then it is not refused
     And the team has 3 tasks
 

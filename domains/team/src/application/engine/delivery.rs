@@ -237,11 +237,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .to_owned();
                 self.store.save_branch(&b)?;
                 self.keep(b.id, if *ok { "" } else { text })?;
+                // In develop now. No Deployed card follows: the check after a deploy retired
+                // (ADR 0142), and the lab's recurring health check is the check.
                 self.said_on_the_record(&b, *ok, text)?;
-                // In develop now: the owner says when it is deployed (ADR 0115, amended).
-                if *ok {
-                    self.offer_deploy(b.task, &b)?;
-                }
             }
         }
         Ok(())

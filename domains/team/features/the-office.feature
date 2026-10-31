@@ -1,17 +1,15 @@
 Feature: The open office
   The team is one team (ADR 0119, 0142). The office is an open floor drawn from
-  its layout, where the members work and, in their downtime, play: downtime
-  costs nothing, since it is work on the house's own model whatever a member
-  judges with (ADR 0131). Chess is played by the rules.
+  its layout, where the members work and, in their downtime, play: downtime on
+  the house's own model costs nothing. Chess is played by the rules.
 
   Background:
-    Given Mara is the CEO
-    And Ada is the lead
+    Given Ada is the lead
     And Bo is the developer
     And Cy is the researcher
     And the office has its default layout
 
-  Scenario: Downtime costs nothing, whatever a member judges with
+  Scenario: Downtime on the house's model costs nothing
     Given downtime is on
     When a tick passes
     Then Ada has a downtime turn that costs nothing

@@ -11,7 +11,7 @@
 //! Pure arithmetic: the node says the figures, the engine keeps them for the day, and this
 //! decides what they come to.
 
-use super::lessons::civil;
+use super::dates::civil;
 use super::money::{DAYS_A_MONTH, Micros, pool_a_day};
 use super::projects::dollars;
 use super::world_migration::days_from_civil;

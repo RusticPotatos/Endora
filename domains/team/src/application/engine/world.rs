@@ -11,13 +11,13 @@ use crate::domain::world::{
     self, Address, HOUSE, HandoverNote, Section, Snapshot, Stage, Trust, WorldRefusal,
 };
 use crate::domain::world_migration::TimelineLine;
-use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, RunId};
+use crate::domain::{EventKind, MemberId, Millis, Refusal, RunId};
 
 /// The day of `at` with its year, in the owner's time: `17 Oct 2026`.
 pub(super) fn day_with_year(at: Millis, offset_minutes: i64) -> String {
     let day = crate::domain::money::day_of(at, offset_minutes);
-    let (year, _, _) = crate::domain::lessons::civil(day);
-    let (d, m) = crate::domain::lessons::day_and_month(day);
+    let (year, _, _) = crate::domain::dates::civil(day);
+    let (d, m) = crate::domain::dates::day_and_month(day);
     format!("{d} {m} {year}")
 }
 
@@ -104,7 +104,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some((fixed, was)) = crate::domain::house::corrected_year(text, today) else {
             return Ok(text.to_owned());
         };
-        let (now, _, _) = crate::domain::lessons::civil(today);
+        let (now, _, _) = crate::domain::dates::civil(today);
         self.emit(
             EventKind::WorldChanged,
             json!({ "what": "year corrected", "by": who, "in": what, "was": was, "now": now }),
@@ -131,25 +131,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             run,
         )?;
         Ok(())
-    }
-
-    /// The house page's timeline gains a member's dated line: what the house log's `note_house`
-    /// does now (ADR 0122). Returns the line, dated.
-    pub(super) fn note_house_line(&self, run: &Run, ceo: &Member, entry: &str) -> Done<String> {
-        let entry = self.dated_true(&ceo.name, "the house page's timeline", entry)?;
-        let line =
-            crate::domain::house::line(&entry, self.clock.now(), self.settings.offset_minutes)
-                .map_err(EngineError::Refused)?;
-        let said = line
-            .split_once(": ")
-            .map_or(line.as_str(), |(_, rest)| rest)
-            .to_owned();
-        self.timeline_line(HOUSE.slug, &ceo.name, Some(run.id), &said)?;
-        self.emit(
-            EventKind::HouseNoted,
-            json!({ "by": ceo.name, "entry": line, "page": HOUSE.slug }),
-        )?;
-        Ok(line)
     }
 
     // ---- what a turn may do ---------------------------------------------------------------
@@ -316,17 +297,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         said
     }
 
-    /// The team page, derived from the record: who is at work, in what role, on what brain,
-    /// reporting to whom.
+    /// The team page, derived from the record: who is at work, by what title, on what brain.
     pub(super) fn team_said(&self) -> Done<String> {
         let members = self.store.members()?;
         let mut said = format!("{} (world:team):\n", world::TEAM.title);
         for m in &members {
-            let to = m
-                .reports_to
-                .and_then(|id| members.iter().find(|o| o.id == id))
-                .map(|o| format!(", reports to {}", o.name))
-                .unwrap_or_default();
             let away = if m.furloughed() {
                 ", on furlough"
             } else if m.paused {
@@ -335,7 +310,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 ""
             };
             said.push_str(&format!(
-                "- {} ({}, {}{to}{away})\n",
+                "- {} ({}, {}{away})\n",
                 m.name,
                 m.role.title(),
                 m.brain.label()

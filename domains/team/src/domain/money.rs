@@ -7,7 +7,7 @@
 //! Amounts are millionths of a dollar, so a model's per-token price adds up without rounding.
 
 use super::brain::Brain;
-use super::work::{Millis, Role};
+use super::work::Millis;
 
 /// Millionths of a dollar.
 pub type Micros = i64;
@@ -83,24 +83,14 @@ pub const fn most_top_up(pool_per_month: Micros) -> Micros {
     pool_a_day(pool_per_month) * 3
 }
 
-/// The most one turn of a member in `role` may spend.
+/// The most one turn of a member thinking with `brain` may spend: since one team (ADR 0142)
+/// has no CEO, the member who thinks with Opus has the CEO's dollar, as the relay gives it.
 #[must_use]
-pub const fn most_a_turn(role: Role) -> Micros {
-    match role {
-        Role::Ceo => CEO_MOST_A_TURN,
-        _ => MOST_A_TURN,
-    }
-}
-
-/// The most one turn of a member in `role` thinking with `brain` may spend: since one team
-/// (ADR 0142) has no CEO, the member who thinks with Opus has the CEO's dollar, as the relay
-/// gives it.
-#[must_use]
-pub const fn most_a_turn_of(role: Role, brain: Brain) -> Micros {
+pub const fn most_a_turn_of(brain: Brain) -> Micros {
     if matches!(brain, Brain::Opus) {
         return CEO_MOST_A_TURN;
     }
-    most_a_turn(role)
+    MOST_A_TURN
 }
 
 /// The day a moment falls on, as days since the epoch, by the owner's clock.
@@ -176,6 +166,7 @@ pub const fn crossed(spent: Micros, reserved: Micros) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::work::Role;
 
     #[test]
     fn the_pool_is_split_per_day_among_the_paid_by_their_weights() {
@@ -228,7 +219,7 @@ mod tests {
 
     #[test]
     fn a_turn_reserves_at_most_its_roles_cap_and_never_more_than_is_left() {
-        let most = most_a_turn(Role::Lead);
+        let most = MOST_A_TURN;
         assert_eq!(most, MOST_A_TURN);
         assert_eq!(
             reservation(933_333, 2_333_333, most, LEAST_A_TURN),
@@ -248,18 +239,19 @@ mod tests {
             "less than a turn is left"
         );
         // The CEO's turns may spend a dollar each (ADR 0111); nobody else's more than 40 cents.
-        assert_eq!(most_a_turn(Role::Ceo), DOLLAR);
-        for role in [Role::Developer, Role::Reviewer, Role::Researcher] {
-            assert_eq!(most_a_turn(role), MOST_A_TURN);
-        }
+        assert_eq!(most_a_turn_of(Brain::Opus), DOLLAR);
+        assert_eq!(most_a_turn_of(Brain::Haiku), MOST_A_TURN);
         assert_eq!(
-            reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo), LEAST_A_TURN),
+            reservation(
+                1_361_110,
+                2_333_333,
+                most_a_turn_of(Brain::Opus),
+                LEAST_A_TURN
+            ),
             Some(DOLLAR)
         );
         // One team (ADR 0142) has no CEO: the member who thinks with Opus has its dollar.
-        assert_eq!(most_a_turn_of(Role::Developer, Brain::Opus), DOLLAR);
-        assert_eq!(most_a_turn_of(Role::Developer, Brain::Sonnet), MOST_A_TURN);
-        assert_eq!(most_a_turn_of(Role::Ceo, Brain::Sonnet), DOLLAR);
+        assert_eq!(most_a_turn_of(Brain::Sonnet), MOST_A_TURN);
     }
 
     #[test]
@@ -275,7 +267,7 @@ mod tests {
             "its opening call is under a cent"
         );
         assert_eq!(least_a_turn(Brain::Local), LEAST_A_TURN);
-        let most = most_a_turn(Role::Lead);
+        let most = MOST_A_TURN;
         assert_eq!(
             reservation(22_962, 2_333_333, most, least_a_turn(Brain::Sonnet)),
             None
@@ -307,7 +299,7 @@ mod tests {
         // The owner's allowance for the day is added to what it may draw.
         assert_eq!(may_draw(500_000, 1_000_000, [900_000], 50_000), 50_000);
         // And what it may draw is still held to the turn's cap and the pool's day.
-        let most = most_a_turn(Role::Lead);
+        let most = MOST_A_TURN;
         assert_eq!(
             reservation(
                 may_draw(500_000, 550_000, [2_000_000], 0),

@@ -25,12 +25,12 @@ Feature: What the team's work came to
   Scenario: The Money card says what each model cost this week against the week before
     Given Ada is the lead
     And Linus is the developer
-    And Linus judges with "Claude Haiku"
+    And Linus thinks with "Claude Haiku"
     And the goal "Keep the home lab healthy"
     And Linus has the task "Look at sonarr"
     When Linus's turns on "Look at sonarr" spend $0.10 and then $0.20
     And 7 days pass
-    And the owner gives Linus "Claude Sonnet" to judge with
+    And the owner gives Linus "Claude Sonnet" to think with
     And Linus's turns on "Look at sonarr" spend $0.25 and then $0.35
     Then the cost by model puts Claude Sonnet first, then Claude Haiku
     And this week Claude Sonnet ran 2 turns for $0.60, $0.30 a turn, 100% of the spend
@@ -54,6 +54,7 @@ Feature: What the team's work came to
   Scenario: Turns that wait are counted by what they wait for, with the oldest wait
     Given a pool of $0.50 a day
     And Ada is the lead
+    And Ada thinks with "Claude Haiku"
     And the goal "Keep the home lab healthy"
     And the pool's day is spent on Ada's decisions
     When Ada is woken to decide "Cap sonarr's memory"

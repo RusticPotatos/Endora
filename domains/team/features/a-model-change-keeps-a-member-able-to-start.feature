@@ -29,5 +29,5 @@ Feature: A model change never leaves a member unable to start
     Given Rae is the developer
     And Rae's model is "deepseek-flash"
     When the owner sets Rae's runtime to "claude-code"
-    Then it is refused for "Claude Code is a developer's on Claude alone"
+    Then it is refused for "Claude Code is for a member on Claude alone"
     And Rae runs on Endora's worker

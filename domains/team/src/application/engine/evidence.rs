@@ -217,21 +217,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         .map_err(EngineError::Refused)
     }
 
-    /// Judges evidence for a decision or a message up: at least one reference, each in HQ's
-    /// record.
-    pub(super) fn judge_decision(&self, cited: &[Ref], turn: RunId) -> Done<()> {
-        let found = self.look_up(None, &[cited.to_vec()])?;
-        evidence::judge(
-            &[],
-            &found,
-            &Judged {
-                fresh: &[turn],
-                own_reading: None,
-            },
-        )
-        .map_err(EngineError::Refused)
-    }
-
     /// References in HQ's record, each looked up: a post's, which need only be there.
     pub(super) fn all_there(&self, cited: &[Ref]) -> Done<()> {
         for r in cited {
@@ -387,9 +372,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         // Who may hand what to whom comes first.
         let to_another = task.assignee.filter(|a| *a != turn.member);
-        if let Some(to) = to_another {
-            let (from, to) = (self.member(turn.member)?, self.member(to)?);
-            crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
+        if to_another.is_some() {
+            return Err(EngineError::Refused(Refusal::NotBelow));
         }
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_authored_held_lock(

@@ -189,12 +189,16 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
         &ada,
         "create_task",
         &json!({ "title": "Tidy sonarr's role", "description": "and check it is up",
-                 "assignee": "Linus", "criteria": [
+                 "criteria": [
                     { "text": "the role's tasks are named" },
                     { "text": "sonarr is running and healthy", "live": true }] }),
     )
     .unwrap();
+    // Work goes to a member through its loop (ADR 0142): the owner gives Linus this one.
     let sub = hq.store().tasks().unwrap().pop().unwrap();
+    hq.store().set_assignee(sub.id, Some(t.dev)).unwrap();
+    hq.wake(t.dev, Some(sub.id), crate::domain::WakeReason::Assigned)
+        .unwrap();
     end(&hq, &clock, &ada);
     let linus = turn(&hq, t.dev);
     use_tool(&hq, &linus, "claim", &json!({ "task": sub.id.0 })).unwrap();
@@ -684,7 +688,7 @@ fn a_check_back_on_a_task_blocked_on_a_wait_is_replaced_by_the_wait() {
         &hq,
         &ada,
         "create_task",
-        &json!({ "title": "Restart deluge", "description": "after the VPN", "assignee": "Linus",
+        &json!({ "title": "Restart deluge", "description": "after the VPN",
                  "criteria": [{ "text": "deluge is running", "live": true }] }),
     )
     .unwrap();
