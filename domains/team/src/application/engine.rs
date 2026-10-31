@@ -1588,12 +1588,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.checked_at_review(task)? {
             return Ok(());
         }
-        // In the loops, the member one rank up reviews it (ADR 0142).
+        // In the loops, a member at Haiku's rank or below reviews it, when there is one (ADR
+        // 0142, amended 2026-10-31).
         if let Some(reviewer) = self.loop_reviewer_of(task)? {
             self.post_held_lock(
                 Author::Endora,
                 task.id,
-                &format!("{} reviews this, one rank up.", reviewer.name),
+                &format!("{} reviews this.", reviewer.name),
             )?;
             self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
             return Ok(());

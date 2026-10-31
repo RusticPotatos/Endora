@@ -27,18 +27,19 @@ const TOOL_NAMES: &[&str] = &[
     "read_doc",
 ];
 
-/// The highest rank a review of work done below it is given at (ADR 0142, amended 2026-10-31,
-/// D7): Haiku's. Sonnet's and Opus's reviews were most of round 2's spend.
+/// The highest rank any review is given at (ADR 0142, amended 2026-10-31, D7): Haiku's.
+/// Sonnet's and Opus's reviews were most of round 2's spend; harder work reaches stronger models
+/// by its climb, not by review.
 pub const REVIEWS_CAPPED_AT: u8 = super::Brain::Haiku.rank();
 
 /// Who reviews the work `worker` did at `rank`, among the loops' `members` (each with its
 /// rank; 1 is the most able), never the worker itself (ADR 0142, amended 2026-10-31, D7).
 ///
-/// Work done at Haiku's rank or above is reviewed one rank up, as before: the nearest member
-/// above it, or, for the top rank's, the nearest below. Work done below Haiku's rank is
-/// reviewed one rank up but never above Haiku's: the nearest member above it at Haiku's rank or
-/// below, else the nearest below it. Only when no member but the worker is at Haiku's rank or
-/// below is it the next member up the ranks. Ties go to the member hired first.
+/// Work done below Haiku's rank is reviewed one rank up but never above Haiku's: the nearest
+/// member above it at Haiku's rank or below, else the nearest below it, else the next member up
+/// the ranks. Work done at Haiku's rank or above is reviewed by another member at Haiku's rank,
+/// else the nearest member below Haiku's rank, else, as the last resort, the nearest above it.
+/// Ties go to the member hired first.
 #[must_use]
 pub fn reviewer_among(worker: MemberId, rank: u8, members: &[(MemberId, u8)]) -> Option<MemberId> {
     let others: Vec<(MemberId, u8)> = members
@@ -46,24 +47,33 @@ pub fn reviewer_among(worker: MemberId, rank: u8, members: &[(MemberId, u8)]) ->
         .copied()
         .filter(|(id, _)| *id != worker)
         .collect();
-    let nearest_above = |highest: u8| {
+    let nearest_above = |of: u8, highest: u8| {
         others
             .iter()
-            .filter(|(_, r)| *r < rank && *r >= highest)
+            .filter(|(_, r)| *r < of && *r >= highest)
             .max_by_key(|(id, r)| (*r, std::cmp::Reverse(id.0)))
             .map(|(id, _)| *id)
     };
-    let nearest_below = others
-        .iter()
-        .filter(|(_, r)| *r > rank)
-        .min_by_key(|(id, r)| (*r, id.0))
-        .map(|(id, _)| *id);
+    let nearest_below = |of: u8| {
+        others
+            .iter()
+            .filter(|(_, r)| *r > of)
+            .min_by_key(|(id, r)| (*r, id.0))
+            .map(|(id, _)| *id)
+    };
     if rank > REVIEWS_CAPPED_AT {
-        if let Some(within) = nearest_above(REVIEWS_CAPPED_AT).or(nearest_below) {
-            return Some(within);
-        }
+        return nearest_above(rank, REVIEWS_CAPPED_AT)
+            .or_else(|| nearest_below(rank))
+            .or_else(|| nearest_above(rank, 0));
     }
-    nearest_above(0).or(nearest_below)
+    let at_the_cap = others
+        .iter()
+        .filter(|(_, r)| *r == REVIEWS_CAPPED_AT)
+        .min_by_key(|(id, _)| id.0)
+        .map(|(id, _)| *id);
+    at_the_cap
+        .or_else(|| nearest_below(REVIEWS_CAPPED_AT))
+        .or_else(|| nearest_above(REVIEWS_CAPPED_AT, 0))
 }
 
 /// What the reviewer is told when work is put before it.
@@ -305,13 +315,42 @@ mod tests {
         members.iter().map(|m| (*m, rank(*m))).collect()
     }
 
+    /// Cy, Dee and Zed, on Haiku too, hired after Ada and in that order.
+    const CY: MemberId = MemberId(7);
+    const DEE: MemberId = MemberId(8);
+    const ZED: MemberId = MemberId(9);
+
     #[test]
-    fn work_at_haiku_s_rank_or_above_is_reviewed_one_rank_up_as_before() {
+    fn work_at_haiku_s_rank_or_above_is_reviewed_by_another_member_at_haiku_s_rank() {
+        let mut team = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        team.extend([(CY, 3), (DEE, 3), (ZED, 3)]);
+        // Sonnet's and Opus's work: the Haiku member hired first.
+        assert_eq!(reviewer_among(KIT, 2, &team), Some(ADA));
+        assert_eq!(reviewer_among(MARA, 1, &team), Some(ADA));
+        // Haiku's work: another member at Haiku's rank, never itself, the one hired first.
+        assert_eq!(reviewer_among(ADA, 3, &team), Some(CY));
+        assert_eq!(reviewer_among(CY, 3, &team), Some(ADA));
+        assert_eq!(reviewer_among(ZED, 3, &team), Some(ADA));
+    }
+
+    #[test]
+    fn with_nobody_else_at_haiku_s_rank_the_nearest_below_it_reviews_else_the_nearest_above() {
+        // Ada the only Haiku member: her work goes to the nearest below, Rae, not to Kit.
         let all = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
-        assert_eq!(reviewer_among(ADA, 3, &all), Some(KIT));
-        assert_eq!(reviewer_among(KIT, 2, &all), Some(MARA));
-        // The top rank's work, the member just below it.
-        assert_eq!(reviewer_among(MARA, 1, &all), Some(KIT));
+        assert_eq!(reviewer_among(ADA, 3, &all), Some(RAE));
+        let no_rae = ranked(&[MARA, KIT, ADA, MO, BO]);
+        assert_eq!(reviewer_among(ADA, 3, &no_rae), Some(MO));
+        // No Haiku member: Sonnet's and Opus's work, the nearest below Haiku's rank.
+        let no_haiku = ranked(&[MARA, KIT, RAE, MO, BO]);
+        assert_eq!(reviewer_among(KIT, 2, &no_haiku), Some(RAE));
+        assert_eq!(reviewer_among(MARA, 1, &no_haiku), Some(RAE));
+        // Nobody else at Haiku's rank or below: the nearest above, as the last resort.
+        let ada_alone = ranked(&[MARA, KIT, ADA]);
+        assert_eq!(reviewer_among(ADA, 3, &ada_alone), Some(KIT));
+        let top_two = ranked(&[MARA, KIT]);
+        assert_eq!(reviewer_among(KIT, 2, &top_two), Some(MARA));
+        assert_eq!(reviewer_among(MARA, 1, &top_two), Some(KIT));
+        assert_eq!(reviewer_among(MARA, 1, &ranked(&[MARA])), None);
     }
 
     #[test]
@@ -339,9 +378,6 @@ mod tests {
         // The only member at Haiku's rank or below is the worker: the next member up the ranks.
         let rae_alone = ranked(&[MARA, KIT, RAE]);
         assert_eq!(reviewer_among(RAE, 4, &rae_alone), Some(KIT));
-        // Ada is the only member at Haiku's rank: her work goes up, to Kit.
-        let ada_alone = ranked(&[MARA, KIT, ADA]);
-        assert_eq!(reviewer_among(ADA, 3, &ada_alone), Some(KIT));
         // Alone on the team, nobody reviews.
         assert_eq!(reviewer_among(BO, 6, &ranked(&[BO])), None);
         // A second member at the worker's own rank does not count as one rank up.
