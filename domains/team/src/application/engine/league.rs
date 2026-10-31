@@ -12,8 +12,8 @@ use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::chess_match::Match;
 use crate::domain::games::{self, Rng};
 use crate::domain::league::{self, Played};
-use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
-use crate::domain::{lessons, money};
+use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, TaskId};
+use crate::domain::{dates, money};
 
 /// Where the league is kept: its project and its brains, by name.
 const LEAGUE: &str = "league";
@@ -162,7 +162,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// `at` as the owner's day says it: "17 Oct".
     fn owners_day(&self, at: Millis) -> String {
-        let (day, month) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
+        let (day, month) = dates::day_and_month(money::day_of(at, self.settings.offset_minutes));
         format!("{day} {month}")
     }
 
