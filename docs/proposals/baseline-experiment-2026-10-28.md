@@ -499,11 +499,16 @@ done. Defects are numbered so the next round's changes can name them.
   after an answer, which this does not stop.
 - [ ] **D11. Lab: sonarr restarted at 03:24 EDT on 31 Oct**, not by HQ (no restart in its
   record); cause unknown.
-- [ ] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
+- [x] **D12. A long item's thread eats every turn's budget, and nothing is kept.** 937 failed
   more than twelve turns across Rae, Ada and Kit: each re-reads the thread, now dozens of handover
   blocks long, and reaches the budget after 5 to 8 calls, before anything is committed and
   submitted. $2.14 spent with no branch kept. A turn should read the newest handover, not every
   one, and work in progress should be kept (a work branch committed before the turn ends).
+  *Fixed on `r3-long-items` (ADR 0142, amended 2026-10-31): older handovers and out-of-room last
+  words are left out of the briefing and `my_turn` (a climb's briefing 28,151 to 4,129 bytes); the
+  worker commits the sandbox to the task's branch as the turn runs out of room and the node keeps
+  it unchecked for the next turn, which the handover tells to check it out; a turn that kept new
+  work is no failure, so 937 would not have climbed. Not yet merged or released.*
 - [ ] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
   `repo_checkout` refuses `main`, so 936 (what upstream changed) cannot be done. A read-only
   upstream checkout, or a mirror of upstream on the node, would let it.

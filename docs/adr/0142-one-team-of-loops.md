@@ -460,3 +460,59 @@ Round 2 of the baseline experiment found three ways an item was woken wrongly
   item now, not to a member it has since left. Round 1's repeats (915 five times) each followed an
   answer, which the member did not find enough; one card at a time caps the desk, it does not
   stop a member asking again after an answer.
+
+## Amended 2026-10-31: a long item makes progress across turns (D12)
+
+Round 2's item 937 (a lint rule with tests in the ansible-nas fork) ran out of room 38 times
+across Rae, Ada, Kit and Mara before a branch was submitted
+(`docs/proposals/baseline-experiment-2026-10-28.md`, D12). Read from HQ's record:
+- **The thread was read again by every turn.** Each continuation and change of hands posted a
+  handover (about 1,300 characters) after the turn's last word (about 600), and `my_turn` sent
+  the twelve newest posts beside the briefing. A member new to the item was told the whole
+  thread as news: Ada's first turn on it was told 27,960 bytes, Kit's 53,027, Mara's 78,575; a
+  continuation's first message was about 18,800 bytes, more than half of it old handovers and
+  last words, and every call of the turn sent it again.
+- **Nothing a turn wrote was kept.** The sandbox's `/work` is gone when a turn ends, and only a
+  branch submitted with `repo_submit` is kept, which queues its checks. Turns ran out of room
+  writing the rule and its tests, before a commit worth checking, so each started again from
+  `develop` (Ada: "The sandbox has no checkout, so I need to bring the fork in first").
+- **Running out of room moved it up the ranks.** Every fourth turn out of room was a failure
+  (amended 2026-10-30), so 937 climbed three ranks with no check failed and no send-back,
+  against this ADR's rule that failed checks and send-backs move an item. $2.14 was spent.
+
+Decided:
+- **A turn reads the newest handover, not every one.** In the briefing's news and in
+  `my_turn`'s thread, a handover older than the thread's newest is left out, and so are the last
+  words of turns that ran out of room and HQ's notices that one counted, when they come before
+  the newest handover (which carries the last three of them). One line says how many were left
+  out and that the record keeps them; only HQ's own posts count as handovers. `my_turn` no longer
+  repeats the handover its briefing already tells the member. The thread itself is unchanged.
+- **Work in progress is kept, by the worker.** When a turn in the workbench ends at its prompt's
+  budget, the worker (not the model, after the model's last call) commits what `/work/repo`
+  holds to the task's branch, or to a new `hq/task-<N>-work` when it is not on one, bundles it
+  and sends it to the node's `repo_submit` marked `wip`. The node takes it by a submission's
+  rules (on its base, HQ's commits, no forbidden path, within the limits) and keeps it, as it
+  keeps any submission; HQ records it as a branch `in_progress`, writes no document, queues no
+  check, posts nothing and shuts the gate (the newest head is unchecked). Work in review is
+  refused, since a new head would void its review. The handover then begins with where the work
+  is and `repo_checkout with branch <name>`, which hands it back at the recorded head as it hands
+  back any kept branch. The worker's last word says where it was kept, or why it could not be.
+  Why the worker and not a last word naming the branch: the sandbox is gone when the turn ends,
+  so a branch named in words would be lost with it, and the existing kept-branch flow (node keeps
+  `refs/submissions/<branch>`, HQ hands out its head) needed only the `wip` mark to skip the
+  check, whose failure on half-done work would have counted against the item. Nothing goes to
+  the fork: the push stays the owner's, after a review that a checked head alone can pass.
+- **A turn out of room that kept new work is no failure.** Progress is HQ's record, not the
+  turn's word: a branch the turn recorded whose head differs from the item's branch before it.
+  Such a turn starts the count of continuations again; turns that keep nothing still count, and
+  the fourth in a row is one of the item's failures, as before. So that one item cannot take a
+  member's every turn, twelve continuations in all with one member are also one failure, and the
+  counts start again. The loops' money caps bound it as before.
+
+Measured on the engine's real briefing, thread and handovers (the worker's test
+`a_fifth_continuation_of_a_long_item_fits_its_budget_with_room_to_work`: twelve turns out of room
+at Ada's rank, the climb to Kit, then five of his; bytes of the relay's body, the lab's calls with
+results read whole within a Claude turn's 480,000): Kit's first turn after the climb, briefing
+28,151 to 4,129 bytes and first call 38,253 to 14,058, 7 to 10 of the lab's calls; his fifth
+continuation, briefing 11,114 to 3,713 and first call 21,089 to 13,637, 9 to 10 calls. What a turn
+reads is now the briefing, its tools and the work, not the item's history.
