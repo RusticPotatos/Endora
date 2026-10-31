@@ -82,8 +82,8 @@ fn ordinary_log_lines_are_left_alone() {
 fn a_links_credentials_are_replaced_and_its_place_kept() {
     for (line, kept) in [
         (
-            "cloning https://jane:hunter2@git.example.com/repo.git now\n",
-            "cloning https://[redacted]@git.example.com/repo.git now\n",
+            "cloning https://jane:hunter2@example.com/repo.git now\n",
+            "cloning https://[redacted]@example.com/repo.git now\n",
         ),
         (
             "db at postgres://admin:p%40ss@192.168.1.10:5432/app",

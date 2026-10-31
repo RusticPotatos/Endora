@@ -1560,7 +1560,7 @@ mod tests {
             "moments": [
                 { "kind": "briefing", "text": "You are Bo. The key is sk-ant-abcdefabcdefabcdefabcdef." },
                 { "kind": "call", "tool": "container_logs", "args": "password=hunter2",
-                  "excerpt": "pulled https://jane:hunter2@git.example.com/x.git" },
+                  "excerpt": "pulled https://jane:hunter2@example.com/x.git" },
             ],
             "transcript": { "runtime": "worker", "est_tokens": 40, "text":
                 "--- tools ---\npost\n--- system ---\nYou are Bo.\n--- user ---\nUse ghp_1234567890abcdefghijklmnopqrstuv \
@@ -1591,7 +1591,7 @@ mod tests {
                 "the rest is kept: {page}"
             );
             assert!(
-                page.contains("git.example.com"),
+                page.contains("[redacted]@example.com/x.git"),
                 "a link keeps its host: {page}"
             );
         }
