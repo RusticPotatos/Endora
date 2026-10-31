@@ -73,6 +73,7 @@ pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use projects::{LAB_UPKEEP, Proposal};
+pub use runtime::ModelSet;
 pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
@@ -647,12 +648,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The owner sets a member's model (ADR 0142), by its name: every turn of the member's runs
-    /// on it, whatever woke it. Any member may be any model; a title is a name only.
+    /// on it, whatever woke it. Any member may be any model; a title is a name only. A member
+    /// whose runtime cannot run the new model is put back on Endora's worker, and the answer
+    /// says so (ADR 0117, amended 2026-10-31).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
     /// a name that is not a model Endora has; a store failure.
-    pub fn set_model(&self, member: MemberId, brain: &str) -> Done<Brain> {
+    pub fn set_model(&self, member: MemberId, brain: &str) -> Done<ModelSet> {
         let _held = self.held();
         let found = self.member(member)?;
         let brain = Brain::from_name(brain).ok_or_else(|| {
@@ -667,7 +670,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
                     "slot": "model" }),
         )?;
-        Ok(brain)
+        let said = self.runtime_after_model(&found, brain)?;
+        Ok(ModelSet { brain, said })
     }
 
     /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or

@@ -8,6 +8,16 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::{EventKind, MemberId, RunId, Runtime};
 
+/// What the owner's change of a member's model did (ADR 0117, amended 2026-10-31).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSet {
+    /// The model set.
+    pub brain: crate::domain::Brain,
+    /// What the owner is told beside it, when the member's runtime cannot run the new model and
+    /// the member was put back on Endora's worker; `None` when nothing else changed.
+    pub said: Option<String>,
+}
+
 /// Set once HQ has put the pilot's developer on Claude Code, so the owner's later choice
 /// stands.
 const PILOT_SEEDED: &str = "claude_code_pilot_seeded";
@@ -33,6 +43,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "name": found.name, "runtime": runtime.name() }),
         )?;
         Ok(runtime)
+    }
+
+    /// After the owner set `member`'s model to `brain`, under the engine's hold: a runtime that
+    /// cannot run it is moved to Endora's worker, which runs every model, said in the feed, and
+    /// what the owner is told is returned. The owner chooses the model and the runtime; the
+    /// worker is every member's default (ADR 0117), so the move takes nothing the owner chose
+    /// that could still run. `None` when the runtime stands.
+    pub(super) fn runtime_after_model(
+        &self,
+        member: &crate::domain::Member,
+        brain: crate::domain::Brain,
+    ) -> Done<Option<String>> {
+        let set = self.store.runtime_of(member.id)?;
+        if set.allowed_for(member.role, brain) {
+            return Ok(None);
+        }
+        self.store.set_runtime(member.id, Runtime::Worker)?;
+        self.emit(
+            EventKind::RuntimeSet,
+            json!({ "member": member.id.0, "name": member.name, "runtime": Runtime::Worker.name(),
+                    "was": set.name(), "why": "model" }),
+        )?;
+        Ok(Some(format!(
+            "{} now runs on {}: {} runs only Claude",
+            member.name,
+            Runtime::Worker.label(),
+            set.label()
+        )))
     }
 
     /// What runs a member's turn now: the owner's setting while the member may still run on

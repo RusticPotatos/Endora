@@ -47,12 +47,13 @@ impl Runtime {
     }
 
     /// Whether a member in `role` thinking with `brain` may run on this: the worker always;
-    /// Claude Code only for a developer on Claude.
+    /// Claude Code only for a developer on Claude, the brains that speak Anthropic's API, as
+    /// the runner checks (not every cloud brain: DeepSeek is not one).
     #[must_use]
     pub const fn allowed_for(self, role: Role, brain: Brain) -> bool {
         match self {
             Self::Worker => true,
-            Self::ClaudeCode => matches!(role, Role::Developer) && brain.cloud(),
+            Self::ClaudeCode => matches!(role, Role::Developer) && brain.claude(),
         }
     }
 
@@ -128,6 +129,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(said.contains("developer"), "{said}");
+    }
+
+    #[test]
+    fn claude_code_runs_only_claude_not_every_cloud_model() {
+        // Round 2 (31 Oct): DeepSeek is a cloud model but not Claude; Claude Code speaks only
+        // Anthropic's API, so the runner refused every turn of a developer moved to it.
+        assert!(!Runtime::ClaudeCode.allowed_for(Role::Developer, Brain::DeepSeek));
+        assert!(Runtime::for_member(Role::Developer, Brain::DeepSeek, "claude-code").is_err());
+        assert_eq!(
+            Runtime::ClaudeCode.effective(Role::Developer, Brain::DeepSeek),
+            Runtime::Worker
+        );
+        for brain in [Brain::Opus, Brain::Sonnet, Brain::Haiku] {
+            assert!(
+                Runtime::ClaudeCode.allowed_for(Role::Developer, brain),
+                "{brain:?}"
+            );
+        }
     }
 
     #[test]

@@ -122,6 +122,14 @@ impl Brain {
         matches!(self, Self::Local | Self::Mac)
     }
 
+    /// Whether the brain is a Claude, which speaks Anthropic's API: Opus, Sonnet or Haiku. Not
+    /// every cloud brain is one: DeepSeek is reached through the node's local relay, in
+    /// OpenAI's shape, so Claude Code cannot run it (ADR 0117, amended 2026-10-31).
+    #[must_use]
+    pub const fn claude(self) -> bool {
+        matches!(self, Self::Opus | Self::Sonnet | Self::Haiku)
+    }
+
     /// Its price class (ADR 0113, amended): what a token costs on it, in thousandths of what it
     /// costs on Opus, by the relay's input prices (Opus $4, Sonnet $2, Haiku $0.10 a million;
     /// their output prices stand in the same ratios). Nothing for the house's model, which costs

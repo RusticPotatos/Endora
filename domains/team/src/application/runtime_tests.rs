@@ -87,3 +87,45 @@ fn the_pilot_puts_rae_on_claude_code_once_and_zed_stays_on_the_worker() {
     assert_eq!(hq.seed_claude_code_pilot().unwrap(), None);
     assert_eq!(hq.runtime_of(rae).unwrap(), Runtime::Worker);
 }
+
+#[test]
+fn a_model_claude_code_cannot_run_puts_the_member_on_the_worker_and_says_so() {
+    // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
+    // turn of hers for three hours.
+    let hq = engine();
+    let rae = hq.hire("Rae", Role::Developer, 40, 2, 0).unwrap();
+    hq.set_brain(rae, "claude-sonnet-5-5").unwrap();
+    hq.set_runtime(rae, "claude-code").unwrap();
+    let set = hq.set_model(rae, "deepseek-flash").unwrap();
+    assert_eq!(set.brain, crate::domain::Brain::DeepSeek);
+    assert_eq!(
+        set.said.as_deref(),
+        Some("Rae now runs on Endora's worker: Claude Code runs only Claude")
+    );
+    assert_eq!(hq.runtime_of(rae).unwrap(), Runtime::Worker);
+    assert_eq!(
+        hq.store().runtime_of(rae).unwrap(),
+        Runtime::Worker,
+        "the setting itself moved, so the console shows what runs"
+    );
+    let said = hq.events_after(0).unwrap();
+    assert!(
+        said.iter()
+            .any(|e| e.kind == "member.runtime" && e.data["runtime"] == "worker"),
+        "said in the feed"
+    );
+    // Claude Code is refused while it cannot run her model.
+    assert!(matches!(
+        hq.set_runtime(rae, "claude-code"),
+        Err(EngineError::Refused(Refusal::NotARuntime { .. }))
+    ));
+    // Another Claude keeps Claude Code, and nothing more is said.
+    hq.set_model(rae, "claude-haiku-5-5").unwrap();
+    hq.set_runtime(rae, "claude-code").unwrap();
+    let set = hq.set_model(rae, "claude-sonnet-5-5").unwrap();
+    assert_eq!(set.said, None);
+    assert_eq!(hq.runtime_of(rae).unwrap(), Runtime::ClaudeCode);
+    // A member on the worker is told nothing whatever the model.
+    hq.set_runtime(rae, "worker").unwrap();
+    assert_eq!(hq.set_model(rae, "mac").unwrap().said, None);
+}

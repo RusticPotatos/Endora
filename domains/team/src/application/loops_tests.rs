@@ -83,8 +83,8 @@ fn a_member_is_its_model_whatever_woke_it() {
     let g = goal(&hq);
     let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
     let kit = hq.hire("Kit", Role::Developer, 10, 2, 0).unwrap();
-    assert_eq!(hq.set_model(bo, "local").unwrap(), Brain::Local);
-    assert_eq!(hq.set_model(kit, "sonnet").unwrap(), Brain::Sonnet);
+    assert_eq!(hq.set_model(bo, "local").unwrap().brain, Brain::Local);
+    assert_eq!(hq.set_model(kit, "sonnet").unwrap().brain, Brain::Sonnet);
     let asked = task(&hq, g, "A question for Bo");
     let given = task(&hq, g, "Work for Kit");
     hq.wake(bo, Some(asked), WakeReason::Mentioned).unwrap();
@@ -133,7 +133,7 @@ fn any_member_may_be_any_model() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let mara = hq.hire("Mara", Role::Developer, 10, 2, 0).unwrap();
-    assert_eq!(hq.set_model(mara, "opus").unwrap(), Brain::Opus);
+    assert_eq!(hq.set_model(mara, "opus").unwrap().brain, Brain::Opus);
     assert!(hq.set_model(mara, "gpt").is_err(), "not a model Endora has");
 }
 
@@ -1683,7 +1683,7 @@ fn a_turn_that_read_far_less_than_its_budget_does_not_continue() {
 /// A Claude Code turn has no prompt budget of the worker's, and has the turn's token in its
 /// environment: its post marked as continuing is never taken as one, however much it read.
 ///
-/// Given Bo on DeepSeek, his turns run by Claude Code, with the loop's item,
+/// Given Bo on Haiku, his turns run by Claude Code, with the loop's item,
 /// when a turn of his that read 200,000 prompt tokens says it ran out of room,
 /// then he is not woken to continue it.
 #[test]
@@ -1691,9 +1691,12 @@ fn a_claude_code_turn_never_continues() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let f = five(&hq);
-    hq.set_model(f.bo, "deepseek").unwrap();
+    // Claude Code runs only Claude (ADR 0117, amended 2026-10-31): Bo takes Haiku's rank, and
+    // Ada, who had it, works on the Mac.
+    hq.set_model(f.ada, "mac").unwrap();
+    hq.set_model(f.bo, "haiku").unwrap();
     hq.set_runtime(f.bo, "claude-code").unwrap();
-    hq.set_loop_rank(f.loop_, Brain::DeepSeek.rank()).unwrap();
+    hq.set_loop_rank(f.loop_, Brain::Haiku.rank()).unwrap();
     let hard = hard_item(&hq, &f);
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, hard), Some(f.bo));

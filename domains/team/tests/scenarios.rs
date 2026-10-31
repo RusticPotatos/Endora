@@ -80,6 +80,11 @@ mod deploys;
 #[path = "scenarios/areas.rs"]
 mod areas;
 
+/// The owner's setup of a member and a loop never strands a turn (round 2's D1 and D4), in its
+/// own file.
+#[path = "scenarios/setup.rs"]
+mod setup;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

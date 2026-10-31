@@ -613,15 +613,18 @@ struct ModelAsked {
     model: String,
 }
 
-/// The owner sets a member's model (ADR 0142): every turn of its runs on it.
+/// The owner sets a member's model (ADR 0142): every turn of its runs on it. `said` tells the
+/// owner when its runtime could not run the model and it was put on the worker (ADR 0117).
 async fn set_model(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
     Json(req): Json<ModelAsked>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
-    Ok(Json(json!({ "member": id, "model": brain.name() })))
+    let set = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
+    Ok(Json(
+        json!({ "member": id, "model": set.brain.name(), "said": set.said }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -3172,6 +3175,46 @@ mod tests {
         let jane = &shown["members"][0];
         assert_eq!(jane["work_brain"], "mac");
         assert_eq!(jane["judgment_brain"], "claude-sonnet-5-5");
+    }
+
+    #[tokio::test]
+    async fn a_model_claude_code_cannot_run_answers_that_the_member_runs_on_the_worker() {
+        // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
+        // turn of hers until the runtime was set by hand.
+        let st = state(false);
+        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        st.hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
+        st.hq.set_runtime(dev, "claude-code").unwrap();
+        let app = app(st.clone());
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/model", dev.0),
+                Some(TOKEN),
+                &json!({ "model": "deepseek-flash" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let said = json_of(res).await;
+        assert_eq!(said["model"], "deepseek-flash");
+        assert_eq!(
+            said["said"],
+            "Jane Doe now runs on Endora's worker: Claude Code runs only Claude"
+        );
+        // And Claude Code is refused while it cannot run the member's model.
+        let refused = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/runtime", dev.0),
+                Some(TOKEN),
+                &json!({ "runtime": "claude-code" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
