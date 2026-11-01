@@ -818,6 +818,10 @@ done. Defects are numbered so the next round's changes can name them.
   times, 920 four). Fixed on `r3-wakes`: one question per item waits on the desk; another is
   refused with the reason, HQ's own is added to the waiting card. Round 1's repeats each came
   after an answer, which this does not stop.
+  *It came back in round 3 that way: 950 (cards 5061, then 5062 50 s after the answer) and 956
+  (5064, then 5065). Fixed on `round4` (c759e60e): once the owner has answered an item's question
+  in words, a later question on it is refused with that answer quoted (act on it, or block with
+  the reason); new decisions reach the owner by a block, an approval or a money or key card.*
 - [ ] **D11. Lab: containers are recreated every night by Watchtower.** Diagnosed 31 Oct (read-only):
   Watchtower runs at 03:00 (`--schedule 0 0 3 * * * --cleanup`) and recreates every container on a
   `:latest` tag with a newer image; on 31 Oct it recreated six, sonarr and nzbget among them, at
@@ -845,7 +849,6 @@ done. Defects are numbered so the next round's changes can name them.
   worker commits the sandbox to the task's branch as the turn runs out of room and the node keeps
   it unchecked for the next turn, which the handover tells to check it out; a turn that kept new
   work is no failure, so 937 would not have climbed. Not yet merged or released.*
-- [ ] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
 - [x] **D13. The team cannot read upstream ansible-nas.** The sandbox is offline and
   `repo_checkout` refuses `main`, so 936 (what upstream changed) cannot be done. A read-only
   upstream checkout, or a mirror of upstream on the node, would let it. *Built on `r3-upstream`
@@ -858,23 +861,28 @@ done. Defects are numbered so the next round's changes can name them.
   `repo_checkout develop` in the shell (exit 127) instead of calling the tool, then asked the
   owner whether to go on. The shell's "command not found" could say which Endora tool has that
   name and how to call it.
+  *Partly met on `round4` by D27 (85436f8e): the fork's tools are up front and the shell tool
+  says the fork comes in with `repo_checkout`; the shell's own "command not found" still names nothing.*
 
-- [ ] **D15. The house's own model is held to 60 turns a day.** Round 3, 31 Oct 15:0x: Bo (the
+- [x] **D15. The house's own model is held to 60 turns a day.** Round 3, 31 Oct 15:0x: Bo (the
   NAS's model, which costs nothing) reached "60 turns a day is the most a member takes" and
   stopped until tomorrow, partly from looping on 953's questions. The cap guards against a
   runaway; for a free model a loop that keeps failing is what should stop it, not the count.
+  *Fixed on `round4` (7aa23595: a waste check (looping, re-reviews, rooms that keep nothing) replaces the 60-turn count), to release with round 4.*
 - [ ] **D16. The top-up refusal names a figure it then refuses.** HQ said "$2.84 may still be
   added today" and refused $2.84; $2.83 went through. The room is rounded up when said.
 
-- [ ] **D17. Refused wakes during review count as failures, and climb the item.** Round 3, 948:
+- [x] **D17. Refused wakes during review count as failures, and climb the item.** Round 3, 948:
   after it was ready at 13:30, wakes HQ refused because the item was in review were counted as
   failures 1 to 3, so the item climbed to Kit (Sonnet) and then Mara (Opus), who only re-checked
   the same head. $0.24 of its $0.36 came after it was ready, and the reviews went above Haiku's
   rank despite the cap (D7).
-- [ ] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
+  *Fixed on `round4` (0345027c: a wake refused while the item waits in review is not a failure), to release with round 4.*
+- [x] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
   948: Rae's turns ended at the budget without keeping work in progress (D12's fix), and the item
   moved only once it reached Ada. Check why the worker kept no work on these turns.
-- [ ] **D19. A Claude reviewer never had its verdict tool.** Round 3, 947: Mara (Opus) put the
+  *Fixed on `round4` (0e2cdda8: on a cached model the turn's budget counts its conversation once (12 KB opening, ~50 KB conversation was counted as 238 KB)), to release with round 4.*
+- [x] **D19. A Claude reviewer never had its verdict tool.** Round 3, 947: Mara (Opus) put the
   work in review at 21:10 UTC; Ada (Haiku) reviewed it four times, approving each, and every
   verdict went to `set_status`, refused ("this task is not yours", then a `d86` citation). Her
   turns listed `review` under "held back": the worker loads a fixed list on Claude and left the
@@ -883,12 +891,14 @@ done. Defects are numbered so the next round's changes can name them.
   `codex/agent-collaboration` (`app/worker/src/turn.rs`, test
   `a_claude_turn_loads_what_hq_marks_for_its_kind`); the worker has no scenario suite, so its
   end-to-end test stands for one. Released in `1340e5b3` mid-round, by the owner's word.*
-- [ ] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
+  *Released (1340e5b3, released mid-round on the owner's word: HQ's up-front mark is honoured on the Claude path).*
+- [x] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
   to Sonnet.** Ada read 400–460 KB over 6–7 calls a turn (mostly `image_tags` and the
   checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
   it in 10 turns for $0.94 (22:02–22:20 UTC), of the task's $1.38. The cap on results a turn
   reads, or a smaller `image_tags` answer, would keep it at Haiku's price. Related to D12 and D17.
-- [ ] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
+  *Fixed on `round4` (4117683b and 92c51ac7: every lab or shell result held to 6 KB on every API, unless asked raw), to release with round 4.*
+- [x] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
   Round 3, 31 Oct: Ada had today's $0.50 allowance (card 5025, approved) and reached her limit
   ($0.89 of $0.88: twice her $0.19 share plus the allowance) at about 22:42 UTC. HQ asks about a
   member once a day, so no card came; her turns on 949 (a review) and 951 stayed queued with
@@ -899,7 +909,8 @@ done. Defects are numbered so the next round's changes can name them.
   something cents"): the once-a-day mark for Ada was cleared, HQ raised card 5054 itself, and it
   was approved at $2.00 for the day (in place of $0.50; the pool had $3.77). A money decision
   and a setup fault, not counted as an intervention on a task.*
-- [ ] **D22. Work that meets the bar's reading of a criterion ends blocked, never delivered.**
+  *Fixed on `round4` (2a4e60df: a member capped again after an allowance is asked about again), to release with round 4.*
+- [x] **D22. Work that meets the bar's reading of a criterion ends blocked, never delivered.**
   Round 3, 949: the branch pins all seven tags, each real on its registry, and lints exactly as
   develop does (`ansible-lint nas.yml` 14 and 14, `yamllint .` 6 and 6, sorted findings the
   same), which is how Claude Code's arm and round 2's 931 were accepted. HQ's own check measured
@@ -910,7 +921,8 @@ done. Defects are numbered so the next round's changes can name them.
   states its comparison as the measure ("no new findings against develop: met") and the
   reviewer's brief takes the check's verdict for a lint criterion, as it already does for CI;
   keep a blocked item's submission where delivery can reach it.
-- [ ] **D23. Work kept in progress at the head that passed its check shuts the gate for good.**
+  *Fixed on `round4` (0ce92a48), to release with round 4.*
+- [x] **D23. Work kept in progress at the head that passed its check shuts the gate for good.**
   Round 3, 951: submitted at fc36418e20c2 (00:36 UTC), check c55 passed (no worse than develop).
   At 01:22 a turn of Kit's ran out of room and the worker kept the same head as work in
   progress; `keep_work_in_progress` sets the gate shut and queues no check, so Ada's approvals at
@@ -920,13 +932,15 @@ done. Defects are numbered so the next round's changes can name them.
   it but a developer's `recheck`, which a reviewer's turn does not have, and the owner has none.
   Fix proposed: keeping a head the gate already passed leaves the gate as it is (the gate
   belongs to the head, not to the last write); a scenario of exactly this sequence first.
-- [ ] **D24. A reviewer passed work she wrote.** Round 3, 952: Ada wrote its work-in-progress
+  *Fixed on `round4` (e27c426c), to release with round 4.*
+- [x] **D24. A reviewer passed work she wrote.** Round 3, 952: Ada wrote its work-in-progress
   commits (5f3db92, bfec3e4, ad586b7), Kit squashed them into 38aa78a after D17 moved it to him,
   and Ada then reviewed and closed it ("Tested and passed"). The own-work check reads who
   submitted the head, not who wrote the work. The work held on the judge's own readings, so no
   harm this time. Fix proposed: a reviewer is refused for any item whose branch carries her
   commits or whose thread shows her doing turns.
-- [ ] **D25. HQ's CI check reads a criterion about CI as needing a run.** Round 3, 955:
+  *Fixed on `round4` (d412ac52), to release with round 4.*
+- [x] **D25. HQ's CI check reads a criterion about CI as needing a run.** Round 3, 955:
   criterion 2 is "It reports today's offenders without failing CI on them"; HQ's mechanical check
   (post 7916) said no workflow runs on a push to the branch, so the criterion "cannot be met as
   the fork stands" and HQ will not pass it. The criterion asks what CI does with the rule's
@@ -934,12 +948,14 @@ done. Defects are numbered so the next round's changes can name them.
   findings as warnings). D6's refusal is right for "CI passes on the branch", wrong here. Fix
   proposed: the refusal applies only to a criterion that asks for a run's result; otherwise the
   check reports what CI's steps give on the head.
-- [ ] **D26. A review turn ends with no verdict, and the item sits in review.** Round 3: Rae
+  *Fixed on `round4` (04ea0d74), to release with round 4.*
+- [x] **D26. A review turn ends with no verdict, and the item sits in review.** Round 3: Rae
   (DeepSeek Flash) reviewed 955 (run 4978, 02:07 UTC), 952 (runs 4932, 4941) and 953 (runs
   5029, 5033, 5034) with one
   `repo_checkout` each and ended, no verdict and no post. Fix proposed: a review turn that ends
   with neither verdict is recorded as not done and the review goes to the next reviewer.
-- [ ] **D27. On the house model, each turn's empty sandbox reads as "offline", and Bo gives up.**
+  *Fixed on `round4` (66225c7e (side effect: a refused verdict also passes the review on)), to release with round 4.*
+- [x] **D27. On the house model, each turn's empty sandbox reads as "offline", and Bo gives up.**
   Round 3, 950, 1 Nov 04:02–05:07 UTC: Bo (the NAS's model) did use `repo_checkout`, six times,
   every one working (runs 5003–5009, 5028), after finding it behind `find_tools` (his first try
   ran it in the shell, exit 127). But in the turns that asked the owner (cards 5061 at 04:24 and
@@ -952,11 +968,28 @@ done. Defects are numbered so the next round's changes can name them.
   and `repo_submit` for the turn, so they load up front on every runtime (as D19 did for a
   verdict), and the handover's first line says the sandbox starts empty: check out the kept
   branch first. (Corrected on the judge's readings; it first said he never called it.)
-- [ ] **D28. A turn's kept work in progress is Python byproducts, called new work.** Round 3, 950:
+  *Fixed on `round4` (85436f8e: HQ names the fork's tools up front for a loop's item on every runtime; the handover and the shell tool say the sandbox starts empty, not offline), to release with round 4.*
+- [x] **D28. A turn's kept work in progress is Python byproducts, called new work.** Round 3, 950:
   all three heads kept on `hq/task-950-work` add only two `__pycache__/*.pyc` files (the fork has
   no ignore entry for them); 947, 951 carried the same file, added and removed. The handover
   says the turn "kept new work". Fix proposed: the keep leaves out what `git status` would show
   only as byproducts (`__pycache__`, `*.pyc`), and a head with no other change is not kept.
+  *Fixed on `round4` (ba135b8b), to release with round 4.*
+
+- [ ] **D29. Nothing stops an arm reading the owner's values.** Round 3, task 8: Claude Code's arm
+  read 20 lines of `group_vars/nas.yml` (round 0's did the same); nothing of it reached the branch.
+  The guard hook (`.claude/hooks/guard-paths.sh`) blocks edits to `group_vars`, `host_vars`,
+  inventories and vaults, not reads. Fix proposed: the same paths refused to `Read` and to the
+  shell's `cat`/`sed`/`grep` in the arms' sessions, as HQ's sandbox already refuses them.
+- [ ] **D30. Turns spend moves on the protocol.** The house-model replay (1 Nov): both models call
+  `my_turn`, which repeats the briefing the first message already holds, and `find_tools` for a
+  tool already offered; round 3's store shows the same pattern in `claim`/`my_turn` openings. Fix
+  proposed (with item E): `my_turn` and `claim` are not offered to a turn whose briefing already
+  says the item is theirs, and `find_tools` answers a request for an offered tool by saying so.
+- [x] **D31. A finished turn is replayed, a running one is not.** The owner, 1 Nov: "watch them
+  as they work". *Fixed on `round4` (`round4-live`, merged in 9fc92ceb): the worker tells its
+  conversation after every round, Replay refreshes a running turn, the reasoning is kept and
+  shown folded, and Activity's lines open what they name.*
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
