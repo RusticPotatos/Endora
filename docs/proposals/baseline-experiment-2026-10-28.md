@@ -562,6 +562,14 @@ one intervention on task 3.
 window ends 21:00 UTC, so it runs in both arms after that, on the owner's approval of 31 Oct, and
 its row is filled when it is judged.
 
+**Task 8's window cut short, by the owner (1 Nov, mid-round).** The owner's word: don't wait for
+21:00 UTC; "we don't even know if 24 hours is valuable against a shorter test". The window was
+closed at 13:30 UTC, about 16.5 hours from 31 Oct 21:00 UTC, not 24. Task 8 was made at 13:25 UTC
+as HQ task 956 from source 909, its words unchanged but for the window ("31 Oct 21:00 UTC to
+1 Nov 13:30 UTC"), in 909's project (the gluetun timer, project 4) and goal; Claude Code's arm
+started on the same words at 13:3x UTC, a fresh agent in its own worktree of the fork at
+ee878f7 (`exp/a-08-r3`, local), as in round 0.
+
 **A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
 08:43 UTC (HQ's status call hung for minutes; 335 MB of 16 GB available): Ollama's llama-server
 host prompt cache (llama.cpp's `--cache-ram`, 8192 MiB by default, which Ollama leaves unset)
@@ -588,7 +596,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 5 | 951 | Reported no: Ada's approvals at 01:26 and 02:10 refused by a gate shut by D23, then blocked by HQ as "failed at every rank" before 03:50 UTC (its card 5058 closed unanswered, not counted); never delivered. Verified yes: the admin password defaults to `vault_minio_admin_password`, the old literal gone from the role and its docs; the judge played the role: unset or empty fails with a clear message, set passes, disabled skips; README and website page say to set it in the vault; no secret in patches or commit messages (the removed line is upstream's public default); lint the same as develop (14 and 14, 6 and 6, identical); 8 commits off ee878f7; rechecked by the round judge from the mirror's `refs/submissions`. Outside the criteria: loki's template reads the same variable, and miniflux keeps the literal | $0.54 (71% after first ready; Mara $0.19 from the D17 climb) | 460 min to first ready; never accepted | 0 | |
 | 6 | 952 | Yes, reported and verified: both SQL passwords default to vault variables, no literal left; the assert fails with a clear message when either is unset and passes when set (run by the judge, unset and set); docs say how to set them in the vault; lint the same as develop (14 and 14, 6 and 6, identical); one commit off ee878f7, pushed by delivery as `hq/task-952-nextcloud-secrets`, privacy scan clean; rechecked by the round judge. Ada reviewed work she had written before Kit squashed it (D24) | $0.25 (Kit's squash 37%, after D17 refusals) | 488 min (462 waiting in the loop's queue; about 26 min of work) | 0 | |
 | 7 | 953 | Yes, reported and verified (as written): the indexers named (TheRARBG and The Pirate Bay through Prowlarr) with lines from both apps, all in the live logs; the cause shown: the 429 is Prowlarr's own "disabled after failures" reply, each following a failed connection to the indexer's site from inside gluetun's network, beside gluetun's DoH errors; a change with its expected effect and a 24-hour check; nothing changed on the lab by HQ (every receipt a read). The fix is weak: the failures come after names resolve, so switching gluetun's DNS likely leaves the 429s, and DoT is what the role's own comment says it moved off; Kit also said a restart timer is on when it is off. Rechecked by the round judge | $0.99 (78% after first ready: Rae's three reviews with no verdict, D26, then Kit after D17) | 722 min (Bo stopped 18:41–04:00 by D15) | 3 | |
-| 8 | (after its window: 31 Oct 21:00 UTC to 1 Nov 21:00 UTC) | | | | | |
+| 8 | 956 (window 31 Oct 21:00 UTC to 1 Nov 13:30 UTC, cut by the owner) | | | | | |
 | 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
 | 10 | 955 | Reported no: blocked by Kit at 04:10 UTC on criterion 2, since no CI run can be had on the branch (D25); before that its gate was shut (D23) and Rae's review gave no verdict (D26); never delivered. Verified yes at its final head a41a314f2e58: the rule's 11 tests pass as CI runs them; the judge's own literals fail and vault, empty and `!vault` values pass, and a broken rule fails 2 tests; today's 30 offenders are warnings, guarded by a test, and the 14 lint failures are the same as develop; yamllint identical to develop (the fixture's missing `---` fixed); one commit off ee878f7; rechecked twice by the round judge from the mirror's `refs/submissions`. New literals too are only warnings | $1.60 (Kit $1.41 after first ready, the `---` the only change kept) | 548 min to first ready (about 36 min of work) | 1 | |
 
@@ -679,6 +687,10 @@ new agent, orchestration layer or scoring framework.
    ladder**, the fresh set worked by a single Haiku member end to end (it checks out, works,
    checks its own criteria, submits), beside the team's arm. If the single member matches or
    beats the team, the team's machinery is cut back to what that arm lacked.
+8. **Task 8's window becomes short (a few hours)** unless a round shows the longer window finds
+   something the short one misses (the owner, 1 Nov: "we don't even know if 24 hours is
+   valuable against a shorter test"). The judge of task 8 notes whether anything either arm
+   found needed more than the window's last few hours.
 
 **Two scorecards, because they are two products.** HQ's development work and its standing,
 unattended work have different measures. HQ could fall short of Claude Code at development and
