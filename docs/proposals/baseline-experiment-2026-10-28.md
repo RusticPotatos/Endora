@@ -568,14 +568,27 @@ closed at 13:30 UTC, about 16.5 hours from 31 Oct 21:00 UTC, not 24. Task 8 was 
 as HQ task 956 from source 909, its words unchanged but for the window ("31 Oct 21:00 UTC to
 1 Nov 13:30 UTC"), in 909's project (the gluetun timer, project 4) and goal; Claude Code's arm
 started on the same words at 13:3x UTC, a fresh agent in its own worktree of the fork at
-ee878f7 (`exp/a-08-r3`, local), as in round 0.
+ee878f7 (`exp/a-08-r3`, local), as in round 0. **Arm A accepted** (round judge, 13:5x UTC): remove; the four
+containers' RestartCount 0 since 31 Oct 21:00:41–21:02:08 UTC, the timer inactive since 27 Oct
+00:10 UTC, sonarr's 64 and radarr's 32 RSS syncs through Prowlarr, five sampled points in the live
+logs, and one gluetun tunnel outage (08:53–09:03 UTC, inside the NAS's memory stall, recovered
+inside the container); the change on `exp/a-08-r3` (ae290f80, one commit off ee878f7) retires
+the timer and removes its units and script, a new test fails on develop and passes at the tip
+(13 pass), lint identical to develop, nothing personal, no vars or inventory touched; nothing
+changed on the lab. 152k tokens, about 7.6 minutes, no intervention. A rule slip, as round 0's
+arm A: it read 20 lines of `group_vars/nas.yml` while finding the timer; nothing of it is in the
+branch. For round 4's item 8: only the outage needed more than the last few hours (4.5 hours
+before the close), and it did not change the verdict; the night's Watchtower run with no recreate
+of the stack is the other thing a short afternoon window would not show.
 
 **A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
 08:43 UTC (HQ's status call hung for minutes; 335 MB of 16 GB available): Ollama's llama-server
 host prompt cache (llama.cpp's `--cache-ram`, 8192 MiB by default, which Ollama leaves unset)
 filled to 8.2 GB, and the kernel's OOM killer killed the runner at 09:07 UTC (the same on
 31 Oct 10:40). At the owner's request Ollama's container limit was lowered from 12g to 8g at
-about 10:50 UTC (`docker update`, no restart), so a repeat stays inside Ollama; the full fix
+about 10:50 UTC, so a repeat stays inside Ollama (the coordinator's note said `docker update`,
+no restart; the container's own record shows it recreated at 11:02:10 UTC, RestartCount 0, now
+limited to 8 GiB); the full fix
 (the cache capped at 1 GB) is on the fork's branch `fix/ollama-prompt-cache`, for after the
 round. Not HQ's doing, and not the VPN stack: task 8's "nothing changed on the lab" is judged
 on gluetun, prowlarr, deluge and nzbget, unrestarted through it.
