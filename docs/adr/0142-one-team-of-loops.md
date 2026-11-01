@@ -741,3 +741,12 @@ rule changed here, with a scenario of what happened.
   as not done, she is passed over on that review, and the next reviewer by the same rule is
   asked; with nobody left, the owner is asked about the item. A new ask for review starts the
   review again with nobody passed over.
+- **D25. Only a criterion that asks for a CI run's result needs one.** Item 955's criterion "It
+  reports today's offenders without failing CI on them" was read by D6's check as asking for a
+  run no push of the branch could have, and HQ would not pass it; the criterion asks what CI's
+  steps make of the rule's findings, which the check of the head shows. Of the criteria about
+  CI, D6's refusal now applies only to those that ask for a run's result: they name a run (a CI
+  run, a workflow run) or say CI passes, goes green or succeeds
+  (`mechanical::asks_for_a_run`). For the others the report says no run is needed and gives the
+  newest check of the head, which runs the lint steps CI runs against develop, as the measure;
+  nothing is refused on them.

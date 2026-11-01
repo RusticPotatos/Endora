@@ -150,6 +150,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(report);
         };
         let files = self.branch_files(&branch)?;
+        report.check = self
+            .store
+            .checks()?
+            .into_iter()
+            .filter(|c| c.branch == branch.id)
+            .max_by_key(|c| c.id)
+            .map(|c| mechanical::HeadCheck {
+                id: c.id,
+                branch: branch.name.clone(),
+                ok: c.ok.filter(|_| c.status == "done"),
+                summary: c.summary,
+            });
         let mut words = format!("{}\n{}", task.title, task.description);
         for c in &task.criteria {
             words.push('\n');

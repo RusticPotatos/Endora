@@ -12,9 +12,11 @@
 //! - **Defaults coverage** ([`coverage`]): when the criteria ask for a README listing every
 //!   default, each role README in the branch names every top-level key of the role's
 //!   `defaults/main.yml` with its value.
-//! - **A CI run** ([`ci`], amended 2026-10-31): when the criteria ask for a CI run, whether any
-//!   GitHub Actions workflow at the branch's head runs on a push of it, by its `on.push`
-//!   filter ([`push_filter`]); when none does, the criterion cannot be met.
+//! - **A CI run** ([`ci`], amended 2026-10-31): when the criteria ask for a CI run's result,
+//!   whether any GitHub Actions workflow at the branch's head runs on a push of it, by its
+//!   `on.push` filter ([`push_filter`]); when none does, the criterion cannot be met. A
+//!   criterion about CI that asks for no run's result (amended 2026-11-01, D25) is measured by
+//!   the check of the head ([`HeadCheck`]), which runs the lint steps CI runs.
 
 use super::cut::CUT;
 use super::record;
@@ -539,8 +541,9 @@ pub fn coverage(readme_path: &str, readme: &str, defaults_yaml: &str) -> Coverag
     }
 }
 
-/// The criteria that ask for a CI run: those that name CI as a word of their own (`CI`,
-/// `ci.yml`), continuous integration, GitHub Actions or a workflow run.
+/// The criteria about CI: those that name CI as a word of their own (`CI`, `ci.yml`),
+/// continuous integration, GitHub Actions or a workflow run. Only some ask for a run's result
+/// ([`asks_for_a_run`]).
 #[must_use]
 pub fn asks_for_ci(criteria: &[&str]) -> Vec<String> {
     criteria
@@ -554,6 +557,29 @@ pub fn asks_for_ci(criteria: &[&str]) -> Vec<String> {
         })
         .map(|c| (*c).to_owned())
         .collect()
+}
+
+/// Whether a criterion about CI asks for a CI run's result (D25 of round 3): it names a run
+/// ("A CI run on the branch passes"), or says CI passes, goes green or succeeds ("The tests pass
+/// on GitHub Actions"). "It reports today's offenders without failing CI on them" asks what CI's
+/// steps make of the work, which the check of the head shows without a run.
+#[must_use]
+pub fn asks_for_a_run(criterion: &str) -> bool {
+    let c = criterion.to_ascii_lowercase();
+    let words: Vec<&str> = c
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let named_run = ["ci run", "workflow run", "actions run", "run of ci", "run of the workflow"]
+        .iter()
+        .any(|r| c.contains(r));
+    let succeeds = words.iter().any(|w| {
+        matches!(
+            *w,
+            "pass" | "passes" | "passing" | "green" | "succeed" | "succeeds" | "successful"
+        )
+    });
+    named_run || succeeds
 }
 
 /// What a GitHub Actions workflow's `on.push` says of the branches a push runs it for.
@@ -838,8 +864,11 @@ impl PushFilter {
 pub struct Ci {
     /// The branch.
     pub branch: String,
-    /// The criteria that ask for a CI run.
+    /// The criteria that ask for a CI run's result.
     pub criteria: Vec<String>,
+    /// The criteria about CI that ask for no run's result (D25): what CI's steps make of the
+    /// work, which the check of the head measures.
+    pub steps: Vec<String>,
     /// Each workflow at the branch's head, by file name, with its push filter; `None` when the
     /// node did not hand them over.
     pub workflows: Option<Vec<(String, PushFilter)>>,
@@ -864,13 +893,34 @@ impl Ci {
         Some(false)
     }
 
-    /// The report's line.
-    fn said(&self) -> String {
-        let quoted: Vec<String> = self
-            .criteria
-            .iter()
-            .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
-            .collect();
+    /// The report's lines: what the check of the head (`check`) gave for a criterion that asks
+    /// for no run, and whether a run can be had for one that does.
+    fn said(&self, check: Option<&HeadCheck>) -> String {
+        let quote = |c: &[String]| -> String {
+            c.iter()
+                .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut told = String::new();
+        if !self.steps.is_empty() {
+            told.push_str(&format!(
+                "- CI: {} asks what CI's steps make of the work, not for a run's result, so no \
+                 run is needed: the check of the head runs the lint steps CI runs, against \
+                 develop, and its result is the measure: {}.\n",
+                quote(&self.steps),
+                HeadCheck::said_of(check)
+            ));
+        }
+        if self.criteria.is_empty() {
+            return told;
+        }
+        told.push_str(&self.run_said(&quote(&self.criteria)));
+        told
+    }
+
+    /// The line on a CI run, for the criteria (`quoted`) that ask for one.
+    fn run_said(&self, quoted: &str) -> String {
         let Some(workflows) = &self.workflows else {
             return format!(
                 "- CI: not checked: the node did not hand HQ the workflows at {}'s head.\n",
@@ -886,7 +936,7 @@ impl Ci {
                 "- CI: no CI run can be had for {}: there is no workflow at its head. {} cannot \
                  be met as the fork stands: HQ will not pass the item on it; say so to the owner.\n",
                 self.branch,
-                quoted.join(", ")
+                quoted
             ),
             Some(false) => format!(
                 "- CI: no CI run can be had for {}: no workflow at its head runs on a push to it \
@@ -894,7 +944,7 @@ impl Ci {
                  so to the owner.\n",
                 self.branch,
                 each.join("; "),
-                quoted.join(", ")
+                quoted
             ),
             Some(true) => {
                 let runs: Vec<&str> = workflows
@@ -907,7 +957,7 @@ impl Ci {
                      and {} needs that run's result.\n",
                     runs.join(", "),
                     self.branch,
-                    quoted.join(", ")
+                    quoted
                 )
             }
             None => format!(
@@ -919,13 +969,16 @@ impl Ci {
     }
 }
 
-/// What HQ can say of a CI run for `branch`, whose item's `criteria` ask for one, from the
+/// What HQ can say of CI for `branch`, whose item's `criteria` are about it (those that ask for
+/// a run's result apart from those that do not, [`asks_for_a_run`]), from the
 /// `(path, text)` of each workflow at its head, or `None` when the node did not tell them.
 #[must_use]
 pub fn ci(branch: &str, criteria: Vec<String>, workflows: Option<&[(String, String)]>) -> Ci {
+    let (criteria, steps) = criteria.into_iter().partition(|c| asks_for_a_run(c));
     Ci {
         branch: branch.to_owned(),
         criteria,
+        steps,
         workflows: workflows.map(|w| {
             w.iter()
                 .map(|(path, text)| {
@@ -950,6 +1003,43 @@ pub struct Report {
     pub unchecked: Vec<String>,
     /// Whether a CI run can be had for the branch, when the criteria ask for one.
     pub ci: Option<Ci>,
+    /// The newest check of the branch, when there is one: what a criterion measured by it reads.
+    pub check: Option<HeadCheck>,
+}
+
+/// The newest check of an item's newest branch, as the report says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadCheck {
+    /// Its id: `c<id>`.
+    pub id: i64,
+    /// The branch it checks.
+    pub branch: String,
+    /// Whether it passed; `None` while it waits or runs.
+    pub ok: Option<bool>,
+    /// Its line.
+    pub summary: String,
+}
+
+impl HeadCheck {
+    /// The check in a few words, or that none has come back.
+    fn said_of(check: Option<&Self>) -> String {
+        let Some(c) = check else {
+            return "no check of the head has been asked for".to_owned();
+        };
+        match c.ok {
+            None => format!(
+                "check c{} of {} has not finished: wait for its result",
+                c.id, c.branch
+            ),
+            Some(ok) => format!(
+                "check c{} of {} {}: {}",
+                c.id,
+                c.branch,
+                if ok { "passed" } else { "failed" },
+                super::cut::cut(&c.summary, 300)
+            ),
+        }
+    }
 }
 
 /// A list said in one line, at most `most` items, saying how many more.
@@ -981,7 +1071,9 @@ impl Report {
     /// asks for one can be met (ADR 0142, amended 2026-10-31, D6).
     #[must_use]
     pub fn no_ci_run(&self) -> Option<&Ci> {
-        self.ci.as_ref().filter(|c| c.can_be_had() == Some(false))
+        self.ci
+            .as_ref()
+            .filter(|c| !c.criteria.is_empty() && c.can_be_had() == Some(false))
     }
 
     /// The files the branch must never have touched.
@@ -1105,7 +1197,7 @@ impl Report {
             ));
         }
         if let Some(ci) = &self.ci {
-            told.push_str(&ci.said());
+            told.push_str(&ci.said(self.check.as_ref()));
         }
         told
     }
@@ -1433,6 +1525,7 @@ mod tests {
             }],
             unchecked: vec![],
             ci: None,
+            check: None,
         };
         let said = report.said();
         assert!(said.starts_with(HEADER), "{said}");
@@ -1478,6 +1571,61 @@ mod tests {
         );
         assert!(asks_for_ci(&["ci.yml runs the tests"]).len() == 1);
         assert!(asks_for_ci(&["Decide which rules apply", "Specific circuits"]).is_empty());
+    }
+
+    /// D25 of round 3: 955's criterion asked what CI makes of the rule's findings, and HQ read
+    /// it as asking for a run no push of the branch could have.
+    #[test]
+    fn a_ci_criterion_asks_for_a_run_only_when_it_wants_a_run_s_result() {
+        assert!(asks_for_a_run("A CI run on the branch passes"));
+        assert!(asks_for_a_run("The tests pass on GitHub Actions"));
+        assert!(asks_for_a_run("CI is green on the branch"));
+        assert!(!asks_for_a_run(
+            "It reports today's offenders without failing CI on them"
+        ));
+        assert!(!asks_for_a_run("ci.yml runs the tests"));
+        let asked = vec![
+            "It reports today's offenders without failing CI on them".to_owned(),
+            "A CI run on the branch passes".to_owned(),
+        ];
+        let split = ci(HQ_BRANCH, asked.clone(), Some(&[]));
+        assert_eq!(split.criteria, ["A CI run on the branch passes"]);
+        assert_eq!(
+            split.steps,
+            ["It reports today's offenders without failing CI on them"]
+        );
+        // With no criterion asking for a run, none is refused, and the check is the measure.
+        let steps_only = Report {
+            ci: Some(ci(HQ_BRANCH, asked[..1].to_vec(), Some(&[]))),
+            check: Some(HeadCheck {
+                id: 61,
+                branch: HQ_BRANCH.to_owned(),
+                ok: Some(true),
+                summary: "yamllint 6 errors (develop 6): no new findings against develop: met"
+                    .to_owned(),
+            }),
+            ..Report::default()
+        };
+        assert!(steps_only.no_ci_run().is_none() && !steps_only.failed());
+        let said = steps_only.said();
+        assert!(
+            said.contains("asks what CI's steps make of the work, not for a run's result")
+                && said.contains("check c61 of hq/task-932-ci-lint-rules passed: yamllint 6"),
+            "{said}"
+        );
+        assert!(!said.contains("cannot be met"), "{said}");
+        // Both kinds: the run is still refused, and the check still said.
+        let both = Report {
+            ci: Some(split),
+            ..Report::default()
+        };
+        assert!(both.no_ci_run().is_some());
+        let said = both.said();
+        assert!(
+            said.contains("no check of the head has been asked for")
+                && said.contains("\"A CI run on the branch passes\" cannot be met"),
+            "{said}"
+        );
     }
 
     #[test]
