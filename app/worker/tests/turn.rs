@@ -485,6 +485,60 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     assert!(!said(&out).contains(TOKEN), "and never printed");
 }
 
+/// The owner watches a turn as it works (ADR 0129, amended 2026-11-01): after every round that
+/// goes on, the worker tells the node the conversation so far, before the round's calls run,
+/// and what the model reasoned is in it; the model is never sent its reasoning back.
+#[test]
+fn a_turn_tells_its_conversation_after_every_round_with_what_the_model_reasoned() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let mut first = calls(&[("call_1", "homelab_status", "")]);
+    first["choices"][0]["message"]["reasoning_content"] = json!("The lab first, then decide.");
+    let mut last = says("All is well.");
+    last["choices"][0]["message"]["reasoning"] = json!("Nothing is stale.");
+    let (model_url, to_model) = model(vec![(200, first), (200, last)]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_node = to_node.lock().unwrap().clone();
+    let paths: Vec<&str> = to_node.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/team-relay/contracts",
+            "/team-relay/transcript",
+            "/team-relay/contracts/homelab_status",
+            "/team-relay/transcript",
+        ]
+    );
+    let told: Vec<&str> = to_node
+        .iter()
+        .filter(|s| s.path == "/team-relay/transcript")
+        .map(|s| s.body["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        told[0].contains(
+            "--- thinking ---\nThe lab first, then decide.\n--- assistant ---\n\
+             --- call: homelab_status ---\n"
+        ),
+        "{}",
+        told[0]
+    );
+    assert!(
+        !told[0].contains("--- result ---"),
+        "told before the call ran"
+    );
+    assert!(
+        told[1].contains("--- thinking ---\nNothing is stale.\n--- assistant ---\nAll is well."),
+        "{}",
+        told[1]
+    );
+    let to_model = to_model.lock().unwrap().clone();
+    let second = to_model[1].body.to_string();
+    assert!(!second.contains("The lab first"), "{second}");
+    assert!(!second.contains("reasoning"), "{second}");
+}
+
 #[test]
 fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
     let (hq_url, to_hq) = hq(None);
@@ -773,10 +827,11 @@ fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
         );
         // What HQ answered is in the turn's transcript, as every other call's is: live, the
         // turns that ended on set_status were kept with the call and no reply.
+        // The last tell is the whole conversation; one went before it, after the model's round.
         let told = to_node.lock().unwrap().clone();
         let transcript = told
             .iter()
-            .find(|s| s.path == "/team-relay/transcript")
+            .rfind(|s| s.path == "/team-relay/transcript")
             .expect("the transcript is told");
         let text = transcript.body["text"].as_str().unwrap();
         assert!(
@@ -1302,6 +1357,9 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
         paths,
         [
             "/team-relay/contracts",
+            // What the model said and called, told before its calls run (ADR 0129, amended
+            // 2026-11-01).
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
             "/team-relay/contracts/restart_container",
             "/team-relay/transcript",
@@ -1325,9 +1383,9 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
         assert!(text.contains(part), "{part:?} in\n{text}");
     }
     assert!(!text.contains(TOKEN), "the token is never in what it tells");
-    assert_eq!(to_node[1].body, json!({}));
+    assert_eq!(to_node[2].body, json!({}));
     assert_eq!(
-        to_node[2].body,
+        to_node[3].body,
         json!({ "container": "sonarr", "why": "it is unhealthy" })
     );
     for sent in &to_node {
@@ -1423,7 +1481,9 @@ fn the_same_call_again_with_nothing_new_is_answered_from_what_it_already_has() {
         paths,
         [
             "/team-relay/contracts",
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
+            "/team-relay/transcript",
             "/team-relay/contracts/restart_container",
             "/team-relay/contracts/homelab_status",
             "/team-relay/transcript",
@@ -1961,6 +2021,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
         [
             "/team-relay/contracts",
             "/team-relay/v1/messages",
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
             "/team-relay/v1/messages",
             "/team-relay/transcript",
@@ -2849,7 +2910,7 @@ fn a_long_log_on_a_house_turn_is_read_through_a_checked_gist() {
     let kept = to_node.lock().unwrap().clone();
     let transcript = kept
         .iter()
-        .find(|s| s.path == "/team-relay/transcript")
+        .rfind(|s| s.path == "/team-relay/transcript")
         .expect("the conversation told");
     let text = transcript.body["text"].as_str().unwrap();
     assert!(
