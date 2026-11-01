@@ -558,7 +558,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 7 | 953 | | | | | |
 | 8 | (after its window: 31 Oct 21:00 UTC to 1 Nov 21:00 UTC) | | | | | |
 | 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
-| 10 | 955 | | | | | |
+| 10 | 955 | Reported no (as of 02:20 UTC): in review with its gate shut (D23), Rae's review turn gave no verdict (D26), and HQ's CI check says it will not pass criterion 2 (D25); never delivered. Verified yes: the rule's 11 tests pass as CI runs them; the judge's own literals fail and vault, empty and `!vault` values pass, and a broken rule fails 2 tests; today's 30 offenders are warnings, the 14 lint failures the same as develop, guarded by a test; one commit off ee878f7; rechecked by the round judge from the mirror's `refs/submissions`. Short of strict: one new yamllint warning (a fixture without `---`), and new literals too are only warnings | $0.18 | 548 min to first ready (about 36 min of work) | 0 | |
 
 ### Round 4, planned (owner's review of 31 Oct)
 
@@ -823,6 +823,18 @@ done. Defects are numbered so the next round's changes can name them.
   submitted the head, not who wrote the work. The work held on the judge's own readings, so no
   harm this time. Fix proposed: a reviewer is refused for any item whose branch carries her
   commits or whose thread shows her doing turns.
+- [ ] **D25. HQ's CI check reads a criterion about CI as needing a run.** Round 3, 955:
+  criterion 2 is "It reports today's offenders without failing CI on them"; HQ's mechanical check
+  (post 7916) said no workflow runs on a push to the branch, so the criterion "cannot be met as
+  the fork stands" and HQ will not pass it. The criterion asks what CI does with the rule's
+  findings, which running CI's own steps shows (the judge did: 14 failures as develop, the 30
+  findings as warnings). D6's refusal is right for "CI passes on the branch", wrong here. Fix
+  proposed: the refusal applies only to a criterion that asks for a run's result; otherwise the
+  check reports what CI's steps give on the head.
+- [ ] **D26. A review turn ends with no verdict, and the item sits in review.** Round 3: Rae
+  (DeepSeek Flash) reviewed 955 (run 4978, 02:07 UTC) and 952 (runs 4932, 4941) with one
+  `repo_checkout` each and ended, no verdict and no post. Fix proposed: a review turn that ends
+  with neither verdict is recorded as not done and the review goes to the next reviewer.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
