@@ -439,14 +439,36 @@ counted as an intervention:
 - **The registry tool.** `image_tags` was released but not added to the ansible-nas loop's tools
   until 02:2x, so 931 at first asked for tags as round 1's 915 had.
 
-**Rounds side by side, so far** (accepted of 10; interventions; HQ's spend):
+**Rounds side by side, on one measure** (1 Nov; round 3's column is final when task 8 is
+judged). **Reported** is what HQ recorded done; **verified** is what the judge found the work
+meets, whatever HQ recorded. Rounds 0–2 recorded one "accepted" column; it is re-derived here
+from their judged rows. There, every task HQ did not mark done was either never ready, never
+started or blocked on an unmet criterion, so verified equals accepted; what differs is that
+HQ marked some work done that the judge refused (883 in round 0, 932 in round 2). So round 2's
+"7 accepted" is a verified count, set beside round 3's 8 verified, not its 4 reported. The
+piping numbers are from HQ's store for each round's task range (rounds 0: 882–890 and 903 with
+its one subtask; 1: 913–922; 2: 929–938; 3: 947–955), read-only.
 
-| | Accepted | Interventions | Spend | Notes |
-|---|---|---|---|---|
-| Claude Code (28 Oct) | 10 | 0 | tokens only | the bar |
-| Round 0, HQ (28 Oct) | 1 | many | | blocked by missing tools, restarts on a read-only task |
-| Round 1, HQ (30 Oct) | 3 | 7 counted | | one item at a time; five tasks never started |
-| Round 2, HQ (30–31 Oct) | **7** | 7 | $7.93 on the ten tasks | items side by side; the registry tool; all ten judged by 10:00 on 31 Oct, about 11 hours in, four of them waiting on the day's pool |
+| | Claude Code | Round 0 | Round 1 | Round 2 | Round 3 (9 of 10 so far) |
+|---|---|---|---|---|---|
+| Reported (HQ done) | — | 2 | 3 | 8 | 4 |
+| Verified (judge) | 10 | 1 | 3 | 7 | 8 |
+| Interventions | 0 | 9 | 7 | 7 | 7 |
+| Spend (HQ's runs) | tokens only | $0.81 | $1.67 | $8.35 | $6.14 |
+| Turns | 10 sessions | 112 | 92 | 320 | 295 |
+| Turns that changed nothing (HQ's own flag) | — | 84 | 65 | 267 | 246 |
+| Fork checkouts | 10 | 28 | 50 | 258 | 255 |
+| Wakes: continued / recovery (refused) / review asked / assigned | — | 0 / 373 (335) / 13 / 24 | 0 / 51 (3) / 9 / 21 | 225 / 18 (3) / 25 / 34 | 209 / 35 (23) / 33 / 29 |
+| Handovers / climbs one rank up | — | 0 / 27 | 0 / 19 | 249 / 47 | 231 / 20 |
+| Questions on the desk | — | 121 | 12 | 10 | 12 |
+
+Where the record does not allow a re-derivation: round 0's arm B judged only what reached it
+(five tasks never started) and recorded no verified reading of blocked work, so its 1 is
+accepted-as-judged; reviews are not counted before round 3 (the "reviews this" post is new);
+round 2's spend here ($8.35) includes runs after its close, beside the $7.93 it recorded.
+What the piping numbers say so far: since round 2, eight or nine of ten turns change nothing
+by HQ's own flag, and nearly every turn checks the fork out again (D27): the cost of the
+handover-and-continue design, not of the models (the piping audit, round 4's item E).
 
 What round 2 shows already, by the evidence:
 - **Side by side works.** Six of ten tasks were worked within four hours; round 1 started five
