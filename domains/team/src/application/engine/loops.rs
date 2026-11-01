@@ -261,7 +261,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// An item that sat with nothing moving it, after its one nudge: one of its failures. Kept
     /// at its rank, its holder is woken to try again; past the third, it has climbed.
+    ///
+    /// Work in review waits on its reviewer, not its holder (D17 of round 3: task 947 counted
+    /// "Failure 1 of 3 at Mara's rank" while it waited, and was blocked as failed at every
+    /// rank): no failure, no climb, and the holder, whose wake HQ would refuse, is not woken.
+    /// The reviewer is asked again, once for each time the item has moved since.
     pub(super) fn loop_stalled(&self, task: &Task) -> Done<()> {
+        if task.status == TaskStatus::InReview {
+            if let Some(reviewer) = self.loop_reviewer_of(task)? {
+                self.nudge_once(task, reviewer.id, WakeReason::ReviewRequested)?;
+            }
+            return Ok(());
+        }
         let holder = task.holder();
         self.loop_failed(task.id)?;
         let now = self.task(task.id)?;

@@ -719,11 +719,19 @@ done. Defects are numbered so the next round's changes can name them.
 - [ ] **D16. The top-up refusal names a figure it then refuses.** HQ said "$2.84 may still be
   added today" and refused $2.84; $2.83 went through. The room is rounded up when said.
 
-- [ ] **D17. Refused wakes during review count as failures, and climb the item.** Round 3, 948:
+- [x] **D17. Refused wakes during review count as failures, and climb the item.** Round 3, 948:
   after it was ready at 13:30, wakes HQ refused because the item was in review were counted as
   failures 1 to 3, so the item climbed to Kit (Sonnet) and then Mara (Opus), who only re-checked
   the same head. $0.24 of its $0.36 came after it was ready, and the reviews went above Haiku's
   rank despite the cap (D7).
+  *Fixed on `round4`: the cause was the stranded-work check, not the refusal itself. An item in
+  review that sat with no turn was "stalled" like work in hand: one of its failures at the
+  holder's rank, and a recovery wake to the holder that HQ then refused (`in_review`). Now a
+  stalled item in review is no failure and does not climb; its holder is not woken, and its
+  reviewer is asked again, once for each time the item has moved since (`loop_stalled`,
+  `engine/loops.rs`; test `work_waiting_for_its_review_is_no_failure_of_its_holder`, which
+  reproduced 947's "failed at every rank" before the fix; scenario in
+  `what-wakes-an-item-in-the-loops.feature`).*
 - [ ] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
   948: Rae's turns ended at the budget without keeping work in progress (D12's fix), and the item
   moved only once it reached Ada. Check why the worker kept no work on these turns.

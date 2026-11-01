@@ -74,3 +74,16 @@ Feature: What wakes an item in the loops
     And the owner pauses Bo
     And the owner answers the question about "Raise sonarr's memory": "Yes, 2 GB"
     Then Rae is woken about it
+
+  # Seed (D17, round 3): 947 waited for its review, and HQ counted "Failure 1 of 3 at Mara's
+  # rank", then a second and a third, each time refusing the wake it sent her, until it was
+  # blocked as failed at every rank.
+  Scenario: Work waiting for its review is no failure of the member who did it
+    Given the loop "ansible-nas" starts at Mara's rank
+    And the loop "ansible-nas" has the item "Pin the homepage image"
+    When the loop hands out its items
+    And Mara submits "Pin the homepage image" for review
+    And 3 hours pass, with HQ ticking every few minutes
+    Then "Pin the homepage image" has no failures and is still Mara's
+    And "Pin the homepage image" still waits for its review
+    And HQ refused no wake of Mara's on "Pin the homepage image"

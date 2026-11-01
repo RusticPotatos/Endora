@@ -238,3 +238,27 @@ fn ends_at_budget(w: &mut Office, name: String, title: String, times: String) {
         assert!(!said.contains("not continued"), "{said}");
     }
 }
+
+#[then(expr = "{string} still waits for its review")]
+fn still_in_review(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    assert_eq!(found.status, TaskStatus::InReview, "{found:?}");
+}
+
+#[then(expr = "HQ refused no wake of {word}'s on {string}")]
+fn no_wake_refused(w: &mut Office, name: String, title: String) {
+    let (member, task) = (w.member(&name), w.task(&title));
+    let refused: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|wake| wake.member == member && wake.task == Some(task))
+            .filter(|wake| matches!(wake.receipt, Receipt::Refused(_)))
+            .collect();
+    assert!(refused.is_empty(), "{name}'s refused wakes: {refused:#?}");
+}

@@ -2245,3 +2245,69 @@ fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
         "{desk:?}"
     );
 }
+
+/// D17 of round 3 (1 Nov): task 947 waited for its review, and each time it sat stranded HQ
+/// counted it a failure at its holder's rank and woke the holder, whose wake HQ refused because
+/// the work was in review: "Failure 1 of 3 at Mara's rank", "Failure 2 of 3", then it was
+/// blocked as failed at every rank. Work in review waits on its reviewer, not its holder: a
+/// stall there is no failure, does not climb, and asks the reviewer again.
+///
+/// Given Bo's item in review, and a reviewer whose turns end with no verdict,
+/// when it sits stranded again and again,
+/// then it has no failure, is still Bo's and in review, Bo was never woken (and so never
+/// refused), and the reviewer was asked again.
+#[test]
+fn work_waiting_for_its_review_is_no_failure_of_its_holder() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let mara = assignee(&hq, fix).unwrap();
+    let bo = turn_of(&hq, mara);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    assert_eq!(reviewer, f.ada, "Haiku reviews");
+    for _ in 0..8 {
+        hq.tick().unwrap();
+        for started in hq.runner().started() {
+            // The reviewer's turn reads the item, and ends with no verdict.
+            if let Ok(Some(_)) = hq.turn_of(&started.token) {
+                let _ = use_tool(&hq, &started, "my_turn", &serde_json::json!({}));
+            }
+            hq.runner().finish(started.run, true);
+        }
+        clock
+            .0
+            .fetch_add(super::engine::STRANDED_AFTER_MS + 60_000, Ordering::SeqCst);
+    }
+    assert_eq!(hq.loop_failures(fix).unwrap(), 0);
+    let now = hq.store().task(fix).unwrap().unwrap();
+    assert_eq!(now.status, TaskStatus::InReview);
+    assert_eq!(now.holder(), Some(mara));
+    let thread = hq.store().thread(fix).unwrap();
+    assert!(
+        thread.iter().all(|p| !p.text.contains("Failure")),
+        "{thread:?}"
+    );
+    let bo_after: Vec<_> = wakes_on(&hq, mara, fix)
+        .into_iter()
+        .filter(|w| w.reason != WakeReason::Assigned)
+        .collect();
+    assert!(bo_after.is_empty(), "the holder is not woken: {bo_after:?}");
+    let asked = wakes_on(&hq, reviewer, fix)
+        .into_iter()
+        .filter(|w| w.reason == WakeReason::ReviewRequested)
+        .count();
+    assert!(asked >= 2, "the reviewer is asked again: {asked}");
+}
