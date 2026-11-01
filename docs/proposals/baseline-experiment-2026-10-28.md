@@ -735,6 +735,10 @@ done. Defects are numbered so the next round's changes can name them.
   $3.78 left in the pool, until the owner's next day. The owner's top-ups raise the pool, but a
   share of $0.19 a day is small beside a $0.50 allowance. Either size the allowance from what
   the pool has left, or ask again when the pool has money and work waits.
+  *Worked round at 00:0x UTC 1 Nov, on the owner's word ("I don't want phase 3 to stop for the 80
+  something cents"): the once-a-day mark for Ada was cleared, HQ raised card 5054 itself, and it
+  was approved at $2.00 for the day (in place of $0.50; the pool had $3.77). A money decision
+  and a setup fault, not counted as an intervention on a task.*
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
