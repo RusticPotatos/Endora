@@ -588,6 +588,21 @@ new agent, orchestration layer or scoring framework.
 3. **A. A fresh set beside the fixed ten.** The ten stay unchanged as the regression benchmark.
    Each round adds 2–3 tasks HQ has never seen, drawn from the real backlog and written the same
    way, scored apart: does an improvement carry over, or does HQ only get good at the ten?
+
+   **Round 4's fresh set** (drafted 1 Nov, from the fork's own gaps; same rules as the ten: the
+   fork's `develop` at `ee878f7` or read-only on the lab, nothing in inventories, `group_vars`,
+   `host_vars` or vaults; code tasks end as a branch ready for review). One repeats a kind of the
+   ten on roles HQ has not seen, to test carry-over; two are kinds the ten do not have.
+
+   | # | Size | Task | Acceptance criteria (all must hold) |
+   |---|---|---|---|
+   | F1 | S | Pin the `jellyfin` and `overseerr` roles off the `latest` image tag | Each tag is a release that exists on its registry, named in the commit; `jellyfin`'s molecule scenario (or, if it cannot run, `ansible-lint`) passes; `yamllint .` and `ansible-lint nas.yml` no worse than `develop` |
+   | F2 | M | Molecule scenarios for the `gatus` and `ddns_updater` roles, which have none | Each role gains a `molecule/default` scenario following the fork's existing ones; both run and pass on the branch (the output quoted); a deliberately broken task makes one fail (shown once, then reverted); lint no worse than `develop` |
+   | F3 | M | The NAS runs short of memory (its swap was nearly full on 31 Oct): which containers use it, and what to cap | The ten largest containers by memory, measured at two or more times, with the figures; which roles already set a `*_memory` limit and which do not; a proposed limit for each of the largest, with the reason; nothing changed on the lab |
+
+   They are not run in round 3. A task is retired from the fresh set once it has been run, and
+   new ones are drawn each round, so the set stays unseen.
+
 4. **B. Cost and complexity, not reliability alone.** Each round's report adds the cost of
    building the round (the assistant's sessions, not only HQ's turns), the mechanisms it added
    (handoffs, recovery paths, model calls, settings a task depends on) and the code size. A round
