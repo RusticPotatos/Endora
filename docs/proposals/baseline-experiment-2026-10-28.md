@@ -574,7 +574,8 @@ new agent, orchestration layer or scoring framework.
    fill a Haiku prompt and the item climbs).
 2. **Architecture: limits that stop working members (owner, 1 Nov).** A limit should stop
    waste, not work that is moving. Three in round 3 stopped members while the pool had money:
-   - **Shares follow price, not work.** A member's claim is its role's weight times its model's
+   - **Shares follow price, not work.** *(Built on `round4` as claim classes Haiku 8, Sonnet and
+     DeepSeek 2, Opus 1, house models 0; the owner kept that split on 1 Nov.)* A member's claim is its role's weight times its model's
      price class (`money::claim`, ADR 0113), so Opus has the largest share and Haiku the
      smallest, though Haiku does most of the work and is the cheapest paid model. Ada's share
      was $0.19 of a $16.60 day; she stopped at $0.88 with $3.77 left (D21). The owner's
