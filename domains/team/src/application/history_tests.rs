@@ -172,11 +172,6 @@ fn a_running_turns_conversation_is_kept_with_its_member_task_brain_and_thirty_da
     );
     assert_eq!(found.kept_until, NOON + KEPT_DAYS * DAY_MS);
     assert!(found.body.contains("I will cap it at 512M."));
-    // A turn has one conversation.
-    let again = hq
-        .record_transcript(&context.token, "worker", "more")
-        .unwrap_err();
-    assert!(again.to_string().contains("already kept"), "{again}");
     // And nothing is kept for nothing.
     assert!(hq.record_transcript("nope", "worker", "x").is_err());
 }
@@ -220,10 +215,72 @@ fn a_turn_tried_again_keeps_each_attempts_conversation() {
         found.body.find("First try") < found.body.find("Second try"),
         "in the order they ran"
     );
-    let again = hq
-        .record_transcript(&second.token, "worker", "more")
-        .unwrap_err();
-    assert!(again.to_string().contains("already kept"), "{again}");
+    // The later attempt goes on telling its conversation as it runs: its last tell replaces
+    // its earlier one, and the first attempt's stays before it.
+    hq.record_transcript(
+        &second.token,
+        "worker",
+        "Second try: it ran out again. Third round.",
+    )
+    .unwrap()
+    .expect("kept");
+    let found = hq.store().transcript(first.run).unwrap().unwrap();
+    assert_eq!(found.body.matches("First try").count(), 1, "{}", found.body);
+    assert_eq!(
+        found.body.matches("Second try").count(),
+        1,
+        "{}",
+        found.body
+    );
+    assert_eq!(
+        found.body.matches("tried again").count(),
+        1,
+        "{}",
+        found.body
+    );
+    assert!(found.body.ends_with("Third round."), "{}", found.body);
+}
+
+/// The owner watches a turn as it works (ADR 0129, amended 2026-11-01): the worker tells its
+/// conversation after every model round, each time the whole of it so far.
+///
+/// Given a running turn that has told its conversation,
+/// when it tells it again, longer,
+/// then HQ keeps the latest in place of the first, once, and not past the turn's end.
+#[test]
+fn a_running_turn_tells_its_conversation_as_it_goes_and_the_latest_is_kept() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    task_for(&hq, t.goal, t.linus, "Cap sonarr's memory");
+    hq.tick().unwrap();
+    let context = turn_of(&hq, t.linus);
+    hq.record_transcript(&context.token, "worker", "--- assistant ---\nRound one.")
+        .unwrap()
+        .expect("kept");
+    clock.0.fetch_add(5_000, Ordering::SeqCst);
+    hq.record_transcript(
+        &context.token,
+        "worker",
+        "--- assistant ---\nRound one.\n--- assistant ---\nRound two.",
+    )
+    .unwrap()
+    .expect("kept again");
+    let found = hq.store().transcript(context.run).unwrap().unwrap();
+    assert_eq!(
+        found.body.matches("Round one.").count(),
+        1,
+        "{}",
+        found.body
+    );
+    assert!(found.body.ends_with("Round two."), "{}", found.body);
+    assert!(!found.body.contains("tried again"), "{}", found.body);
+    assert_eq!(found.at, NOON + 5_000);
+    end(&hq, &context);
+    assert!(
+        hq.record_transcript(&context.token, "worker", "after the end")
+            .is_err()
+    );
 }
 
 #[test]
