@@ -593,7 +593,12 @@ climbed to Ada (Haiku), whose turns did the same (352 KB over 3 calls; 108 `cont
 reads on the task by then), and who was out for the day at $0.08 (card 5067, a share of $0.05):
 given $0.50 within the pool ($2.36 left) at 15:4x UTC. Owner's minutes on 956's two answers
 (round 4 counts human attention in minutes): about one each, restating the task's words; each
-question waited 8 and about 15 minutes for its answer. D20 on a read-only task: whole logs read
+question waited 8 and about 15 minutes for its answer. Ada's turns ran out of room too, and at 15:56 it climbed to Kit
+(Sonnet), whose three turns read 330–478 KB of logs each and ended the same way (156
+`container_logs` calls on the task by 16:08, $1.22 spent, nothing kept). Kit was out for the day
+at $1.80 (card 5068); given $0.50 within the pool ($1.42 left) at 16:0x UTC, under the task's $2
+cap, though the spend is a loop of re-reading: each turn reads whole logs and none keeps what it
+found. D20 on a read-only task: whole logs read
 in each turn, nothing kept between them.
 
 **A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
