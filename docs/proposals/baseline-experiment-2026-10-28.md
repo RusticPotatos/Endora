@@ -619,7 +619,59 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
 | 10 | 955 | Reported no: blocked by Kit at 04:10 UTC on criterion 2, since no CI run can be had on the branch (D25); before that its gate was shut (D23) and Rae's review gave no verdict (D26); never delivered. Verified yes at its final head a41a314f2e58: the rule's 11 tests pass as CI runs them; the judge's own literals fail and vault, empty and `!vault` values pass, and a broken rule fails 2 tests; today's 30 offenders are warnings, guarded by a test, and the 14 lint failures are the same as develop; yamllint identical to develop (the fixture's missing `---` fixed); one commit off ee878f7; rechecked twice by the round judge from the mirror's `refs/submissions`. New literals too are only warnings | $1.60 (Kit $1.41 after first ready, the `---` the only change kept) | 548 min to first ready (about 36 min of work) | 1 | |
 
-### Round 4, planned (owner's review of 31 Oct)
+### Round 4, as decided (owner, 1 Nov): a product decision, not a benchmark
+
+**Supersedes the plan below**, which is kept as history. After an outside review of the cheat
+sheet and field notes ("you have not yet established that the orchestration system is worth
+operating"), the owner reshaped round 4 into one decision: does HQ deserve more of the owner's
+time? No additional tooling, no scope expansion, no architectural rescue, and no round 5 to
+rescue it.
+
+**The finding before it runs.** HQ's sandbox has Python, git and yamllint only (no `cargo`,
+`node` or Swift; `ansible-lint` fails in it). HQ cannot do the main development work for Endora
+(Rust, JS) or the iOS apps. That is a product limitation, recorded as such, and left as it is for
+round 4 (option A): a good round 4 can justify HQ only within what it can do, such as unattended
+infrastructure work, never a wider development harness.
+
+**Two arms, the same words.** Claude Code as the single-agent baseline; HQ as one member alone
+(`solo`, ADR 0142 amended), with its task's sandbox kept between turns, its deterministic checks
+and its safety rules. No team arm, reviewers, new guards or orchestration. The same pinned base
+commit for both; local branches only; neither arm sees the other's work.
+
+**The tasks: real ones only, up to five, not a quota.** Fewer than five means limited coverage,
+reported as such; it may support narrowing HQ, never a claim that it is generally competitive.
+
+| # | Task | Acceptance criteria (written before either arm runs) |
+|---|---|---|
+| R1 | The miniflux role ships a literal default password (found by the round judge on 951, 1 Nov) | The literal default is identified; the insecure fallback is removed using the fork's established credential approach (a vault variable, as 951 and 952 did); the relevant configuration is verified without exposing any secret; a branch off `develop` at `ee878f7`, nothing pushed |
+| R2 | Sonarr writes Prowlarr's API key into its logs in plain text (found 1 Nov) | The real source of the plaintext logging is identified with cited evidence, and a narrowly scoped remediation proposed. Read-only throughout: no restart, no configuration change, no reproduction that exposes the key further |
+| R3 | The `jellyfin` and `overseerr` roles run the `latest` image tag (a gap in the fork, F1 of the earlier plan) | Each pinned to a release that exists on its registry, named in the commit; `yamllint .` no worse than `develop`; a branch off `develop` at `ee878f7`, nothing pushed |
+
+Not used, and why: F2 needs molecule, which the sandbox lacks; F3 (the NAS's memory) was largely
+answered on 1 Nov (the Ollama cache), so its answer is known; F4 is not the owner's work.
+
+**Measured, from the existing records and one comparison table.** Verified (the round judge,
+against the criteria above); elapsed time; cost (HQ hard-capped at $15 for the round; Claude
+Code's tokens recorded); interventions as a **count and as minutes of human attention** (each
+logged with the minutes spent reading and answering it); rework found seven days later.
+
+**The decision rule, set before running.** Continue HQ, within what it showed it can do, only if
+all four hold:
+1. HQ verifies at least Claude Code's verified count minus one;
+2. HQ takes no more minutes of human attention than Claude Code;
+3. HQ finishes within twice Claude Code's elapsed time, or shows a concrete unattended-work
+   advantage;
+4. no unresolved security or correctness regression.
+
+A failure with no intervention is not autonomy. Otherwise narrow HQ to unattended
+infrastructure operations, or retire its development side. With two to five varied tasks this is
+a decision test, not a statistical benchmark: passing it shows no general superiority.
+
+**Engineering effort.** Already authorised and kept: the task sandbox kept between turns, and no
+protocol moves (D30). The metrics and replay scripts stop at their first usable point. During the
+round: blockers only, each logged with the run it affected.
+
+### Round 4, planned (owner's review of 31 Oct; superseded on 1 Nov by the section above)
 
 The purpose of harness engineering is not to make the harness more sophisticated. It is to make
 valuable work more reliable and economical. Round 3's failures so far were in the machinery
