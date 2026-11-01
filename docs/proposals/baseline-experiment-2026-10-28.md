@@ -964,6 +964,13 @@ product grew by the domain rules now unit-tested in their own files.
   (who has played whom, results and standings), with each game's PGN. Done on `r3-ui-chess-tab`:
   the league is a round robin, so the bracket is the current round's ("Round N, since <reset
   day>"); `GET /v1/league/games?page=N` lists every finished game (ADR 0135, amended 31 Oct).
+- [ ] **Activity lines open what they name** (the owner, 1 Nov; after round 3). Every item,
+  turn and member a line names is a link: `EL-955` opens the item as Work's "Looking at" does
+  (its thread, criteria, branch and turns), `R4952` opens that turn's replay with "What it was
+  given", a member's name opens their line on the team board, and "more" opens the whole post.
+  Closing it returns to the same place in Activity, so one can step in and out. One view per
+  thing, reused from where it already lives; no new screen.
+
 ### After round 3: what the second check of round 3's code found (31 Oct)
 
 To fix on one branch, released after round 3 so the round measures one build:
