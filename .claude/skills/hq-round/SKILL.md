@@ -19,6 +19,24 @@ Keep it current as you go, never in a scratch file alone.
 Arguments: `start`, `tick`, `judge <task>`, `close`, `next`. With none, find where the current
 round stands (step 2's status) and do the next due step.
 
+**Run it from a session started in this repository**, so this skill, its agents
+(`round-judge`, `duplication-reviewer`), the `end-of-round` workflow and the guard hooks in
+`.claude/settings.json` load. The round's checks run as `/loop /hq-round tick`: the loop's prompt
+is the skill's name, so every tick reads the rules as they are now, never a pasted copy that goes
+stale. Start a fresh session for each round; the record, not the conversation, carries it over.
+
+## The cycle (one round a day)
+
+| When | What |
+|---|---|
+| Round N runs, **24 hours** at most | Ticks (step 2); each task judged as it reaches done or blocked (step 3). Meanwhile round N+1's fixes are built on one branch, `round<N+1>`, in its own worktree and session: a failing test and a scenario first, the gate on each (step 5) |
+| Hour 24, or all judged | Close round N (step 4): a task not finished is not accepted |
+| The same day | Merge `round<N+1>`, gate, release, start round N+1 (step 1) |
+
+Speed comes from removing waits, not from more agents: what held round 3 was members stopped
+with money in the pool (D21, D15), verdicts that could not land (D19) and tasks never started.
+Settings that change speed (items in hand at once, limits) change only at a round's start.
+
 ## Standing rules (from the owner; never relaxed by a round)
 
 - **The purpose of harness engineering is not to make the harness more sophisticated. It is to
@@ -45,7 +63,8 @@ round stands (step 2's status) and do the next due step.
 1. **The build is ready**: every branch for the round merged into one branch; then, in order:
    - `sh scripts/prune-builds.sh 15 ..` (keep the disk from filling; a full disk stopped every
      agent on 31 Oct);
-   - the full gate (AGENTS.md "Before handoff"), and `sh scripts/code-size.sh`; record the size
+   - the full gate, `scripts/gate.sh` on a detached copy (its header says how), which prints the
+     unit/scenario/step totals and `sh scripts/code-size.sh`; record the size
      in "Code size" if it is a release;
    - a duplication review of the round's diff with the `duplication-reviewer` agent (or the
      `end-of-round` workflow); act on what it finds before release, or list it for after;
@@ -57,7 +76,8 @@ round stands (step 2's status) and do the next due step.
    - the day's pool: the credit-sized pool or the owner's top-up rule covers the round's
      reviews; check it before the owner sleeps, not after it runs out.
 3. **Release** only with no turn running (HQ's `runs.status = 'running'` is empty), through the
-   established release (snapshots, rollback tags, drain), and check health and the build after.
+   established release, `zsh scripts/release.sh` (push, snapshots, rollback tags, drain, NAS and
+   Pi, health), and check the build after.
 4. **Start**: set the previous round aside and make the new one, the ten tasks' words unchanged:
    `docker --context nas exec -i endora-hq python3 - start --round N --from-tasks <ids>
    --previous <last round's ids> --yes < scripts/experiment.py` (dry-run first, without
@@ -71,7 +91,9 @@ round stands (step 2's status) and do the next due step.
 
 ## 2. During the round (`tick`)
 
-Check every 30 minutes (an hour when nothing can move): `status` and the desk.
+Check every 30 minutes (an hour when nothing can move): `status` and the desk. A member
+stopped while the pool has money and work waits is a setup fault: get it going through HQ's own
+card and log it (the owner, 1 Nov: "I don't want phase 3 to stop for the 80 something cents").
 - `docker --context nas exec -i endora-hq python3 - status --tasks <ids> < scripts/experiment.py`
 - **A question on the desk**: answer only by restating the task's own criteria; count it as an
   intervention. When the item's tools cannot meet them, add "If your tools cannot meet these,
