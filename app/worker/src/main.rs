@@ -38,9 +38,9 @@ const CONTRACTS: &str = "http://node:8788/team-relay/contracts";
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
 const MOST_ROUNDS: u32 = 12;
-/// The most rounds of Claude Code in a turn, unless told otherwise: a round is one model call,
-/// and Claude Code reads and edits a file a round. The relay's money cap is the real limit.
-const MOST_CLAUDE_CODE_ROUNDS: u32 = 30;
+/// The most rounds of a turn on Claude, on either runtime, unless told otherwise: a round is one
+/// model call, and Claude reads or edits a file a round. The relay's money cap is the real limit.
+const MOST_CLAUDE_ROUNDS: u32 = 30;
 /// Where the workbench's shell runs: the sandbox's writable home, gone when the turn ends.
 const WORKBENCH_DIR: &str = "/work";
 
@@ -71,8 +71,19 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             ));
         }
     };
+    let model = given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned());
+    // A Claude model is reached through the Anthropic relay, in Anthropic's own API; anything
+    // else through the local relay, in OpenAI's.
+    let api = if model.starts_with("claude-") {
+        Api::Anthropic
+    } else {
+        Api::OpenAi
+    };
+    // A Claude turn gets the rounds Claude Code gets, on either runtime: with twelve, the
+    // worker's turns stopped mid-task where Claude Code's, on the same model, went on to
+    // check their work (the runtime proof of concept, 1 Nov). The house's model keeps twelve.
     let most_rounds = match given("ENDORA_MOST_ROUNDS") {
-        None if claude_code => MOST_CLAUDE_CODE_ROUNDS,
+        None if claude_code || api == Api::Anthropic => MOST_CLAUDE_ROUNDS,
         None => MOST_ROUNDS,
         Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
             format!("ENDORA_MOST_ROUNDS must be a whole number above zero, not {n}")
@@ -87,14 +98,6 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             |(node, _)| format!("{node}/team-relay/contracts"),
         )
     });
-    let model = given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned());
-    // A Claude model is reached through the Anthropic relay, in Anthropic's own API; anything
-    // else through the local relay, in OpenAI's.
-    let api = if model.starts_with("claude-") {
-        Api::Anthropic
-    } else {
-        Api::OpenAi
-    };
     // How hard Claude tries, as HQ decided for this turn: one of the five, or the model's own.
     let effort = match given("ENDORA_EFFORT") {
         None => None,
@@ -275,6 +278,28 @@ mod tests {
         assert_eq!(setup.api, Api::OpenAi);
         assert_eq!(setup.most_rounds, 12);
         assert_eq!(setup.workbench, None, "no shell outside the workbench");
+    }
+
+    #[test]
+    fn a_claude_turn_gets_the_rounds_claude_code_gets_and_a_house_turn_keeps_twelve() {
+        // The runtime proof of concept (1 Nov): the worker's twelve rounds cut R1 before it
+        // submitted, where Claude Code, on the same model, used 25.
+        let rounds = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).unwrap().most_rounds
+        };
+        assert_eq!(rounds(&[("ENDORA_MODEL", "claude-haiku-5-5")]), 30);
+        assert_eq!(rounds(&[]), 12, "the house's model");
+        assert_eq!(rounds(&[("ENDORA_MODEL", "deepseek-flash")]), 12);
+        assert_eq!(
+            rounds(&[
+                ("ENDORA_MODEL", "claude-haiku-5-5"),
+                ("ENDORA_MOST_ROUNDS", "5")
+            ]),
+            5,
+            "told otherwise"
+        );
     }
 
     #[test]
