@@ -439,8 +439,8 @@ counted as an intervention:
 - **The registry tool.** `image_tags` was released but not added to the ansible-nas loop's tools
   until 02:2x, so 931 at first asked for tags as round 1's 915 had.
 
-**Rounds side by side, on one measure** (1 Nov; round 3's column is final when task 8 is
-judged). **Reported** is what HQ recorded done; **verified** is what the judge found the work
+**Rounds side by side, on one measure** (1 Nov; round 3's column final at its close, all ten
+tasks). **Reported** is what HQ recorded done; **verified** is what the judge found the work
 meets, whatever HQ recorded. Rounds 0–2 recorded one "accepted" column; it is re-derived here
 from their judged rows. There, every task HQ did not mark done was either never ready, never
 started or blocked on an unmet criterion, so verified equals accepted; what differs is that
@@ -449,18 +449,18 @@ HQ marked some work done that the judge refused (883 in round 0, 932 in round 2)
 piping numbers are from HQ's store for each round's task range (rounds 0: 882–890 and 903 with
 its one subtask; 1: 913–922; 2: 929–938; 3: 947–955), read-only.
 
-| | Claude Code | Round 0 | Round 1 | Round 2 | Round 3 (9 of 10 so far) |
+| | Claude Code | Round 0 | Round 1 | Round 2 | Round 3 |
 |---|---|---|---|---|---|
 | Reported (HQ done) | — | 2 | 3 | 8 | 4 |
 | Verified (judge) | 10 | 1 | 3 | 7 | 8 |
-| Interventions | 0 | 9 | 7 | 7 | 8 (before task 8's two) |
-| Spend (HQ's runs) | tokens only | $0.81 | $1.67 | $8.35 | $6.14 |
-| Turns | 10 sessions | 112 | 92 | 320 | 295 |
-| Turns that changed nothing (HQ's own flag) | — | 84 | 65 | 267 | 246 |
-| Fork checkouts | 10 | 28 | 50 | 258 | 255 |
-| Wakes: continued / recovery / review asked / assigned (refused wakes of any reason) | — | 0 / 373 (335) / 13 / 24 | 0 / 51 (3) / 9 / 21 | 225 / 18 (3) / 25 / 34 | 209 / 35 (23) / 33 / 29 |
-| Handovers / climbs one rank up | — | 0 / 14 | 0 / 10 | 249 / 22 | 231 / 20 |
-| Questions on the desk | — | 121 | 12 | 10 | 12 |
+| Interventions | 0 | 9 | 7 | 7 | 10 |
+| Spend (HQ's runs) | tokens only | $0.81 | $1.67 | $8.35 | $8.68 |
+| Turns | 10 sessions | 112 | 92 | 320 | 347 |
+| Turns that changed nothing (HQ's own flag) | — | 84 | 65 | 267 | 293 |
+| Fork checkouts | 10 | 28 | 50 | 258 | 280 |
+| Wakes: continued / recovery / review asked / assigned (refused wakes of any reason) | — | 0 / 373 (335) / 13 / 24 | 0 / 51 (3) / 9 / 21 | 225 / 18 (3) / 25 / 34 | 248 / 42 (23) / 33 / 35 |
+| Handovers / climbs one rank up | — | 0 / 14 | 0 / 10 | 249 / 22 | 274 / 24 |
+| Questions on the desk | — | 121 | 12 | 10 | 14 |
 
 Where the record does not allow a re-derivation: round 0's arm B judged only what reached it
 (five tasks never started) and recorded no verified reading of blocked work, so its 1 is
@@ -632,6 +632,52 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 8 | 956 (window 31 Oct 21:00 UTC to 1 Nov 13:30 UTC, cut by the owner) | No, reported and verified: past the arm's $2 cap at 16:2x UTC with no branch and nothing kept, after five ranks (Bo, Rae, Ada, Kit, Mara); 52 turns, 5 moving forward, each reading whole logs (190 `container_logs` calls) and running out of room (D20). Bo had recommended remove with log points at 21:01, 03:46 and 10:36, but asked the owner twice rather than make the branch (criterion 3). Nothing changed on the lab: every call a read, the four containers' RestartCount 0. Set aside at 16:3x UTC (project 10, dropped) so it stops spending. Claude Code's arm: accepted (see above) | $2.54 (Kit $1.46, Mara $0.77, Rae $0.21, Ada $0.09, Bo $0) | none ready; about 3 h of turns | 2 (about a minute each) | |
 | 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
 | 10 | 955 | Reported no: blocked by Kit at 04:10 UTC on criterion 2, since no CI run can be had on the branch (D25); before that its gate was shut (D23) and Rae's review gave no verdict (D26); never delivered. Verified yes at its final head a41a314f2e58: the rule's 11 tests pass as CI runs them; the judge's own literals fail and vault, empty and `!vault` values pass, and a broken rule fails 2 tests; today's 30 offenders are warnings, guarded by a test, and the 14 lint failures are the same as develop; yamllint identical to develop (the fixture's missing `---` fixed); one commit off ee878f7; rechecked twice by the round judge from the mirror's `refs/submissions`. New literals too are only warnings | $1.60 (Kit $1.41 after first ready, the `---` the only change kept) | 548 min to first ready (about 36 min of work) | 1 | |
+
+### Round 3's result (closed 1 Nov, 16:4x UTC)
+
+**Reported 4 of 10, verified 8 of 10** (round 2: 7 verified; Claude Code: 10, task 8 included,
+run today on the same words). Reported: 948, 952, 953, 954. Verified as well: 947, 949, 951 and
+955, done to their criteria and lost by HQ's own process. Not accepted in either reading: 950
+and 956 (task 8). 10 interventions (four tasks' questions answered with their own words; the
+minutes counted from 956 on, about one each). $8.68 on the ten tasks; the day's top-ups were
+$12.49 on 31 Oct and none on 1 Nov, where four members' days were given within the pool
+($2.00, then $0.50 three times).
+
+**What held it back, by the evidence:**
+- **The machinery lost four finished tasks** (947, 949, 951, 955): a verdict that could not land
+  (D19), refused wakes counted as failures (D17), a literal reading of a lint criterion HQ's own
+  check had measured as met (D22), a gate shut by keeping the head that passed (D23), a CI
+  criterion read as needing a run (D25), reviews that gave no verdict (D26). Reported and
+  verified differ by exactly these.
+- **Two tasks the team did not do.** 950: each turn's empty sandbox read as "offline" (D27), and
+  the branch carried only `.pyc` files (D28); its CI criterion cannot be met while the fork's
+  workflow runs on main only (D6). 956: every turn at five ranks read whole logs and ran out of
+  room, nothing kept between turns (D20), until the $2 cap.
+- **The piping.** 293 of 347 turns changed nothing by HQ's own flag; 280 fork checkouts; 274
+  handovers. Waiting outweighed working: 952 waited 462 of its 488 minutes in the loop's queue,
+  Bo was stopped nine hours by the turn cap (D15), and Ada stalled with money in the pool (D21).
+
+**Cost by model** (HQ's runs on 947–956):
+
+| Model | Turns | Spend | Share | Per turn |
+|---|---|---|---|---|
+| Claude Sonnet | 55 | $5.30 | 61% | $0.096 |
+| DeepSeek Flash | 134 | $1.49 | 17% | $0.011 |
+| Claude Opus | 7 | $1.24 | 14% | $0.178 |
+| Claude Haiku | 107 | $0.65 | 7% | $0.006 |
+| The house model | 44 | $0 | 0% | $0 |
+
+The owner's word was that most money should go to Haiku; three fifths went to Sonnet, reached by
+climbs (D17's refused wakes, D20's runs out of room), not chosen for the work.
+
+**The code.** 101,368 product lines (`scripts/code-size.sh`; 32,338 of tests; 41 scenario
+features). The round's own code, `8f138b2d..1340e5b3` (12 commits, 52 lines added in Rust), was
+reviewed by `duplication-reviewer`; nothing skips a safety check, and five findings are for the
+round-4 consolidation, in order of what each removes: the worker decides "loaded up front" two
+ways (`up_front()` and `CLAUDE_LOADS`, the mark checked twice in `app/worker/src/turn.rs`), which
+also takes `chess`'s second record; a scenario step converts dollars by hand beside `micros()`
+(three copies); the top-up limit's "five" is written as a number and a word (`money.rs`,
+`work.rs`); the `endora/up_front` mark is defined in the worker and in HQ.
 
 ### Round 4, as decided (owner, 1 Nov): a product decision, not a benchmark
 
