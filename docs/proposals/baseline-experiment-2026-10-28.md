@@ -585,7 +585,11 @@ making the branch (cards 5064 at 14:15 and 5065 at 14:4x UTC, a second question 
 despite D10); both answered with the task's own words (two interventions). It climbed to Rae,
 whose turns each ran out of room after three to five log reads (D20); at 15:01 she was out for
 the day (card 5066: $0.45 spent, the pool $2.46 left) and was given $0.50 within the pool at
-15:2x UTC (a money decision, not an intervention).
+15:2x UTC (a money decision, not an intervention). Rae's turns kept running out of room on log reads; at 15:39 it
+climbed to Ada (Haiku), whose turns did the same (352 KB over 3 calls; 108 `container_logs`
+reads on the task by then), and who was out for the day at $0.08 (card 5067, a share of $0.05):
+given $0.50 within the pool ($2.36 left) at 15:4x UTC. D20 on a read-only task: whole logs read
+in each turn, nothing kept between them.
 
 **A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
 08:43 UTC (HQ's status call hung for minutes; 335 MB of 16 GB available): Ollama's llama-server
