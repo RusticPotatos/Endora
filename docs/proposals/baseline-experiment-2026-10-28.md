@@ -642,6 +642,21 @@ new agent, orchestration layer or scoring framework.
    round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
    delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
    reasoning alone would have passed it.
+7. **E. The piping audit, before round 4's changes are final (owner, 1 Nov: "let the agents be
+   agents").** The question is whether HQ's own process, not the models, causes the failures.
+   Round 3's record so far: 296 turns for nine tasks (Claude Code took one session each); 209
+   of the wakes were a loop's "continued" and 35 were recoveries (22 of them refused); 255
+   `repo_checkout` calls, because every turn starts in an empty sandbox (D27); the four tasks
+   done but never reported (947, 949, 951, 955) were each lost to HQ's process (D19, D22, D23,
+   D25), not to the work. The audit, from the store, per task: turns that changed nothing
+   (re-reading the briefing, re-checking out, waiting); every handoff (climb, review, handover,
+   desk question) and whether it changed the outcome; time working against time waiting; tokens
+   spent on protocol (briefing, `my_turn`, `claim`, re-checkouts) against tokens spent on the
+   work. Each step of the pipeline is kept only where it changed an outcome; the rest is cut
+   or merged. And one arm settles the question directly: **one member, one long turn, no
+   ladder**, the fresh set worked by a single Haiku member end to end (it checks out, works,
+   checks its own criteria, submits), beside the team's arm. If the single member matches or
+   beats the team, the team's machinery is cut back to what that arm lacked.
 
 **Two scorecards, because they are two products.** HQ's development work and its standing,
 unattended work have different measures. HQ could fall short of Claude Code at development and
