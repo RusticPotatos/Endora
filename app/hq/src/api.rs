@@ -104,6 +104,9 @@ pub fn app(state: State) -> Router {
             get(loop_lessons).post(set_loop_lessons),
         )
         .route("/v1/one-team", post(one_team))
+        // A round of the experiment under way (ADR 0142, amended 2026-11-01): its items, set by
+        // `scripts/experiment.py start`; no downtime turn starts while any is open.
+        .route("/v1/round", get(round_shown).post(set_round))
         // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/league", post(start_league))
@@ -934,6 +937,49 @@ async fn league_games(
 async fn reset_league(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     Ok(Json(blocking(move || hq.reset_league()).await?))
+}
+
+#[derive(Deserialize)]
+struct Round {
+    /// Items to add to the round under way.
+    #[serde(default)]
+    items: Vec<i64>,
+    /// The round is over: downtime goes on.
+    #[serde(default)]
+    close: bool,
+}
+
+/// The round of the experiment under way, as HQ holds it: its items and whether any is open.
+fn round_said(hq: &Hq) -> Result<serde_json::Value, EngineError> {
+    let items: Vec<i64> = hq.round_items()?.into_iter().map(|t| t.0).collect();
+    Ok(json!({ "items": items, "running": hq.round_running()? }))
+}
+
+/// The round of the experiment under way (ADR 0142, amended 2026-11-01).
+async fn round_shown(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || round_said(&hq)).await?))
+}
+
+/// The owner, or `scripts/experiment.py start`, adds a round's items (each arm's in turn), or
+/// closes the round: while any of its items is open, no downtime or chess turn starts.
+async fn set_round(
+    Extract(state): Extract<State>,
+    Json(req): Json<Round>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(
+        blocking(move || {
+            if req.close {
+                hq.close_round()?;
+            } else {
+                let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+                hq.add_to_round(&items)?;
+            }
+            round_said(&hq)
+        })
+        .await?,
+    ))
 }
 
 /// The owner's cut-over to one team of loops (ADR 0142): what it did.
@@ -3682,6 +3728,43 @@ mod tests {
         )
         .await;
         assert_ne!(status, StatusCode::OK, "no such loop");
+    }
+
+    /// ADR 0142, amended 2026-11-01: `scripts/experiment.py start` sets the round's items; no
+    /// downtime turn starts while any is open, and the close ends it.
+    #[tokio::test]
+    async fn a_round_of_the_experiment_is_set_read_and_closed() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let send = |method: &str, body: &str| {
+            let app = app.clone();
+            let (method, body) = (method.to_owned(), body.to_owned());
+            async move {
+                let res = app
+                    .oneshot(call(&method, "/v1/round", Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, none) = send("GET", "").await;
+        assert_eq!(status, StatusCode::OK, "{none}");
+        assert_eq!(none, json!({ "items": [], "running": false }));
+        let (status, set) = send("POST", &json!({ "items": [task.0] }).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set, json!({ "items": [task.0], "running": true }));
+        assert!(st.hq.round_running().unwrap());
+        let (status, _) = send("POST", r#"{"items":[99999]}"#).await;
+        assert_ne!(status, StatusCode::OK, "no such task");
+        let (_, closed) = send("POST", r#"{"close":true}"#).await;
+        assert_eq!(closed, json!({ "items": [], "running": false }));
+        let unsigned = app
+            .clone()
+            .oneshot(call("POST", "/v1/round", None, r#"{"close":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

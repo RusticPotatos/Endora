@@ -915,3 +915,16 @@ models asked `find_tools` for tools they were already offered.
 
 Scenario: `features/a-turn-spends-no-moves-on-the-protocol.feature`; the worker's end-to-end
 test stands for `find_tools`'s.
+
+## Amended 2026-11-01: downtime waits while a round runs (round 4)
+
+Downtime and chess turns (wake reason `downtime`) ran beside a round's items, taking the
+runner's places and the house's model from the work being measured. Now none starts while a
+round of the experiment is under way: HQ's setting `round_running` holds the round's items, and
+while any of them is neither done nor dropped, no member is given a downtime turn, no chess move
+is picked up, and a downtime turn queued before the round began stays queued. The round lapses
+on its own once every item is finished; `POST /v1/round` with `{"items": [...]}` adds a round's
+items (both arms' starts add up, finished ones are let go), `{"close": true}` ends it sooner, and
+`GET /v1/round` says what it holds. `scripts/experiment.py start --yes` sets it with the tasks it
+makes. Scenario: `features/the-office.feature` ("Downtime waits while a round of the experiment
+is under way").

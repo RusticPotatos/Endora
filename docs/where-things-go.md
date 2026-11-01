@@ -55,6 +55,10 @@ Settings.
   setting of the loop's beside its rank and items (`loop_solo:<project>`, set through
   `/v1/projects/{id}/solo`), and its rules are in the loops' engine
   (`domains/team/src/application/engine/loops.rs`); no screen.
+- A round of the experiment under way (ADR 0142, amended 2026-11-01) is a setting of HQ's
+  (`round_running`, its items), set by `scripts/experiment.py start` through `/v1/round`, and its
+  rule (no downtime while an item is open) is the office's, in
+  `domains/team/src/application/engine/office.rs`; no screen.
 - A loop's repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) is a setting
   of its project (`project_repo:<project>`), set by the owner through
   `/v1/hq/projects/{id}/repo`; the rule of which addresses may be named is the kernel's
