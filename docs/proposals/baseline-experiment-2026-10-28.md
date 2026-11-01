@@ -731,6 +731,134 @@ a decision test, not a statistical benchmark: passing it shows no general superi
 protocol moves (D30). The metrics and replay scripts stop at their first usable point. During the
 round: blockers only, each logged with the run it affected.
 
+### Round 4 (1 Nov, from 16:45 UTC): the run
+
+**Build** `round4` (81f49915), released before the round. **Started 16:45 UTC** with
+`experiment.py start --round 4 --from-tasks 957-959 --solo Sol --yes` after a clean dry run.
+
+**HQ's arm.** Sol (member 10, `claude-haiku-5-5`, developer, worker runtime) hired through
+`POST /v1/members` so the team keeps Ada. The words of R1–R3 were made as tasks 957–959 in a
+project paused at once and then dropped (project 11, never worked), and copied by the start into
+project 12, "Round 4 solo (Sol)": tasks **960 (R1), 961 (R2), 962 (R3)**, no mismatches. Cap
+$15 on project 12 (`POST /v1/projects/12/cap`, ADR 0113); `GET /v1/round` holds 960–962,
+`running: true`. Each task's description is the fork's rules line plus "Work on the ansible-nas
+fork's develop at ee878f7"; its criteria are the table's, a line each, none live. Sol works the
+loop's items one at a time, so HQ's elapsed times run in sequence.
+
+**Claude Code's arm.** One fresh general-purpose agent per task, started 16:46 UTC, in local
+branches `exp/a-r4-1`…`3` of the fork cut from `ee878f7` (worktrees beside the fork), nothing
+pushed, told the fork's rules (no `group_vars`, `host_vars`, inventories or vaults; no fetch; no
+other branch or worktree, `hq/*` included). R2 strictly read-only on the lab, with a redaction
+filter for its own output.
+
+**Disclosed before judging: where the arms' words differ.** Both got the same title, description
+and criteria. Claude Code's briefs added, beyond the fork's rules: for R1, "look at how other
+roles default secrets to `vault_*` variables and assert they are set" (it cannot know what "as
+951 and 952 did" points to; HQ's arm can, from its own store); for R3, "verify each tag on its
+registry; a current stable release"; for R2, a redaction filter and, as an example of the shape
+of an answer, "e.g. URL query-string logging, log level". The last is a hint HQ's arm did not
+get, and is weighed against Claude Code's R2 when judged.
+
+**Known deviation: "nothing pushed".** HQ pushes an accepted branch to the fork as `hq/task-N`
+after its privacy scan, by the owner's rule of 31 Oct (ADR 0115, "the push is HQ's, by rule");
+there is no switch to hold it and building one is out of scope. Judged as: the arm itself pushed
+nothing to `develop` or elsewhere; a delivery push is noted, not failed.
+
+Elapsed is recorded two ways, since Sol works one item at a time while Claude Code ran three
+agents at once: **first turn to done** (the like-for-like figure, used by the decision rule's
+part 3) and **wall clock from 16:45**, the queue included.
+
+| # | Arm | Task | Verified | Elapsed: first turn to done | Elapsed: wall clock | Cost | Interventions (count, minutes) | Rework (8 Nov) |
+|---|---|---|---|---|---|---|---|---|
+| R1 | HQ | 960 | **No** (round judge, re-checked against 951's, 952's and Claude Code's standard: criterion 2 not met. Unset, the role deploys `POSTGRES_PASSWORD: ""` and failed=0, and the pinned `postgres:11.1` entrypoint then writes `host all all all trust`: a database open without a password, an insecure fallback, unresolved on the delivered branch. First reading, at 217446b from the public fork: the literal at all four places identified (post 8193) and none left in the role or docs, the Postgres password included; `vault_miniflux_*` defaults; but a `debug` reminder in cloudflared's style, not 952's assert: the judge played the role offline and an unset value deploys empty passwords with failed=0; yamllint 6/6 identical, ansible-lint on the role 3/3 identical; two commits off ee878f7, the first adding a `.pyc` the second removes (left in public history); develop untouched; delivered by HQ. **Rule breach, recorded as such whatever the folder held** (disclosed by Sol, post 8191): read `tests/inventories/integration_testing/group_vars`; HQ's scope check sees changed files only. Criteria 1, 3 and 4 met. Existing installs keep the old database password, not documented) | 8 min | 8 min | $0.014 | 0 | |
+| R1 | Claude Code | `exp/a-r4-1` | **Yes** (round judge: the literal in the defaults, the tasks' `POSTGRES_PASSWORD` and `DATABASE_URL`, and the docs; none left in the role or docs; `vault_miniflux_*` defaults; the judge played the assert offline: unset or empty fails with a clear message, set passes, a special-character password encodes rightly; yamllint 6/6 and ansible-lint 14/14 identical; one commit `53783e00` off ee878f7, not on the remote. Owner notes: the molecule scenario now stops at the assert, as librechat's already does; an existing install keeps its old database password) | 3 min | 4 min | 83.6k tokens | 0 | |
+| R2 | HQ | 961 | **No** (round judge: criterion 3 met, every receipt a read and the four containers unrestarted; 1 and 2 not met. Sol found the leaking `HttpClient` 429 lines (r3594) but said the key is also in Sonarr's own log file, which holds 0 raw keys (244 and 266 `(removed)`), and missed why only the console is plaintext (Sonarr 4.0.20 lacks the cleansing console layout Radarr and Prowlarr have, whose consoles scrub the same 429s); its fix, a promtail redaction plus rotation, stops one copy reaching Loki and leaves the source; "no role-level switch" rests on not looking (`ConsoleLevel`, `ConsoleFormat` in the DLL); its repository claims are true but cite no read receipt) | 2 min | 10 min | $0.006 | 0 | |
+| R2 | Claude Code | `exp/a-r4-2` (report) | **Yes** (round judge: 29 unscrubbed `HttpClient` 429 lines in Sonarr's console, 0 raw keys in its file logs, rotated files and `logs.db`; `CleansingConsoleLogLayout` 0 in Sonarr's DLL, 1 in Radarr's and Prowlarr's, whose consoles scrub the same 429s; not the log level; `SONARR__LOG__CONSOLEFORMAT` in the DLL makes the proposed variable plausible, untested as said; sonarr, radarr, prowlarr and promtail started before the round with 0 restarts and no container events but execs. Goes well past the brief's hint. Open for the owner: the key is still leaking until fixed, then rotate) | 3 min | 4 min | 86.4k tokens | 0 | |
+| R3 | HQ | 962 | **No** (round judge, criteria 1–3 met but not verified under the decision rule's part 4: the jellyfin pin is two majors behind develop's effective `latest` (12.4), and Jellyfin's 12.0 and 10.11.0 release posts say a backup is the only way back, so any default install since September would break on deploying it; unresolved on the delivered branch, no warning in commit or thread; Sol's own receipt r3603 listed 12.4 as newest. First reading, at a555cb8 from the public fork: one commit, two one-line defaults changes, nothing stray; `linuxserver/jellyfin:10.11.11` (stable, pushed 2026-09-01) and `sctx/overseerr:1.35.0` (= `latest`) exist, named in the commit; yamllint 6/6 and ansible-lint 14/14 identical; develop untouched; delivered by HQ. Note: jellyfin's pin is two majors behind linuxserver's `12.4ubu2604-ls57`, since `image_tags` with `semver_only` hides linuxserver's versioned tags and Sol did not explain the choice; jellyfin does not run on the lab, so no downgrade today) | 4 min | 14 min | $0.008 | 0 | |
+| R3 | Claude Code | `exp/a-r4-3` | **Yes** (round judge: one commit `2aea09fa`, two one-line defaults changes; both tags active on Docker Hub, stable, digests equal to today's `latest`, named in the commit; yamllint 7 and 7 identical as the judge ran it, ansible-lint identical; merge-base ee878f7; not on the remote) | 1 min (53 s) | 2 min | 67.5k tokens | 0 | |
+
+**Log.**
+- 16:45 UTC: Sol's first turn on 960; 961 and 962 waiting in the loop.
+- 16:47 UTC: Claude Code's R3 reported done in 53 s (67.5k tokens, 9 tool calls): commit
+  `2aea09fa`, jellyfin `linuxserver/jellyfin:12.4ubu2604-ls57`, overseerr `sctx/overseerr:1.35.0`,
+  yamllint 6 and 6, identical. Sent to the judge.
+- 16:49 UTC: Claude Code's R1 reported done in 3 min 11 s (83.6k tokens, 26 tool calls): commit
+  `53783e00`; admin and database passwords from `vault_miniflux_*` with an assert; the literal
+  also in the tasks (Postgres and `DATABASE_URL`) removed; yamllint 6/6 and ansible-lint 14/14
+  identical. Its own notes: existing installs must set the database password to the current one,
+  and the molecule scenario will stop at the new assert. Sent to the judge.
+- 16:49 UTC: Claude Code's R2 reported done in 3 min 9 s (86.4k tokens, 13 tool calls): the
+  key reaches Sonarr's console (stdout, so `docker logs` and very likely Loki) in `HttpClient`
+  warnings that print the whole Torznab URL on Prowlarr's 429s; Sonarr's file and database logs
+  are scrubbed; Sonarr 4.0.20's console layout does not cleanse where Radarr's does. Proposed:
+  Sonarr's console level to Error in its role, then an upgrade to a cleansing build, then rotate
+  the key. Sent to the judge.
+- 16:53 UTC: HQ's R1 (960) done after 2 turns, $0.014; delivered by HQ as
+  `hq/task-960-miniflux-vault-password` (217446b3cd0e, 4 files, +19 −5), privacy scan clean
+  (desk 5069, a notice). Desk 5070 (`needs_owner`): set `vault_miniflux_admin_password` and
+  `vault_miniflux_db_password` before deploying; left for the owner, not a question, not counted.
+  Sol moved to 961. Sent to the judge.
+- 16:59 UTC: the judge first accepted 960; on the coordinator's word that criterion 2 is held to
+  the standard used for 951, 952 and Claude Code's R1, re-checked and changed it to **not
+  accepted** (empty-password fallback; the old `postgres:11.1` trusts every connection then).
+- 16:55 UTC: HQ's R2 (961) done in one turn, $0.006, report in post 8202 (no key-shaped string in
+  any of Sol's posts, checked by count). 16:59 UTC: HQ's R3 (962) done in 2 turns, $0.008,
+  jellyfin `10.11.11`, overseerr `1.35.0`, check c64 no new findings; delivered as
+  `hq/task-962-pin-jellyfin-overseerr` (a555cb86e98e), privacy scan clean. `GET /v1/round`:
+  `running: false`, the round over on its own. Both sent to the judge. No question reached the
+  desk in either arm; no money approved; no blocker fixed.
+- 17:00 UTC: 962 verified by the judge on the criteria as written. On the coordinator's word,
+  sent back on part 4 of the decision rule: pinning jellyfin to 10.11.11 when the role's default
+  `latest` is 12.4 is a two-major downgrade for any default install, and Jellyfin's migrations do
+  not run backwards (the lab has no jellyfin container, so nothing breaks here today). **Cause, a
+  round finding and not a fix to build now:** HQ's `image_tags` lookup with `semver_only` hid
+  linuxserver's versioned `12.xubu2604-lsNN` tags, so it showed 10.11.11 as the newest.
+- 17:04 UTC: the judge changed 962 to **not verified** under part 4 (open correctness
+  regression), and held Claude Code's R3 verified under the same reading: both its pins equal
+  today's `latest` digests (its first judge checked them on Docker Hub), so no version moves.
+
+### Round 4's result (closed 1 Nov, 17:05 UTC): the decision
+
+| Measure | HQ (Sol alone, Haiku) | Claude Code (one agent a task) |
+|---|---|---|
+| Verified (round judge, criteria written before the run) | **0 of 3** (R1 not met; R2 not met; R3 met as written, not verified under part 4) | **3 of 3** |
+| Reported done | 3 of 3 | 3 of 3 |
+| Elapsed, first turn to done (sum; used by part 3) | 14.0 min (8.0 + 2.3 + 3.7) | 7.2 min (3.2 + 3.2 + 0.9) |
+| Elapsed, wall clock from 16:45 (queue included) | 14 min (one item at a time) | 4 min (three agents at once) |
+| Cost | $0.028 (`experiment.py metrics`: 5 turns, 0 that changed nothing, 794k tokens in, 713k of them cached, 22k out) | 237.5k tokens (83.6k + 86.4k + 67.5k), judges excluded |
+| Interventions: count, minutes of attention | 0, 0 min (no desk question; one `needs_owner` notice, 5070, to clear before any deploy) | 0, 0 min |
+| Security or correctness regression left open | **Two**, both on branches HQ pushed to the public fork: R1 deploys an empty Postgres password that the pinned `postgres:11.1` turns into trust-all; R3 downgrades jellyfin two majors. And one rule breach: R1 read a test inventory's `group_vars` (disclosed by Sol) | None found |
+| Rework | checked on 8 Nov | checked on 8 Nov |
+
+**The decision rule, applied.**
+1. HQ verifies at least Claude Code's count minus one (2): **fails**, 0 against 3.
+2. HQ takes no more minutes of human attention: **holds**, 0 and 0.
+3. HQ within twice Claude Code's elapsed time: **holds narrowly** on first turn to done (14.0 against
+   a limit of 14.4 min); it would fail on wall clock (14 against 4). No unattended-work advantage
+   was shown: both arms ran without attention, and Claude Code's did so correctly.
+4. No unresolved security or correctness regression: **fails**, two open, on public branches.
+
+**Result: retire HQ's development side.** Two of the four parts fail, so HQ does not continue as
+it is. Of the two other outcomes, narrowing to unattended infrastructure operations is not
+supported either: the round's one operations-shaped task (R2, read-only diagnosis of the lab) also
+failed, on finding the real source. HQ was fast and cheap here (5 turns, none wasted, $0.03,
+after round 3's 293 of 347 turns that changed nothing), so the solo arm fixed the waste; what
+stayed short is the judgement in the work: a weaker guard than the fork's own pattern, a
+downgrade its own receipt showed, a cause asserted without reading. Coverage is three tasks: a
+decision test, not a benchmark, and it shows no general claim either way.
+
+**What the owner may want to act on, apart from the decision.**
+- Prowlarr's API key is still being written to Sonarr's console log (29 lines by 16:41 UTC), so
+  `docker logs` and very likely Loki hold it. Claude Code's R2 has the narrow fix (Sonarr's console
+  level in its role, then a cleansing build); rotate the key after the leak stops.
+- HQ's two pushed branches, `hq/task-960-miniflux-vault-password` and
+  `hq/task-962-pin-jellyfin-overseerr`, should not be merged as they are (the first also carries
+  a `.pyc` in its history). Claude Code's branches `exp/a-r4-1` and `exp/a-r4-3` are local.
+- Round findings, not fixes to build: HQ's scope check sees changed files only, so a forbidden
+  read passes; `image_tags` with `semver_only` hides linuxserver's versioned tags; a solo item is
+  marked done on mechanical checks with nobody reading the work, and R2's repository claims cited
+  no read receipt.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
