@@ -69,6 +69,13 @@ Settings that change speed (items in hand at once, limits) change only at a roun
 - **Decide from evidence.** Ask the owner only for money, keys, accepted risk, irreversible
   steps or taste; otherwise decide, and cite the evidence (the round's record, the ADRs,
   published guidance).
+- **Let the agents be agents** (owner, 1 Nov). Prefer removing a hand-off, check or question to
+  adding one; a step of HQ's pipeline stays only where the record shows it changed an outcome.
+- **Investigate without asking, and never idle.** Read-only checks (the store, logs, metrics,
+  the lab's state) need no permission. While a round waits on anything, prepare the next one on
+  its branch (fixes, arms, tasks), gated and pushed; releasing still waits for the close.
+- **No wait longer than it earns.** A task's window or wait is as short as shows what it must
+  (task 8's window: a few hours, unless a round shows the longer one finds more).
 
 ## 1. Before a round (`start`)
 
