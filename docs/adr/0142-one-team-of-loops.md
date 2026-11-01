@@ -780,3 +780,8 @@ rule changed here, with a scenario of what happened.
   kept branch first." The shell's description and the instructions no longer say "offline":
   the sandbox has no internet, starts empty each turn, and the fork comes in with
   `repo_checkout`.
+- **D28. Python's byproducts are not work.** All three heads kept on item 950's work branch
+  added only `__pycache__/*.pyc` (the fork has no ignore entry for them), and the handover said
+  the turn "kept new work"; 947 and 951 carried the same file. The worker's keep now never adds
+  `__pycache__/` or `*.pyc`, and a branch whose only change from its base is such byproducts is
+  not kept (nothing is sent to the node). Work the model committed itself is kept as it is.

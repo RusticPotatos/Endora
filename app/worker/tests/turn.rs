@@ -1173,6 +1173,73 @@ fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D28 of round 3 (item 950): every head kept as work in progress added only Python's
+/// `__pycache__/*.pyc`, and the handover called it new work. A turn out of room whose sandbox
+/// holds nothing but byproducts sends nothing to keep. (The worker has no scenario suite; this
+/// end-to-end test stands for one.)
+#[test]
+fn a_turn_out_of_room_with_only_python_byproducts_keeps_nothing() {
+    let dir = std::env::temp_dir().join(format!("endora-pyc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join("tests").join("__pycache__")).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "nas.yml"]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Jane) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    // What running the tests left, and nothing else.
+    std::fs::write(
+        repo.join("tests/__pycache__/test_lint_rules.cpython-312.pyc"),
+        b"\x00",
+    )
+    .unwrap();
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        ),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }));
+    let (hq_url, _) = hq(None);
+    let (model_url, _) = model(
+        (0..12)
+            .map(|i| {
+                let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+                (200, calls(&[("call_1", "post", &args)]))
+            })
+            .collect(),
+    );
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    env.push(("ENDORA_PROMPT_BUDGET", "16000".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert!(
+        !to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path == "/team-relay/contracts/repo_submit"),
+        "nothing is sent to keep"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The first call is always made, however large: a turn that could make none would never
 /// get anywhere. The next one is not.
 #[test]

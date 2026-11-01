@@ -406,11 +406,24 @@ pub fn bundle(work: &Path, branch: &str) -> Result<(Vec<u8>, String), String> {
 pub const IN_PROGRESS_MESSAGE: &str =
     "Work in progress, kept as the turn's prompt reached its budget";
 
+/// What running Python leaves beside the work (D28 of round 3), as pathspecs left out of a keep:
+/// the fork has no ignore entry for them.
+const BYPRODUCTS: [&str; 2] = [":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc"];
+
+/// Whether a path is one of Python's byproducts ([`BYPRODUCTS`]).
+fn a_byproduct(path: &str) -> bool {
+    path.ends_with(".pyc")
+        || path.starts_with("__pycache__/")
+        || path.contains("/__pycache__/")
+}
+
 /// Commits what the sandbox's checkout holds as work in progress for `task`, as a turn runs out
 /// of room (ADR 0142, amended 2026-10-31), on the branch it is on when that is the task's own
 /// (`hq/task-<task>-…`), else on a new `hq/task-<task>-work` from where it stands. Returns the
 /// branch to bundle, or `None` when there is no checkout or nothing beyond the base to keep.
-/// The model takes no part: the worker does this after the model's last call.
+/// Python's byproducts are never added, and a branch whose only change from its base is
+/// byproducts keeps nothing (D28). The model takes no part: the worker does this after the
+/// model's last call.
 ///
 /// # Errors
 /// What git said, in a line.
@@ -429,22 +442,27 @@ pub fn work_in_progress(work: &Path, task: i64) -> Result<Option<String>, String
         git(&repo, &["checkout", "-q", "-b", &made])?;
         made
     };
-    if !git(&repo, &["status", "--porcelain"])?.trim().is_empty() {
-        git(&repo, &["add", "-A"])?;
+    let mut add = vec!["add", "-A", "--", "."];
+    add.extend(BYPRODUCTS);
+    git(&repo, &add)?;
+    if !git(&repo, &["diff", "--cached", "--name-only"])?
+        .trim()
+        .is_empty()
+    {
         git(
             &repo,
             &["commit", "-q", "--no-verify", "-m", IN_PROGRESS_MESSAGE],
         )?;
     }
-    let ahead = git(
+    let changed = git(
         &repo,
         &[
-            "rev-list",
-            "--count",
-            &format!("refs/heads/{base}..refs/heads/{branch}"),
+            "diff",
+            "--name-only",
+            &format!("refs/heads/{base}...refs/heads/{branch}"),
         ],
     )?;
-    if ahead.trim() == "0" {
+    if changed.lines().all(|f| f.trim().is_empty() || a_byproduct(f.trim())) {
         return Ok(None);
     }
     Ok(Some(branch))
@@ -579,6 +597,30 @@ mod tests {
             work_in_progress(&work, 7).is_err(),
             "hq/task-7-work exists: refused"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D28 of round 3: every head kept on 950's work branch added only `__pycache__/*.pyc`,
+    /// and the handover called it new work. Python's byproducts are left out of the keep, and a
+    /// sandbox with nothing else beyond its base keeps nothing.
+    #[test]
+    fn python_byproducts_are_not_kept_as_work() {
+        let (root, fork) = a_bundle("pyc");
+        let work = root.join("work");
+        let out = checkout(&work, &fork, "main", "main", false, "Kit", Some(7)).unwrap();
+        let cache = out.path.join("tests").join("__pycache__");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("test_rules.cpython-312.pyc"), b"\x00\x01").unwrap();
+        std::fs::write(out.path.join("loose.pyc"), b"\x00\x02").unwrap();
+        assert_eq!(work_in_progress(&work, 7).unwrap(), None, "byproducts alone");
+        // With real work beside them, the work is kept and the byproducts are not.
+        std::fs::write(out.path.join("rule.py"), "class SecretDefault: ...\n").unwrap();
+        assert_eq!(
+            work_in_progress(&work, 7).unwrap().as_deref(),
+            Some("hq/task-7-work")
+        );
+        let kept = run(&out.path, &["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(kept, "rule.py", "{kept}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
