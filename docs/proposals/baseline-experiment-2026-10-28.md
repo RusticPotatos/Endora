@@ -554,7 +554,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 3 | 949 | Reported no: blocked by Kit at 00:56 UTC on criterion 2 read literally, never delivered (D22). Verified yes: all seven tags real on their registries (Docker Hub, ghcr) and named in the commit; lint the same as develop (14 and 14, 6 and 6, findings identical); one commit off ee878f7 touching only the two defaults files; nothing personal; rechecked by the round judge from the node mirror's `refs/submissions` | $1.71 (Ada $1.24; 360 `image_tags` calls from re-reading, D20) | 322 min to first ready; never accepted | 1 | |
 | 4 | 950 | | | | | |
 | 5 | 951 | | | | | |
-| 6 | 952 | | | | | |
+| 6 | 952 | Yes, reported and verified: both SQL passwords default to vault variables, no literal left; the assert fails with a clear message when either is unset and passes when set (run by the judge, unset and set); docs say how to set them in the vault; lint the same as develop (14 and 14, 6 and 6, identical); one commit off ee878f7, pushed by delivery as `hq/task-952-nextcloud-secrets`, privacy scan clean; rechecked by the round judge. Ada reviewed work she had written before Kit squashed it (D24) | $0.25 (Kit's squash 37%, after D17 refusals) | 488 min (462 waiting in the loop's queue; about 26 min of work) | 0 | |
 | 7 | 953 | | | | | |
 | 8 | (after its window: 31 Oct 21:00 UTC to 1 Nov 21:00 UTC) | | | | | |
 | 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
@@ -817,6 +817,12 @@ done. Defects are numbered so the next round's changes can name them.
   it but a developer's `recheck`, which a reviewer's turn does not have, and the owner has none.
   Fix proposed: keeping a head the gate already passed leaves the gate as it is (the gate
   belongs to the head, not to the last write); a scenario of exactly this sequence first.
+- [ ] **D24. A reviewer passed work she wrote.** Round 3, 952: Ada wrote its work-in-progress
+  commits (5f3db92, bfec3e4, ad586b7), Kit squashed them into 38aa78a after D17 moved it to him,
+  and Ada then reviewed and closed it ("Tested and passed"). The own-work check reads who
+  submitted the head, not who wrote the work. The work held on the judge's own readings, so no
+  harm this time. Fix proposed: a reviewer is refused for any item whose branch carries her
+  commits or whose thread shows her doing turns.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
