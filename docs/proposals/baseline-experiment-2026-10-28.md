@@ -653,6 +653,7 @@ new agent, orchestration layer or scoring framework.
    | F1 | S | Pin the `jellyfin` and `overseerr` roles off the `latest` image tag | Each tag is a release that exists on its registry, named in the commit; `jellyfin`'s molecule scenario (or, if it cannot run, `ansible-lint`) passes; `yamllint .` and `ansible-lint nas.yml` no worse than `develop` |
    | F2 | M | Molecule scenarios for the `gatus` and `ddns_updater` roles, which have none | Each role gains a `molecule/default` scenario following the fork's existing ones; both run and pass on the branch (the output quoted); a deliberately broken task makes one fail (shown once, then reverted); lint no worse than `develop` |
    | F3 | M | The NAS runs short of memory (its swap was nearly full on 31 Oct): which containers use it, and what to cap | The ten largest containers by memory, measured at two or more times, with the figures; which roles already set a `*_memory` limit and which do not; a proposed limit for each of the largest, with the reason; nothing changed on the lab |
+   | F4 | S | Outside the homelab: fix python-pathspec issue #176 (https://github.com/cpburnz/python-pathspec/issues/176, chosen 1 Nov): with the rule `/data/private.txt`, `GitIgnoreSpec` misses `data//private.txt` and `data/./private.txt`, which `git check-ignore` matches. The project's repository is set to https://github.com/cpburnz/python-pathspec (base `47ea6a5`) | A new `unittest` test over the three paths (the sandbox has no pytest) fails on `47ea6a5` and passes with the fix; paths holding `..` are left as they are; `python3 -m unittest discover -s tests -t .` passes offline; only `pathspec/` and `tests/` change; a local branch on top of `47ea6a5`, nothing pushed anywhere |
 
    They are not run in round 3. A task is retired from the fresh set once it has been run, and
    new ones are drawn each round, so the set stays unseen.
@@ -700,6 +701,10 @@ new agent, orchestration layer or scoring framework.
    ladder**, the fresh set worked by a single Haiku member end to end (it checks out, works,
    checks its own criteria, submits), beside the team's arm. If the single member matches or
    beats the team, the team's machinery is cut back to what that arm lacked.
+   *Built on `round4` (1 Nov): a project setting `solo: <member>` (ADR 0142, amended); started with
+   `experiment.py start --round 4 --from-tasks <ids> --solo <Name> [--yes]`, in a project of its own, by a
+   Haiku member hired for it so the team keeps Ada. Its item is done when HQ's checks pass and the member
+   sets it ready; nine failures block it.*
 8. **Task 8's window becomes short (a few hours)** unless a round shows the longer window finds
    something the short one misses (the owner, 1 Nov: "we don't even know if 24 hours is
    valuable against a shorter test"). The judge of task 8 notes whether anything either arm
