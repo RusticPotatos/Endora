@@ -1043,6 +1043,59 @@ by HQ's delivery; only 963, 966 and 968 are judged acceptable, and 962 and 965 c
 downgrade. Prowlarr's key is still leaking (37 console lines at 21:53 UTC); the fix is the local
 branch `fix/sonarr-console-key-leak`.
 
+### The worker brought up to Claude Code's level (1–2 Nov, head to heads)
+
+The owner's direction after the proof of concept: keep Endora's own worker rather than build on
+another vendor's CLI, find what its loop lacks, and close the gap by targeted head to heads. A
+research pass compared the worker's loop (`app/worker/src/turn.rs`) with Claude Code's
+published design and with the stored transcripts of both arms, and ranked the gaps: the round
+budget (12 against 30), instructions that reward closing over checking ("look, post, end the
+turn with set_status"), no carry-over at a cut, little reply room, 6 KB shell results, no
+retry. Two were built test-first on branch `worker-parity`, each released alone and run twice
+on R1–R3 (Sol, Haiku 5.5, the same words, $3 cap a run), each judged by a fresh round judge on
+round 4's standard:
+
+- **H1** (`4d824793`): a turn on Claude gets 30 rounds, as Claude Code does; the house's model
+  keeps 12.
+- **H2** (`fa5cfe15`, on H1): one paragraph in the instructions: before saying done, try the
+  failure each criterion guards against (the value missing, empty or wrong), compare the choice
+  with what is current, read rather than infer, and never set in_review while a check is
+  pending.
+
+| Worker | Samples | R1 | R2 | R3 | Verified | Cost per verified |
+|---|---|---|---|---|---|---|
+| As released (12 rounds) | 960–962, 963–965 | 0 of 2 → 1 of 2 | 0 of 2 | 0 of 2 | 0, 1 of 3 | $0.058 |
+| H1, 30 rounds | 969–971, 972–974 | 0 of 2 | 0 of 2 | 0 of 2 | 0, 0 of 3 | — |
+| **H2, 30 rounds and the check** | 975–977, 978–980 | **2 of 2** | 0 of 2 | **2 of 2** | **2, 2 of 3** | **$0.015** |
+| Claude Code runtime, same setup | 966–968 | 1 | 0 | 1 | 2 of 3 | $0.027 |
+| Claude Code alone, Haiku | exp/h-r4-* | 1 | 0 | 1 | 2 of 3 | tokens |
+
+**What each showed.**
+- **H1 alone changed nothing.** No turn came near 30 rounds (22 at most), and both samples
+  failed as before: R1 without an assert, R3 two majors back (once to 10.10.7, with overseerr
+  downgraded too). The budget was not what held the worker back.
+- **H2 fixed the two judgement failures, four times out of four.** On R1 Sol played the role
+  unset and set and kept the assert; on R3 one run first pinned 10.11.11 from the filtered list,
+  then, comparing with `latest`, found 12.4 and corrected it before committing; the other
+  compared first. Both waited for their checks. Its turns ran 15–18 calls, past the old 12, so
+  H2 needs H1's room: the two together, not either alone.
+- **R2 stayed failed in every Haiku arm** (now eight runs in three harnesses): the right where,
+  no where-not, no why. That is the model's depth on a diagnosis inside a program, not the loop.
+- **Cost.** H2's six tasks cost $0.059: $0.015 a verified task, under half the Claude Code
+  runtime's $0.027 on the same setup.
+
+**So the worker is at Claude Code's level on these tasks, on the same model, at less cost.**
+Limits, honestly: three tasks the worker has now seen many times (the instruction is general and
+names none of them, but only fresh tasks show it carries over); two samples an arm; the gaps not
+tried (carry-over at a cut, reply room, result size, retries) are untested, not ruled out. No
+scenario was added: the change is in the worker's own instructions and setup, which the domain's
+cucumber suite does not drive; its unit tests pin the text and the rounds.
+
+**Still open.** HQ's delivery pushed every arm's branches to the public fork (`hq/task-960`
+through `-980`); only 963, 966, 968, 975, 977, 978 and 980 are judged acceptable, and 975 and
+978 carry a `.pyc` in history. Two posts (8357, 8362) quote a private address from a log line,
+in HQ's store only. Prowlarr's key still leaks (41 console lines at 23:00 UTC).
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
