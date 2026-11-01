@@ -750,3 +750,18 @@ rule changed here, with a scenario of what happened.
   (`mechanical::asks_for_a_run`). For the others the report says no run is needed and gives the
   newest check of the head, which runs the lint steps CI runs against develop, as the measure;
   nothing is refused on them.
+- **D22. A lint criterion is measured against develop, and a blocked item's work is kept.**
+  Item 949's branch pinned every tag and linted exactly as develop does, which is how Claude
+  Code's arm and round 2's 931 were accepted; HQ's check measured "no worse than develop", yet
+  the reviewer sent it back on "passes" read literally, the next member asked the owner, and it
+  ended blocked, its work left only in the node's mirror. Now:
+  - the check states its measure: "…: no new findings against develop: met", or "…: new
+    findings against develop on ansible-lint: not met" (ADR 0115's wording, amended);
+  - HQ's mechanical checks give, for each criterion about lint (a word naming it: `lint`,
+    `ansible-lint`, `yamllint`, `lints`, `linting`), the newest check of the head as its
+    measure, and tell the reviewer to take the check's verdict for it, as for CI; a finding
+    develop has too fails nothing;
+  - when an item in the loops ends blocked (its member's block, or failed at every rank), its
+    newest submission, if its check passed, is listed on Manage as `kept_blocked` with a bundle
+    to download. It is not accepted and HQ never pushes it; moving the item back to work is the
+    owner's, as before.

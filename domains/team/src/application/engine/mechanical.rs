@@ -172,6 +172,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             mechanical::scope(&files.changed, &words),
         ));
         let criteria: Vec<&str> = task.criteria.iter().map(|c| c.text.as_str()).collect();
+        report.lint = mechanical::asks_for_lint(&criteria);
         let asks_for_ci = mechanical::asks_for_ci(&criteria);
         if !asks_for_ci.is_empty() {
             report.ci = Some(mechanical::ci(

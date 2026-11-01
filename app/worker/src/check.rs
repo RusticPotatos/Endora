@@ -254,7 +254,8 @@ fn unchecked(plain: &str, why: &str) -> String {
     format!("{plain} (develop could not be checked: {why})")
 }
 
-/// Pass or fail against the branch's base ("no worse than develop"), and the line HQ keeps.
+/// Pass or fail against the branch's base, and the line HQ keeps, which states the measure
+/// (D22): "no new findings against develop: met", or where it is not met.
 /// A branch with no failure passes as it is, in [`summarise`]'s words, without the base being
 /// asked for. Otherwise each check is held to what the base did: its count no higher, or,
 /// where no count can be read, a failure only where the base passed. A check that could not run
@@ -305,11 +306,14 @@ pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, Str
         .collect();
     let line = parts.join(", ");
     if worse.is_empty() {
-        return (true, format!("{line}: no worse than develop"));
+        return (true, format!("{line}: no new findings against develop: met"));
     }
     (
         false,
-        format!("{line}: worse than develop on {}", worse.join(", ")),
+        format!(
+            "{line}: new findings against develop on {}: not met",
+            worse.join(", ")
+        ),
     )
 }
 
@@ -693,13 +697,16 @@ mod tests {
         assert!(ok, "{said}");
         assert_eq!(
             said,
-            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no worse than develop"
+            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no new findings against develop: met"
         );
         // Fewer is better, and a base that was worse on syntax is tolerated.
         let (ok, said) = judge(&ran(1, 24, 0), Ok(&ran(1, 25, 14)));
         assert!(ok, "{said}");
         assert!(said.contains("syntax failed (develop failed)"), "{said}");
-        assert!(said.ends_with(": no worse than develop"), "{said}");
+        assert!(
+            said.ends_with(": no new findings against develop: met"),
+            "{said}"
+        );
     }
 
     #[test]
@@ -707,13 +714,13 @@ mod tests {
         let (ok, said) = judge(&ran(0, 26, 14), Ok(&ran(0, 25, 14)));
         assert!(!ok);
         assert!(
-            said.ends_with(": worse than develop on ansible-lint"),
+            said.ends_with(": new findings against develop on ansible-lint: not met"),
             "{said}"
         );
         let (ok, said) = judge(&ran(1, 0, 15), Ok(&ran(0, 0, 14)));
         assert!(!ok);
         assert!(
-            said.ends_with(": worse than develop on syntax, yamllint"),
+            said.ends_with(": new findings against develop on syntax, yamllint: not met"),
             "{said}"
         );
         assert!(said.contains("yamllint 15 errors (develop 14)"), "{said}");
@@ -738,7 +745,10 @@ mod tests {
         let (ok, said) = judge(&branch, Ok(&ran(0, 25, 14)));
         assert!(!ok);
         assert!(said.contains("yamllint timed out"), "{said}");
-        assert!(said.ends_with("worse than develop on yamllint"), "{said}");
+        assert!(
+            said.ends_with("new findings against develop on yamllint: not met"),
+            "{said}"
+        );
         // Out of time on develop too: develop was not read, so it excuses nothing, and the line
         // says that rather than that the branch is worse than a develop nobody saw.
         let mut base = ran(0, 25, 14);
@@ -775,7 +785,7 @@ mod tests {
             said.contains("develop could not be checked") && said.contains("exited 127"),
             "{said}"
         );
-        assert!(!said.contains("no worse than develop"), "{said}");
+        assert!(!said.contains("against develop: met"), "{said}");
         // Not executable (126), killed or never started (no code), or timed out: the same. One
         // broken check on develop is enough, even where the branch's own failure is a finding.
         let timed_out = Outcome {
@@ -817,7 +827,8 @@ mod tests {
         let (ok, said) = judge(&branch, Ok(&ran(0, 25, 0)));
         assert!(!ok, "{said}");
         assert!(
-            said.contains("ansible-lint could not run") && said.ends_with("on ansible-lint"),
+            said.contains("ansible-lint could not run")
+                && said.ends_with("on ansible-lint: not met"),
             "{said}"
         );
         // Killed with no code: the same.

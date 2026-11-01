@@ -138,6 +138,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// An item in the loops ended blocked (the lock held): its newest submission, when its
+    /// check passed, is kept on Manage's list with its bundle a download away (D22 of round 3:
+    /// 949's work, which met the bar, survived only in the node's mirror). Nothing is pushed.
+    pub(super) fn keep_blocked_submission(&self, task: crate::domain::TaskId) -> Done<()> {
+        let Some(mut branch) = self.newest_branch(task)? else {
+            return Ok(());
+        };
+        if branch.status != crate::domain::wing::SUBMITTED {
+            return Ok(());
+        }
+        let passed = self
+            .store
+            .checks()?
+            .into_iter()
+            .filter(|c| c.branch == branch.id && c.status == "done")
+            .max_by_key(|c| c.id)
+            .is_some_and(|c| c.ok == Some(true));
+        if !passed {
+            return Ok(());
+        }
+        branch.status = delivery::KEPT_BLOCKED.to_owned();
+        self.store.save_branch(&branch)?;
+        self.keep(
+            branch.id,
+            "it passed its check; download its bundle, or move the item back to work",
+        )
+    }
+
     /// What the node is to do now.
     ///
     /// # Errors

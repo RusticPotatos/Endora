@@ -1030,7 +1030,7 @@ pub(super) async fn check_bundle(
                         named["branch"].as_str().unwrap_or("").to_owned(),
                     ),
                     // The default branch's head the submission sits on: what the job judges
-                    // the branch against ("no worse than develop").
+                    // the branch against ("no new findings against develop").
                     (
                         axum::http::HeaderName::from_static("x-endora-base"),
                         named["base"].as_str().unwrap_or("").to_owned(),
@@ -3004,7 +3004,7 @@ mod tests {
         assert!(text.contains("work in progress"), "{text}");
         assert!(!text.contains("check c"), "nothing is checked: {text}");
         // 4. The check job fetches the branch's whole history with its token, and the base HQ
-        //    recorded rides in the header and is in that history: what "no worse than develop"
+        //    recorded rides in the header and is in that history: what "no new findings against develop"
         //    needs to run the same checks there.
         let job = "a-check-jobs-token-of-thirty-two-chars-x";
         let res = team_relay(state.clone())

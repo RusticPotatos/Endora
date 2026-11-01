@@ -17,6 +17,9 @@
 //!   `on.push` filter ([`push_filter`]); when none does, the criterion cannot be met. A
 //!   criterion about CI that asks for no run's result (amended 2026-11-01, D25) is measured by
 //!   the check of the head ([`HeadCheck`]), which runs the lint steps CI runs.
+//! - **Lint** ([`asks_for_lint`], amended 2026-11-01, D22): a criterion about lint is measured
+//!   by the check of the head against develop ("no new findings against develop: met"), and the
+//!   report gives that verdict for it, for the reviewer to take as it takes the CI line.
 
 use super::cut::CUT;
 use super::record;
@@ -559,6 +562,21 @@ pub fn asks_for_ci(criteria: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The criteria about lint (D22 of round 3): those with a word naming it (`lint`, `lints`,
+/// `ansible-lint`, `yamllint`, `linting`). The check of the head measures them against develop.
+#[must_use]
+pub fn asks_for_lint(criteria: &[&str]) -> Vec<String> {
+    criteria
+        .iter()
+        .filter(|c| {
+            c.to_ascii_lowercase()
+                .split(|ch: char| !ch.is_ascii_alphanumeric())
+                .any(|w| w.ends_with("lint") || w == "lints" || w == "linting")
+        })
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
 /// Whether a criterion about CI asks for a CI run's result (D25 of round 3): it names a run
 /// ("A CI run on the branch passes"), or says CI passes, goes green or succeeds ("The tests pass
 /// on GitHub Actions"). "It reports today's offenders without failing CI on them" asks what CI's
@@ -1005,6 +1023,8 @@ pub struct Report {
     pub ci: Option<Ci>,
     /// The newest check of the branch, when there is one: what a criterion measured by it reads.
     pub check: Option<HeadCheck>,
+    /// The criteria about lint, which the check measures against develop (D22).
+    pub lint: Vec<String>,
 }
 
 /// The newest check of an item's newest branch, as the report says it.
@@ -1065,6 +1085,7 @@ impl Report {
             && self.coverage.is_empty()
             && self.unchecked.is_empty()
             && self.ci.is_none()
+            && self.lint.is_empty()
     }
 
     /// The CI check, when it found that no CI run can be had for the branch: no criterion that
@@ -1194,6 +1215,21 @@ impl Report {
             told.push_str(&format!(
                 "- Defaults: {readme} not checked: the branch's record holds no defaults file \
                  beside it.\n"
+            ));
+        }
+        if !self.lint.is_empty() {
+            let quoted: Vec<String> = self
+                .lint
+                .iter()
+                .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+                .collect();
+            told.push_str(&format!(
+                "- Lint: {} is measured by the check of the head against develop: {}. Its verdict \
+                 (no new findings against develop: met, or not met) is the criterion's: a \
+                 finding develop has too fails nothing. Reviewer: take the check's verdict for a \
+                 criterion about lint, as for CI.\n",
+                quoted.join(", "),
+                HeadCheck::said_of(self.check.as_ref())
             ));
         }
         if let Some(ci) = &self.ci {
@@ -1526,6 +1562,7 @@ mod tests {
             unchecked: vec![],
             ci: None,
             check: None,
+            lint: vec![],
         };
         let said = report.said();
         assert!(said.starts_with(HEADER), "{said}");
@@ -1625,6 +1662,60 @@ mod tests {
             said.contains("no check of the head has been asked for")
                 && said.contains("\"A CI run on the branch passes\" cannot be met"),
             "{said}"
+        );
+    }
+
+    /// D22 of round 3: 949 linted exactly as develop does, and its reviewer read "passes"
+    /// literally.
+    #[test]
+    fn a_lint_criterion_is_measured_by_the_check_against_develop() {
+        assert_eq!(
+            asks_for_lint(&[
+                "Every image tag is pinned",
+                "ansible-lint and yamllint pass",
+                "The role lints clean",
+                "Linting finds nothing new",
+                "The client is unchanged",
+            ]),
+            [
+                "ansible-lint and yamllint pass",
+                "The role lints clean",
+                "Linting finds nothing new"
+            ]
+        );
+        let report = Report {
+            lint: vec!["ansible-lint and yamllint pass".to_owned()],
+            check: Some(HeadCheck {
+                id: 55,
+                branch: HQ_BRANCH.to_owned(),
+                ok: Some(true),
+                summary: "ansible-lint 14 findings (develop 14): no new findings against \
+                          develop: met"
+                    .to_owned(),
+            }),
+            ..Report::default()
+        };
+        assert!(!report.is_empty() && !report.failed());
+        let said = report.said();
+        assert!(
+            said.contains(
+                "- Lint: \"ansible-lint and yamllint pass\" is measured by the check of the \
+                 head against develop: check c55 of hq/task-932-ci-lint-rules passed"
+            ) && said.contains("take the check's verdict for a criterion about lint"),
+            "{said}"
+        );
+        // No check yet: it says so, and fails nothing.
+        let waiting = Report {
+            lint: vec!["The role lints clean".to_owned()],
+            ..Report::default()
+        };
+        assert!(!waiting.failed());
+        assert!(
+            waiting
+                .said()
+                .contains("no check of the head has been asked for"),
+            "{}",
+            waiting.said()
         );
     }
 

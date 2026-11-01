@@ -199,7 +199,8 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    (the node names it, from the branch HQ recorded, in an `x-endora-base` header on the bundle),
    and passes when no check is worse there: ansible-lint findings and yamllint errors no more
    than on the base, syntax failing only where the base's did, a timeout always a fail. The line
-   then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop") and the
+   then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop"; since
+   2026-11-01 "…: no new findings against develop: met", ADR 0142's D22) and the
    report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
    be found leaves the plain pass or fail, said in the line. *Amended 2026-10-19:* a check that
    **could not run** (its tool not found or not executable, exit 127 or 126; killed; out of

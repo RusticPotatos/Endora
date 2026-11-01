@@ -31,8 +31,13 @@ pub const MERGED: &str = "merged";
 /// The merge failed (a conflict, or develop moved): listed, for the owner's own hand.
 pub const MERGE_FAILED: &str = "merge_failed";
 
+/// A submission whose check passed, kept for the owner when its item ended blocked before any
+/// pass (D22 of round 3): not accepted and never pushed by HQ, but listed, its bundle a download
+/// away, rather than left only in the node's mirror.
+pub const KEPT_BLOCKED: &str = "kept_blocked";
+
 /// The statuses Manage lists as "Accepted, waiting to merge".
-pub const WAITING: [&str; 7] = [
+pub const WAITING: [&str; 8] = [
     DUE,
     DUE_UNSCANNED,
     ACCEPTED,
@@ -40,6 +45,7 @@ pub const WAITING: [&str; 7] = [
     ON_FORK,
     PUSH_FAILED,
     MERGE_FAILED,
+    KEPT_BLOCKED,
 ];
 
 /// Whether a branch in this status is listed as waiting to merge.
@@ -60,6 +66,7 @@ pub fn said(status: &str) -> &'static str {
         PUSH_FAILED => "push failed",
         MERGE_FAILED => "merge failed",
         MERGED => "merged into develop",
+        KEPT_BLOCKED => "kept: its item ended blocked, not reviewed or pushed",
         _ => "",
     }
 }

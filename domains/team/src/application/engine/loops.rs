@@ -449,6 +449,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.blocked_in_the_loops(task)? {
             return Ok(());
         }
+        self.keep_blocked_submission(task)?;
         let found = self.task(task)?;
         let who = self.member(member)?;
         let text = format!(
@@ -799,6 +800,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.release(task)?;
             self.store.set_assignee(task, None)?;
             self.store.set_task_status(task, TaskStatus::Blocked)?;
+            self.keep_blocked_submission(task)?;
             let text = format!(
                 "{} failed at every rank, {} the last to try it. It is blocked and its loop has \
                  moved on; its thread says what was tried.",

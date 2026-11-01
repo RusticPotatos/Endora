@@ -2425,7 +2425,8 @@ function hqAccepted(s) {
   const when = (at) => at ? `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${hqClock(at)}` : "";
   const lines = rows.map((r) => {
     const slug = String(r.branch || "").replace(/^hq\//, "");
-    const bundle = r.status === "accepted" && !r.can_push
+    // A blocked item's kept submission (D22) is never pushed: its bundle is how it is reached.
+    const bundle = (r.status === "accepted" && !r.can_push) || r.status === "kept_blocked"
       ? ` <button class="hq-link" data-act="hq:bundle:${Number(r.task)}:${esc(slug)}">bundle</button>` : "";
     return `<li><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(r.branch)} · ${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
   });
