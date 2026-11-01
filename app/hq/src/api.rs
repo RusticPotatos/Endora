@@ -92,6 +92,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
+        // The repository outside the lab a project's work is in (ADR 0115, amended 2026-11-01).
+        .route("/v1/projects/{id}/repo", post(project_repo))
         .route("/v1/projects/{id}/rank", post(loop_rank))
         .route("/v1/projects/{id}/items", post(loop_items))
         // A loop's lessons (ADR 0142, amended 2026-10-31): read, and set whole by the owner.
@@ -1024,6 +1026,24 @@ async fn project_tools(
     let hq = state.hq.clone();
     let kept = blocking(move || hq.project_tools(ProjectId(id))).await?;
     Ok(Json(json!({ "project": id, "tools": kept })))
+}
+
+#[derive(Deserialize)]
+struct ProjectRepo {
+    /// A public `https://github.com/<owner>/<name>`, or null to take it away.
+    url: Option<String>,
+}
+
+/// The owner names the repository outside the lab a project's work is in (ADR 0115, amended
+/// 2026-11-01: round 4's F4): a public GitHub address alone, refused otherwise.
+async fn project_repo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectRepo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let kept = blocking(move || hq.set_project_repo(ProjectId(id), req.url.as_deref())).await?;
+    Ok(Json(json!({ "project": id, "repo": kept })))
 }
 
 #[derive(Deserialize)]
@@ -3205,6 +3225,7 @@ mod tests {
         )
         .await;
         assert_eq!(found["runtime"], "claude-code", "the relay is told");
+        assert_eq!(found["repo"], json!(null), "work in no outside repository");
     }
 
     #[tokio::test]
@@ -3650,6 +3671,37 @@ mod tests {
             )
         );
         assert_eq!(snap["tasks"][0]["project"], id);
+        // The repository outside the lab its work is in (ADR 0115, amended 2026-11-01): a
+        // public GitHub address alone, kept plainly; anything else is refused.
+        let (status, refused) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://gitlab.com/example/tiny" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{refused}"
+        );
+        let (status, kept) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://github.com/example/tiny.git" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        assert_eq!(kept["repo"], "https://github.com/example/tiny");
+        let (status, gone) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": null }).to_string(),
+        )
+        .await;
+        assert_eq!(
+            (status, gone["repo"].clone()),
+            (StatusCode::OK, json!(null))
+        );
     }
 
     #[tokio::test]

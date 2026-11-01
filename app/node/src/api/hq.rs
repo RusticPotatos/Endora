@@ -906,6 +906,34 @@ pub(super) async fn hq_project_tools(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqProjectRepo {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// The owner names the repository outside the lab a project's work is in (ADR 0115, amended
+/// 2026-11-01: round 4's F4), or takes it away: HQ keeps a public GitHub address alone, and its
+/// refusal of anything else is passed on. Recorded.
+pub(super) async fn hq_project_repo(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqProjectRepo>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/repo"),
+        Some(json!({ "url": req.url })),
+    )
+    .await?;
+    let said = match answer.0["repo"].as_str() {
+        Some(repo) => format!("you named {repo} as project {id}'s repository outside the lab"),
+        None => format!("you took project {id}'s repository outside the lab away"),
+    };
+    record(&state, &said);
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqPoolTopUp {
     amount_micros: i64,
 }
@@ -1564,6 +1592,28 @@ mod tests {
                 .any(|a| a == "HQ: you moved task 676 into project 2"),
             "{audit:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_owners_outside_repository_of_a_project_passes_through_to_hq() {
+        let (url, seen) = fake(Arc::new(|_, body| {
+            let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+            let body = json!({ "project": 3, "repo": sent["url"] });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_project_repo(
+            State(state.clone()),
+            Path(3),
+            Json(HqProjectRepo {
+                url: Some("https://github.com/example/tiny".to_owned()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["repo"], "https://github.com/example/tiny");
+        let sent = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(sent.0, "/v1/projects/3/repo");
     }
 
     #[tokio::test]

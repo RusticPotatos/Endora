@@ -128,7 +128,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             forbidden: report.forbidden(),
             no_ci_run: report.no_ci_run().is_some(),
         };
-        let (status, why) = match delivery::may_push(&passed) {
+        let decided = if self.outside_repo_of_task(branch.task)?.is_some() {
+            Err(delivery::OUTSIDE_KEPT.to_owned())
+        } else {
+            delivery::may_push(&passed)
+        };
+        let (status, why) = match decided {
             Ok(()) => (delivery::DUE, String::new()),
             Err(why) => (delivery::ACCEPTED, why),
         };
