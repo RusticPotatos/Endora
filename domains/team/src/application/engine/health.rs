@@ -30,6 +30,12 @@ pub(super) struct Seen {
 /// The wakes that ask for a review round: coordination by their nature.
 const CHECKING: [WakeReason; 2] = [WakeReason::ReviewRequested, WakeReason::AcceptanceAsked];
 
+/// Where HQ keeps the owner's newest answer in words to a question about `task` (ADR 0142,
+/// amended 2026-11-01).
+fn answered_key(task: TaskId) -> String {
+    format!("answered:{}", task.0)
+}
+
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the tick's look ----------------------------------------------------------------------
 
@@ -159,6 +165,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the same ask, once on the desk -------------------------------------------------------
 
+    /// Keeps the owner's answer in words to a question about `task`, the newest one standing.
+    pub(super) fn keep_the_answer(&self, task: TaskId, words: &str) -> Done<()> {
+        let words = words.trim();
+        if words.is_empty() {
+            return Ok(());
+        }
+        self.store
+            .set_setting(&answered_key(task), &crate::domain::cut::cut(words, 600))?;
+        Ok(())
+    }
+
+    /// A member's question about `task` once the owner has answered one about it in words
+    /// (ADR 0142, amended 2026-11-01): refused with the answer, so the member acts on it. An
+    /// approval for a step that cannot be undone, a block, and HQ's own asks are not questions
+    /// of a member's and still reach the desk.
+    ///
+    /// # Errors
+    /// [`Refusal::Answered`] with the owner's answer; a store failure.
+    pub(super) fn not_asked_again(&self, task: TaskId) -> Done<()> {
+        let Some(words) = self.store.setting(&answered_key(task))? else {
+            return Ok(());
+        };
+        Err(EngineError::Refused(Refusal::Answered { words }))
+    }
+
     /// An ask about `task` goes on the owner's desk as [`desk::placing`] says (ADR 0124; ADR
     /// 0142, amended 2026-10-31): a card of its own, from `member` when a member raised it;
     /// added to the item's question already waiting; or put with another task's card that asks
@@ -252,6 +283,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             (_, w) => format!("answered: {w}"),
         };
         for (task, member) in attached {
+            if decision == "seen" {
+                self.keep_the_answer(task, words)?;
+            }
             self.post_held_lock(
                 Author::Owner,
                 task,

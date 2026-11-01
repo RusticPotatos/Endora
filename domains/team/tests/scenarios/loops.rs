@@ -160,6 +160,20 @@ fn one_question_about(w: &mut Office, title: String) {
     w.question_about(&title);
 }
 
+#[then(expr = "the owner's desk holds no question about {string}")]
+fn no_question_about(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let waiting: Vec<_> = w
+        .waiting_on_desk("question")
+        .into_iter()
+        .filter(|d| d.task == Some(task))
+        .collect();
+    assert!(
+        waiting.is_empty(),
+        "questions about {title:?}: {waiting:#?}"
+    );
+}
+
 #[when(regex = r"^(\d+) hours pass, with HQ ticking every few minutes$")]
 fn hours_pass(w: &mut Office, hours: i64) {
     for _ in 0..hours * 12 {

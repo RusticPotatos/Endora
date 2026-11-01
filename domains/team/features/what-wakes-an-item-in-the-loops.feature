@@ -5,7 +5,9 @@ Feature: What wakes an item in the loops
   about every eleven minutes, about $0.39 for nothing (D3). And a blocked item kept asking the
   owner the same thing (D10). A turn that never started is tried again later and is nobody's
   failure; a blocked item waits for the owner's words or the owner's move; and an item has one
-  question on the owner's desk at a time (ADR 0142, amended 2026-10-31).
+  question on the owner's desk at a time (ADR 0142, amended 2026-10-31). Once the owner has
+  answered an item's question in words, its member acts on the answer rather than asking again
+  (amended 2026-11-01).
 
   Background:
     Given the five ranked members Mara, Kit, Ada, Rae and Bo
@@ -65,6 +67,22 @@ Feature: What wakes an item in the loops
     And Rae asks the owner "May sonarr have 3 GB of the NAS's 16?"
     Then it is refused, saying "already waits on the owner's desk"
     And the owner's desk holds one question about "Raise sonarr's memory"
+
+  # Seed (D10, round 3): 956's first question (card 5064) was answered with the task's own
+  # words, and the turn that answer woke asked the same again (card 5065), as 950 did with 5061
+  # and 5062. One card at a time did not stop it, since the first was no longer waiting.
+  Scenario: A question on an item the owner has answered is refused, quoting the answer
+    Given the loop "ansible-nas" has the item "Judge the gluetun timer"
+    When the loop hands out its items
+    And Bo asks the owner "Remove the timer: please approve or reject"
+    And the owner answers the question about "Judge the gluetun timer": "The task's own words: a keep or remove recommendation, and if remove, the change as a branch off develop"
+    Then Bo is woken about it
+    When Bo asks the owner "Owner decision needed to commit a branch off develop for the removal"
+    Then it is refused, saying "the owner has answered this item"
+    And it is refused, saying "a keep or remove recommendation"
+    And the owner's desk holds no question about "Judge the gluetun timer"
+    When Bo blocks "Judge the gluetun timer", saying "my tools cannot make the branch"
+    Then the owner's desk holds one question about "Judge the gluetun timer"
 
   # Seed: the answer woke whoever asked, though the item had gone on to another member.
   Scenario: The owner's answer reaches whoever holds the item now

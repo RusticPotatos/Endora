@@ -485,6 +485,22 @@ Round 2 of the baseline experiment found three ways an item was woken wrongly
   answer, which the member did not find enough; one card at a time caps the desk, it does not
   stop a member asking again after an answer.
 
+  *Amended 2026-11-01 (round 3).* That gap let two repeats through: 950 (card 5061, answered at
+  04:28 UTC with the task's own words, then 5062 at 04:29 from the turn the answer woke) and 956
+  (5064 answered at 14:23 UTC the same way, then 5065 at 14:25, again from the woken turn). Each
+  first card was already seen, so nothing waited and the second was a card of its own. The owner's
+  direction is fewer questions ("let the agents be agents"). Now, once the owner has answered a
+  question about an item in words, a member's further question on it (`ask_owner`) is refused for
+  the rest of the item's life, quoting the newest answer (kept as the setting `answered:<task>`)
+  and saying to act on it, or, if its tools cannot meet it, to block the item with the reason.
+  Nothing reaches the desk. A question seen with no words stops nothing. What still reaches the
+  owner is not a member's question: a block (HQ's own question, once), an approval for a step that
+  cannot be undone (its own card, running the one action it stored), a credential the work needs
+  and money (HQ's own cards). This is simpler than judging whether the new question "asks the
+  same kind of thing": that would compare model wording (5061 and 5062 share little of it), which
+  this repository has learned not to trust, and every decision that should still reach the owner
+  already has a route that is not `ask_owner`.
+
 ## Amended 2026-10-31: a long item makes progress across turns (D12)
 
 Round 2's item 937 (a lint rule with tests in the ansible-nas fork) ran out of room 38 times

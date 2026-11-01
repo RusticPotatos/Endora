@@ -2360,8 +2360,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
-    /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
-    /// last question waits; a store failure.
+    /// [`Refusal::TurnOver`] for a turn that has ended, [`Refusal::AlreadyAsked`] while its
+    /// last question waits, or [`Refusal::Answered`] once the owner has answered a question
+    /// about the item in words; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<Asked> {
         self.ask_owner_citing(run, text, &[])
     }
@@ -2385,8 +2386,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
-        turn.task
+        let task = turn
+            .task
             .ok_or(EngineError::Unknown("task for this turn"))?;
+        // Once answered in words, the item's answer is acted on, not asked for again (ADR 0142,
+        // amended 2026-11-01).
+        self.not_asked_again(task)?;
         // There is no chain: a question goes to the owner's desk (ADR 0142).
         let text = self.with_evidence(&text, cited)?;
         let checked = review::checked(&text, lab.as_deref());
@@ -2631,6 +2636,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // and a blocked item is woken only by the owner's words (ADR 0142, amended
                 // 2026-10-31).
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                // Answered in words, the item is not asked about again (ADR 0142, amended
+                // 2026-11-01).
+                self.keep_the_answer(task.id, words)?;
                 let holder = task.holder();
                 let to = if self.loop_holds(&task)? {
                     holder.or(found.member)

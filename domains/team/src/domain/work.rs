@@ -390,6 +390,12 @@ pub enum Refusal {
         /// The desk card that waits.
         item: i64,
     },
+    /// The owner has answered a question about the item in words: a member's further question
+    /// on it is refused with that answer, to act on (ADR 0142, amended 2026-11-01).
+    Answered {
+        /// The owner's last answer about the item.
+        words: String,
+    },
     /// The task is not one this turn may touch.
     OutOfReach,
     /// The turn has ended.
@@ -622,6 +628,12 @@ impl fmt::Display for Refusal {
                 "a question about this item already waits on the owner's desk (card {item}); \
                  their answer comes to this thread and wakes whoever holds the item: post \
                  what you would add, and end your turn"
+            ),
+            Self::Answered { words } => write!(
+                f,
+                "the owner has answered this item already: \"{words}\". Act on that answer; it \
+                 is not asked again. If your tools cannot meet it, say what you tried and set \
+                 the item blocked with the reason"
             ),
             Self::Covered { task, names } => write!(
                 f,

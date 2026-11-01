@@ -2072,6 +2072,42 @@ fn a_second_question_on_an_item_is_refused_while_the_first_waits() {
     assert_eq!(cards, 1);
 }
 
+/// D10 of round 3: only an answer in words is acted on instead of asked again; a question seen
+/// with no words leaves the member free to ask once more (ADR 0142, amended 2026-11-01).
+#[test]
+fn a_question_seen_with_no_words_does_not_stop_the_next() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let mem = item(&hq, &f, "Raise sonarr's memory", Priority::Normal);
+    let ask = |text: &str| {
+        let bo = turn_of(&hq, f.bo);
+        use_tool(
+            &hq,
+            &bo,
+            "ask_owner",
+            &serde_json::json!({ "text": text, "evidence": [format!("task {}", mem.0)] }),
+        )
+    };
+    ask("May sonarr have 2 GB?").unwrap();
+    let card = |hq: &Hq<'_>| {
+        hq.store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task == Some(mem) && d.status == "waiting")
+            .map(|d| d.id)
+    };
+    hq.decide(card(&hq).unwrap(), "seen").unwrap();
+    hq.tick().unwrap();
+    ask("May sonarr have 2 GB, or is 1 GB enough?").unwrap();
+    hq.answer(card(&hq).unwrap(), "  ").unwrap_err();
+    hq.answer(card(&hq).unwrap(), "1 GB is enough").unwrap();
+    hq.tick().unwrap();
+    let said = ask("Should it be 1 GB?").unwrap_err();
+    assert!(said.contains("\"1 GB is enough\""), "{said}");
+}
+
 /// A failure at the top rank, while a question on the item already waits, is told on that card
 /// rather than on a second one.
 #[test]
