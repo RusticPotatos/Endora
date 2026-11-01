@@ -615,6 +615,12 @@ pub(crate) struct LabKnowledge {
     /// How the image registries are asked, for `image_tags`: the real ones, unless a test
     /// fakes them.
     registries: Box<dyn registry::Fetch>,
+    /// The mirrors of repositories outside the lab, by address (ADR 0115, amended 2026-11-01),
+    /// each made the first time a turn's work names it.
+    outside: std::sync::Mutex<std::collections::HashMap<String, Arc<Mirror>>>,
+    /// Where a test's outside repository is fetched from instead of GitHub: a local bare
+    /// repository, by the address it stands in for. Empty on a running node.
+    outside_from: std::collections::HashMap<String, String>,
 }
 
 impl LabKnowledge {
@@ -629,7 +635,46 @@ impl LabKnowledge {
             push_remote: None,
             push_key: None,
             registries: Box::new(registry::Web),
+            outside: std::sync::Mutex::new(std::collections::HashMap::new()),
+            outside_from: std::collections::HashMap::new(),
         }
+    }
+
+    /// With the outside repository `url` fetched from the local repository at `from`: a test's.
+    #[cfg(test)]
+    pub(crate) fn with_outside(mut self, url: &str, from: &str) -> Self {
+        self.outside_from.insert(url.to_owned(), from.to_owned());
+        self
+    }
+
+    /// The node's mirror of the repository outside the lab at `url` (ADR 0115, amended
+    /// 2026-11-01: round 4's F4), made the first time it is asked for, worked from the default
+    /// branch the repository names then. Only a public `https://github.com/<owner>/<name>` is
+    /// mirrored, whatever HQ said: the one rule is held here again. What is submitted to it is
+    /// kept in it and never pushed anywhere ([`Mirror::outside`]).
+    ///
+    /// # Errors
+    /// An address that is not allowed, or the repository not answering for its default branch.
+    pub(crate) fn outside_mirror(&self, url: &str) -> Result<Arc<Mirror>, String> {
+        let plain = repo::outside_repo(url)?;
+        let mut kept = self
+            .outside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mirror) = kept.get(&plain) {
+            return Ok(mirror.clone());
+        }
+        let from = self
+            .outside_from
+            .get(&plain)
+            .cloned()
+            .unwrap_or_else(|| plain.clone());
+        std::fs::create_dir_all(&self.repo_dir).map_err(|e| format!("no data folder: {e}"))?;
+        let base = repo::default_branch(&self.repo_dir, &from)
+            .map_err(|why| format!("{plain} did not say its default branch: {why}"))?;
+        let mirror = Arc::new(Mirror::outside(&self.repo_dir, &from, &base));
+        kept.insert(plain, mirror.clone());
+        Ok(mirror)
     }
 
     /// With the image registries asked through `fetch`: a test's fake.
@@ -722,6 +767,25 @@ impl LabKnowledge {
     }
 }
 
+/// The mirror a turn's git works in: the repository outside the lab its work names (ADR 0115,
+/// amended 2026-11-01), else the fork's. An address that is not allowed is refused, never
+/// fetched.
+fn mirror_for(state: &AppState, turn: &Turn, now: i64) -> Result<Arc<Mirror>, Refused> {
+    let Some(url) = turn.repo.as_deref() else {
+        return state
+            .lab
+            .mirror(now)
+            .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
+    };
+    if let Err(why) = repo::outside_repo(url) {
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    state
+        .lab
+        .outside_mirror(url)
+        .map_err(|why| (StatusCode::BAD_GATEWAY, why))
+}
+
 /// What the team is told when no fork is configured for the wing.
 const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node (ENDORA_ANSIBLE_NAS_REPO): there is nothing to check out";
 
@@ -733,9 +797,7 @@ const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node 
 /// recorded (see [`kept_checkout`]).
 fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
     let branch = args["branch"]
         .as_str()
         .map(str::trim)
@@ -891,9 +953,8 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
         ));
     };
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
+    let outside = mirror.is_outside();
     let wip = args["wip"] == true;
     let taken = mirror
         .submit(&bytes, branch, task, now)
@@ -911,7 +972,10 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "token": turn.token, "branch": taken.branch, "head": taken.head,
                 "base": taken.base, "files": taken.files, "plus": taken.plus,
                 "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
-                "can_push": state.lab.can_push(),
+                // A branch of a repository outside the lab is never pushed (ADR 0115, amended
+                // 2026-11-01): HQ is told so, and which repository it is.
+                "can_push": !outside && state.lab.can_push(),
+                "repo": turn.repo.as_deref().filter(|_| outside),
                 // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
                 "changed": taken.changed, "texts": taken.texts, "wip": wip,
                 // For the check of a CI criterion (ADR 0142, amended 2026-10-31).
@@ -939,6 +1003,32 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
             said: format!(
                 "kept work in progress {} at {short} ({} files, +{} −{}) for task {task}: {why}",
                 taken.branch, taken.files, taken.plus, taken.minus
+            ),
+        });
+    }
+    if outside {
+        return Ok(Done {
+            text: format!(
+                "Submitted {} at {short} ({} file{}, +{} −{}) in {}: document d{} on task \
+                 #{task}. It is kept on the node for judging and never pushed anywhere; no check \
+                 of the lab's applies to it. Now submit the task for review with set_status \
+                 in_review, citing this receipt.",
+                taken.branch,
+                taken.files,
+                if taken.files == 1 { "" } else { "s" },
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or(""),
+                recorded["document"].as_i64().unwrap_or(0),
+            ),
+            said: format!(
+                "submitted branch {} at {short} ({} files, +{} −{}) in {} for task {task}, kept \
+                 on the node: {why}",
+                taken.branch,
+                taken.files,
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or("")
             ),
         });
     }
@@ -4042,5 +4132,191 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("you switched the team's restarts off"))
         );
+    }
+
+    /// Round 4's F4 (ADR 0115, amended 2026-11-01): an item whose project names a public
+    /// repository outside the lab is checked out from the node's mirror of that repository, and
+    /// what is submitted is kept there for judging; HQ is told it cannot be pushed, and delivery,
+    /// asked to push it all the same, puts it nowhere. A turn whose work names any other
+    /// address is refused before anything is fetched. GitHub is played by a local bare
+    /// repository standing in for the address.
+    #[tokio::test]
+    async fn an_outside_repository_is_checked_out_and_its_branch_kept_on_the_node_never_pushed() {
+        use super::super::relay::tests::fake;
+        const TINY: &str = "https://github.com/example/tiny";
+        let (root, fork) = a_fork_on("outside-fork", "develop", "---\n- hosts: all\n");
+        let (_, tiny) = a_fork_on("outside-tiny", "main", "print('tiny')\n");
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let told = recorded.clone();
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 940, "repo": TINY }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "role": "developer", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/tiny" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 0 }))
+                }
+                ("/v1/team/deliveries", _) => {
+                    // An HQ that, wrongly, says the branch is due: the node still pushes nothing.
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    said(
+                        200,
+                        json!({ "push": [{ "branch": 1, "task": 940, "name": branch["branch"],
+                                           "head": branch["head"], "base": branch["base"],
+                                           "scan": false }],
+                                "merge": [] }),
+                    )
+                }
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+                .with_repo(
+                    root.join("data"),
+                    fork.to_str().unwrap(),
+                    "develop",
+                    fork.to_str().unwrap(),
+                )
+                .with_push_key(root.join("fork.git").join("HEAD"))
+                .with_outside(TINY, tiny.to_str().unwrap()),
+        );
+        // 1. The checkout is of the outside repository's default branch, not the fork's.
+        let (status, said) = as_turn(&state, "rae", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (payload, _) = said["text"]
+            .as_str()
+            .unwrap()
+            .rsplit_once(" (receipt ")
+            .unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            (handed["branch"].as_str(), handed["head"].as_str()),
+            (
+                Some("main"),
+                Some(git_in(&tiny, &["rev-parse", "refs/heads/main"]).as_str())
+            )
+        );
+        // 2. A fix on the item's branch, HQ's own commit, submitted.
+        let file = root.join("tiny.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        git_in(&work, &["checkout", "-q", "-b", "hq/task-940-fix", "main"]);
+        std::fs::write(work.join("nas.yml"), "print('tiny, fixed')\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fix tiny\n\nMade-by: Endora HQ (Rae) for task #940",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-940-fix",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-940-fix", "why": "fixes tiny", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        assert!(text.contains("never pushed anywhere"), "{text}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (
+                told_hq["head"].as_str(),
+                told_hq["can_push"].clone(),
+                told_hq["repo"].clone()
+            ),
+            (Some(head.as_str()), json!(false), json!(TINY))
+        );
+        // Kept on the node, in the outside repository's own mirror; not in the fork's.
+        let mirror = state.lab.outside_mirror(TINY).unwrap();
+        assert_eq!(
+            git_in(
+                mirror.dir(),
+                &["rev-parse", "refs/submissions/hq/task-940-fix"]
+            ),
+            head
+        );
+        assert!(
+            state
+                .lab
+                .mirror(0)
+                .unwrap()
+                .head_of("hq/task-940-fix")
+                .is_err()
+        );
+        // 3. Delivery, told (wrongly) that it is due, pushes it nowhere.
+        super::super::delivery::deliver(&state, &[]);
+        for remote in [&tiny, &fork] {
+            assert_eq!(
+                git_in(remote, &["branch", "--list", "hq/task-940-fix"]),
+                "",
+                "{remote:?} has the branch"
+            );
+        }
+        let outcome = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/deliveries/1")
+            .map(|(_, _, b)| serde_json::from_str::<serde_json::Value>(b).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(outcome.len(), 1, "{outcome:?}");
+        assert_eq!(outcome[0]["ok"], false, "{outcome:?}");
+        // 4. Work naming an address that is not allowed is refused before anything is fetched.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

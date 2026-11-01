@@ -174,6 +174,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             at: now,
         })?;
         let branch = self.keep_branch(&run, task, s, wing::SUBMITTED, now)?;
+        if let Some(repo) = self.outside_repo_of_task(task)? {
+            return self.record_outside_branch(&run, task, s, &repo, branch, document, &title);
+        }
         let (check, _) = self.store.add_check(&Check {
             id: 0,
             task,
@@ -228,6 +231,46 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             branch,
             document,
             check,
+        })
+    }
+
+    /// A branch of the repository outside the lab its item names (ADR 0115, amended 2026-11-01:
+    /// round 4's F4), recorded with its document (the lock held). The dev node's check is
+    /// ansible's and says nothing of another repository, so none is queued: the item's criteria
+    /// are its gate, judged by its reviewer, who checks the branch out and runs its tests. The
+    /// branch stays on the node and is never pushed (see [`Self::accept_branch`]).
+    #[allow(clippy::too_many_arguments)]
+    fn record_outside_branch(
+        &self,
+        run: &Run,
+        task: TaskId,
+        s: &Submission,
+        repo: &str,
+        branch: i64,
+        document: i64,
+        title: &str,
+    ) -> Done<Recorded> {
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "Submitted {title} at {} in {repo}: document d{document}. It is kept on the node \
+                 for judging and never pushed anywhere. No check of the lab's applies to it: the \
+                 item's criteria are its gate, so check it out and run its own tests.",
+                short(&s.head)
+            ),
+        )?;
+        self.store.set_gate(task, true)?;
+        self.emit(
+            EventKind::BranchSubmitted,
+            json!({ "task": task.0, "branch": branch, "name": s.branch, "head": s.head,
+                    "files": s.files, "member": run.member.0, "run": run.id.0,
+                    "document": document, "repo": repo }),
+        )?;
+        Ok(Recorded {
+            branch,
+            document,
+            check: 0,
         })
     }
 
@@ -655,8 +698,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         // No card unless the owner put them back: listed, and pushed by rule (ADR 0115,
-        // amended 2026-10-31).
-        if !self.cards_back()? {
+        // amended 2026-10-31). A branch of a repository outside the lab is listed, never carded.
+        if !self.cards_back()? || self.outside_repo_of_task(task)?.is_some() {
             return self.accept_branch(branch);
         }
         let checks = self.checks_said(branch.id)?;

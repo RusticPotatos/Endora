@@ -71,6 +71,11 @@ pub fn said(status: &str) -> &'static str {
     }
 }
 
+/// Why an accepted branch of a repository outside the lab is not pushed (ADR 0115, amended
+/// 2026-11-01): it is kept on the node for judging, and never pushed anywhere.
+pub const OUTSIDE_KEPT: &str =
+    "a branch of a repository outside the lab is kept on the node for judging: it is never pushed";
+
 /// What a branch's checks came to, as HQ reads them when its work is accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Passed<'a> {

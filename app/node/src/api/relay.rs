@@ -111,6 +111,10 @@ pub(super) struct Turn {
     /// The node's tools HQ refuses the turn whatever else it may use: `restart_container` on
     /// a task that says the lab is to be left as it is. Empty from an older HQ.
     pub(super) never: Vec<String>,
+    /// The repository outside the lab the turn's work is in, as HQ says (ADR 0115, amended
+    /// 2026-11-01): `repo_checkout` and `repo_submit` work in the node's mirror of it, not the
+    /// fork's. `None` from an older HQ, or for work in the lab.
+    pub(super) repo: Option<String>,
 }
 
 impl Turn {
@@ -285,6 +289,11 @@ pub(super) async fn turn_of(
                 .flatten()
                 .filter_map(|n| n.as_str().map(str::to_owned))
                 .collect(),
+            repo: v["repo"]
+                .as_str()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,

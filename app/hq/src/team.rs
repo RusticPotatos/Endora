@@ -179,13 +179,16 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         let only = hq.lab_tools_of(run.id)?;
         // And what it may never use: the lab's acts, on a task that leaves the lab as it is.
         let never = hq.lab_tools_refused(run.id)?;
+        // The repository outside the lab the turn's work is in (ADR 0115, amended 2026-11-01):
+        // the node mirrors it, and its checkout and submission work there, not in the fork.
+        let repo = hq.outside_repo_of_run(run.id)?;
         Ok::<_, endora_team::application::EngineError>(Some((
-            run, member, runtime, wing, only, never,
+            run, member, runtime, wing, only, never, repo,
         )))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime, wing, only, never)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing, only, never, repo)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
             "role": member.role.name(),
@@ -201,6 +204,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "wing": wing,
             "only": only,
             "never": never,
+            "repo": repo,
         }))
         .into_response(),
         Ok(Ok(None)) => (

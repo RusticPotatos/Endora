@@ -1010,3 +1010,95 @@ fn each_step_is_told_once_and_merging_waits_for_its_setting() {
     let landed = hq.snapshot().unwrap()["scorecard"]["outcomes"]["day"]["landed"].clone();
     assert_eq!(landed, 1, "an automatic push is a landed change");
 }
+
+// --- A repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) ---------------
+
+fn wing_project(hq: &Hq<'_>) -> crate::domain::ProjectId {
+    hq.store()
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.title == WING_PROJECT)
+        .expect("the wing's project")
+        .id
+}
+
+/// The owner names the repository a project's work is done in: a public GitHub address alone,
+/// kept in its one plain form, and taken away again with none.
+#[test]
+fn the_owner_names_an_outside_repository_on_a_project_and_only_a_public_github_one() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let project = wing_project(&hq);
+    for refused in [
+        "https://gitlab.com/example/tiny",
+        "git@github.com:example/tiny.git",
+        // A credential in the address (split so it reads as no mailbox).
+        concat!("https://jane:secret", "@", "github.com/example/tiny"),
+        "http://github.com/example/tiny",
+    ] {
+        let why = hq
+            .set_project_repo(project, Some(refused))
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("only a public https://github.com/"), "{why}");
+    }
+    assert_eq!(hq.project_repo(project).unwrap(), None, "nothing kept");
+    assert_eq!(
+        hq.set_project_repo(project, Some("https://github.com/example/tiny.git"))
+            .unwrap()
+            .as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    // A turn on work under the project (Rae's task sits under the plan, which is in it) is
+    // told the repository; the node mirrors and hands out that one.
+    let task = raes_task(&hq, &t);
+    let rae = turn(&hq, t.rae);
+    use_tool(&hq, &rae, "claim", &json!({ "task": task.0 })).unwrap();
+    let (run, _) = hq.turn_of(&rae.token).unwrap().expect("a running turn");
+    assert_eq!(
+        hq.outside_repo_of_run(run.id).unwrap().as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    hq.set_project_repo(project, None).unwrap();
+    assert_eq!(hq.outside_repo_of_run(run.id).unwrap(), None);
+}
+
+/// A branch of an outside repository is kept on the node for judging: no check of the lab's is
+/// queued (ansible's checks say nothing of it), its item's criteria are its gate, and accepted,
+/// it is listed as never pushed: not due to the node, not carded, whatever the deploy key.
+#[test]
+fn a_branch_of_an_outside_repository_is_kept_for_judging_and_never_delivered() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
+        .unwrap();
+    let (task, _, recorded) = submitted(&hq, &t, true);
+    assert_eq!(recorded.check, 0, "no check is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let last = thread(&hq, task).pop().unwrap();
+    assert!(
+        last.contains("kept on the node for judging") && last.contains("never pushed"),
+        "{last}"
+    );
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["status"], "accepted", "{listed}");
+    assert!(
+        listed[0]["why"].as_str().unwrap().contains("never pushed"),
+        "{listed}"
+    );
+    // With the cards back on the desk, still no push card for it.
+    hq.set_delivery(Some(true), None).unwrap();
+    all_turns_over(&hq);
+    let (other, _, _) = submitted(&hq, &t, true);
+    hq.store().set_task_status(other, TaskStatus::Done).unwrap();
+    hq.offer_push(other).unwrap();
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    assert!(hq.deliveries().unwrap().push.is_empty());
+}

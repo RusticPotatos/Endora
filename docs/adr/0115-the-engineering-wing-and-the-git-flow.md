@@ -8,6 +8,9 @@ develop behind a setting (see the last section).
 Amended 2026-10-31 by the one-team clean-up (ADR 0142, "What goes"): the check after a deploy is
 retired. There is no Deployed card (kind `deploy`), no check of the lab after one, and no
 `deploy_check` card; the section on it below is history.
+Amended 2026-11-01 for round 4's F4: an item's project may name one public repository outside
+the lab, which the node mirrors and the wing's two contracts work in; its branches stay on the
+node and are never pushed (see the last section).
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 [0106](0106-team-contracts.md) (two more contracts, `repo_checkout` and `repo_submit`, for a
@@ -386,3 +389,45 @@ merge is an audit line on the node.
 requirements file reads as a live-looking secret); the owner's "push anyway" is the way past
 one. The scan reads what leaves in the branch, not what is already on the fork. A personal value
 split across a line break is not seen, as in the repository's own check.
+
+## Amended 2026-11-01: a repository outside the lab (round 4's F4)
+
+**Why.** Round 4 of the baseline experiment adds F4: each round, one small task in a public
+open-source repository HQ has never seen, done by both arms against criteria written first, its
+branch kept locally and pushed nowhere (`docs/proposals/baseline-experiment-2026-10-28.md`,
+"Not only the homelab"). A member's sandbox has no internet, and `repo_checkout` served only the
+lab's fork.
+
+**What changes.**
+
+- **The owner names the repository on the item's project**, once, when the task is set up:
+  `POST /v1/hq/projects/{id}/repo` with `{"url": "https://github.com/<owner>/<name>"}` (null
+  takes it away), kept as the setting `project_repo:<project>`. Only a public
+  `https://github.com/<owner>/<name>` is taken, by one rule in the kernel
+  (`endora_kernel::lab::outside_repo`): any other scheme or host, a credential, a port, a query
+  or a path past the repository is refused. A task with no project of its own takes the nearest
+  one above it.
+- **HQ tells the node** in its answer to `/v1/team/turn` (`"repo"`). The node holds the address
+  to the same rule again, clones it once into a mirror of its own beside the fork's
+  (under `outside-repos/` in the node's data folder, `Mirror::outside`), worked from the default branch the
+  repository names, and fetches it on the fork's five-minute schedule. No upstream rides with it.
+- **`repo_checkout`** hands that repository's default branch (or the team's kept branch of it)
+  to `/work/repo`, as it does the fork's. **`repo_submit`** takes the branch by the same rules
+  (named for the task, on top of the default branch, HQ's commits, the limits) and keeps it as
+  `refs/submissions/<branch>` in that mirror, with its bundle under the task, for judging. HQ is
+  told `can_push: false` and the repository.
+- **Never pushed, by code at three places.** The outside mirror refuses `push` and
+  `merge_into_base` for every branch (`repo::OUTSIDE_KEPT`); HQ never lists such a branch as due
+  (`accept_branch` keeps it "accepted" with why) and never puts a push card for it, whatever the
+  card setting; and the node's delivery and the owner's push work from the fork's mirror alone,
+  which does not hold the submission.
+- **No check of the lab's.** The dev node's check is ansible's and says nothing of another
+  repository, so none is queued: the item's criteria are its gate, which opens on submission,
+  and its reviewer checks the branch out and runs its tests. Acceptance has no consequence
+  outside the node, since nothing is delivered.
+
+**Limits, accepted.** The submission rules are the fork's: a path named like a vault, an
+inventory, `group_vars` or `host_vars` is refused in an outside repository too. A repository past
+the 32 MB checkout bundle cannot be handed out. The repository must fetch from the node; its
+tests must run in the offline sandbox, so a candidate's dependencies are the experiment's to
+vendor. Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature`.

@@ -367,3 +367,136 @@ fn refused_saying(w: &mut Node, words: String) {
 fn taken(w: &mut Node) {
     assert!(matches!(w.said, Some(Ok(_))), "refused: {:?}", w.said);
 }
+
+// ---- a repository outside the lab (ADR 0115, amended 2026-11-01) ----------------------------
+//
+// `features/the-team-works-in-an-outside-repository.feature`. The public repository is played by
+// a local bare repository the node fetches from, standing in for the GitHub address the owner
+// named; the address itself is held to the one rule, `endora_kernel::lab::outside_repo`.
+
+#[given(
+    expr = "a public repository {string} the owner named for an item, whose default branch is {string}"
+)]
+fn an_outside_repository(w: &mut Node, address: String, base: String) {
+    endora_kernel::lab::outside_repo(&address).expect("the scenario names an allowed address");
+    let root = std::env::temp_dir().join(format!(
+        "endora-outside-scenario-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("seed")).unwrap();
+    let seed = root.join("seed");
+    git(&seed, &["init", "-q", "-b", &base]);
+    commit(
+        &seed,
+        JOHN,
+        "parse.py",
+        "def parse(s):\n    return s\n",
+        "parse",
+    );
+    git(&root, &["clone", "-q", "--bare", "seed", "tiny.git"]);
+    w.fork = root.join("tiny.git");
+    w.root = root;
+    w.mirror = Some(Mirror::outside(
+        &w.root.join("data"),
+        w.fork.to_str().unwrap(),
+        &base,
+    ));
+}
+
+#[when("a member checks out the outside repository")]
+fn checks_out_outside(w: &mut Node) {
+    w.check_out(0);
+}
+
+#[then(expr = "the checkout holds the repository's {string}")]
+fn holds_the_repository(w: &mut Node, base: String) {
+    let bundle = w.checkout.as_ref().expect("checked out");
+    assert_eq!(bundle.branch, base);
+    assert_eq!(bundle.head, git(&w.fork, &["rev-parse", &base]));
+    let repo = w.sandbox("sandbox");
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), bundle.head);
+}
+
+/// A fix on `branch` from `base` in the sandbox, as HQ's own commit, handed to the node.
+#[when(expr = "a member submits {string} on top of {string} as HQ's own commit")]
+fn submits_outside(w: &mut Node, branch: String, base: String) {
+    w.check_out(0);
+    let repo = w.sandbox("sandbox");
+    git(&repo, &["checkout", "-q", "-b", &branch, &base]);
+    let message = format!("parse trims its input\n\n{TRAILER}");
+    std::fs::write(
+        repo.join("parse.py"),
+        "def parse(s):\n    return s.strip()\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "."]);
+    let mut args: Vec<&str> = HQ.to_vec();
+    args.extend(["commit", "-q", "-m", &message]);
+    git(&repo, &args);
+    let file = w.root.join("submit.bundle");
+    git(
+        &repo,
+        &[
+            "bundle",
+            "create",
+            "-q",
+            file.to_str().unwrap(),
+            &format!("{base}..{branch}"),
+        ],
+    );
+    let bytes = std::fs::read(&file).unwrap();
+    let said = w.mirror().submit(&bytes, &branch, 936, 1);
+    if let Ok(taken) = &said {
+        w.taken = Some((taken.branch.clone(), taken.head.clone()));
+    }
+    w.said = Some(said.map(|t| t.title()));
+}
+
+#[given(expr = "a member's branch {string} on {string} was taken")]
+fn outside_was_taken(w: &mut Node, branch: String, base: String) {
+    submits_outside(w, branch, base);
+    assert!(
+        matches!(w.said, Some(Ok(_))),
+        "the branch was not taken: {:?}",
+        w.said
+    );
+}
+
+#[then(expr = "the node keeps it as {string}")]
+fn kept_as(w: &mut Node, kept: String) {
+    let (_, head) = w.taken.clone().expect("a branch was taken");
+    assert_eq!(git(w.mirror().dir(), &["rev-parse", &kept]), head);
+}
+
+#[then(expr = "the repository has no branch {string}")]
+fn repository_lacks(w: &mut Node, branch: String) {
+    assert_eq!(git(&w.fork, &["branch", "--list", &branch]), "");
+}
+
+#[when("the node is asked to push it to the repository")]
+fn push_outside(w: &mut Node) {
+    let (branch, head) = w.taken.clone().expect("a branch was taken");
+    let to = w.fork.to_str().unwrap().to_owned();
+    w.said = Some(w.mirror().push(&branch, &head, &to, None));
+}
+
+#[when(expr = "the node is asked to merge it into the repository's {string}")]
+fn merge_outside(w: &mut Node, _base: String) {
+    let (branch, head) = w.taken.clone().expect("a branch was taken");
+    let to = w.fork.to_str().unwrap().to_owned();
+    w.said = Some(w.mirror().merge_into_base(&branch, &head, &to, None));
+}
+
+#[when(expr = "the owner names {string} as an item's repository")]
+fn names_a_repository(w: &mut Node, address: String) {
+    w.said = Some(endora_kernel::lab::outside_repo(&address));
+}
+
+#[then(expr = "it is kept as {string}")]
+fn kept_plainly(w: &mut Node, plain: String) {
+    assert_eq!(w.said, Some(Ok(plain)));
+}
