@@ -364,7 +364,12 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                     }
                 }
                 let mut reply = reply;
-                reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
+                // A result the model asked for whole (`"raw": true`) is read whole, as it asked.
+                let asked_whole = arguments(&call.arguments)
+                    .is_ok_and(|args| crate::gist::wants_raw(&args));
+                if !asked_whole {
+                    reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
+                }
                 let ended = if reply.asked {
                     Some(Taken::AskedTheOwner)
                 } else if reply.moved_on {
@@ -1578,8 +1583,9 @@ fn stub(tool: &str, args: &Value, text: &str) -> String {
     )
 }
 
-/// The most one result of the lab's or the shell's adds to a Claude turn, in bytes (D20 of round
-/// 3). A Claude turn reads every result whole, its prompt cached, and its budget sums every
+/// The most one result of the lab's or the shell's adds to a turn, in bytes (D20 of round 3).
+/// On every API: DeepSeek's turns go the house's way and filled their budget the same way (Rae,
+/// 238 KB over 7 calls on 955, 1 Nov). A Claude turn reads every result whole, its prompt cached, and its budget sums every
 /// call's whole prompt: a 16 KB listing read at the second call was counted again on each call
 /// after it, and Ada's Haiku turns on 949 ended at the budget after 6 or 7 calls, every turn.
 pub(crate) const RESULT_AT_MOST: usize = 6 * 1024;
@@ -1588,13 +1594,14 @@ pub(crate) const RESULT_AT_MOST: usize = 6 * 1024;
 /// command's exit, a log's newest lines and the receipt are.
 const RESULT_END_KEPT: usize = 1024;
 
-/// A result as the model reads it: on a Claude turn, one from the shell or the node's lab tools
-/// (`on_the_node`) past [`RESULT_AT_MOST`] keeps its start and its end, and says what was left
-/// out and how to ask for less. HQ's own results (a briefing, a document's part) are sized by
-/// HQ and read whole; a house turn's long results are read through a gist and cut as it goes.
-pub(crate) fn for_the_model(api: Api, tool: &str, on_the_node: &[String], text: String) -> String {
+/// A result as the model reads it: one from the shell or the node's lab tools (`on_the_node`)
+/// past [`RESULT_AT_MOST`] keeps its start and its end, and says what was left out and how to
+/// ask for less, whichever API the turn is on. HQ's own results (a briefing, a document's part)
+/// are sized by HQ and read whole; on a house turn a long result's gist, when it has one, is what
+/// the model reads.
+pub(crate) fn for_the_model(_api: Api, tool: &str, on_the_node: &[String], text: String) -> String {
     let the_labs = tool == SHELL || on_the_node.iter().any(|n| n == tool);
-    if api != Api::Anthropic || !the_labs || text.len() <= RESULT_AT_MOST {
+    if !the_labs || text.len() <= RESULT_AT_MOST {
         return text;
     }
     let start_at_most = RESULT_AT_MOST - RESULT_END_KEPT;
@@ -4267,10 +4274,11 @@ mod tests {
             for_the_model(Api::Anthropic, "read_doc", &on_the_node, listing.clone()),
             listing
         );
-        assert_eq!(
-            for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone()),
-            listing
-        );
+        // DeepSeek's turns go the house's way and filled their budget the same way (Rae, 238 KB
+        // over 7 calls on 955, 1 Nov): held to size on every API.
+        let deepseek = for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone());
+        assert!(deepseek.len() <= RESULT_AT_MOST + 200, "{}", deepseek.len());
+        assert!(deepseek.contains("left out"), "{deepseek}");
         // A turn of 949's shape: read whole, the budget ends it before its submission (9 of 11
         // calls here; live, with the bridged tools and a longer thread, 6 or 7); held to size,
         // it makes all of them.

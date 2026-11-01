@@ -2814,7 +2814,8 @@ fn a_long_log_on_a_house_turn_is_read_through_a_checked_gist() {
     );
 }
 
-/// A gist call that fails leaves the turn reading the raw result, as before.
+/// A gist call that fails leaves the turn reading the raw result, held to size as every turn's
+/// lab result is (D20): its start and its end, and how to ask for less.
 #[test]
 fn a_gist_call_that_fails_leaves_the_raw_result() {
     let log = long_log();
@@ -2831,7 +2832,12 @@ fn a_gist_call_that_fails_leaves_the_raw_result() {
     let out = worker(&with_node(&hq_url, &model_url, &node_url));
     assert_eq!(out.status.code(), Some(0), "{}", said(&out));
     assert_eq!(to_model.lock().unwrap().len(), 3);
-    assert_eq!(tool_result_in(&to_model, 2), log);
+    let read = tool_result_in(&to_model, 2);
+    let first_line = log.lines().next().unwrap();
+    let last_line = log.lines().last().unwrap();
+    assert!(read.starts_with(first_line), "the start is kept");
+    assert!(read.trim_end().ends_with(last_line), "the end is kept");
+    assert!(read.contains("left out"), "{read}");
 }
 
 /// Asked for whole, a result is read whole, with no gist call, and the node is never sent the

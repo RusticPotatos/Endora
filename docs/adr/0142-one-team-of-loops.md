@@ -286,6 +286,11 @@ shrank each call; nothing bounded the turn.
   kilobyte (where a command's exit, a log's newest lines and the receipt are), and says how much
   was left out and to ask for less. HQ's own results (a briefing, a document's 20,000-character
   part) are sized by HQ and read whole; a house turn's are read through a gist as before.
+  *Extended to every API the same day (the owner's word): DeepSeek's turns go the house's way
+  and filled their budget the same way (Rae, 238 KB over 7 calls on 955). On a house or
+  DeepSeek turn a long result's gist, when it has one, is still what the model reads; the cap
+  holds the raw result when there is no gist (or the gist call failed); a result the model asked
+  for whole (`"raw": true`) is read whole.*
 - **Its last word says it goes on.** The worker posts what the model said on the way and that
   the prompt reached its budget, as its last word (not progress), marked `continues`. Only the
   worker sets the mark: it strips `last_word` and `continues` from the model's own posts, so a
