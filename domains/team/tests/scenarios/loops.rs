@@ -9,7 +9,7 @@ use serde_json::json;
 
 use endora_team::application::run_ports::RunStore;
 use endora_team::application::{Author, TeamStore};
-use endora_team::domain::{Brain, DeskId, Receipt, RunStatus, TaskStatus};
+use endora_team::domain::{Brain, DeskId, Receipt, RunStatus, TaskStatus, WakeReason};
 use endora_team::infrastructure::Script;
 
 use super::Office;
@@ -271,4 +271,40 @@ fn turn_counts_budget(_w: &mut Office, model: String, counting: String) {
         counting == "its conversation",
         "{model}"
     );
+}
+
+// ---- One member works a loop alone (ADR 0142, amended 2026-11-01) --------------------------
+
+#[given(expr = "the owner sets the loop {string} to be worked by {word} alone")]
+fn loop_worked_alone(w: &mut Office, project: String, name: String) {
+    let project = w.project(&project).id;
+    let member = w.member(&name);
+    w.hq.set_loop_solo(project, Some(member))
+        .expect("the owner names the member");
+}
+
+/// The member sets its item ready (in review) citing its newest reading, in its turn; a
+/// refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing (?:his|her) reading$"#)]
+fn sets_ready(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let reading = w.newest_reading(&name);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "Done, as the reading shows.",
+                 "evidence": [reading] }),
+    );
+}
+
+#[then(expr = "no member is asked to review {string}")]
+fn nobody_reviews(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let asked: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|k| k.task == Some(task) && k.reason == WakeReason::ReviewRequested)
+            .collect();
+    assert!(asked.is_empty(), "asked to review: {asked:#?}");
 }
