@@ -557,7 +557,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 6 | 952 | | | | | |
 | 7 | 953 | | | | | |
 | 8 | (after its window: 31 Oct 21:00 UTC to 1 Nov 21:00 UTC) | | | | | |
-| 9 | 954 | | | | | |
+| 9 | 954 | Yes, reported and verified: the fork holds all of upstream's main (merge-base is upstream's head 36e2338; 137 ahead, 0 behind; GitHub's compare agrees; no upstream branch or merged PR since), so the list is rightly empty and no merge order is needed, as Claude Code's arm found; nothing pushed, develop still ee878f7; rechecked by the round judge. Rae ran out of room 12 times on two commands before Ada answered in one turn (D20); the counts rest on unreceipted shell readings | $0.18 ($0.16 of it Rae's 12 cut turns) | 512 min (not picked up until 01:07 UTC) | 0 | |
 | 10 | 955 | | | | | |
 
 ### Round 4, planned (owner's review of 31 Oct)
