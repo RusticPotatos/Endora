@@ -125,6 +125,17 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             format!("ENDORA_PROMPT_BUDGET must be a whole number of bytes above zero, not {n}")
         })?,
     };
+    // How the budget counts (HQ's word by the member's brain): `conversation`, each byte once,
+    // or `every_call`, every call's prompt summed, as an older runner's turns did.
+    let counts_conversation = match given("ENDORA_BUDGET_COUNTS").as_deref() {
+        None | Some("every_call") => false,
+        Some("conversation") => true,
+        Some(other) => {
+            return Err(format!(
+                "ENDORA_BUDGET_COUNTS must be conversation or every_call, not {other}"
+            ));
+        }
+    };
     // Past what size a long result is read through a gist: its kind's, unless told; `off`
     // reads every result whole.
     let gist_past = match given("ENDORA_GIST_PAST").as_deref() {
@@ -145,6 +156,7 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         api,
         most_rounds,
         prompt_budget,
+        counts_conversation,
         workbench,
         effort,
         claude_code,

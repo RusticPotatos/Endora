@@ -41,6 +41,17 @@ pub const fn prompt_budget(brain: Brain) -> usize {
     }
 }
 
+/// Whether a turn on `brain` holds [`prompt_budget`] to its conversation, each byte counted once,
+/// rather than to every call's prompt summed (the owner, 1 Nov). Every call resends the
+/// conversation so far; Claude's and DeepSeek's providers cache the part a call repeats, so a
+/// resend costs little, and the sum counted Rae's 50 KB conversation on 955 as 238 KB. The
+/// house's own models on the NAS and the Mac read every resend again, slowly, so their turns
+/// still sum them.
+#[must_use]
+pub const fn counts_conversation(brain: Brain) -> bool {
+    !matches!(brain, Brain::Local | Brain::Mac)
+}
+
 /// About how many prompt tokens [`prompt_budget`] comes to.
 #[must_use]
 pub const fn prompt_budget_tokens(brain: Brain) -> i64 {
@@ -467,6 +478,15 @@ mod tests {
         assert_eq!(prompt_budget(Brain::Haiku), 480_000);
         assert_eq!(prompt_budget_tokens(Brain::Opus), 120_000);
         assert_eq!(prompt_budget_tokens(Brain::Mac), 60_000);
+    }
+
+    #[test]
+    fn a_cached_brain_counts_its_conversation_once_and_a_house_model_every_call() {
+        for brain in [Brain::Haiku, Brain::Sonnet, Brain::Opus, Brain::DeepSeek] {
+            assert!(counts_conversation(brain), "{brain:?}");
+        }
+        assert!(!counts_conversation(Brain::Local));
+        assert!(!counts_conversation(Brain::Mac));
     }
 
     #[test]

@@ -219,6 +219,9 @@ pub struct Turn {
     /// What the turn may read in all, in bytes, as HQ judges it (by the member's brain). An
     /// older HQ says nothing: the worker's own.
     prompt_budget: Option<u64>,
+    /// How the worker counts that budget, as HQ says by the brain: `conversation` or
+    /// `every_call`. An older HQ says nothing: the worker's own way.
+    budget_counts: Option<&'static str>,
 }
 
 /// Why a turn HQ handed out was refused.
@@ -324,6 +327,11 @@ impl Turn {
             claude_code,
             shell: handed["shell"].as_bool().unwrap_or(true),
             prompt_budget: handed["prompt_budget"].as_u64().filter(|n| *n > 0),
+            budget_counts: match handed["budget_counts"].as_str() {
+                Some("conversation") => Some("conversation"),
+                Some("every_call") => Some("every_call"),
+                _ => None,
+            },
         })
     }
 }
@@ -349,6 +357,9 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
     }
     if let Some(budget) = turn.prompt_budget {
         env.push(format!("ENDORA_PROMPT_BUDGET={budget}"));
+    }
+    if let Some(counts) = turn.budget_counts {
+        env.push(format!("ENDORA_BUDGET_COUNTS={counts}"));
     }
     // 256 MB, one CPU, 128 processes; a workbench a gigabyte (its `/work` is memory too),
     // two CPUs and 256 processes, for a shell, git and a build.
@@ -1233,7 +1244,9 @@ mod tests {
     fn hqs_prompt_budget_reaches_the_worker() {
         let mut handed = turn(12);
         handed["prompt_budget"] = json!(480_000);
+        handed["budget_counts"] = json!("conversation");
         let mut unsaid = turn(13);
+        unsaid["budget_counts"] = json!("whatever");
         unsaid["prompt_budget"] = json!("lots");
         let hq = FakeHq::new(vec![handed, unsaid]);
         let docker = FakeDocker::default();
@@ -1246,6 +1259,17 @@ mod tests {
                 .unwrap()
                 .contains(&json!("ENDORA_PROMPT_BUDGET=480000")),
             "{envs:?}"
+        );
+        assert!(
+            envs[0]
+                .as_array()
+                .unwrap()
+                .contains(&json!("ENDORA_BUDGET_COUNTS=conversation")),
+            "{envs:?}"
+        );
+        assert!(
+            !envs[1].to_string().contains("ENDORA_BUDGET_COUNTS"),
+            "an unknown word is not passed on: {envs:?}"
         );
         assert!(
             !envs[1].to_string().contains("ENDORA_PROMPT_BUDGET"),

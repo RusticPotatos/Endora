@@ -93,6 +93,12 @@ pub struct Setup {
     /// turn ends and goes on in a fresh one (ADR 0142, amended 2026-10-30). See
     /// [`prompt_budget_for`].
     pub prompt_budget: usize,
+    /// Whether [`Self::prompt_budget`] holds the conversation itself, each byte counted once,
+    /// rather than every call's prompt summed: on a brain whose provider caches the part a call
+    /// repeats (Claude, DeepSeek), a resend costs little, and the sum counted a 50 KB conversation
+    /// as 238 KB (Rae on 955, 1 Nov). A house model on the NAS or the Mac reads every resend
+    /// again, slowly, so its turns still sum them.
+    pub counts_conversation: bool,
     /// Where the workbench's shell runs, when the worker is in the workbench; `None` anywhere
     /// else, where it has no shell.
     pub workbench: Option<std::path::PathBuf>,
@@ -275,11 +281,24 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         let mut read = 0usize;
         for round in 0..setup.most_rounds {
             let next = talk.body(&setup.model).to_string().len();
-            if !has_room(round, read, next, setup.prompt_budget) {
+            // Counting the conversation, what the turn has read is the conversation it last sent.
+            let so_far = if setup.counts_conversation { 0 } else { read };
+            if !has_room(round, so_far, next, setup.prompt_budget) {
+                let reached = if setup.counts_conversation {
+                    format!(
+                        "The turn's conversation reached its budget ({next} bytes after {round} \
+                         calls, of {})",
+                        setup.prompt_budget
+                    )
+                } else {
+                    format!(
+                        "The turn's prompt reached its budget ({read} bytes read over {round} \
+                         calls, of {})",
+                        setup.prompt_budget
+                    )
+                };
                 let line = format!(
-                    "The turn's prompt reached its budget ({read} bytes read over {round} calls, \
-                     of {}): it ends here, and goes on in a fresh turn from HQ's handover. {}",
-                    setup.prompt_budget,
+                    "{reached}: it ends here, and goes on in a fresh turn from HQ's handover. {}",
                     did.line()
                 );
                 // What the sandbox holds is kept for the next turn (ADR 0142, amended

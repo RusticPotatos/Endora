@@ -1019,6 +1019,50 @@ fn a_turn_whose_prompt_reaches_its_budget_ends_cleanly_and_says_it_continues() {
     );
 }
 
+/// Live, 1 Nov (Rae on 955): a 50 KB conversation was counted as 238 KB, because every call
+/// resends the conversation so far and the budget summed every resend. On a brain whose
+/// provider caches the repeated part (`ENDORA_BUDGET_COUNTS=conversation`, Claude and DeepSeek)
+/// the budget holds the conversation itself, so each byte counts once: the turn goes on while
+/// what it sends fits, and still ends cleanly once the conversation would not.
+#[test]
+fn a_cached_brains_budget_counts_the_conversation_once() {
+    let saying = |text: &str, i: usize| {
+        let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+        let mut said = calls(&[("call_1", "post", &args)]);
+        said["choices"][0]["message"]["content"] = json!(text);
+        (200, said)
+    };
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(
+        (0..40)
+            .map(|i| saying(&format!("Step {i}: the log says the disk is full."), i))
+            .collect(),
+    );
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_PROMPT_BUDGET", "12000".to_owned()));
+    env.push(("ENDORA_BUDGET_COUNTS", "conversation".to_owned()));
+    env.push(("ENDORA_MOST_ROUNDS", "40".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    let largest = to_model
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.body.to_string().len())
+        .max()
+        .unwrap();
+    assert!(largest <= 12_000, "every call fits: {largest}");
+    let read = read_in_all(&to_model);
+    assert!(
+        read > 3 * 12_000,
+        "each byte counted once: {read} sent in all"
+    );
+    let last = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(last["continues"], json!(true), "{last}");
+    let text = last["text"].as_str().unwrap();
+    assert!(text.contains("conversation reached"), "{text}");
+}
+
 /// `git` in `dir`, which must succeed.
 fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")

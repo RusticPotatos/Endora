@@ -914,6 +914,7 @@ mod tests {
             api: Api::Anthropic,
             most_rounds: 30,
             prompt_budget: crate::turn::CLAUDE_PROMPT_BUDGET,
+            counts_conversation: true,
             workbench: Some("/work".into()),
             effort: Some("low".to_owned()),
             claude_code: true,

@@ -291,6 +291,16 @@ shrank each call; nothing bounded the turn.
   DeepSeek turn a long result's gist, when it has one, is still what the model reads; the cap
   holds the raw result when there is no gist (or the gist call failed); a result the model asked
   for whole (`"raw": true`) is read whole.*
+- **On a cached model the budget holds the conversation, each byte once (amended 2026-11-01, the
+  owner's word).** Every call of a turn resends the conversation so far, and the budget summed
+  every resend: Rae's DeepSeek turn on 955 was a 50 KB conversation (a 12 KB opening, results of
+  12 KB at most) counted as 238 KB, and it ended after 7 calls. Claude's and DeepSeek's providers
+  cache the part a call repeats, so a resend costs little: on them the turn now ends when its
+  conversation would pass the budget (HQ hands the worker `budget_counts: conversation`,
+  `ENDORA_BUDGET_COUNTS`). The house's own models on the NAS and the Mac read every resend again,
+  slowly, so their turns still sum them (`every_call`). The figures are unchanged; HQ's own test
+  of a turn that ran out of room (half the budget metered) holds either way, since what is
+  metered is at least the conversation.
 - **Its last word says it goes on.** The worker posts what the model said on the way and that
   the prompt reached its budget, as its last word (not progress), marked `continues`. Only the
   worker sets the mark: it strips `last_word` and `continues` from the model's own posts, so a

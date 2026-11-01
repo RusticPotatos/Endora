@@ -147,6 +147,14 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "prompt_budget": endora_team::domain::handover::prompt_budget(
                 on.unwrap_or(endora_team::domain::Brain::Local)
             ),
+            // How the worker counts it: the conversation once, or every call summed.
+            "budget_counts": if endora_team::domain::handover::counts_conversation(
+                on.unwrap_or(endora_team::domain::Brain::Local)
+            ) {
+                "conversation"
+            } else {
+                "every_call"
+            },
             // How hard Claude tries: its model's own (the roles that named one are gone).
             "effort": serde_json::Value::Null,
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.

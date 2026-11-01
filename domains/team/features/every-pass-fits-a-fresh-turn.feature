@@ -41,3 +41,19 @@ Feature: Every pass fits one fresh turn
     And Bo's turn runs out of room after reading 5,000 prompt tokens, having said "The VPN credentials look stale."
     Then the answer says "The turn is not continued: HQ did not see its prompt reach its budget."
     And Bo is not woken to continue "Find what stops gluetun"
+
+  Scenario Outline: A turn on a cached model counts its conversation once
+    Every call of a turn resends the conversation so far. Claude's and DeepSeek's providers
+    cache the part a call repeats, so on them the budget holds the conversation, each byte
+    counted once; summing every resend counted Rae's 50 KB conversation as 238 KB (955, 1 Nov).
+    The house's own models read every resend again, slowly, so their turns still sum them.
+    Then a turn on <model> counts its budget by <counting>
+
+    Examples:
+      | model    | counting         |
+      | haiku    | its conversation |
+      | sonnet   | its conversation |
+      | opus     | its conversation |
+      | deepseek | its conversation |
+      | local    | every call       |
+      | mac      | every call       |

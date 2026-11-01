@@ -262,3 +262,13 @@ fn no_wake_refused(w: &mut Office, name: String, title: String) {
             .collect();
     assert!(refused.is_empty(), "{name}'s refused wakes: {refused:#?}");
 }
+
+#[then(regex = r"^a turn on (\w+) counts its budget by (its conversation|every call)$")]
+fn turn_counts_budget(_w: &mut Office, model: String, counting: String) {
+    let brain = Brain::from_name(&model).expect("a model");
+    assert_eq!(
+        endora_team::domain::handover::counts_conversation(brain),
+        counting == "its conversation",
+        "{model}"
+    );
+}

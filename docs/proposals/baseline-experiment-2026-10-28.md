@@ -772,7 +772,10 @@ done. Defects are numbered so the next round's changes can name them.
   kilobyte (the receipt), with how much was left out and to ask for less (`for_the_model`,
   `app/worker/src/turn.rs`; ADR 0142, amended 2026-11-01), and since the owner's word of 1 Nov
   to every API's turns, DeepSeek's among them (Rae filled 238 KB over 7 calls on 955), except a
-  result asked for whole. Test
+  result asked for whole. And on a cached model (Claude, DeepSeek) the budget now holds the
+  conversation, each byte counted once, not every resend summed: Rae's 50 KB conversation had
+  been counted as 238 KB (`counts_conversation`, `domain/handover.rs`; ADR 0142, amended
+  2026-11-01; scenario "A turn on a cached model counts its conversation once"). Test
   `a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn`: a turn of 949's shape on a
   measured Haiku opening (23 KB) made 9 of its 11 calls read whole, all 11 held to size. The
   worker has no scenario suite; its test stands for one, as D19's did.*
