@@ -229,6 +229,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         if self.in_the_loops(member.id)? && !in_a_game {
             told.push_str(&self.loops_said(run)?);
+            told.push_str(&self.alone_said(member, run)?);
             // Its own section: the item's handover, when it came to this member (ADR 0142,
             // amended 2026-10-30).
             told.push_str(&self.handover_briefed(member, run)?);

@@ -503,6 +503,9 @@ pub enum Refusal {
         branch: String,
         /// The criteria that ask for a CI run.
         criteria: Vec<String>,
+        /// Whether the item's loop is worked alone (ADR 0142, amended 2026-11-01): its member,
+        /// with nobody to send it back to, blocks it.
+        alone: bool,
     },
     /// That is not a step a project takes from where it is.
     NotAProjectStep {
@@ -707,12 +710,21 @@ impl fmt::Display for Refusal {
                 "a tester passes work on her own readings: take them this turn and cite their \
                  receipts",
             ),
-            Self::NoCiRun { branch, criteria } => write!(
+            Self::NoCiRun {
+                branch,
+                criteria,
+                alone,
+            } => write!(
                 f,
                 "no CI run can be had for {branch}: no workflow at its head runs on a push to it, \
-                 so \"{}\" cannot be met as the fork stands (HQ's checks say which). Send it \
-                 back saying so, for the owner to decide",
-                criteria.join("\", \"")
+                 so \"{}\" cannot be met as the fork stands (HQ's checks say which). {}, for the \
+                 owner to decide",
+                criteria.join("\", \""),
+                if *alone {
+                    "You work this loop alone: block the item with the reason"
+                } else {
+                    "Send it back saying so"
+                }
             ),
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")

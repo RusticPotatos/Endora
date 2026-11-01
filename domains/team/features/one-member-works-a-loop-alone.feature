@@ -6,8 +6,9 @@ Feature: One member works a loop alone
   checks its own criteria and sets the item ready (in review), and the item is done once HQ's
   checks have passed: the check of its newest head, and the mechanical checks at review. Nobody
   reviews it, a failure never climbs the ranks or hands it to anyone, and a turn that runs out
-  of room goes on with the same member. The turn, the tools, the checks and the delivery are
-  the team's own. The member takes no other loop's work and reviews none of it, so the team's
+  of room goes on with the same member. Its ninth failure, three ranks' worth (the team arm's
+  ceiling), blocks it with the reason and asks the owner, as the team's top rank does. The turn,
+  the tools, the checks and the delivery are the team's own; the briefing says she works alone. The member takes no other loop's work and reviews none of it, so the team's
   arm and the solo arm share nobody.
 
   Background:
@@ -38,6 +39,25 @@ Feature: One member works a loop alone
     And the thread of "Document the media role" says "HQ's checks passed and Sol set it ready: done, with no review"
     And no member is asked to review "Document the media role"
 
+  Scenario: Her briefing says she works alone, and that setting it ready closes it
+    Given the loop "solo arm" has the item "Pin the images": "Pin roles/media off the latest tag."
+    And a tick passes
+    When Sol's turn starts
+    Then Sol's briefing says "You work this loop alone"
+    And Sol's briefing says "closes it, with no review"
+
+  Scenario: A CI criterion no push can meet is hers to block, with the reason
+    Given the loop "solo arm" has the item "Run the lint rules' tests in CI", with the criteria
+      | The workflow runs tests/test_lint_rules.py |
+      | A CI run on the branch passes              |
+    And a tick passes
+    When Sol submits the branch "hq/task-1-ci-lint-rules", whose workflow "ci.yml" runs on a push to "main, develop"
+    And the check passes: "syntax ok, ansible-lint ok, yamllint ok"
+    And Sol sets "Run the lint rules' tests in CI" ready, citing the item for each criterion
+    Then it is refused for "no CI run can be had for hq/task-1-ci-lint-rules"
+    And it is refused for "block the item with the reason, for the owner to decide"
+    And the task "Run the lint rules' tests in CI" is doing
+
   Scenario: Failed checks stay with her, and climb to nobody
     Given the loop "solo arm" has the item "Pin the images": "Pin roles/media off the latest tag."
     And a tick passes
@@ -58,6 +78,15 @@ Feature: One member works a loop alone
     When Sol's turns on "Pin the images" run out of room 12 times, keeping nothing
     Then "Pin the images" has 3 failures and is still Sol's
     And Sol is woken to continue "Pin the images"
+    And Kit is not woken to take "Pin the images"
+
+  Scenario: The ninth failure blocks it with the reason, and the owner is asked
+    Given the loop "solo arm" has the item "Pin the images": "Pin roles/media off the latest tag."
+    And a tick passes
+    When Sol's turns on "Pin the images" run out of room 36 times, keeping nothing
+    Then the task "Pin the images" is blocked
+    And the owner's desk holds one question about "Pin the images"
+    And the thread of "Pin the images" says "failed 9 times with Sol working this loop alone"
     And Kit is not woken to take "Pin the images"
 
   Scenario: She takes no other loop's work, and reviews none of it

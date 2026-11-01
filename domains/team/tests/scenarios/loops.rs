@@ -297,6 +297,31 @@ fn sets_ready(w: &mut Office, name: String, title: String) {
     );
 }
 
+/// The member claims its item and sets it ready citing the item for each criterion, in its
+/// turn; a refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing the item for each criterion$"#)]
+fn sets_ready_citing_the_item(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its item");
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    let evidence: Vec<_> = found
+        .criteria
+        .iter()
+        .map(|_| json!([format!("task {}", task.0)]))
+        .collect();
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "ready",
+                 "evidence": evidence }),
+    );
+}
+
 #[then(expr = "no member is asked to review {string}")]
 fn nobody_reviews(w: &mut Office, title: String) {
     let task = w.task(&title);

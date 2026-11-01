@@ -290,6 +290,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             crate::domain::Refusal::NoCiRun {
                 branch: ci.branch.clone(),
                 criteria: ci.criteria.clone(),
+                alone: self.solo_of(task)?.is_some(),
             },
         ))
     }

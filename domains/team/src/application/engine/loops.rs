@@ -41,6 +41,10 @@ const HEALTH_CHECK: &str = "Check the home lab";
 /// How many failed checks at one rank move an item up (ADR 0142).
 const FAILURES_A_RANK: u32 = 3;
 
+/// How many failures block an item of a loop worked alone (amended 2026-11-01): three ranks'
+/// worth, the team arm's ceiling, so neither arm's spend on one item is unbounded.
+const FAILURES_ALONE: u32 = 3 * FAILURES_A_RANK;
+
 /// Where an item's failures at its rank are counted.
 fn failures_key(task: TaskId) -> String {
     format!("loop_failures:{}", task.0)
@@ -254,6 +258,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         self.loop_solo(project)
+    }
+
+    /// What a turn on an item of a loop its member works alone is told of that (amended
+    /// 2026-11-01): nobody reviews it or takes it over, and setting it ready closes it once HQ's
+    /// check has passed. Empty for any other turn.
+    pub(super) fn alone_said(
+        &self,
+        member: &Member,
+        run: &crate::application::ports::Run,
+    ) -> Done<String> {
+        let Some(task) = run.task else {
+            return Ok(String::new());
+        };
+        if self.solo_of(&self.task(task)?)? != Some(member.id) {
+            return Ok(String::new());
+        }
+        Ok(format!(
+            "You work this loop alone: nobody reviews your item and nobody takes it over. Check \
+             its criteria yourself. Once HQ's check of your newest submission has passed, setting \
+             it ready (set_status in_review) closes it, with no review. After {FAILURES_ALONE} \
+             failures it is blocked; if it cannot be done, block it yourself with the reason.\n"
+        ))
     }
 
     /// The members who work a loop alone (one active or paused): out of the team's loops.
@@ -843,7 +869,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         if self.solo_of(&found)?.is_some() {
-            return self.failed_alone(task, &holder);
+            return self.failed_alone(&found, &holder);
         }
         // Held for an away member above: it neither counts nor climbs until one is free.
         if self.held_above(task)? {
@@ -892,20 +918,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// One of the failures of an item whose loop `holder` works alone (amended 2026-11-01):
-    /// counted and said, and it stays with `holder`. Nothing climbs, nothing is handed on, and
-    /// the owner is not asked; the loops' money caps bound it, as they bound a climb.
-    fn failed_alone(&self, task: TaskId, holder: &Member) -> Done<()> {
+    /// counted and said, and it stays with `holder`. Nothing climbs and nothing is handed on.
+    /// The [`FAILURES_ALONE`]th blocks it with the reason and asks the owner, as the team's top
+    /// rank's last failure does.
+    fn failed_alone(&self, found: &Task, holder: &Member) -> Done<()> {
+        let task = found.id;
         let failures = self.loop_failures(task)? + 1;
         self.store
             .set_setting(&failures_key(task), &failures.to_string())?;
-        self.post_held_lock(
-            super::Author::Endora,
-            task,
-            &format!(
-                "Failure {failures}: {} works this loop alone, so it stays with {}.",
-                holder.name, holder.name
-            ),
-        )
+        if failures < FAILURES_ALONE {
+            return self.post_held_lock(
+                super::Author::Endora,
+                task,
+                &format!(
+                    "Failure {failures} of {FAILURES_ALONE}: {} works this loop alone, so it \
+                     stays with {}.",
+                    holder.name, holder.name
+                ),
+            );
+        }
+        self.store.release(task)?;
+        self.store.set_assignee(task, None)?;
+        self.store.set_task_status(task, TaskStatus::Blocked)?;
+        self.keep_blocked_submission(task)?;
+        let text = format!(
+            "{} failed {FAILURES_ALONE} times with {} working this loop alone. It is blocked and \
+             its loop has moved on; its thread says what was tried.",
+            found.title, holder.name
+        );
+        self.post_held_lock(super::Author::Endora, task, &text)?;
+        self.ask_about_the_item(task, None, &text)
     }
 
     /// The item goes one rank up, to `up`, after [`FAILURES_A_RANK`] failures at `holder`'s.
