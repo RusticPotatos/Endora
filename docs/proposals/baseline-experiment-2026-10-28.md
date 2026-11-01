@@ -551,7 +551,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 |---|---|---|---|---|---|---|
 | 1 | 947 | No: blocked by HQ at 22:38 UTC, "failed at every rank". The work was ready at 19:36 and Ada approved it four times on her own readings (all 46 defaults, ports, lint same as develop), but no verdict could land (D19), and wakes refused while it waited in review counted as Mara's failures (D17). Never delivered | $0.50 | 158 min to first ready; never accepted | 1 | |
 | 2 | 948 | Yes (all 39 defaults with exact values against `defaults/main.yml`; ports and the VPN rule match the tasks; lint the same as develop, 14 and 6; pushed by delivery as `hq/task-948-role-readmes`, its privacy scan clean; rechecked by the round judge) | $0.36 (two thirds after it was ready, see D17) | 32 min | 0 | |
-| 3 | 949 | (blocked 00:43 UTC on card 5055; answered with its own words; back with Kit) | | | 1 | |
+| 3 | 949 | Reported no: blocked by Kit at 00:56 UTC on criterion 2 read literally, never delivered (D22). Verified yes: all seven tags real on their registries (Docker Hub, ghcr) and named in the commit; lint the same as develop (14 and 14, 6 and 6, findings identical); one commit off ee878f7 touching only the two defaults files; nothing personal; rechecked by the round judge from the node mirror's `refs/submissions` | $1.71 (Ada $1.24; 360 `image_tags` calls from re-reading, D20) | 322 min to first ready; never accepted | 1 | |
 | 4 | 950 | | | | | |
 | 5 | 951 | | | | | |
 | 6 | 952 | | | | | |
@@ -796,6 +796,17 @@ done. Defects are numbered so the next round's changes can name them.
   something cents"): the once-a-day mark for Ada was cleared, HQ raised card 5054 itself, and it
   was approved at $2.00 for the day (in place of $0.50; the pool had $3.77). A money decision
   and a setup fault, not counted as an intervention on a task.*
+- [ ] **D22. Work that meets the bar's reading of a criterion ends blocked, never delivered.**
+  Round 3, 949: the branch pins all seven tags, each real on its registry, and lints exactly as
+  develop does (`ansible-lint nas.yml` 14 and 14, `yamllint .` 6 and 6, sorted findings the
+  same), which is how Claude Code's arm and round 2's 931 were accepted. HQ's own check measured
+  "no worse than develop", yet Ada sent it back on "passes" read literally, Kit asked the owner
+  (card 5055), and on the task's own words ended it blocked at 00:56 UTC: the round judge
+  verifies it, HQ reports it not done. Also seen: receipt r2936's bundle is cut in the store, so
+  the work survives only in the node mirror's `refs/submissions`. Fix proposed: HQ's lint check
+  states its comparison as the measure ("no new findings against develop: met") and the
+  reviewer's brief takes the check's verdict for a lint criterion, as it already does for CI;
+  keep a blocked item's submission where delivery can reach it.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
