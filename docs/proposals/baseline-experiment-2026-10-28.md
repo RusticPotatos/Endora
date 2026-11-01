@@ -552,7 +552,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 | 1 | 947 | No: blocked by HQ at 22:38 UTC, "failed at every rank". The work was ready at 19:36 and Ada approved it four times on her own readings (all 46 defaults, ports, lint same as develop), but no verdict could land (D19), and wakes refused while it waited in review counted as Mara's failures (D17). Never delivered. **Verified yes** (round judge, 1 Nov, at head c858650e0b18 from the mirror's `refs/submissions`): all 46 defaults match `defaults/main.yml` value for value with no extra rows; ports 8000, 6789 and 9696 match the tasks; nothing personal in the three READMEs or commit messages; lint identical to develop (14 and 6); one branch off ee878f7 | $0.50 | 158 min to first ready; never accepted | 1 | |
 | 2 | 948 | Yes (all 39 defaults with exact values against `defaults/main.yml`; ports and the VPN rule match the tasks; lint the same as develop, 14 and 6; pushed by delivery as `hq/task-948-role-readmes`, its privacy scan clean; rechecked by the round judge) | $0.36 (two thirds after it was ready, see D17) | 32 min | 0 | |
 | 3 | 949 | Reported no: blocked by Kit at 00:56 UTC on criterion 2 read literally, never delivered (D22). Verified yes: all seven tags real on their registries (Docker Hub, ghcr) and named in the commit; lint the same as develop (14 and 14, 6 and 6, findings identical); one commit off ee878f7 touching only the two defaults files; nothing personal; rechecked by the round judge from the node mirror's `refs/submissions` | $1.71 (Ada $1.24; 360 `image_tags` calls from re-reading, D20) | 322 min to first ready; never accepted | 1 | |
-| 4 | 950 | | | | | |
+| 4 | 950 | No, reported and verified: blocked by Bo at 05:07 UTC; his kept heads add only two `.pyc` files (D28); no branch pushed and no CI run (and `ci.yml` runs on a push to main only, D6); no broken rule shown. `ci.yml` already ran `tests/test_lint_rules.py` on develop. Bo checked out the fork six times, then in fresh sandboxes took the empty checkout for "offline" (D27); rechecked by the round judge | $0.00 (house model) | none ready; about 65 min of work (first turn 04:02 after D15's wait) | 2 | |
 | 5 | 951 | Reported no: Ada's approvals at 01:26 and 02:10 refused by a gate shut by D23, then blocked by HQ as "failed at every rank" before 03:50 UTC (its card 5058 closed unanswered, not counted); never delivered. Verified yes: the admin password defaults to `vault_minio_admin_password`, the old literal gone from the role and its docs; the judge played the role: unset or empty fails with a clear message, set passes, disabled skips; README and website page say to set it in the vault; no secret in patches or commit messages (the removed line is upstream's public default); lint the same as develop (14 and 14, 6 and 6, identical); 8 commits off ee878f7; rechecked by the round judge from the mirror's `refs/submissions`. Outside the criteria: loki's template reads the same variable, and miniflux keeps the literal | $0.54 (71% after first ready; Mara $0.19 from the D17 climb) | 460 min to first ready; never accepted | 0 | |
 | 6 | 952 | Yes, reported and verified: both SQL passwords default to vault variables, no literal left; the assert fails with a clear message when either is unset and passes when set (run by the judge, unset and set); docs say how to set them in the vault; lint the same as develop (14 and 14, 6 and 6, identical); one commit off ee878f7, pushed by delivery as `hq/task-952-nextcloud-secrets`, privacy scan clean; rechecked by the round judge. Ada reviewed work she had written before Kit squashed it (D24) | $0.25 (Kit's squash 37%, after D17 refusals) | 488 min (462 waiting in the loop's queue; about 26 min of work) | 0 | |
 | 7 | 953 | | | | | |
@@ -835,17 +835,24 @@ done. Defects are numbered so the next round's changes can name them.
   (DeepSeek Flash) reviewed 955 (run 4978, 02:07 UTC) and 952 (runs 4932, 4941) with one
   `repo_checkout` each and ended, no verdict and no post. Fix proposed: a review turn that ends
   with neither verdict is recorded as not done and the review goes to the next reviewer.
-- [ ] **D27. On the house model, a code item's checkout tool is held back, and Bo never finds it.**
-  Round 3, 950, 1 Nov 04:2x UTC: Bo (the NAS's model) tried `git checkout` and `git init` with a
-  made-up remote in an empty sandbox, then asked the owner (card 5061) for "an HQ tool I haven't
-  seen": `repo_checkout` and `repo_submit` were on his list under "held back", behind
-  `find_tools`, while weather, news and traffic tools sat beside them. The same on 953's turns.
-  Answered with the task's own words (an intervention). At 04:5x he asked again (card 5062,
-  a second question on one item despite D10), still never having called `repo_checkout`;
-  answered the same way (a second intervention). Fix proposed: an item of a loop that
-  checks out the fork marks `repo_checkout` and `repo_submit` for the turn, so they are loaded
-  up front on every runtime (D19 did this for a review's verdict).
-
+- [ ] **D27. On the house model, each turn's empty sandbox reads as "offline", and Bo gives up.**
+  Round 3, 950, 1 Nov 04:02–05:07 UTC: Bo (the NAS's model) did use `repo_checkout`, six times,
+  every one working (runs 5003–5009, 5028), after finding it behind `find_tools` (his first try
+  ran it in the shell, exit 127). But in the turns that asked the owner (cards 5061 at 04:24 and
+  5062 at 04:29, a second question on one item despite D10) and the one that blocked (5031), he
+  did not call it: he met a fresh, empty sandbox, ran `git checkout`, then `git init` with a
+  made-up remote, and took the failures for "the sandbox is offline, checkout needs github.com".
+  Both cards were answered with the task's own words (two interventions); he ended it blocked
+  at 05:07. On the house model `repo_checkout` and `repo_submit` stay held back beside weather
+  and news tools. Fix proposed: an item of a loop that checks out the fork marks `repo_checkout`
+  and `repo_submit` for the turn, so they load up front on every runtime (as D19 did for a
+  verdict), and the handover's first line says the sandbox starts empty: check out the kept
+  branch first. (Corrected on the judge's readings; it first said he never called it.)
+- [ ] **D28. A turn's kept work in progress is Python byproducts, called new work.** Round 3, 950:
+  all three heads kept on `hq/task-950-work` add only two `__pycache__/*.pyc` files (the fork has
+  no ignore entry for them); 947, 951 carried the same file, added and removed. The handover
+  says the turn "kept new work". Fix proposed: the keep leaves out what `git status` would show
+  only as byproducts (`__pycache__`, `*.pyc`), and a head with no other change is not kept.
 ### From the review of round 2's code (31 Oct), not yet fixed
 
 Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
