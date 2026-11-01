@@ -365,8 +365,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 }
                 let mut reply = reply;
                 // A result the model asked for whole (`"raw": true`) is read whole, as it asked.
-                let asked_whole = arguments(&call.arguments)
-                    .is_ok_and(|args| crate::gist::wants_raw(&args));
+                let asked_whole =
+                    arguments(&call.arguments).is_ok_and(|args| crate::gist::wants_raw(&args));
                 if !asked_whole {
                     reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
                 }
