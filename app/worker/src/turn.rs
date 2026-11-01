@@ -1042,7 +1042,16 @@ pub(crate) fn instructions(
          a routine's check as done; anything about the lab now needs a reading taken this turn, \
          never memory or another member's word. The tester then re-checks it with her own \
          readings, and the lead accepts it. A post that states a finding cites what it rests \
-         on. Keep it short, and never say you did what you did not do. When your part is done, \
+         on.\n\
+         \n\
+         Before you say it is done, check it the way someone who doubts you would. For each \
+         criterion, find the failure that criterion guards against and try it: run the change \
+         with the value missing, empty or wrong and see it refuse; compare what you chose with \
+         what is current (the newest release, what runs today) and say why if you chose \
+         otherwise; read where you claim something is or is not, rather than inferring it. A \
+         check that only shows nothing got worse (lint, syntax) is not this. Say what you ran \
+         and what it showed. Set in_review only when that holds, and never while a check you \
+         started is still pending. Keep it short, and never say you did what you did not do. When your part is done, \
          stop calling tools and reply in one or two sentences.",
     );
     if posted {
@@ -2932,6 +2941,24 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_is_told_to_check_its_work_against_the_failure_before_calling_it_done() {
+        // The runtime proof of concept (1 Nov): on the same model, Claude Code ran the case a
+        // criterion guards against (the play with the password unset) before saying done; the
+        // worker measured "unset, both are empty", moved on, and set in_review with its check
+        // still pending.
+        for shell in [true, false] {
+            let told = instructions(true, &[], false, shell);
+            assert!(
+                told.contains("Before you say it is done, check it")
+                    && told.contains("the failure that criterion guards against")
+                    && told.contains("what is current")
+                    && told.contains("never while a check you started is still pending"),
+                "{told}"
+            );
+        }
+    }
+
+    #[test]
     fn a_tester_is_told_the_wings_git_is_for_reading_and_a_developer_that_it_is_for_work() {
         let checkout_and_submit = ["repo_checkout".to_owned(), "repo_submit".to_owned()];
         let developer = instructions(true, &checkout_and_submit, false, true);
@@ -3931,7 +3958,7 @@ mod tests {
     fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
         let told = instructions(true, &[], false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 3, "{told}");
+        assert_eq!(parts.len(), 4, "{told}");
         assert!(!parts[0].contains('\n'), "{told}");
         let steps: Vec<&str> = parts[1].lines().collect();
         assert_eq!(steps[0], "Take your turn in these steps:");
@@ -3953,7 +3980,7 @@ mod tests {
         // owner's, one rule a line.
         let told = instructions(false, &lab(), false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 5, "{told}");
+        assert_eq!(parts.len(), 6, "{told}");
         // And how the lab is built (ADR 0112), the house log's text, as a paragraph.
         assert_eq!(parts[3], endora_kernel::lab::lab_built_paragraph());
         let rules: Vec<&str> = parts[2].lines().collect();
@@ -4000,7 +4027,7 @@ mod tests {
         // own.
         let told = instructions(true, &lab(), true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 6, "{told}");
+        assert_eq!(parts.len(), 7, "{told}");
         assert_eq!(
             parts[4],
             "When the owner corrects you, or you learn something about this house that the team \
@@ -4038,7 +4065,7 @@ mod tests {
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
         let told = instructions(true, &lab(), true, true);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 7, "{told}");
+        assert_eq!(parts.len(), 8, "{told}");
         assert!(!told.contains("You cannot run commands"), "{told}");
         assert!(
             parts[1].contains(
