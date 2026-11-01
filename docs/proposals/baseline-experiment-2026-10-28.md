@@ -1090,11 +1090,15 @@ done. Defects are numbered so the next round's changes can name them.
   The guard hook (`.claude/hooks/guard-paths.sh`) blocks edits to `group_vars`, `host_vars`,
   inventories and vaults, not reads. Fix proposed: the same paths refused to `Read` and to the
   shell's `cat`/`sed`/`grep` in the arms' sessions, as HQ's sandbox already refuses them.
-- [ ] **D30. Turns spend moves on the protocol.** The house-model replay (1 Nov): both models call
+- [x] **D30. Turns spend moves on the protocol.** The house-model replay (1 Nov): both models call
   `my_turn`, which repeats the briefing the first message already holds, and `find_tools` for a
   tool already offered; round 3's store shows the same pattern in `claim`/`my_turn` openings. Fix
   proposed (with item E): `my_turn` and `claim` are not offered to a turn whose briefing already
   says the item is theirs, and `find_tools` answers a request for an offered tool by saying so.
+  *Fixed on `round4` (faf440fc, merged in 81f49915): a turn on its own item is not offered
+  `my_turn` or `claim`; `find_tools` for a tool already offered says so at no cost. With it, an
+  item keeps its sandbox between turns on the Pi (c22d9658) and downtime waits while a round runs
+  (301ce505); not yet tried on the Pi.*
 - [x] **D31. A finished turn is replayed, a running one is not.** The owner, 1 Nov: "watch them
   as they work". *Fixed on `round4` (`round4-live`, merged in 9fc92ceb): the worker tells its
   conversation after every round, Replay refreshes a running turn, the reasoning is kept and
