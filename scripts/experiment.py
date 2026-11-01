@@ -11,6 +11,7 @@ on as `sys.argv[1:]`:
 Subcommands (every one but `start` only reads):
 
     start  --round N --from-tasks 882-890,903 [--previous 913-922] [--yes]
+    start  --round N --from-tasks 1001-1003 --solo NAME [--yes]
     status --tasks 913-922
     fields --tasks 913-922 [--header]
     check  --task 919
@@ -21,7 +22,11 @@ Where things are, from the environment (each also a flag, which wins):
     HQ_URL         HQ's API, for `start` only             (default http://127.0.0.1:8790; --url)
     HQ_TOKEN_FILE  the file holding HQ's bearer token     (--token-file); never printed
 
-`start` without `--yes` only says what it would do.
+`start` without `--yes` only says what it would do. With `--solo NAME` it starts round 4's
+solo arm ("one member, one long turn, no ladder", ADR 0142, amended 2026-11-01): the tasks are
+made in a project of their own, `Round N solo (NAME)`, worked by that member alone, so the
+team's arm and the solo arm share no loop; nothing is archived, since the team's arm of the
+same round is running beside it.
 """
 
 import argparse
@@ -458,6 +463,49 @@ def plan_round(conn, round_number, from_tasks, previous):
     return {"round": round_number, "archive": archive, "sources": sources, "problems": problems}
 
 
+def solo_member(conn, name):
+    """The member named to work the solo arm: (id, problems, notes)."""
+    row = conn.execute(
+        "SELECT id, brain, furloughed_at FROM members WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if row is None:
+        return None, [f"no member is called {name}"], []
+    if row["furloughed_at"] is not None:
+        return None, [f"{name} has retired"], []
+    notes = []
+    if row["brain"] != "haiku":
+        notes.append(f"{name} thinks with {row['brain']}, not haiku: the arm as planned is Haiku's")
+    return row["id"], [], notes
+
+
+def plan_solo(conn, round_number, from_tasks, name):
+    """Round `round_number`'s solo arm: its tasks, copied from `from_tasks`, in a project of its
+    own worked by `name` alone. One goal, since a project serves one."""
+    sources = [source_of(conn, t) for t in from_tasks]
+    member, problems, notes = solo_member(conn, name)
+    goals = sorted({s["goal"] for s in sources})
+    if len(goals) != 1:
+        problems.append(f"the tasks serve goals {goals}: a solo arm's project serves one")
+    project = None
+    if member is not None and len(goals) == 1:
+        project = {
+            "goal": goals[0],
+            "title": f"Round {round_number} solo ({name})",
+            "reason": f"Round {round_number}'s solo arm of the baseline experiment: one member, "
+            "one long turn, no ladder (ADR 0142, amended 2026-11-01).",
+            "lead": member,
+            "solo": member,
+        }
+    return {
+        "round": round_number,
+        "archive": None,
+        "solo": project,
+        "notes": notes,
+        "sources": sources,
+        "problems": problems,
+    }
+
+
 def run_round(conn, hq, plan):
     """Sets aside the open items, then makes the round's tasks, and checks each against its
     source as the store now has it."""
@@ -473,6 +521,12 @@ def run_round(conn, hq, plan):
             hq.post(f"/v1/tasks/{task}/project", {"project": project})
         hq.post(f"/v1/projects/{project}", {"action": "drop"})
         archived = {"project": project, "tasks": archive["tasks"]}
+    solo = plan.get("solo")
+    if solo:
+        made = hq.post("/v1/projects", solo)["project"]
+        solo = {"project": made, "member": solo["solo"]}
+        for s in plan["sources"]:
+            s["project"] = made
     made_tasks = []
     for s in plan["sources"]:
         body = {
@@ -493,9 +547,10 @@ def run_round(conn, hq, plan):
     return {
         "round": plan["round"],
         "archived": archived,
+        "solo": solo,
         "tasks": made_tasks,
         "ids": [m["task"] for m in made_tasks],
-        "warnings": [w for s in plan["sources"] for w in s["lost"]],
+        "warnings": [w for s in plan["sources"] for w in s["lost"]] + plan.get("notes", []),
         "mismatches": mismatches,
     }
 
@@ -524,6 +579,9 @@ def parser():
     start.add_argument("--from-tasks", required=True, help="round 0's tasks, e.g. 882-890,903")
     start.add_argument("--previous", help="the previous round's tasks (default: open by title)")
     start.add_argument("--yes", action="store_true", help="really write; without it, a dry run")
+    start.add_argument(
+        "--solo", metavar="NAME", help="the solo arm: the tasks in a project NAME works alone"
+    )
     for name in ("status", "fields"):
         one = sub.add_parser(name)
         one.add_argument("--tasks", required=True)
@@ -561,7 +619,10 @@ def command(args, conn, out):
     if args.round < 1:
         raise SystemExit("--round is 1 or more: round 0 is the baseline itself")
     previous = ids_of(args.previous) if args.previous else None
-    plan = plan_round(conn, args.round, ids_of(args.from_tasks), previous)
+    if args.solo:
+        plan = plan_solo(conn, args.round, ids_of(args.from_tasks), args.solo)
+    else:
+        plan = plan_round(conn, args.round, ids_of(args.from_tasks), previous)
     if plan["problems"]:
         print(json.dumps({"refused": plan["problems"]}, indent=2), file=out)
         return 1
