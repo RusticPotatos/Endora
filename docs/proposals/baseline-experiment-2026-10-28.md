@@ -853,6 +853,7 @@ done. Defects are numbered so the next round's changes can name them.
   no ignore entry for them); 947, 951 carried the same file, added and removed. The handover
   says the turn "kept new work". Fix proposed: the keep leaves out what `git status` would show
   only as byproducts (`__pycache__`, `*.pyc`), and a head with no other change is not kept.
+
 ### From the review of round 2's code (31 Oct), not yet fixed
 
 Fixed and released in `7c195ac6`: HQ decides out of room itself; moved and quoted owner's files
