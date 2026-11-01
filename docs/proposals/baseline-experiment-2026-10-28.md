@@ -767,7 +767,7 @@ done. Defects are numbered so the next round's changes can name them.
   `a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn`: a turn of 949's shape on a
   measured Haiku opening (23 KB) made 9 of its 11 calls read whole, all 11 held to size. The
   worker has no scenario suite; its test stands for one, as D19's did.*
-- [ ] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
+- [x] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
   Round 3, 31 Oct: Ada had today's $0.50 allowance (card 5025, approved) and reached her limit
   ($0.89 of $0.88: twice her $0.19 share plus the allowance) at about 22:42 UTC. HQ asks about a
   member once a day, so no card came; her turns on 949 (a review) and 951 stayed queued with
@@ -778,6 +778,13 @@ done. Defects are numbered so the next round's changes can name them.
   something cents"): the once-a-day mark for Ada was cleared, HQ raised card 5054 itself, and it
   was approved at $2.00 for the day (in place of $0.50; the pool had $3.77). A money decision
   and a setup fault, not counted as an intervention on a task.*
+  *Fixed on `round4` (ADR 0113, amended 2026-11-01), both ways the defect named. A member is asked
+  about again after each allowance it has had that day, while the pool has money and its work
+  waits (never while a card waits; not after the owner declines): test
+  `a_member_capped_again_after_an_allowance_is_asked_about_again`, scenario in
+  `projects-and-their-money.feature`. And shares no longer follow price: most of the day goes to
+  Haiku (`Brain::claim_class`), so round 3's team gives Ada about 55% of a day where she had
+  about 1%.*
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 

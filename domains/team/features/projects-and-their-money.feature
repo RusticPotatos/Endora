@@ -66,3 +66,22 @@ Feature: Projects, their caps and their money
     And the owner's desk holds one request about Ada being out for the day
     When the owner gives Ada $0.08 more today
     Then Ada's turn starts on "Look at radarr"
+
+  # Seed (D21, round 3): Ada had the day's allowance and reached her limit again with $3.78 in
+  # the pool; HQ asked about a member once a day, so no card came and her work waited for the
+  # next day. Capped again after an allowance, a member is asked about again.
+  Scenario: A member out for the day again after the owner's allowance is asked about again
+    Given Cy is the researcher
+    And Cy thinks with Claude
+    And Ada has spent $1.00 of her share today
+    When Ada is woken to decide "Look at sonarr"
+    And Ada's turn on "Look at sonarr" spends $0.10
+    And Ada is woken to decide "Look at radarr"
+    And a tick passes
+    Then the owner's desk holds one request about Ada being out for the day
+    When the owner gives Ada $0.10 more today
+    And Ada's turn on "Look at radarr" spends $0.10
+    And Ada is woken to decide "Look at sonarr"
+    And a tick passes
+    Then Ada's turn on "Look at sonarr" is waiting for budget
+    And the owner's desk holds one request about Ada being out for the day

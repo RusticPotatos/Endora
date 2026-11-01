@@ -1875,6 +1875,59 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
     assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 1_882_352);
 }
 
+/// D21 of round 3 (31 Oct): Ada had the day's allowance, approved, and reached her limit again
+/// at 22:42 UTC with $3.78 in the pool; HQ asked about a member once a day, so no card came, and
+/// her review and her next item stayed queued until the owner's next day. A member capped again
+/// after an allowance, while the pool has money and its work waits, is asked about again; once
+/// the owner declines, it is not.
+#[test]
+fn a_member_capped_again_after_an_allowance_is_asked_about_again() {
+    let clock = hands();
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings {
+            pool_per_month: 150 * crate::domain::money::DOLLAR,
+            ..Settings::default()
+        },
+    );
+    let t = team(&hq);
+    // Cy on Haiku claims most of the day (ADR 0113, amended 2026-11-01), as Ada did.
+    hq.hire("Cy", Role::Researcher, 15, 2, 0).unwrap();
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_all_he_may(&hq, &t, work);
+    assert!(waits_for_budget(&hq, t.dev, work));
+    let first = out_for_day_items(&hq);
+    assert_eq!(first.len(), 1);
+    hq.decide_saying(first[0].id, "approve", "0.5").unwrap();
+    // The allowance is spent, and he is capped again with the pool's day not spent.
+    linus_spends_all_he_may(&hq, &t, work);
+    assert!(waits_for_budget(&hq, t.dev, work));
+    let items = out_for_day_items(&hq);
+    assert_eq!(items.len(), 2, "asked about again: {items:?}");
+    let again = items.iter().find(|d| d.status == "waiting").unwrap();
+    assert_eq!(again.member, Some(t.dev));
+    assert!(
+        again.text.contains("Linus is out for today"),
+        "{}",
+        again.text
+    );
+    assert!(
+        again.text.contains("$0.50 already given today"),
+        "{}",
+        again.text
+    );
+    // Asked while that card waits, nothing more is added.
+    assert!(waits_for_budget(&hq, t.dev, work));
+    assert_eq!(out_for_day_items(&hq).len(), 2);
+    // Declined, it is not asked again today.
+    hq.decide(again.id, "decline").unwrap();
+    assert!(waits_for_budget(&hq, t.dev, work));
+    assert_eq!(out_for_day_items(&hq).len(), 2);
+}
+
 #[test]
 fn declining_changes_nothing_and_the_owners_own_turns_ignore_the_cap() {
     let clock = hands();

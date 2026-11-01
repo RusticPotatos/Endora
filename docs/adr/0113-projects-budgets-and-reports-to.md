@@ -341,7 +341,7 @@ credit, renewed on the owner's renewal day) is what rule 2 sends HQ, so it must 
    answer; the owner's own entry (a $100 grant renewing on the 18th, $0 bought) is taken as it
    was. A later balance, with a grant already kept, splits as before.
 
-## Amendment (2026-11-01): most of the money to Haiku
+## Amendment (2026-11-01): most of the money to Haiku, and asked again after an allowance
 
 Decided by the owner on 1 November 2026, from round 3 of the baseline experiment
 (`docs/proposals/baseline-experiment-2026-10-28.md`, D21): shares followed price, not work. Ada
@@ -365,6 +365,15 @@ and Opus draw on what is left.
 - **The floor's part for members not on a Claude** (the amendment of 2026-10-31, rule 2) is their claims'
   part of the floor, now by claim class: a member on DeepSeek keeps a larger part on top of the
   credit-sized base, which its own balance pays.
+
+- **Asked again after an allowance (rule 5, D21).** Ada had the day's allowance (approved at
+  $0.50) and reached her limit again at 22:42 UTC with $3.78 in the pool; HQ asked about a member
+  once a day, so no card came and her review and her next item waited for the owner's next day.
+  A member is now asked about once for each allowance it has had that day: the first time it is
+  out, and again after each allowance the owner gives (the key `out_for_day_asked:<member>:<day>`
+  keeps the allowance it was asked at). Never while a card waits, and not again once the owner
+  declines, since neither changes the allowance. The card says what was already given ("$0.50
+  already given today"), and its "borrowed" leaves the allowance out.
 
 Rejected: sizing shares from the work each rank did on recent days (more machinery and a figure
 that lags; the owner's direction is plain, and a class says it); no shares above Haiku's rank

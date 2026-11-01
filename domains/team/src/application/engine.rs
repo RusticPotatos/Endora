@@ -521,7 +521,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// member borrows at most one more share of what the other paid members have not used
     /// today, so its day reaches twice its share and no more, the owner's allowance aside
     /// ([`money::may_draw`]). Turned away at that limit with the pool's day not spent, it puts
-    /// one "out for today" item a day on the owner's desk.
+    /// one "out for today" item on the owner's desk, and another after each allowance.
     /// A turn the owner asked for (`for_owner`) is the pool's alone and needs no share. The
     /// pool's day is the hard ceiling either way, and the per-turn cap holds.
     fn affordable(
@@ -557,14 +557,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let draw = money::may_draw(share, spent, others, allowance);
         let amount = money::reservation(draw, pool_left, most, least);
         // Turned away at twice its share while the pool's day and the project's month have
-        // money: the owner is asked, once a day (ADR 0113, amended).
+        // money: the owner is asked, once for each allowance (ADR 0113, amended 2026-11-01).
         let out_for_the_day = share > 0
             && !member.furloughed()
             && draw < least
             && pool_left >= least
             && most >= least;
         if amount.is_none() && out_for_the_day {
-            self.ask_about_the_day(member, day, share, spent, pool_left)?;
+            self.ask_about_the_day(member, day, (share, spent, allowance), pool_left)?;
         }
         Ok(amount)
     }
