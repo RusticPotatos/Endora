@@ -1990,7 +1990,12 @@ mod tests {
             .oneshot(tell(Some(TOKEN), &turn.token, said))
             .await
             .unwrap();
-        assert_eq!(again.status(), StatusCode::BAD_REQUEST, "a turn has one");
+        // Told again while it runs, the latest replaces it (ADR 0129, amended 2026-11-01).
+        assert_eq!(
+            again.status(),
+            StatusCode::OK,
+            "a running turn tells it as it goes"
+        );
         // The owner's replay carries it.
         let replay = json_of(
             app.clone()

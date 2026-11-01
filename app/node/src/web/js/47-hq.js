@@ -24,6 +24,7 @@ const HQ = {
   working: false,      // the "Give work" form is open
   workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
+  back: null,          // where Activity was when one of its links was taken: { y, feed }
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
   whole: {},           // task id → a finished task opened whole (the snapshot has it in brief), or "asking"
   pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
@@ -400,12 +401,41 @@ function hqLogText(l) {
   return p && p.author === w.author ? `${w.author}: ${p.text}` : l.text;
 }
 // One line as a list item. A long one is shown to its first 240 characters, with "more" to
-// open it in place and "less" to fold it again; nothing is lost either way.
+// open it in place and "less" to fold it again; nothing is lost either way. A post HQ cut in
+// its event has "more" too, which asks HQ for the post whole.
 function hqLogLine(l) {
-  const full = hqLogText(l), long = full.length > HQ_LONG_LINE, open = !!HQ.logOpen[l.key];
+  const full = hqLogText(l), open = !!HQ.logOpen[l.key];
+  const long = full.length > HQ_LONG_LINE, cut = !!l.whole && full === l.text && /…$/.test(full);
   const shown = long && !open ? full.slice(0, HQ_LONG_LINE) + "…" : full;
-  const toggle = long ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
-  return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(shown)}${toggle}</span></li>`;
+  const toggle = long || cut ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
+  return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${hqLogLinks(esc(shown), l.refs)}${toggle}</span></li>`;
+}
+
+// What a line of Activity names, as links that open it (the owner, 1 Nov): any item (EL-955)
+// as Work's "Looking at" does; the turn its event names (R4952) in its replay, with what it was
+// given; and the members its event names, on the team board. `html` is the line escaped; a
+// name matches only as a whole word, and only those the event names, so a routine called "R100"
+// is no turn.
+function hqLogLinks(html, refs) {
+  const r = refs || {}, members = (HQ.snap && HQ.snap.members) || [];
+  const named = new Map();
+  for (const m of members) {
+    if (m.name && ((r.ids || []).includes(m.id) || (r.names || []).includes(m.name))) named.set(esc(m.name), m.id);
+  }
+  const quote = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const names = [...named.keys()].sort((a, b) => b.length - a.length).map(quote);
+  // Each group is always there, matching nothing when the event names nothing of its kind.
+  const run = r.run ? Number(r.run) : "(?!)", who = names.length ? names.join("|") : "(?!)";
+  const pattern = new RegExp(`(?<![\\w&#])(?:EL-(\\d+)|R(${run})|(${who}))(?![\\w-])`, "g");
+  return html.replace(pattern, (all, task, turn, name) => {
+    const [kind, id] = task ? ["task", task] : turn ? ["run", turn] : ["member", named.get(name)];
+    return `<button class="hq-link" data-act="hq:from:${kind}:${Number(id)}">${all}</button>`;
+  });
+}
+
+// The line of Activity with this key, from the tab or the paged view.
+function hqLogFind(key) {
+  return HQ.log.concat((HQ.feed && HQ.feed.lines) || []).find((l) => String(l.key) === String(key));
 }
 
 // One event as a line of the activity log, or null for one it does not tell (a tick).
@@ -502,7 +532,10 @@ function hqLogEntry(e) {
   // A post in a thread is told whole in the feed: the line names its place in the task's
   // thread, and the words are read from there when the line is drawn (the snapshot that has
   // them may arrive just after the event does). The preview stands in until then.
-  return { key: e.id, at: hqClock(e.at), kind: said[0], text: said[1],
+  // The turn and the members the event names, by id or by name, for the line's links.
+  const refs = { run: d.run, ids: [d.member, d.expert, d.lead, d.by].filter((x) => typeof x === "number"),
+    names: [d.author, d.name, d.by].filter((x) => typeof x === "string") };
+  return { key: e.id, at: hqClock(e.at), kind: said[0], text: said[1], refs,
     whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
 }
 
@@ -1774,10 +1807,19 @@ async function hqLogPage(before, want) {
   return { lines, next: next > 1 ? next : 0 };
 }
 
-// The Activity tab: the latest twenty, newest first, each line whole.
+// The turns running now, at the top of Activity (the owner, 1 Nov): each with a Watch link to
+// its replay, live while it runs. Nothing when none runs.
+function hqRunningNow() {
+  const runs = ((HQ.snap && HQ.snap.runs) || []).filter((r) => r.status === "running");
+  if (!runs.length) return "";
+  const line = (r) => `<li><span>R${Number(r.id)} ${esc(hqName(r.member))}${r.task ? ` on ${hqKey(r.task)}` : ""}</span> <button class="hq-link" data-act="hq:from:watch:${Number(r.id)}">Watch</button></li>`;
+  return `<section class="hq-card hq-running"><h2>Running now <span class="hq-count">${runs.length}</span></h2><ul class="hq-running-list">${runs.map(line).join("")}</ul></section>`;
+}
+
+// The Activity tab: the turns running now, then the latest twenty, newest first, each line whole.
 function hqActivity() {
   const log = HQ.log.slice(0, HQ_LOG_SHOWN).map(hqLogLine).join("");
-  return `<section class="hq-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
+  return `${hqRunningNow()}<section class="hq-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
     <div class="hq-row"><button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more</button></div></section>`;
 }
 
@@ -1870,7 +1912,7 @@ function viewHQ() {
       ${hqPanel("work", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        ${HQ.selected ? `<section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>` : ""}
+        ${HQ.selected ? `<section class="hq-card" id="hq-looking" aria-live="polite"><h2>Looking at</h2>${hqBackLink()}${hqSelected()}</section>` : ""}
         ${hqDigest(s)}
         ${hqInFlight(s)}
         ${hqHolodeck(s) ? hqFold("holodeck", "Holodeck", "chess matches and the model league", hqHolodeck(s)) : ""}`)}
@@ -1915,11 +1957,11 @@ function hqRosterLine(m) {
   const doing = m.furloughed ? "on furlough" : `${m.paused ? "paused · " : ""}${on ? "on " + esc(on) : waits ? esc(waits) : "between turns"}`;
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today`;
   const open = !!HQ.roster[m.id];
-  const controls = open ? `<div class="hq-controls">
+  const controls = open ? `<div class="hq-controls">${hqBackLink()}
       <p class="hq-who">${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainTag(m.brain) + (m.brain === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : ""))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
-  return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
+  return `<li class="hq-member"><button class="hq-line" id="hq-member-${Number(m.id)}" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
       <small>${esc(hqBrainTag(m.brain))} · ${doing}</small> <span>${money}</span></button>${controls}</li>`;
 }
 
@@ -2543,10 +2585,44 @@ function hqTaskProject(t) {
   return `${name} <select id="hq-move-${t.id}" aria-label="Move into project">${options}</select> <button class="hq-btn" data-act="hq:move:${t.id}:go">Move</button>`;
 }
 
+// A link in Activity (the owner, 1 Nov) opens what it names where it already lives: an item
+// under Work's "Looking at", a member's line on the team board (Manage), a turn's replay (with
+// what it was given; Watch opens it as it is). Where Activity was is kept, for the way back.
+function hqFrom(kind, n) {
+  if (!n || !["task", "member", "run", "watch"].includes(kind)) return true;
+  HQ.back = { y: window.scrollY || 0, feed: HQ.feed };
+  if (kind === "run" || kind === "watch") { REPLAY.given = kind === "run"; go("replay", `run-${n}`); return true; }
+  HQ.feed = null;
+  if (kind === "task") { HQ.selected = { type: "task", id: n }; hqSetTab("work"); }
+  else { HQ.roster[n] = true; hqSetTab("manage"); }
+  render();
+  const el = document.getElementById(kind === "task" ? "hq-looking" : `hq-member-${n}`);
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
+  return true;
+}
+
+// Back to Activity, where it was: the tab or the paged view, scrolled as it was.
+function hqBackToActivity() {
+  const back = HQ.back || { y: 0, feed: null };
+  HQ.back = null; HQ.feed = back.feed; hqSetTab("activity");
+  if (NAV.v === "hq") render(); else go("hq");
+  // A screen newly opened scrolls to its top first; this comes after.
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, back.y)));
+  return true;
+}
+
+// The way back to Activity, on what one of its links opened.
+function hqBackLink() {
+  return HQ.back ? `<div class="hq-row"><button class="hq-btn" data-act="hq:back">◀ Back to Activity</button></div>` : "";
+}
+
 // The verbs this screen uses. Returns true when it handled one.
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
-  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("work"); render(); return true; }
+  if (noun === "pick") { HQ.back = null; HQ.selected = { type: id, id: Number(arg) }; hqSetTab("work"); render(); return true; }
+  // A line of Activity opens what it names, and back returns to where Activity was.
+  if (noun === "from") return hqFrom(id, Number(arg));
+  if (noun === "back") return hqBackToActivity();
   // Find a task by its number or words of its title, and open it.
   if (noun === "find") {
     const asked = (document.getElementById("hq-find") || {}).value || "";
@@ -2566,7 +2642,13 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   if (noun === "more") { HQ.more[id] = !HQ.more[id]; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
-  if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
+  if (noun === "logmore") {
+    HQ.logOpen[id] = !HQ.logOpen[id];
+    // A post HQ cut in its event is read whole from its task's thread, asked of HQ once.
+    const l = hqLogFind(id);
+    if (HQ.logOpen[id] && l && l.whole && hqLogText(l) === l.text) hqAskWhole(l.whole.task);
+    render(); return true;
+  }
   // Activity's paged view (the owner, 31 Oct).
   if (noun === "feed") return hqFeedAct(id);
   if (noun === "decide") {
@@ -2759,7 +2841,7 @@ async function hqDispatch(verb, noun, id, arg) {
     await loadHQ(); render(); return true;
   }
   // Tabs: per-viewer, kept in this browser.
-  if (noun === "tab") { hqSetTab(id); render(); return true; }
+  if (noun === "tab") { HQ.back = null; hqSetTab(id); render(); return true; }
   // Hand the team a piece of work, under the first goal it is working towards, to the lead the
   // owner picks: a form on the screen, not pop-ups.
   if (noun === "work") {

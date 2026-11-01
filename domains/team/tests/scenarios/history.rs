@@ -23,8 +23,18 @@ impl Office {
 #[when(expr = "{word}'s worker tells the node what the turn said: {string}")]
 fn worker_tells(w: &mut Office, name: String, said: String) {
     let token = w.turn_of(&name).token;
+    // A `\n` in the scenario is a line's end.
+    let said = said.replace("\\n", "\n");
     let kept =
         w.hq.record_transcript(&token, "worker", &format!("--- assistant ---\n{said}"));
+    assert!(w.note(kept).is_some(), "refused: {:?}", w.refused);
+}
+
+#[when(expr = "{word}'s worker tells the node the turn thought {string} and then said {string}")]
+fn worker_tells_thinking(w: &mut Office, name: String, thought: String, said: String) {
+    let token = w.turn_of(&name).token;
+    let text = format!("--- thinking ---\n{thought}\n--- assistant ---\n{said}\n");
+    let kept = w.hq.record_transcript(&token, "worker", &text);
     assert!(w.note(kept).is_some(), "refused: {:?}", w.refused);
 }
 
@@ -78,6 +88,19 @@ fn replay_shows(w: &mut Office, name: String, text: String) {
     // A `\n` in the scenario is a line's end.
     let text = text.replace("\\n", "\n");
     assert!(said.contains(&text), "the replay holds: {shown}");
+}
+
+#[then(expr = "the replay of {word}'s turn shows {string} once")]
+fn replay_shows_once(w: &mut Office, name: String, text: String) {
+    let shown = w.replay_of(&name);
+    let said = shown["transcript"]["text"].as_str().unwrap_or_default();
+    assert_eq!(said.matches(&text).count(), 1, "the replay holds: {shown}");
+}
+
+#[then(regex = r"^the replay of (\w+)'s turn is (live|not live)$")]
+fn replay_is_live(w: &mut Office, name: String, live: String) {
+    let shown = w.replay_of(&name);
+    assert_eq!(shown["live"], live == "live", "{shown}");
 }
 
 #[then(regex = r"^the replay of (\w+)'s turn says it is kept for (\d+) days$")]

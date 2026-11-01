@@ -166,11 +166,11 @@ fn held_to(text: &str, most: usize) -> String {
     format!("{}{}{}", &text[..head], mark(tail - head), &text[tail..])
 }
 
-/// `POST /team-relay/transcript`: what a turn said, told by its own worker at the end of the
-/// turn, with the turn's token (ADR 0129). The node scrubs it of secrets with the scrubber the
-/// receipts use, and of the turn's own token, holds it to a megabyte (head and tail, the cut
-/// marked), and tells HQ, which keeps it for thirty days. Any running turn's worker may tell
-/// its own; HQ keeps one a turn.
+/// `POST /team-relay/transcript`: what a turn said, told by its own worker after every model
+/// round and at the end of the turn, with the turn's token (ADR 0129, amended 2026-11-01). The
+/// node scrubs it of secrets with the scrubber the receipts use, and of the turn's own token,
+/// holds it to a megabyte (head and tail, the cut marked), and tells HQ, which keeps it for
+/// thirty days. Any running turn's worker may tell its own; HQ keeps the latest an attempt.
 pub(super) async fn turn_transcript(
     State(state): State<AppState>,
     headers: HeaderMap,

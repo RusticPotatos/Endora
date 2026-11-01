@@ -66,8 +66,11 @@ Settings.
   team knows — the world's pages and the house — and the office with its games), **Health** (how
   the team and the lab are doing: the scorecard and outcomes, the
   turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
-  the latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
-  Older; never an endless scroll). The office animation
+  a "Running now" strip of the turns in progress, each with a Watch link to its live replay; the
+  latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
+  Older; never an endless scroll. What a line names opens where it already lives, with a way
+  back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
+  board; no new screen). The office animation
   plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)

@@ -697,7 +697,9 @@ if (failures.length) {
   // The Activity tab shows the latest twenty (the owner, 31 Oct); this block reads every line
   // the log was told, drawn as the tab draws one.
   if (runInContext("HQ_LOG_SHOWN", context) !== 20) fail("hq: the Activity tab does not show the latest twenty");
-  const told = runInContext("HQ.log.map(hqLogLine).join('')", context);
+  // Read as words: the names in a line are links (the owner, 1 Nov), checked on their own below.
+  const told = runInContext("HQ.log.map(hqLogLine).join('')", context)
+    .replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1");
   // The world's sections and their buttons are read with the house page open (Knowledge lists
   // its pages first since 2026-10-25).
   runInContext('HQ_WORLD_VIEW.page = "house";', context);
@@ -958,7 +960,9 @@ if (failures.length) {
     runInContext(`hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "start word word…", cut: true, post: HQ.snap.tasks[0].thread.length - 1 } }, false);`, context);
     // Only the Activity tab: the selected task's card shows its own thread too.
     const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
-    const logOf = () => activityOf(runInContext("viewHQ()", context)).split('class="hq-log')[1].split("</ul>")[0];
+    // Read as words: a name in a line is a link (the owner, 1 Nov), checked on its own later.
+    const logOf = () => activityOf(runInContext("viewHQ()", context)).split('class="hq-log')[1].split("</ul>")[0]
+      .replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1");
     const folded = logOf();
     if (folded.includes("THE-END")) fail("hq: a long post in the log is not folded");
     if (!folded.includes('data-act="hq:logmore:70:toggle"') || !folded.includes("start word word word")) fail("hq: a long post in the log has no way to be opened");
@@ -967,7 +971,7 @@ if (failures.length) {
     if (!opened.includes("Bo: start word") || !opened.includes("THE-END")) fail("hq: opening a long post does not show all of it");
     // A post whose event the snapshot does not hold falls back to the preview, which says it was cut.
     runInContext(`hqTell({ id: 71, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "a cut preview…", cut: true } }, false);`, context);
-    if (!runInContext("viewHQ()", context).includes("Bo: a cut preview…")) fail("hq: a post with no place in the thread loses its preview");
+    if (!logOf().includes("Bo: a cut preview…")) fail("hq: a post with no place in the thread loses its preview");
     runInContext("HQ.snap.tasks[0].thread.pop();", context);
     // A finished task's thread is only its tail, each post with its place in the whole thread:
     // the log finds a post by that place, and one cut from the tail falls back to its preview.
@@ -1233,7 +1237,8 @@ if (failures.length) {
     "&lt;img src=e onerror=alert(7)&gt; sonarr: running", "the tester passed it, ", "Tester's pass: given.", "No evidence yet.",
     '<span class="hq-unsupported">unsupported</span>: Probably fine.', "R2 Bo · EL-7 · talk only", "R1 Bo · EL-7 · checked",
     "R10 Bo finished · talk only", "Tester · ", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
-    if (!office.includes(said)) fail(`hq: the evidence does not show ${said}`);
+    // Read as words: a name in a line of Activity is a link (the owner, 1 Nov).
+    if (!office.replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1").includes(said)) fail(`hq: the evidence does not show ${said}`);
   }
   if (office.includes("<b>sonarr</b>") || office.includes("<img src=e")) fail("hq: a criterion or an excerpt became markup");
   if (office.includes("hq:decide:21:seen")) fail("hq: the owner's round was offered something it does not take");
@@ -1826,8 +1831,9 @@ if (failures.length) {
     // off the desk (ADR 0115, amended), and accepted work became one folded line on Manage.
     // Activity at most its twenty lines, its heading and Show more (the owner, 31 Oct), with
     // Health lighter for its leaving. Work 30 -> 27 buttons and 45 -> 42 rows (2026-10-31): the
-    // Deployed cards retired with ADR 0142.
-    const MOST_ON_A_TAB = { work: { buttons: 27, rows: 42 }, manage: { buttons: 27, rows: 32 }, health: { buttons: 14, rows: 22 }, activity: { buttons: 3, rows: 23 }, chess: { buttons: 12, rows: 30 } };
+    // Deployed cards retired with ADR 0142. Activity 3 -> 11 buttons (the owner, 1 Nov): every
+    // item, turn and member a line names is a link that opens it, words rather than controls.
+    const MOST_ON_A_TAB = { work: { buttons: 27, rows: 42 }, manage: { buttons: 27, rows: 32 }, health: { buttons: 14, rows: 22 }, activity: { buttons: 11, rows: 23 }, chess: { buttons: 12, rows: 30 } };
     for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
       const d = density(panelOf(tabs, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
@@ -2345,9 +2351,101 @@ if (failures.length) {
   runInContext('REPLAY.kind = "run"; REPLAY.id = 2; REPLAY.runs = [REPLAY.runs[1]]; REPLAY.at = 0;', context);
   const one = runInContext("viewReplay()", context);
   if (one.includes("replay:step:") || !one.includes("Replay R2")) fail("replay: a single run's replay offers stepping or lacks its title");
+  // Live (ADR 0129, amended 2026-11-01): a turn still running says so, and is read again every
+  // few seconds until it ends; a refresh HQ does not answer keeps what is shown.
+  if (one.includes("hq-live")) fail("replay: a finished turn says it is live");
+  runInContext(`REPLAY.runs = [Object.assign({}, REPLAY.runs[0], { live: true, status: "running", ended_at: null })];`, context);
+  if (!runInContext("viewReplay()", context).includes('<span class="hq-tag hq-live" role="status">Live</span>')) fail("replay: a running turn does not say it is live");
+  runInContext(`__keepApi = api; __liveNow = true; __liveDown = false;
+    api = async () => { if (__liveDown) throw new Error("HQ is away"); return { replay: Object.assign({}, REPLAY.runs[0], { live: __liveNow }) }; };
+    NAV = { v: "replay", id: "run-2" };`, context);
+  await runInContext('loadReplay("run-2")', context);
+  if (!runInContext("REPLAY.timer", context)) fail("replay: a live turn is not read again");
+  runInContext("__liveDown = true;", context);
+  await runInContext('loadReplay("run-2")', context);
+  if (runInContext("REPLAY.error", context) || runInContext("REPLAY.runs.length", context) !== 1) fail("replay: a live refresh HQ did not answer lost what was shown");
+  runInContext("__liveDown = false; __liveNow = false;", context);
+  await runInContext('loadReplay("run-2")', context);
+  if (runInContext("REPLAY.timer", context)) fail("replay: a turn that ended is still read again");
+  runInContext("api = __keepApi;", context);
+  // What the model thought, folded under the step it led to, every word text.
+  runInContext(`REPLAY.runs[0].transcript = { runtime: "worker", brain: "local", est_tokens: 9, cut: false,
+    text: "--- user ---\\nYou are Bo.\\n--- thinking ---\\nThe logs <b>first</b>.\\n--- assistant ---\\nLooking.\\n--- call: container_logs ---\\n{}" };`, context);
+  const thought = runInContext("viewReplay()", context);
+  const step = thought.slice(thought.indexOf("Looking."));
+  if (!/^Looking\.<\/span><details class="hq-replay-thought"><summary>Thinking<\/summary><span class="hq-replay-said">The logs &lt;b&gt;first&lt;\/b&gt;\.<\/span><\/details>/.test(step)) fail(`replay: the thinking is not folded under its step: ${step.slice(0, 200)}`);
+  if (/<span class="hq-replay-tag">thought<\/span>/.test(thought)) fail("replay: the thinking is a step of its own");
+  if (thought.includes("<b>first</b>")) fail("replay: the thinking became markup");
+  runInContext("delete REPLAY.runs[0].transcript;", context);
   runInContext('REPLAY.kind = ""; REPLAY.id = 0; REPLAY.runs = null; REPLAY.error = ""; HQ.snap = null; HQ.selected = null; NAV = { v: "home" };', context);
   console.log("replay: a run and a task's turns read back, stepped in order, the briefing folded, and every word stays text");
   console.log("replay: each turn on a task shows what it was given, by section with sizes, and says what was not kept");
+  console.log("replay: a running turn is live and read again until it ends, and each step's thinking is folded under it");
+}
+
+// Activity's lines open what they name (the owner, 1 Nov): an item as Work's "Looking at" does,
+// a turn's replay with what it was given, a member's line on the team board, a cut post whole;
+// and back to the same place in Activity. The turns running now are at its top, each to watch.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
+  runInContext(`HQ.error = ""; HQ.feed = null; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.tab = "activity"; HQ.log = []; HQ.logOpen = {}; HQ.whole = {};
+    HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+      members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [{ run: 4952, task: 955 }], brains: [] },
+                { id: 3, name: "Al", role: "developer", look: 1, running: [], brains: [] }],
+      tasks: [{ id: 955, goal: 1, title: "Cap <b>sonarr</b>", status: "done", owner: 2, why: [], thread: [], brief: true }],
+      runs: [{ id: 4952, member: 2, task: 955, status: "running" }, { id: 4950, member: 3, task: null, status: "queued" }], recent_runs: [] };
+    hqTell({ id: 80, at: 0, kind: "run.started", data: { run: 4952, member: 2, task: 955, reason: "assigned", reserved: 0 } }, false);
+    hqTell({ id: 81, at: 0, kind: "routine.changed", data: { title: "R100 Al", enabled: true } }, false);
+    hqTell({ id: 82, at: 0, kind: "thread.posted", data: { task: 955, author: "Al", preview: "see EL-12 for it…", cut: true, post: 3 } }, false);`, context);
+  const tab = activityOf(runInContext("viewHQ()", context));
+  for (const link of ['<button class="hq-link" data-act="hq:from:run:4952">R4952</button>', '<button class="hq-link" data-act="hq:from:member:2">Bo</button>',
+    '<button class="hq-link" data-act="hq:from:task:955">EL-955</button>', '<button class="hq-link" data-act="hq:from:member:3">Al</button>',
+    '<button class="hq-link" data-act="hq:from:task:12">EL-12</button>']) {
+    if (!tab.includes(link)) fail(`activity: a line does not open what it names: ${link}`);
+  }
+  // Only what the event names: a routine called "R100 Al" is no turn and no member.
+  if (tab.includes("hq:from:run:100") || tab.includes('Routine R100 Al') === false) fail("activity: a routine's name became a link");
+  if (!tab.includes('data-act="hq:logmore:82:toggle"')) fail("activity: a cut post offers no way to read it whole");
+  // Running now: the turns in progress, each with a Watch link; a queued one is not running.
+  const strip = tab.slice(0, tab.indexOf("<h2>Activity</h2>"));
+  if (!strip.includes("<h2>Running now") || !strip.includes('data-act="hq:from:watch:4952">Watch</button>') || !strip.includes("R4952 Bo on EL-955")) fail(`activity: no Running now strip with a Watch link: ${strip}`);
+  if (strip.includes("4950")) fail("activity: a queued turn is listed as running");
+  // An item opens under Looking at on Work, with a way back to the same place in Activity.
+  runInContext(`__keepScroll = scrollTo; __scrolled = []; scrollTo = (x, y) => __scrolled.push(y); window.scrollY = 640;
+    __keepGo = go; go = (v, id) => { NAV = { v, id }; }; NAV = { v: "hq" }; __keepRender = render; render = () => {};`, context);
+  await runInContext('dispatch("hq:from:task:955")', context);
+  if (runInContext("HQ.tab + ' ' + JSON.stringify(HQ.selected)", context) !== 'work {"type":"task","id":955}') fail("activity: an item does not open under Looking at");
+  const looking = runInContext("viewHQ()", context);
+  if (!looking.includes('id="hq-looking"') || !looking.includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: an item opened from Activity has no way back");
+  await runInContext('dispatch("hq:back")', context);
+  await new Promise((r) => setTimeout(r, 5));
+  if (runInContext("HQ.tab + ' ' + HQ.back + ' ' + __scrolled.pop()", context) !== "activity null 640") fail("activity: back does not return to the same place in Activity");
+  // A member opens their line on the team board.
+  await runInContext('dispatch("hq:from:member:3")', context);
+  const board = runInContext("viewHQ()", context);
+  if (runInContext("HQ.tab + ' ' + HQ.roster[3]", context) !== "manage true" || !board.includes('id="hq-member-3"') || !board.includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: a member does not open their line on the team board, with a way back");
+  await runInContext('dispatch("hq:back")', context);
+  // A turn opens its replay with what it was given; Watch opens it as it is; both come back.
+  await runInContext('dispatch("hq:from:run:4952")', context);
+  if (runInContext("NAV.v + ' ' + NAV.id + ' ' + REPLAY.given", context) !== "replay run-4952 true") fail("activity: a turn does not open its replay with what it was given");
+  runInContext(`REPLAY.kind = "run"; REPLAY.id = 4952; REPLAY.error = ""; REPLAY.runs = [];`, context);
+  if (!runInContext("viewReplay()", context).includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: a replay opened from Activity has no way back");
+  await runInContext('dispatch("hq:back")', context);
+  if (runInContext("NAV.v + ' ' + HQ.tab", context) !== "hq activity") fail("activity: back from a replay does not land on Activity");
+  await runInContext('dispatch("hq:from:watch:4952")', context);
+  if (runInContext("NAV.v + ' ' + NAV.id + ' ' + REPLAY.given", context) !== "replay run-4952 false") fail("activity: Watch does not open the turn's replay");
+  if (runInContext("viewReplay()", context).includes("Back to Activity") === false) fail("activity: a watched replay has no way back");
+  await runInContext('dispatch("hq:back")', context);
+  // A cut post is asked of HQ whole when opened.
+  runInContext(`__keepApi = api; __askedFor = []; api = async (m, p) => { __askedFor.push(p); return { id: 955, thread: [{ n: 3, author: "Al", text: "see EL-12 for it, and the WHOLE-END" }] }; };`, context);
+  await runInContext('dispatch("hq:logmore:82:toggle")', context);
+  await new Promise((r) => setTimeout(r, 5));
+  if (runInContext("__askedFor.join()", context) !== "/v1/hq/tasks/955") fail("activity: a cut post is not asked of HQ whole");
+  if (!activityOf(runInContext("viewHQ()", context)).includes("WHOLE-END")) fail("activity: a cut post opened does not show it whole");
+  runInContext(`api = __keepApi; scrollTo = __keepScroll; go = __keepGo; render = __keepRender; window.scrollY = 0;
+    HQ.snap = null; HQ.log = []; HQ.logOpen = {}; HQ.whole = {}; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.tab = null; NAV = { v: "home" };`, context);
+  console.log("activity: each line opens the item, turn, member or post it names and steps back to its place; Running now offers each turn to watch");
 }
 
 // Speakers (ADR 0104): every source offers its speakers to tap, never the device's own; a wire

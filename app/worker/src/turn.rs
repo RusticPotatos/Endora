@@ -334,6 +334,9 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 last_word(&mut hq, task, said.text.trim(), &did.line())?;
                 return Ok(Taken::Answered);
             }
+            // The owner watches the turn as it works (ADR 0129, amended 2026-11-01): what it
+            // thought, said and called this round, told before its calls run.
+            node.tell_conversation("worker", &talk.as_text());
             if !said.text.trim().is_empty() {
                 on_the_way.push(said.text.trim().to_owned());
             }
@@ -1335,6 +1338,9 @@ struct Talk {
     /// The tools it started with and those held back, by name, as the conversation HQ keeps
     /// begins (`transcript::tools`): what the model was given, for the owner's replay.
     given_tools: String,
+    /// What an OpenAI-shaped model reasoned before a reply, by the reply's place in
+    /// `messages`: kept for the owner's replay (ADR 0129, amended 2026-11-01), never sent back.
+    thoughts: std::collections::HashMap<usize, Value>,
 }
 
 /// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
@@ -1363,6 +1369,7 @@ impl Talk {
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
+                thoughts: std::collections::HashMap::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1374,6 +1381,7 @@ impl Talk {
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
+                thoughts: std::collections::HashMap::new(),
             },
         }
     }
@@ -1457,7 +1465,15 @@ impl Talk {
     /// The conversation so far as plain text (ADR 0129), in the shape of the API it was held in.
     fn as_text(&self) -> String {
         let said = match self.api {
-            Api::OpenAi => crate::transcript::openai(&self.messages),
+            Api::OpenAi => {
+                let mut messages = self.messages.clone();
+                for (at, thought) in &self.thoughts {
+                    if let Some(m) = messages.get_mut(*at) {
+                        m[crate::transcript::THOUGHT] = thought.clone();
+                    }
+                }
+                crate::transcript::openai(&messages)
+            }
             Api::Anthropic => crate::transcript::anthropic(&self.system, &self.messages),
         };
         format!("{}{said}", self.given_tools)
@@ -1468,7 +1484,14 @@ impl Talk {
     /// calls cut, as the repeat guard knows them (`tool {args}`), so that one asked again is
     /// answered in full.
     fn said(&mut self, said: &Said) -> Vec<String> {
-        self.messages.push(said.message.clone());
+        let mut message = said.message.clone();
+        if let Some(thought) = message
+            .as_object_mut()
+            .and_then(|m| m.remove(crate::transcript::THOUGHT))
+        {
+            self.thoughts.insert(self.messages.len(), thought);
+        }
+        self.messages.push(message);
         let Some(keep) = self.keep_whole else {
             return Vec::new();
         };
@@ -2398,8 +2421,9 @@ impl<'a> Node<'a> {
     }
 
     /// Tells the node what the turn said, for HQ to keep a while (ADR 0129): the conversation as
-    /// text, with the turn's token. It is the last thing a turn does and it never changes how
-    /// the turn ended: a node that cannot be reached, or refuses, is said on stderr and the turn
+    /// text, with the turn's token. Told after every round that goes on, each time whole, the
+    /// latest replacing the last (amended 2026-11-01), and as the last thing a turn does; it
+    /// never changes how the turn goes or ended: a node that cannot be reached, or refuses, is said on stderr and the turn
     /// goes on its way.
     pub(crate) fn tell_conversation(&self, runtime: &str, text: &str) {
         let sent = self
@@ -2542,6 +2566,17 @@ impl<'a> Model<'a> {
                     .cloned()
                     .unwrap_or_default(),
             );
+            let mut kept = json!({ "role": "assistant", "content": message["content"],
+                                   "tool_calls": calls });
+            // Its reasoning, as llama.cpp, vLLM and DeepSeek (`reasoning_content`) or
+            // OpenRouter (`reasoning`) give it: for the replay alone (`Talk::said`).
+            if let Some(thought) = message["reasoning_content"]
+                .as_str()
+                .or_else(|| message["reasoning"].as_str())
+                .filter(|t| !t.trim().is_empty())
+            {
+                kept[crate::transcript::THOUGHT] = json!(thought);
+            }
             return Ok(Said {
                 text: message["content"].as_str().unwrap_or("").to_owned(),
                 calls: calls
@@ -2552,8 +2587,7 @@ impl<'a> Model<'a> {
                         arguments: c["function"]["arguments"].clone(),
                     })
                     .collect(),
-                message: json!({ "role": "assistant", "content": message["content"],
-                                 "tool_calls": calls }),
+                message: kept,
                 limit_reached: reply["choices"][0]["finish_reason"] == "length",
             });
         }

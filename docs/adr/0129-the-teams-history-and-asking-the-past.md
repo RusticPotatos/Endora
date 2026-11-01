@@ -131,6 +131,25 @@ names none (the answer goes in a task's thread).
   colleague's post cannot forge a line, hide text or wake anyone in a briefing", in
   `domains/team/features/the-history.feature`.
 
+- *Amended 2026-11-01 (the owner: watch the team's turns as they work):* **a running turn's
+  conversation is told as it goes, and the model's reasoning is kept in it.** The worker tells the
+  node the whole conversation so far after every model round that goes on (its words, thinking
+  and calls, before the calls run), and once more as the turn ends; each tell is bounded and
+  scrubbed as before. HQ keeps the latest an attempt: a tell replaces the attempt's last, and an
+  earlier attempt's stays before it under the "tried again" line (`record_transcript`; the refusal
+  "already kept" is gone). The calls' results show live already, as receipts. What an
+  OpenAI-shaped model reasoned (`reasoning_content`, or OpenRouter's `reasoning`) is kept beside
+  its reply and written `--- thinking ---` before it, never sent back to the model; Anthropic's
+  thinking blocks were kept already. The console's Replay, opened on a turn that is still live,
+  says Live and reads it again every few seconds until it ends, and folds each step's thinking
+  under it. Activity gains a "Running now" strip with a Watch link to each turn's live replay, and
+  its lines open what they name (an item as Work's "Looking at" does, a turn's replay with what it
+  was given, a member's line on the team board, a long post whole), each with a way back to the
+  same place in Activity. A tell costs a node round trip and one row replaced a round; a turn's
+  conversation is still one row. Scenarios: "The owner watches a running turn's conversation as
+  it goes" and "The owner reads what a turn thought before each step", in
+  `domains/team/features/the-history.feature`.
+
 Stored in `consults` (made if missing): asker, the turn it asked in, member consulted, the task it
 is about, the task whose thread the answer goes in, the question, its status (`queued`,
 `answered`, `from_record`), the turn that answered, why it came from the record, whether the asker

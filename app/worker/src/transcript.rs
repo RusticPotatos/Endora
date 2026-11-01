@@ -1,5 +1,6 @@
-//! A turn's conversation as plain text (ADR 0129), told to the node when the turn ends so that
-//! HQ can keep it for a while and show it in the turn's replay. The worker writes it from the
+//! A turn's conversation as plain text (ADR 0129), told to the node after every model round and
+//! when the turn ends (amended 2026-11-01), so that HQ can keep the latest for a while and show
+//! it in the turn's replay, live while the turn runs. The worker writes it from the
 //! messages it already holds: the tools it started with and those held back, by name (since
 //! 2026-10-31), the instructions, the briefing, each round's words and calls, and what each call
 //! came to. A Claude Code turn has only the rules Endora appended, its tools, its briefing and
@@ -10,6 +11,10 @@
 //! does not. The node scrubs the text of secrets and the turn's own token before HQ sees it.
 
 use serde_json::Value;
+
+/// Where an OpenAI-shaped assistant message holds what the model reasoned before it, as the
+/// worker keeps it for the replay: `--- thinking ---` before the reply's words and calls.
+pub const THOUGHT: &str = "reasoning";
 
 /// The most bytes the worker sends: more than HQ keeps, so the node's cut is the cut that
 /// counts, and far less than the node would refuse.
@@ -80,6 +85,10 @@ pub fn openai(messages: &[Value]) -> String {
                 out.push_str(&said(&result_text(&m["content"])));
             }
             "assistant" => {
+                if let Some(thought) = m[THOUGHT].as_str().filter(|t| !t.trim().is_empty()) {
+                    out.push_str(&divider("thinking"));
+                    out.push_str(&said(thought));
+                }
                 out.push_str(&divider("assistant"));
                 if let Some(text) = m["content"].as_str().filter(|t| !t.is_empty()) {
                     out.push_str(&said(text));
@@ -276,6 +285,20 @@ mod tests {
         ] {
             assert!(text.contains(part), "{part:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn an_openai_reply_keeps_what_the_model_reasoned_before_its_words_and_calls() {
+        let text = openai(&[json!({ "role": "assistant", "content": "Claiming.",
+            "reasoning": "I should claim it first.\n--- user ---",
+            "tool_calls": [{ "id": "c1", "function": { "name": "claim", "arguments": "{}" } }] })]);
+        assert_eq!(
+            text,
+            "--- thinking ---\nI should claim it first.\n --- user ---\n--- assistant ---\n\
+             Claiming.\n--- call: claim ---\n{}\n"
+        );
+        let blank = openai(&[json!({ "role": "assistant", "content": "x", "reasoning": " " })]);
+        assert!(!blank.contains("thinking"), "{blank}");
     }
 
     #[test]

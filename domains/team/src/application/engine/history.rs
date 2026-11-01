@@ -6,12 +6,15 @@
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::history::{self, HistoryRefusal, Transcript};
+use crate::domain::history::{self, Transcript};
 use crate::domain::situations;
-use crate::domain::{Millis, Refusal, Runtime};
+use crate::domain::{Millis, Runtime};
 
 /// How often the retention rule is looked at: an hour.
 const PRUNE_EVERY_MS: Millis = 60 * 60 * 1000;
+
+/// The line before a later attempt's conversation, after the earlier attempt's.
+const TRIED_AGAIN: &str = "\n\n--- tried again: a later attempt of this turn ---\n";
 
 /// The setting that keeps when the retention rule last ran.
 const PRUNED_AT: &str = "transcripts_pruned_at";
@@ -106,11 +109,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// naming the turn by its own token: kept only while that turn runs, so neither a model nor
     /// a turn that has ended can write one. Capped at [`history::TRANSCRIPT_MOST`] bytes (head
     /// and tail, the cut marked), marked with the tier of what the turn read, and kept until
-    /// thirty days from now. Nothing is kept for text that is empty.
+    /// thirty days from now. Nothing is kept for text that is empty. Told again while the turn
+    /// runs, the latest replaces it.
     ///
     /// # Errors
-    /// [`EngineError::Unknown`] for a token that opens no running turn;
-    /// [`HistoryRefusal::TranscriptKept`] for a turn that has one; a store failure.
+    /// [`EngineError::Unknown`] for a token that opens no running turn; a store failure.
     pub fn record_transcript(
         &self,
         token: &str,
@@ -129,29 +132,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         // One conversation an attempt: a turn tried again keeps each attempt's, the later after
         // a line that says so (production lost every retry's, 23-26 Oct). An attempt is told
-        // apart by when it started, as its count does not only go up (ADR 0130).
+        // apart by when it started, as its count does not only go up (ADR 0130). Within an
+        // attempt the worker tells it after every model round, each time whole so far (ADR 0129,
+        // amended 2026-11-01): the latest replaces the attempt's last.
         let earlier = self.store.transcript(run.id)?;
-        if earlier
-            .as_ref()
-            .is_some_and(|kept| kept.at >= run.started_at.unwrap_or(Millis::MIN))
-        {
-            return Err(EngineError::Refused(Refusal::History(
-                HistoryRefusal::TranscriptKept,
-            )));
-        }
+        let started = run.started_at.unwrap_or(Millis::MIN);
+        let before = earlier.as_ref().and_then(|kept| {
+            if kept.at < started {
+                return Some(kept.body.as_str());
+            }
+            kept.body.rfind(TRIED_AGAIN).map(|at| &kept.body[..at])
+        });
         let member = self.member(run.member)?;
         let confidential = self.store.run_read_confidential(run.id)?;
-        let whole = earlier.as_ref().map_or_else(
-            || text.to_owned(),
-            |kept| {
-                format!(
-                    "{}\n\n--- tried again: a later attempt of this turn ---\n{text}",
-                    kept.body
-                )
-            },
-        );
+        let whole = before.map_or_else(|| text.to_owned(), |b| format!("{b}{TRIED_AGAIN}{text}"));
         let (body, cut) = history::cap(&whole, history::TRANSCRIPT_MOST);
-        let cut = cut || earlier.as_ref().is_some_and(|kept| kept.cut);
+        let cut = cut || (before.is_some() && earlier.as_ref().is_some_and(|kept| kept.cut));
         let now = self.clock.now();
         let kept = Transcript {
             run: run.id,
