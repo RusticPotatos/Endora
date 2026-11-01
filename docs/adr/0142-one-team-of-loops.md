@@ -734,3 +734,10 @@ rule changed here, with a scenario of what happened.
   chosen, by the same rule, among members who had no hand in the item: none kept a branch of it
   or of its sub-tasks, and none took a turn of work on it (taken, gone on with, woken back to it
   by a send-back, a check or a nudge). Reviewing it is not a hand in it.
+- **D26. A review turn with neither verdict is not done, and the review goes on.** Rae
+  reviewed items 955, 952 and 953 with one `repo_checkout` each and ended with no verdict and no
+  post; each sat in review. A review turn that ends (not out of room, which goes on afresh as
+  before) with the item still in review and still hers to review is now recorded in the thread
+  as not done, she is passed over on that review, and the next reviewer by the same rule is
+  asked; with nobody left, the owner is asked about the item. A new ask for review starts the
+  review again with nobody passed over.

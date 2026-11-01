@@ -86,6 +86,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 2026-10-30).
         if status == RunStatus::Succeeded {
             self.after_out_of_room(&run)?;
+            // A review turn that ended with neither verdict (D26).
+            self.after_review_turn(&run)?;
         }
         Ok(())
     }

@@ -2255,7 +2255,8 @@ fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
 /// Given Bo's item in review, and a reviewer whose turns end with no verdict,
 /// when it sits stranded again and again,
 /// then it has no failure, is still Bo's and in review, Bo was never woken (and so never
-/// refused), and the reviewer was asked again.
+/// refused), and its review was asked for again: of the next reviewer, since a review turn
+/// with neither verdict passes its reviewer over (D26).
 #[test]
 fn work_waiting_for_its_review_is_no_failure_of_its_holder() {
     let clock = Hands(AtomicI64::new(NOON));
@@ -2305,9 +2306,15 @@ fn work_waiting_for_its_review_is_no_failure_of_its_holder() {
         .filter(|w| w.reason != WakeReason::Assigned)
         .collect();
     assert!(bo_after.is_empty(), "the holder is not woken: {bo_after:?}");
-    let asked = wakes_on(&hq, reviewer, fix)
+    let asked: Vec<_> = hq
+        .wakes()
+        .unwrap()
         .into_iter()
-        .filter(|w| w.reason == WakeReason::ReviewRequested)
-        .count();
-    assert!(asked >= 2, "the reviewer is asked again: {asked}");
+        .filter(|w| w.task == Some(fix) && w.reason == WakeReason::ReviewRequested)
+        .collect();
+    assert!(asked.len() >= 2, "the review is asked for again: {asked:?}");
+    assert!(
+        asked.iter().any(|w| w.member != reviewer),
+        "the next reviewer is asked: {asked:?}"
+    );
 }

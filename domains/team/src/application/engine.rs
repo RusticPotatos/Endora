@@ -1399,6 +1399,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
+        // A new ask is a new review: nobody is passed over on it yet (D26).
+        self.review_starts_again(task.id)?;
         // What can be judged by rule is judged first (ADR 0142, amended 2026-10-30): a branch
         // that touches a forbidden path goes back without a reviewer.
         if self.checked_at_review(task)? {

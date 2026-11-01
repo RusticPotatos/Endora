@@ -11,6 +11,9 @@ use crate::domain::{
     TaskStatus, WakeReason,
 };
 
+/// The setting that keeps, by item, the reviewers passed over on its review (D26).
+const PASSED_OVER: &str = "review_passed_over:";
+
 /// The five members and their models, ranked (ADR 0142).
 const SEATS: [(&str, Brain); 5] = [
     ("Mara", Brain::Opus),
@@ -236,21 +239,92 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
     /// the top rank's work the member just below it; never above Haiku's rank for work done
     /// below it (amended 2026-10-31, D7: [`crate::domain::review::reviewer_among`]). `None` for
-    /// work outside the loops. Nobody reviews work she had a hand in ([`Self::had_a_hand_in`]).
+    /// work outside the loops. Nobody reviews work she had a hand in ([`Self::had_a_hand_in`]),
+    /// nor this review again once her turn on it ended with no verdict ([`Self::passed_over`]).
     pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
         let Some(holder) = self.loop_holder(task)? else {
             return Ok(None);
         };
-        let hands = self.had_a_hand_in(task.id)?;
+        let mut not_them = self.had_a_hand_in(task.id)?;
+        not_them.extend(self.passed_over(task.id)?);
         let members: Vec<Member> = self
             .loop_members()?
             .into_iter()
-            .filter(|m| m.id == holder.id || !hands.contains(&m.id))
+            .filter(|m| m.id == holder.id || !not_them.contains(&m.id))
             .collect();
         let ranked: Vec<_> = members.iter().map(|m| (m.id, m.brain.rank())).collect();
         let reviewer =
             crate::domain::review::reviewer_among(holder.id, holder.brain.rank(), &ranked);
         Ok(reviewer.and_then(|id| members.into_iter().find(|m| m.id == id)))
+    }
+
+    /// The reviewers passed over on an item's review as it stands: their review turn ended with
+    /// neither verdict (D26). Cleared when the item is asked for review again.
+    pub(super) fn passed_over(&self, task: TaskId) -> Done<Vec<MemberId>> {
+        Ok(self
+            .store
+            .setting(&format!("{PASSED_OVER}{}", task.0))?
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.parse().ok().map(MemberId))
+            .collect())
+    }
+
+    /// Clears the reviewers passed over on an item: its review starts again.
+    pub(super) fn review_starts_again(&self, task: TaskId) -> Done<()> {
+        self.store
+            .set_setting(&format!("{PASSED_OVER}{}", task.0), "")?;
+        Ok(())
+    }
+
+    /// After a turn that ended (the lock held), D26 of round 3: Rae reviewed three items with
+    /// one checkout each and ended with no verdict and no post, and each sat in review. A review
+    /// turn that ends with neither verdict, the item still in review and still hers to review,
+    /// and not out of room (which goes on afresh), is recorded as not done: she is passed over,
+    /// and the next reviewer by the same rule is asked, or with nobody left, the owner.
+    pub(super) fn after_review_turn(&self, run: &crate::application::ports::Run) -> Done<()> {
+        let Some(task) = run.task else {
+            return Ok(());
+        };
+        if self.reason_for(run)? != WakeReason::ReviewRequested.name()
+            || self.ran_out_of_room(run)?
+        {
+            return Ok(());
+        }
+        let found = self.task(task)?;
+        if found.status != TaskStatus::InReview
+            || self
+                .loop_reviewer_of(&found)?
+                .is_none_or(|r| r.id != run.member)
+        {
+            return Ok(());
+        }
+        let mut over = self.passed_over(task)?;
+        over.push(run.member);
+        let kept: Vec<String> = over.iter().map(|m| m.0.to_string()).collect();
+        self.store
+            .set_setting(&format!("{PASSED_OVER}{}", task.0), &kept.join(","))?;
+        let name = self.member(run.member)?.name;
+        let said = format!("{name}'s review ended with neither verdict: not done.");
+        let Some(next) = self.loop_reviewer_of(&found)? else {
+            self.post_held_lock(super::Author::Endora, task, &said)?;
+            return self.ask_about_the_item(
+                task,
+                None,
+                &format!(
+                    "Nobody is left to review #{}: each review turn on it ended with neither \
+                     verdict. Read it yourself, or move it back to work.",
+                    task.0
+                ),
+            );
+        };
+        self.post_held_lock(
+            super::Author::Endora,
+            task,
+            &format!("{said} {} reviews this.", next.name),
+        )?;
+        self.wake_held_lock(next.id, Some(task), WakeReason::ReviewRequested)?;
+        Ok(())
     }
 
     /// The members who had a hand in an item's work (D24 of round 3: Ada reviewed and closed
