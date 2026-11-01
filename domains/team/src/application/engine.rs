@@ -2224,7 +2224,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
+        // A downtime turn queued before a round of the experiment began waits for its close
+        // (ADR 0142, amended 2026-11-01).
+        let round = self.round_running()?;
         for run in queued {
+            if round && self.reason_for(&run)? == WakeReason::Downtime.name() {
+                continue;
+            }
             let Some(run) = self.task_still_open(run, &tasks)? else {
                 continue;
             };

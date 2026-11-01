@@ -2,14 +2,19 @@
 //! HQ asks to stop, reports and removes the ones that ended (killing any past thirty
 //! minutes), and while it has room asks HQ for the next turn and starts it in a fresh
 //! container. HQ names only the run and its token; everything else about the container is
-//! the runner's own, so HQ cannot choose the image, the mounts or the network.
+//! the runner's own, so HQ cannot choose the image, the mounts or the network. In the workbench
+//! a turn on an item has that item's sandbox at `/work`, kept between the item's turns by a
+//! keeper and let go when HQ says the item is closed or it has been idle three days (ADR 0142,
+//! amended 2026-11-01); HQ's word picks only which item's, by the task it already names.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use endora_kernel::exit_code::{NEVER_STARTED_EXIT, UNREADABLE_EXIT};
 use serde_json::{Value, json};
 
-use crate::docker::{CHECK_LABEL, Docker, LEASE_LABEL, RUN_LABEL, State, WATCHTOWER_LABEL};
+use crate::docker::{
+    CHECK_LABEL, Docker, ITEM_LABEL, LEASE_LABEL, RUN_LABEL, State, WATCHTOWER_LABEL,
+};
 use crate::hq::{Ending, Hq, HqError};
 
 /// The longest a turn's container runs before it is killed, in seconds.
@@ -199,6 +204,64 @@ pub fn check_spec(work: &Work, job: &CheckJob) -> Value {
 /// A workbench's `/work`: in memory, gone with the container, owned by the image's user.
 const WORK_FOLDER: &str = "size=256m,uid=10001,gid=10001,mode=0700";
 
+/// An item's sandbox (ADR 0142, amended 2026-11-01): a `/work` like [`WORK_FOLDER`] (in memory,
+/// the same size and owner, and `noexec` as Docker mounts a tmpfs), but in a volume named for
+/// the item, which its keeper holds mounted between the item's turns, so a later turn, by any
+/// member, finds it as the last one left it.
+const ITEM_FOLDER: &str = "size=256m,uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev";
+
+/// How long an item's sandbox is kept with no turn started on it before it goes, in seconds:
+/// three days. A closed item's goes at once.
+pub const LONGEST_IDLE: u64 = 3 * 24 * 60 * 60;
+
+/// How often the runner asks HQ which items' sandboxes to keep, in seconds.
+const SWEEP_EVERY: u64 = 60;
+
+/// The volume of an item's sandbox: one an item, never shared.
+pub fn item_volume(task: u64) -> String {
+    format!("endora-item-{task}")
+}
+
+/// The mount of an item's sandbox at `/work`: its volume, made on first use as a tmpfs owned by
+/// the workbench's user, and never filled from the image (`NoCopy`), which would hand it to root.
+fn item_mount(task: u64) -> Value {
+    json!({
+        "Type": "volume",
+        "Source": item_volume(task),
+        "Target": "/work",
+        "VolumeOptions": {
+            "NoCopy": true,
+            "Labels": { ITEM_LABEL: task.to_string() },
+            "DriverConfig": {
+                "Name": "local",
+                "Options": { "type": "tmpfs", "device": "tmpfs", "o": ITEM_FOLDER },
+            },
+        },
+    })
+}
+
+/// The body of `POST /containers/create` for an item's keeper: the workbench image asleep, on no
+/// network, with nothing but the item's sandbox mounted, which it holds between the item's turns
+/// (a tmpfs volume is emptied when no container has it mounted). It runs nothing a turn gives it.
+pub fn keeper_spec(work: &Work, task: u64) -> Value {
+    json!({
+        "Image": work.image,
+        "Entrypoint": ["sleep", "infinity"],
+        "Labels": { ITEM_LABEL: task.to_string(), WATCHTOWER_LABEL: "false" },
+        "HostConfig": {
+            "NetworkMode": "none",
+            "Memory": 16 * 1024 * 1024,
+            "NanoCpus": 100_000_000_i64,
+            "PidsLimit": 8,
+            "ReadonlyRootfs": true,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges:true"],
+            "Tmpfs": { "/data": "size=1m" },
+            "Mounts": [item_mount(task)],
+        },
+    })
+}
+
 /// A turn HQ handed out, once checked. Not `Debug`: it holds the turn's token.
 pub struct Turn {
     run: u64,
@@ -339,8 +402,9 @@ impl Turn {
 /// The body of `POST /containers/create` for a turn: the worker image and the fixed fence,
 /// with the turn's own run, lease and token and nothing else of HQ's but its brain, which
 /// picks one of the runner's own two relays (and names the model and its effort, for
-/// Claude).
-pub fn spec(work: &Work, turn: &Turn) -> Value {
+/// Claude). With `kept`, the item whose sandbox it has: its `/work` is that item's, kept between
+/// the item's turns, instead of one of its own.
+pub fn spec(work: &Work, turn: &Turn, kept: Option<u64>) -> Value {
     let mut env = vec![
         format!("ENDORA_RUN_TOKEN={}", turn.token),
         format!("ENDORA_HQ_MCP={}", work.hq_mcp),
@@ -374,7 +438,8 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
     // The workbench's shell and git, unless HQ says the turn has none (ADR 0115, amended):
     // then the worker offers neither, in the same fence.
     let shell = work.workbench && turn.shell;
-    if work.workbench {
+    let kept = kept.filter(|_| work.workbench);
+    if work.workbench && kept.is_none() {
         tmpfs["/work"] = json!(WORK_FOLDER);
     }
     if shell {
@@ -410,6 +475,9 @@ pub fn spec(work: &Work, turn: &Turn) -> Value {
         // workbench reaches the gateway by address, and needs none.
         spec["HostConfig"]["Dns"] = json!([NO_RESOLVER]);
     }
+    if let Some(task) = kept {
+        spec["HostConfig"]["Mounts"] = json!([item_mount(task)]);
+    }
     spec
 }
 
@@ -423,6 +491,8 @@ struct Running {
     container: String,
     /// When it started, in seconds since the Unix epoch.
     since: u64,
+    /// The item whose kept sandbox it has, if it has one.
+    item: Option<u64>,
 }
 
 /// A check job's container the runner is watching (ADR 0115).
@@ -446,6 +516,15 @@ pub struct Runner<D> {
     /// The trouble last said about each thing, so one that lasts is said once, not every
     /// two seconds.
     said: BTreeMap<&'static str, String>,
+    /// The items' keepers, by item: the container holding each item's sandbox between its
+    /// turns (ADR 0142, amended 2026-11-01).
+    keepers: BTreeMap<u64, String>,
+    /// When a turn last started on each kept item, in seconds since the Unix epoch.
+    used: BTreeMap<u64, u64>,
+    /// The items let go whose volumes Docker has not removed yet: tried again at each sweep.
+    volumes_left: BTreeSet<u64>,
+    /// When HQ was last asked which items' sandboxes to keep.
+    swept: u64,
 }
 
 impl<D: Docker> Runner<D> {
@@ -459,6 +538,10 @@ impl<D: Docker> Runner<D> {
             checking: Vec::new(),
             stopping: BTreeSet::new(),
             said: BTreeMap::new(),
+            keepers: BTreeMap::new(),
+            used: BTreeMap::new(),
+            volumes_left: BTreeSet::new(),
+            swept: 0,
         }
     }
 
@@ -497,16 +580,162 @@ impl<D: Docker> Runner<D> {
                 lease,
                 container: container.id,
                 since: container.created,
+                item: None,
             });
+        }
+        self.take_back_keepers();
+    }
+
+    /// Takes back the items' keepers an earlier runner left, so their sandboxes go on being
+    /// kept; a second keeper of one item is removed.
+    fn take_back_keepers(&mut self) {
+        let keepers = match self.docker.keepers() {
+            Ok(keepers) => keepers,
+            Err(e) => {
+                eprintln!("runner: could not look for the items' kept sandboxes: {e}");
+                return;
+            }
+        };
+        for keeper in keepers {
+            let Ok(item) = keeper.item.parse::<u64>() else {
+                continue;
+            };
+            if self.keepers.contains_key(&item) {
+                if let Err(e) = self.docker.remove(&keeper.id) {
+                    eprintln!("runner: could not remove item {item}'s second keeper: {e}");
+                }
+                continue;
+            }
+            println!("runner: item {item}'s sandbox was kept by an earlier runner; taken back");
+            self.keepers.insert(item, keeper.id);
         }
     }
 
-    /// One round: stops, endings, then new turns. `now` is seconds since the Unix epoch.
+    /// One round: stops, endings, the items' sandboxes, then new turns. `now` is seconds since
+    /// the Unix epoch.
     pub fn step(&mut self, now: u64) {
         self.stop_asked();
         self.check(now);
         self.watch_checks(now);
+        self.sweep(now);
         self.fill(now);
+    }
+
+    /// Whether a turn running now has `item`'s sandbox.
+    fn in_use(&self, item: u64) -> bool {
+        self.running.iter().any(|t| t.item == Some(item))
+    }
+
+    /// The item whose sandbox `turn` is to have, kept between the item's turns (ADR 0142,
+    /// amended 2026-11-01): a workbench turn with a shell on an item. `None` (a sandbox of its
+    /// own, gone with it, as before) for any other turn, for a second turn on an item while one
+    /// runs (two never share one), and when the item's keeper cannot be had.
+    fn sandbox_for(&mut self, turn: &Turn, now: u64) -> Option<u64> {
+        let item = turn.task?;
+        if !self.work.workbench || !turn.shell {
+            return None;
+        }
+        if self.in_use(item) {
+            println!(
+                "runner: run {} is on item {item} beside a running turn: a sandbox of its own",
+                turn.run
+            );
+            return None;
+        }
+        if let Err(e) = self.keep(item) {
+            eprintln!(
+                "runner: item {item}'s sandbox cannot be kept ({e}): run {} has one of its own",
+                turn.run
+            );
+            return None;
+        }
+        self.used.insert(item, now);
+        Some(item)
+    }
+
+    /// Makes sure `item`'s keeper runs: the one it has, or a new one (one that stopped took what
+    /// it held with it, and a new one keeps an empty sandbox).
+    fn keep(&mut self, item: u64) -> Result<(), String> {
+        if let Some(id) = self.keepers.get(&item).cloned() {
+            if self.docker.inspect(&id)? == Some(State::Running) {
+                return Ok(());
+            }
+            self.keepers.remove(&item);
+            if let Err(e) = self.docker.remove(&id) {
+                eprintln!("runner: could not remove item {item}'s stopped keeper: {e}");
+            }
+        }
+        let id = self.docker.create(&keeper_spec(&self.work, item))?;
+        if let Err(e) = self.docker.start(&id) {
+            if let Err(e) = self.docker.remove(&id) {
+                eprintln!("runner: could not remove item {item}'s keeper: {e}");
+            }
+            return Err(e);
+        }
+        self.keepers.insert(item, id);
+        self.volumes_left.remove(&item);
+        Ok(())
+    }
+
+    /// Lets go of the items' sandboxes no longer wanted, at most every [`SWEEP_EVERY`]: an item
+    /// HQ says is closed (done, dropped or blocked), or one with no turn started on it for
+    /// [`LONGEST_IDLE`]; never one a running turn has. Its keeper is removed, then its volume.
+    fn sweep(&mut self, now: u64) {
+        if self.keepers.is_empty() && self.volumes_left.is_empty() {
+            return;
+        }
+        if now.saturating_sub(self.swept) < SWEEP_EVERY {
+            return;
+        }
+        self.swept = now;
+        let items: Vec<u64> = self.keepers.keys().copied().collect();
+        let open = if items.is_empty() {
+            None
+        } else {
+            match self.hq.sandboxes(&items) {
+                Ok(keep) => Some(keep),
+                // An HQ without the route says nothing: only idleness lets one go.
+                Err(HqError::Answered(_)) => None,
+                Err(e) => {
+                    self.trouble("HQ", &e.to_string());
+                    None
+                }
+            }
+        };
+        for item in items {
+            if self.in_use(item) {
+                continue;
+            }
+            // A sandbox taken back from an earlier runner is idle from the first sweep after.
+            let last = *self.used.entry(item).or_insert(now);
+            let why = if open.as_ref().is_some_and(|keep| !keep.contains(&item)) {
+                "its item is closed"
+            } else if now.saturating_sub(last) > LONGEST_IDLE {
+                "no turn on it for three days"
+            } else {
+                continue;
+            };
+            let Some(id) = self.keepers.remove(&item) else {
+                continue;
+            };
+            if let Err(e) = self.docker.remove(&id) {
+                eprintln!("runner: could not remove item {item}'s keeper: {e}");
+                self.keepers.insert(item, id);
+                continue;
+            }
+            println!("runner: item {item}'s sandbox is let go: {why}");
+            self.used.remove(&item);
+            self.volumes_left.insert(item);
+        }
+        for item in std::mem::take(&mut self.volumes_left) {
+            if self.in_use(item) || self.keepers.contains_key(&item) {
+                continue;
+            }
+            if let Err(e) = self.docker.remove_volume(&item_volume(item)) {
+                eprintln!("runner: could not remove item {item}'s sandbox yet: {e}");
+                self.volumes_left.insert(item);
+            }
+        }
     }
 
     /// How many turns and checks run now.
@@ -768,7 +997,8 @@ impl<D: Docker> Runner<D> {
 
     /// Starts a turn in a fresh container, or reports it failed.
     fn start(&mut self, turn: &Turn, now: u64) {
-        let container = match self.docker.create(&spec(&self.work, turn)) {
+        let item = self.sandbox_for(turn, now);
+        let container = match self.docker.create(&spec(&self.work, turn, item)) {
             Ok(container) => container,
             Err(e) => {
                 eprintln!("runner: could not make run {}'s container: {e}", turn.run);
@@ -795,6 +1025,7 @@ impl<D: Docker> Runner<D> {
             lease: turn.lease,
             container,
             since: now,
+            item,
         });
     }
 
@@ -871,6 +1102,8 @@ mod tests {
         turns: Arc<Mutex<VecDeque<Value>>>,
         stops: Arc<Mutex<Vec<u64>>>,
         seen: Arc<Mutex<Vec<(String, Value)>>>,
+        /// The items HQ says are closed: their sandboxes go.
+        closed: Arc<Mutex<Vec<u64>>>,
     }
 
     impl FakeHq {
@@ -880,7 +1113,9 @@ mod tests {
             let turns = Arc::new(Mutex::new(VecDeque::from(turns)));
             let stops = Arc::new(Mutex::new(Vec::new()));
             let seen = Arc::new(Mutex::new(Vec::new()));
+            let closed: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
             let (to_hand, to_stop, kept) = (turns.clone(), stops.clone(), seen.clone());
+            let shut = closed.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
@@ -938,6 +1173,17 @@ mod tests {
                             200,
                             json!({ "runs": std::mem::take(&mut *to_stop.lock().unwrap()) }),
                         ),
+                        "POST /v1/runner/sandboxes" => {
+                            let shut = shut.lock().unwrap();
+                            let keep: Vec<u64> = body["items"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_u64)
+                                .filter(|i| !shut.contains(i))
+                                .collect();
+                            (200, json!({ "keep": keep }))
+                        }
                         a if a.starts_with("POST /v1/runner/") && a.ends_with("/ended") => {
                             (200, json!({}))
                         }
@@ -961,6 +1207,7 @@ mod tests {
                 turns,
                 stops,
                 seen,
+                closed,
             }
         }
 
@@ -1035,6 +1282,8 @@ mod tests {
         stderr: BTreeMap<String, String>,
         /// The containers whose log Docker will not give.
         no_log: BTreeSet<String>,
+        /// Each container made with an item's label, and the item.
+        items: BTreeMap<String, String>,
     }
 
     /// Docker, pretending; a clone sees the same containers.
@@ -1085,6 +1334,9 @@ mod tests {
             docker.made += 1;
             let id = format!("c{}", docker.made);
             docker.specs.push(spec.clone());
+            if let Some(item) = spec["Labels"][ITEM_LABEL].as_str() {
+                docker.items.insert(id.clone(), item.to_owned());
+            }
             docker
                 .containers
                 .insert(id.clone(), State::Exited(NEVER_STARTED_EXIT));
@@ -1133,6 +1385,26 @@ mod tests {
         }
         fn left(&self) -> Result<Vec<Left>, String> {
             Ok(self.0.lock().unwrap().left.clone())
+        }
+        fn keepers(&self) -> Result<Vec<crate::docker::Keeper>, String> {
+            let docker = self.0.lock().unwrap();
+            Ok(docker
+                .items
+                .iter()
+                .filter(|(id, _)| docker.containers.contains_key(*id))
+                .map(|(id, item)| crate::docker::Keeper {
+                    id: id.clone(),
+                    item: item.clone(),
+                })
+                .collect())
+        }
+        fn remove_volume(&self, name: &str) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .calls
+                .push(format!("remove volume {name}"));
+            Ok(())
         }
     }
 
@@ -1295,7 +1567,7 @@ mod tests {
             check_done: format!("{gateway}/team-gateway/runner/check/"),
         };
         let env_of = |handed: &Value| {
-            let started = spec(&pi, &Turn::from_hq(handed).expect("a turn"));
+            let started = spec(&pi, &Turn::from_hq(handed).expect("a turn"), None);
             (
                 started["Env"]
                     .as_array()
@@ -1331,6 +1603,8 @@ mod tests {
     fn a_workbench_turn_has_its_own_offline_work_folder_and_reaches_only_the_gateway() {
         let mut handed = turn(12);
         handed["env"] = json!(["HTTPS_PROXY=http://192.168.1.10:3128"]);
+        // A turn on no item: its `/work` is its own, gone with it (an item's is kept, below).
+        handed["task"] = Value::Null;
         let hq = FakeHq::new(vec![handed]);
         let docker = FakeDocker::default();
         let gateway = "http://192.168.1.10:8788";
@@ -1405,7 +1679,8 @@ mod tests {
             check_done: format!("{gateway}/team-gateway/runner/check/"),
         };
         let handed = |run: u64, brain: &str, runtime: Value| {
-            let mut t = turn(run);
+            // On no item, so no keeper is made beside them.
+            let mut t = turn_on(run, None);
             t["brain"] = json!(brain);
             t["runtime"] = runtime;
             t
@@ -2027,5 +2302,227 @@ mod tests {
             assert!(docker.specs().is_empty(), "{odd}: no container");
             assert_eq!(hq.told(), [(30, false)], "{odd}");
         }
+    }
+
+    /// The Pi's runner: workbench turns on the sandbox network.
+    fn pi_work(capacity: usize) -> Work {
+        let gateway = "http://192.168.1.10:8788";
+        Work {
+            image: "endora-workbench:latest".to_owned(),
+            network: "endora_sandbox".to_owned(),
+            model_url: format!("{gateway}/team-relay/local/v1"),
+            cloud_url: format!("{gateway}/team-relay/v1"),
+            hq_mcp: format!("{gateway}/team-gateway/v2/mcp"),
+            capacity,
+            workbench: true,
+            check_bundle: format!("{gateway}/team-relay/check/"),
+            check_done: format!("{gateway}/team-gateway/runner/check/"),
+        }
+    }
+
+    /// A turn on item `task`.
+    fn turn_on(run: u64, task: Option<u64>) -> Value {
+        let mut handed = turn(run);
+        handed["task"] = json!(task);
+        handed
+    }
+
+    /// The item mounted at `/work` in a container's spec, if one is.
+    fn item_at_work(spec: &Value) -> Option<String> {
+        spec["HostConfig"]["Mounts"]
+            .as_array()?
+            .iter()
+            .find(|m| m["Target"] == "/work")
+            .and_then(|m| m["Source"].as_str().map(str::to_owned))
+    }
+
+    /// Round 3 of HQ's experiment: 255 `repo_checkout` calls for nine tasks, because every turn
+    /// started in an empty sandbox (D27). An item's turns, by any member, have one sandbox,
+    /// kept between them by a keeper that runs nothing; another item's turns have another; a
+    /// turn on no item, or with no shell, has one of its own, gone with it, as before.
+    #[test]
+    fn an_items_turns_share_its_kept_sandbox_and_no_other_item_does() {
+        let hq = FakeHq::new(vec![turn_on(12, Some(4))]);
+        let docker = FakeDocker::default();
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("kept")).unwrap(),
+            pi_work(1),
+        );
+        runner.step(T0);
+        assert_eq!(
+            docker.calls(),
+            ["create c1", "start c1", "create c2", "start c2"],
+            "the item's keeper first, then the turn"
+        );
+        let specs = docker.specs();
+        let keeper = &specs[0];
+        assert_eq!(keeper["Entrypoint"], json!(["sleep", "infinity"]));
+        assert_eq!(keeper["Labels"]["endora.item"], "4");
+        assert_eq!(
+            keeper["HostConfig"]["NetworkMode"], "none",
+            "it reaches nothing"
+        );
+        assert_eq!(keeper["HostConfig"]["ReadonlyRootfs"], true);
+        assert_eq!(keeper["HostConfig"]["CapDrop"], json!(["ALL"]));
+        assert!(
+            keeper.get("Env").is_none(),
+            "no token, nothing of the turn's"
+        );
+        let mount = &keeper["HostConfig"]["Mounts"][0];
+        assert_eq!(mount["Source"], "endora-item-4");
+        assert_eq!(mount["Target"], "/work");
+        assert_eq!(
+            mount["VolumeOptions"]["NoCopy"], true,
+            "never handed to root"
+        );
+        assert_eq!(
+            mount["VolumeOptions"]["DriverConfig"]["Options"],
+            json!({ "type": "tmpfs", "device": "tmpfs",
+                    "o": "size=256m,uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev" }),
+            "in memory, as big, owned and mounted as a turn's own /work"
+        );
+        let first = &specs[1];
+        assert_eq!(item_at_work(first).as_deref(), Some("endora-item-4"));
+        assert!(
+            first["HostConfig"]["Tmpfs"].get("/work").is_none(),
+            "{first}"
+        );
+        assert_eq!(
+            first["HostConfig"]["NetworkMode"], "endora_sandbox",
+            "the same fence"
+        );
+        assert_eq!(
+            first["HostConfig"]["ReadonlyRootfs"], true,
+            "the same fence"
+        );
+
+        // The turn ends; the keeper stays. The next turn on the item, another member's, has the
+        // same sandbox and no new keeper.
+        docker.exits("c2", 0);
+        let mut next = turn_on(13, Some(4));
+        next["member"] = json!("Jane Doe");
+        hq.turns.lock().unwrap().push_back(next);
+        runner.step(T0 + 10);
+        assert!(docker.containers().contains(&"c1".to_owned()), "kept");
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 3, "no second keeper: {specs:?}");
+        assert_eq!(item_at_work(&specs[2]).as_deref(), Some("endora-item-4"));
+
+        // Another item has a sandbox of its own; a turn on no item, or with no shell, its own.
+        docker.exits("c3", 0);
+        hq.turns.lock().unwrap().push_back(turn_on(14, Some(5)));
+        runner.step(T0 + 20);
+        let specs = docker.specs();
+        assert_eq!(specs[3]["Labels"]["endora.item"], "5");
+        assert_eq!(item_at_work(&specs[4]).as_deref(), Some("endora-item-5"));
+        docker.exits("c5", 0);
+        hq.turns.lock().unwrap().push_back(turn_on(15, None));
+        runner.step(T0 + 30);
+        let mut shellless = turn_on(16, Some(4));
+        shellless["shell"] = json!(false);
+        docker.exits("c6", 0);
+        hq.turns.lock().unwrap().push_back(shellless);
+        runner.step(T0 + 40);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 7, "{specs:?}");
+        for own in &specs[5..] {
+            assert_eq!(item_at_work(own), None, "{own}");
+            assert!(own["HostConfig"]["Tmpfs"]["/work"].is_string(), "{own}");
+        }
+
+        // A keeper that stopped took the sandbox with it: the next turn has a new one.
+        docker.exits("c7", 0);
+        docker.exits("c1", 137);
+        hq.turns.lock().unwrap().push_back(turn_on(17, Some(4)));
+        runner.step(T0 + 50);
+        let calls = docker.calls();
+        assert!(calls.contains(&"remove c1".to_owned()), "{calls:?}");
+        let specs = docker.specs();
+        assert_eq!(specs[7]["Labels"]["endora.item"], "4", "a new keeper");
+        assert_eq!(item_at_work(&specs[8]).as_deref(), Some("endora-item-4"));
+    }
+
+    /// Two turns on one item at once never share its sandbox: the second has one of its own.
+    #[test]
+    fn two_turns_on_one_item_at_once_do_not_share_a_sandbox() {
+        let hq = FakeHq::new(vec![turn_on(12, Some(4)), turn_on(13, Some(4))]);
+        let docker = FakeDocker::default();
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("kept-twice")).unwrap(),
+            pi_work(2),
+        );
+        runner.step(T0);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 3, "one keeper, two turns: {specs:?}");
+        assert_eq!(item_at_work(&specs[1]).as_deref(), Some("endora-item-4"));
+        assert_eq!(item_at_work(&specs[2]), None);
+        assert!(specs[2]["HostConfig"]["Tmpfs"]["/work"].is_string());
+    }
+
+    /// An item's sandbox goes when HQ says the item is closed (done, dropped or blocked), or
+    /// after three days with no turn started on it; never while a turn has it. Its keeper goes,
+    /// then its volume. A runner that restarts takes the keepers back.
+    #[test]
+    fn an_items_sandbox_goes_when_it_closes_or_after_three_idle_days() {
+        let hq = FakeHq::new(vec![turn_on(12, Some(4)), turn_on(13, Some(5))]);
+        let docker = FakeDocker::default();
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("kept-gone")).unwrap(),
+            pi_work(2),
+        );
+        runner.step(T0);
+        // Keepers c1 (item 4) and c3 (item 5); turns c2 and c4.
+        hq.closed.lock().unwrap().extend([4, 5]);
+        runner.step(T0 + SWEEP_EVERY + 1);
+        assert!(
+            !docker.calls().iter().any(|c| c.starts_with("remove")),
+            "a running turn has them: {:?}",
+            docker.calls()
+        );
+        docker.exits("c2", 0);
+        hq.closed.lock().unwrap().retain(|i| *i == 4);
+        runner.step(T0 + 2 * SWEEP_EVERY + 2);
+        let calls = docker.calls();
+        assert!(calls.contains(&"remove c1".to_owned()), "{calls:?}");
+        assert!(
+            calls.contains(&"remove volume endora-item-4".to_owned()),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.contains(&"remove c3".to_owned()),
+            "item 5 is open: {calls:?}"
+        );
+        let asked: Vec<Value> = hq
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(a, _)| a == "POST /v1/runner/sandboxes")
+            .map(|(_, b)| b["items"].clone())
+            .collect();
+        assert_eq!(asked.last(), Some(&json!([4, 5])), "{asked:?}");
+
+        // A runner that restarts takes the keeper of item 5 back, and lets it go once no turn
+        // has started on it for three days.
+        docker.exits("c4", 0);
+        let mut again = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file("kept-gone")).unwrap(),
+            pi_work(2),
+        );
+        again.take_back();
+        let later = T0 + 3 * SWEEP_EVERY;
+        again.step(later);
+        assert!(!docker.calls().contains(&"remove c3".to_owned()));
+        again.step(later + LONGEST_IDLE + SWEEP_EVERY);
+        let calls = docker.calls();
+        assert!(calls.contains(&"remove c3".to_owned()), "{calls:?}");
+        assert!(
+            calls.contains(&"remove volume endora-item-5".to_owned()),
+            "{calls:?}"
+        );
     }
 }

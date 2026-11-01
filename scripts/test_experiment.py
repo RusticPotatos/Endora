@@ -121,7 +121,7 @@ class Store:
 
 
 class FakeHq(http.server.ThreadingHTTPServer):
-    """The four routes `start` uses, writing to the temporary store as HQ would (minus all the
+    """The five routes `start` uses, writing to the temporary store as HQ would (minus all the
     rest HQ does); refuses a missing or wrong token."""
 
     daemon_threads = True
@@ -131,6 +131,7 @@ class FakeHq(http.server.ThreadingHTTPServer):
         self.store = store
         self.calls = []
         self.solo = {}
+        self.round = []
 
     @property
     def url(self):
@@ -199,6 +200,9 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
             data = {"task": cur.lastrowid, "project": body.get("project"), "status": "todo"}
             Store.event(db, T0 + 999 * MIN, "task.created", data)
             return {"task": cur.lastrowid}
+        if parts == ["round"]:
+            self.server.round.extend(body["items"])
+            return {"items": self.server.round, "running": True}
         if parts[0] == "tasks" and parts[2] == "project":
             db.execute("UPDATE tasks SET project = ? WHERE id = ?", (body["project"], int(parts[1])))
             return {"task": int(parts[1]), "project": body["project"]}
@@ -247,6 +251,9 @@ class Start(unittest.TestCase):
         self.assertEqual(self.hq.calls[0][1]["title"], "Round 1 (archived)")
         self.assertEqual(self.hq.calls[0][1]["lead"], 2)
         self.assertEqual(done["archived"], {"project": 10, "tasks": [3, 4]})
+        # Last, HQ is told the round's tasks: no downtime while any is open.
+        self.assertEqual(self.hq.calls[-1], ("/v1/round", {"items": [6, 7]}))
+        self.assertTrue(done["downtime_paused"])
         db = self.store.db()
         statuses = dict(db.execute("SELECT id, status FROM tasks WHERE id IN (3,4,5)").fetchall())
         self.assertEqual(statuses, {3: "dropped", 4: "dropped", 5: "done"})
@@ -279,7 +286,7 @@ class Start(unittest.TestCase):
         code, out = run(self.base + ["start", "--round", "2", "--from-tasks", "1-2", "--yes"])
         self.assertEqual(code, 0, out)
         self.assertIsNone(json.loads(out)["archived"])
-        self.assertEqual([p for p, _ in self.hq.calls], ["/v1/tasks", "/v1/tasks"])
+        self.assertEqual([p for p, _ in self.hq.calls], ["/v1/tasks", "/v1/tasks", "/v1/round"])
 
     def test_refuses_a_project_no_longer_active(self):
         db = self.store.db()
@@ -314,7 +321,8 @@ class StartSolo(unittest.TestCase):
         self.assertEqual(code, 0, out)
         done = json.loads(out)
         paths = [p for p, _ in self.hq.calls]
-        self.assertEqual(paths, ["/v1/projects", "/v1/tasks", "/v1/tasks"])
+        self.assertEqual(paths, ["/v1/projects", "/v1/tasks", "/v1/tasks", "/v1/round"])
+        self.assertEqual(self.hq.round, [6, 7], "the solo arm's tasks join the round")
         made = self.hq.calls[0][1]
         self.assertEqual((made["lead"], made["solo"], made["goal"]), (3, 3, 1))
         self.assertEqual(made["title"], "Round 4 solo (richard roe)")

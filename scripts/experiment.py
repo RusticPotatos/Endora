@@ -33,7 +33,11 @@ Where things are, from the environment (each also a flag, which wins):
     HQ_URL         HQ's API, for `start` only             (default http://127.0.0.1:8790; --url)
     HQ_TOKEN_FILE  the file holding HQ's bearer token     (--token-file); never printed
 
-`start` without `--yes` only says what it would do. With `--solo NAME` it starts round 4's
+`start` without `--yes` only says what it would do. With `--yes` it also tells HQ the round's
+tasks (`POST /v1/round`, ADR 0142, amended 2026-11-01): no downtime or chess turn starts while
+any of them is open, so the round has the runner and the models to itself. Both arms' starts
+add up; a round whose items are all done or dropped is over on its own, and
+`POST /v1/round {"close": true}` ends one sooner. With `--solo NAME` it starts round 4's
 solo arm ("one member, one long turn, no ladder", ADR 0142, amended 2026-11-01): the tasks are
 made in a project of their own, `Round N solo (NAME)`, worked by that member alone, so the
 team's arm and the solo arm share no loop; nothing is archived, since the team's arm of the
@@ -833,6 +837,9 @@ def run_round(conn, hq, plan):
         if s["project"] is not None:
             body["project"] = s["project"]
         made_tasks.append({"from": s["from"], "task": hq.post("/v1/tasks", body)["task"]})
+    # No downtime while the round runs: HQ holds the round's tasks, the other arm's beside them.
+    ids = [m["task"] for m in made_tasks]
+    paused = hq.post("/v1/round", {"items": ids}).get("running", False)
     mismatches = []
     for s, m in zip(plan["sources"], made_tasks):
         copy = source_of(conn, m["task"])
@@ -844,7 +851,8 @@ def run_round(conn, hq, plan):
         "archived": archived,
         "solo": solo,
         "tasks": made_tasks,
-        "ids": [m["task"] for m in made_tasks],
+        "ids": ids,
+        "downtime_paused": paused,
         "warnings": [w for s in plan["sources"] for w in s["lost"]] + plan.get("notes", []),
         "mismatches": mismatches,
     }

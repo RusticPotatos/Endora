@@ -1434,6 +1434,44 @@ fn has_no_downtime_turn(w: &mut Office, name: String) {
     assert!(w.downtime_turns(&name).is_empty());
 }
 
+/// A round of the experiment under way (ADR 0142, amended 2026-11-01), as
+/// `scripts/experiment.py start` sets it: its item, handed to `name`.
+#[given(regex = r#"^a round of the experiment is under way, with (\w+) working its item "(.+)"$"#)]
+fn a_round_runs(w: &mut Office, name: String, title: String) {
+    let goal = match w.goal {
+        Some(goal) => goal,
+        None => {
+            let goal =
+                w.hq.set_goal("Close the gap to Claude Code", "", Author::Owner)
+                    .expect("the owner sets a goal");
+            w.goal = Some(goal);
+            goal
+        }
+    };
+    let to = w.member(&name);
+    let made = w.hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    );
+    let task = w.note(made).expect("the owner hands it out");
+    w.hq.add_to_round(&[task]).expect("the round is set");
+}
+
+#[when(regex = r#"^the round's item "(.+)" is dropped$"#)]
+fn the_rounds_item_is_dropped(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    w.hq.drop_task(task).expect("the owner drops it");
+}
+
 #[when(regex = r"^(\w+) tries to create a task in her downtime turn$")]
 fn tries_to_make_work(w: &mut Office, name: String) {
     w.use_tool(

@@ -374,7 +374,25 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if woken_for == Some(crate::domain::WakeReason::Downtime) {
         list.retain(|t| t["name"] == "my_turn" || t["name"] == "chess");
     }
+    // No protocol moves (D30 of round 3): a turn on an item its member holds already has its
+    // briefing (the worker reads `my_turn` for it before the first round) and the item, so it
+    // is offered neither `my_turn` nor `claim`. HQ still answers both, for the worker.
+    if holds_its_item(engine, run, member) {
+        list.retain(|t| t["name"] != "my_turn" && t["name"] != "claim");
+    }
     all
+}
+
+/// Whether `run` is on an item its `member` holds (D30 of round 3): one handed to it, or one it
+/// goes on with after a handover.
+fn holds_its_item<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> bool {
+    run.task
+        .and_then(|t| engine.store().task(t).ok().flatten())
+        .is_some_and(|task| task.holder() == Some(member.id))
 }
 
 /// The most a member writes in one post: a thread is read by every turn after it.

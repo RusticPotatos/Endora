@@ -25,6 +25,18 @@ Feature: The open office
     Then Bo's turn runs on "local"
     And the pool has paid nothing
 
+  # Seed (round 3, 1 Nov): downtime and chess turns kept running beside the round's items, on the
+  # house's model and in the runner's places. The owner: cut the time-wasters while a round runs.
+  Scenario: Downtime waits while a round of the experiment is under way
+    Given downtime is on
+    And a round of the experiment is under way, with Cy working its item "Pin the images"
+    When a tick passes
+    Then Ada has no downtime turn
+    And Bo has no downtime turn
+    When the round's item "Pin the images" is dropped
+    And a tick passes
+    Then Ada has a downtime turn that costs nothing
+
   Scenario: Chess is played by the rules
     Given downtime is on
     When a tick passes

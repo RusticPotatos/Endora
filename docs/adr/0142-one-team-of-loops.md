@@ -842,3 +842,89 @@ item of each at once; the round's script makes one such loop a member. A round s
 `scripts/experiment.py start --round N --from-tasks <ids> --solo <name>`, which makes the tasks
 in a project of their own, `Round N solo (<name>)`, worked by that member alone, and archives
 nothing. Scenario: `features/one-member-works-a-loop-alone.feature`.
+
+## Amended 2026-11-01: an item keeps its sandbox between its turns (round 4, item E)
+
+Round 3's piping audit (the experiment's record, "Rounds side by side" and item E): 295 turns
+for nine tasks, 246 of them changing nothing by HQ's own flag, and 255 `repo_checkout` calls,
+because every turn started in an empty sandbox (D27) and checked the fork out again. The owner,
+1 Nov: cut the time-wasters, "let the agents be agents".
+
+- **An item's sandbox is kept between its turns, by any member.** On the Pi's runner (the
+  workbench), a turn with a shell on an item has `/work` in the item's own volume,
+  `endora-item-<task>`: a tmpfs, as before (256 MB, owned by the workbench's user, `noexec`,
+  `nosuid`, `nodev`, never filled from the image), which a keeper container holds mounted
+  between the item's turns, since a tmpfs volume is emptied when nothing has it mounted. The
+  keeper is the workbench image asleep (`sleep infinity`), on no network, read-only, with no
+  capabilities, 16 MB, labelled `endora.item=<task>`; it holds no token and runs nothing a turn
+  gives it. A later turn on the item finds `/work/repo`, committed or not, where the last turn
+  left it. Items never share a sandbox, and two turns on one item at once do not either: the
+  second has a `/work` of its own. The runner's word picks the volume; HQ's picks only which
+  item's, by the task it already names in each turn it hands out.
+- **It goes when the item closes, or after three idle days.** Every minute the runner asks HQ
+  (`POST /v1/runner/sandboxes`, `{"items": [...]}`, through the gateway on the Pi) which of the
+  items it keeps sandboxes for are open; a done, dropped or blocked item's keeper is removed,
+  then its volume (`TaskStatus::keeps_its_sandbox`). One with no turn started on it for three
+  days goes too, and an HQ that does not know the route lets idleness alone decide. A runner
+  that restarts takes the keepers back by their label. A keeper that stopped (the Pi rebooted,
+  Docker restarted) took the sandbox with it: the next turn has a new, empty one, which the
+  wording below allows for. Work worth keeping beyond that is kept as before, on the node, as a
+  submitted or work-in-progress branch.
+- **What a turn is told.** The handover's kept-work line, the shell tool's description and the
+  instructions say "Your sandbox keeps the item's work between turns; /work/repo is there if a
+  turn checked it out", replacing D27's "starts empty each turn" and "gone when the turn ends";
+  the handover still names the kept branch, to check out if `/work/repo` is not there. The
+  reviewer's paragraph no longer says its work is gone either.
+- **`repo_checkout` on a checkout already there says so.** For a member who may submit, a
+  checkout of no branch, or of a branch the kept checkout has, asks the node for nothing: it says
+  where `/work/repo` stands (its branch, head and uncommitted changes) and that the member should
+  go on from it, and takes the checkout over for that member (its commits carry their trailer).
+  `refresh: true` (a new optional input of the contract) fetches the node's latest into it as
+  `node/<branch>`, beside the work and never over it, for the member to rebase on; to start over
+  the member removes `/work/repo` in the shell. A reviewer, who reads what was submitted, has it
+  from the node every time, as before (which replaces the checkout: by then the work is
+  submitted). Every rule of the wing is unchanged: the forbidden paths, the submission's checks,
+  no remote and nothing pushed from the sandbox.
+- **A Claude Code turn's ledger is its own.** The bridge keeps a turn's calls in
+  `/work/.endora/did.json`; the worker removes it before Claude Code starts, so an earlier turn's
+  calls, or its question to the owner, are never read as this turn's.
+
+Where it does not apply: the NAS's runner starts no workbench (no shell and no `/work`), so it
+has nothing to keep and is unchanged; and Claude Code's own session is still not resumed between
+turns (ADR 0117's "per-task `--resume`" stays an alternative), though its folder now lives in the
+kept `/work`. Scenario: `features/a-long-item-makes-progress-across-turns.feature` ("An item keeps
+its sandbox between its turns until it is closed"); the runner's, the worker's and HQ's tests
+hold the rest.
+
+## Amended 2026-11-01: no protocol moves (round 4, D30)
+
+The house-model replay of 1 Nov and round 3's store: turns opened with `my_turn`, which repeats
+the briefing the first message already holds, and `claim`, for an item already theirs, and both
+models asked `find_tools` for tools they were already offered.
+
+- **A turn on the item its member holds is offered neither `my_turn` nor `claim`**
+  (`protocol::tools_for_turn`): the item was handed to the member, or it goes on with it after a
+  handover, and the worker has already read the briefing and claimed for it before the first
+  round, as before. HQ still answers both calls, for the worker and for a model that asks
+  anyway. A turn on an item someone else holds (a review) keeps them.
+- **`find_tools` asked for a tool the turn already has says so, at no cost to the turn.** By
+  name, or by a search every part of whose name it says ("container logs" names
+  `container_logs`), it answers "Already yours: … Call it directly." A round in which every call
+  was such an answer is not counted against the turn's rounds, two at most; its bytes still count
+  against the budget.
+
+Scenario: `features/a-turn-spends-no-moves-on-the-protocol.feature`; the worker's end-to-end
+test stands for `find_tools`'s.
+
+## Amended 2026-11-01: downtime waits while a round runs (round 4)
+
+Downtime and chess turns (wake reason `downtime`) ran beside a round's items, taking the
+runner's places and the house's model from the work being measured. Now none starts while a
+round of the experiment is under way: HQ's setting `round_running` holds the round's items, and
+while any of them is neither done nor dropped, no member is given a downtime turn, no chess move
+is picked up, and a downtime turn queued before the round began stays queued. The round lapses
+on its own once every item is finished; `POST /v1/round` with `{"items": [...]}` adds a round's
+items (both arms' starts add up, finished ones are let go), `{"close": true}` ends it sooner, and
+`GET /v1/round` says what it holds. `scripts/experiment.py start --yes` sets it with the tasks it
+makes. Scenario: `features/the-office.feature` ("Downtime waits while a round of the experiment
+is under way").

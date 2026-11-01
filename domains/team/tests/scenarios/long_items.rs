@@ -1,6 +1,7 @@
 //! The steps of `features/a-long-item-makes-progress-across-turns.feature` (ADR 0142, amended
 //! 2026-10-31, D12): a turn reads the newest handover, not every one; the work a turn leaves is
-//! kept for the next; and a turn out of room that kept new work is no failure.
+//! kept for the next; and a turn out of room that kept new work is no failure. And (amended
+//! 2026-11-01) an item keeps its sandbox between its turns until it is closed.
 
 use cucumber::{then, when};
 use serde_json::json;
@@ -175,4 +176,46 @@ fn forks_tools_up_front(w: &mut Office, name: String, title: String) {
 fn reads_say(w: &mut Office, name: String, title: String, text: String) {
     let read = w.reads_of(&name, &title);
     assert!(read.contains(&text), "{read}");
+}
+
+/// Of `title` and an item HQ has no task for, the ones whose sandboxes HQ tells the runner to
+/// go on keeping (ADR 0142, amended 2026-11-01).
+fn sandboxes_kept(w: &Office, title: &str) -> Vec<endora_team::domain::TaskId> {
+    let task = w.task(title);
+    w.hq.sandboxes_to_keep(&[task, endora_team::domain::TaskId(999_999)])
+        .expect("the store answers")
+}
+
+#[then(regex = r#"^the runner keeps the sandbox of "(.+)"$"#)]
+fn runner_keeps(w: &mut Office, title: String) {
+    assert_eq!(sandboxes_kept(w, &title), [w.task(&title)]);
+}
+
+#[then(regex = r#"^the runner lets the sandbox of "(.+)" go$"#)]
+fn runner_lets_go(w: &mut Office, title: String) {
+    assert!(sandboxes_kept(w, &title).is_empty());
+}
+
+/// D30 of round 3: a turn on the item its member holds is offered neither `my_turn` nor `claim`
+/// (`features/a-turn-spends-no-moves-on-the-protocol.feature`).
+#[then(regex = r#"^(\w+)'s turn on "(.+)" is offered neither my_turn nor claim$"#)]
+fn no_protocol_moves(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let context = w.turn_of(&name);
+    assert_eq!(context.task, Some(task), "{name}'s turn is on {title:?}");
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    let listed = endora_team::application::protocol::tools_in(&w.hq, &run, &member);
+    let names: Vec<&str> = listed
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(names.contains(&"post"), "{names:?}");
+    for gone in ["my_turn", "claim"] {
+        assert!(!names.contains(&gone), "{gone} in {names:?}");
+    }
 }

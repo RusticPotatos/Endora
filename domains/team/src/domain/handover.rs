@@ -314,10 +314,13 @@ impl KeptWork {
             "submitted"
         };
         // D27 of round 3: an empty sandbox read as an offline one, and the item was blocked.
+        // Since round 4 the sandbox keeps the item's work between turns (ADR 0142, amended
+        // 2026-11-01); the kept branch is where the work is when it does not.
         format!(
-            "Your sandbox starts empty each turn: check out the kept branch first. Its work so \
-             far is on {} at {at} ({what}): start with repo_checkout with branch {} and go on \
-             from it; do not start again.\n",
+            "Your sandbox keeps the item's work between turns; /work/repo is there if a turn \
+             checked it out. Its work so far is kept on {} at {at} ({what}) too: if /work/repo \
+             is not there, start with repo_checkout with branch {} and go on from it; do not \
+             start again.\n",
             self.branch, self.branch
         )
     }
@@ -552,11 +555,13 @@ mod tests {
             let told = compose(&h, chars_for(brain));
             let line = told.lines().nth(1).unwrap_or("");
             // D27 of round 3: Bo met an empty sandbox, ran `git init`, and took the failures
-            // for an offline one. The line says first that it starts empty.
+            // for an offline one. Since round 4 the sandbox keeps the item's work (ADR 0142,
+            // amended 2026-11-01): the line says so first, then where else the work is kept.
             assert!(
                 line.starts_with(
-                    "Your sandbox starts empty each turn: check out the kept branch first. Its \
-                     work so far is on hq/task-7-gluetun at 3c1cc497e55d"
+                    "Your sandbox keeps the item's work between turns; /work/repo is there if a \
+                     turn checked it out. Its work so far is kept on hq/task-7-gluetun at \
+                     3c1cc497e55d"
                 ),
                 "{told}"
             );

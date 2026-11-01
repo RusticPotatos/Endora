@@ -1228,6 +1228,95 @@ fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Round 3 of HQ's experiment: 255 `repo_checkout` calls for nine tasks, each turn checking the
+/// fork out again into an empty sandbox (D27). The sandbox now keeps the item's work between
+/// turns (ADR 0142, amended 2026-11-01): a `repo_checkout` that finds the checkout there says
+/// so, keeps the work as it is (uncommitted changes and all) and asks the node for nothing.
+/// (The worker has no scenario suite; this end-to-end test stands for one.)
+#[test]
+fn a_checkout_kept_from_an_earlier_turn_is_said_to_be_there_and_not_made_again() {
+    let dir = std::env::temp_dir().join(format!("endora-kept-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    git_in(
+        &repo,
+        &["checkout", "-q", "-b", "hq/task-7-secret-defaults"],
+    );
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Kit) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    // What an earlier turn, Kit's, wrote and did not commit.
+    std::fs::write(repo.join("rule.py"), "class SecretDefault: ...\n").unwrap();
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        ),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }));
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[(
+                "call_1",
+                "repo_checkout",
+                r#"{"branch": "hq/task-7-secret-defaults", "why": "to go on"}"#,
+            )]),
+        ),
+        (200, says("Going on from it.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert!(
+        !to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path == "/team-relay/contracts/repo_checkout"),
+        "the node is not asked"
+    );
+    let told = to_model.lock().unwrap()[1].body.to_string();
+    assert!(
+        told.contains(
+            "Already checked out: your sandbox kept it from an earlier turn on this item."
+        ),
+        "{told}"
+    );
+    assert!(told.contains("with 1 uncommitted change"), "{told}");
+    assert!(told.contains("refresh: true"), "{told}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("rule.py")).unwrap(),
+        "class SecretDefault: ...\n",
+        "the work is as it was"
+    );
+    let noted = std::fs::read_to_string(dir.join("checkout.json")).unwrap();
+    assert!(
+        noted.contains("(Jane) for task #7"),
+        "the member's own trailer: {noted}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// D28 of round 3 (item 950): every head kept as work in progress added only Python's
 /// `__pycache__/*.pyc`, and the handover called it new work. A turn out of room whose sandbox
 /// holds nothing but byproducts sends nothing to keep. (The worker has no scenario suite; this
@@ -1642,12 +1731,12 @@ fn the_shell_is_offered_only_in_the_workbench() {
     let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
     assert!(!system.contains("You cannot run commands"), "{system}");
     assert!(
-        system.contains("You have a real shell in a disposable sandbox"),
+        system.contains("You have a real shell in a sandbox"),
         "{system}"
     );
     assert!(
         system.contains(
-            "It starts empty each turn, and anything you leave in /work is gone when the turn ends"
+            "Your sandbox keeps the item's work between turns; /work/repo is there if a turn checked it out."
         ),
         "{system}"
     );
@@ -2316,6 +2405,47 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// ADR 0142, amended 2026-11-01: the sandbox keeps the item's work between turns, and with it
+/// the ledger of an earlier Claude Code turn's calls. A turn reads only its own: an earlier
+/// turn's question to the owner and its calls are not this turn's.
+#[test]
+fn a_claude_code_turn_in_a_kept_sandbox_says_only_what_it_did_itself() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("kept-ledger");
+    let work = dir.join("work");
+    std::fs::create_dir_all(work.join(".endora")).unwrap();
+    std::fs::write(
+        work.join(".endora").join("did.json"),
+        json!({ "calls": [["restarted sonarr", false, "done"]], "asked": true, "over": null })
+            .to_string(),
+    )
+    .unwrap();
+    let result = json!({ "type": "result", "subtype": "success", "is_error": false,
+        "result": "Looked again.", "session_id": "s", "total_cost_usd": 0.001, "num_turns": 1 });
+    let claude = stand_in(&dir, &result);
+    let out = worker(&with_claude_code(
+        &hq_url,
+        "http://192.168.1.10:8788",
+        &node_url,
+        &work,
+        &claude,
+    ));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let posted = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|s| s.body["params"]["name"] == "post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone())
+        .expect("its last word");
+    let text = posted.as_str().unwrap();
+    assert!(text.contains("This turn made no tool calls."), "{text}");
+    assert!(!text.contains("sonarr"), "{text}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn a_claude_code_turn_the_relay_ended_exits_3_and_a_broken_one_1() {
     for (result, code) in [
@@ -2655,6 +2785,52 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
     assert!(
         found.contains("sonarr_queue"),
         "the model is told what was added: {found}"
+    );
+}
+
+/// D30 of round 3 (the house-model replay, 1 Nov): both models asked `find_tools` for tools
+/// already offered. `find_tools` says it is already theirs, by name or by what a search names,
+/// and such a round costs the turn none of its rounds (a few at most).
+#[test]
+fn find_tools_asked_for_a_tool_already_offered_says_so_at_no_cost_to_the_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (200, calls(&[("c1", "find_tools", r#"{"names":["post"]}"#)])),
+        (
+            200,
+            calls(&[("c2", "find_tools", r#"{"query":"container logs"}"#)]),
+        ),
+        (200, says("Read the logs.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_MOST_ROUNDS", "2".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_model = to_model.lock().unwrap().clone();
+    assert_eq!(
+        to_model.len(),
+        3,
+        "two rounds that cost nothing, then the answer"
+    );
+    let told = to_model[1].body["messages"].to_string();
+    assert!(
+        told.contains("Already yours: post. Call it directly."),
+        "{told}"
+    );
+    let told = to_model[2].body["messages"].to_string();
+    assert!(told.contains("Already yours: container_logs."), "{told}");
+    assert!(!told.contains("Nothing matched"), "{told}");
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone())
+        .expect("its last word");
+    assert!(
+        last.as_str().unwrap().starts_with("Read the logs."),
+        "answered, not out of rounds: {last}"
     );
 }
 

@@ -269,6 +269,14 @@ impl TaskStatus {
     pub const fn finished(self) -> bool {
         matches!(self, Self::Done | Self::Dropped)
     }
+
+    /// Whether a task in this status keeps its sandbox between turns (ADR 0142, amended
+    /// 2026-11-01): while it is open. Done, dropped or blocked, the runner lets it go; work worth
+    /// keeping is kept on the node as a branch.
+    #[must_use]
+    pub const fn keeps_its_sandbox(self) -> bool {
+        !self.finished() && !matches!(self, Self::Blocked)
+    }
 }
 
 /// How soon a task matters.
@@ -885,6 +893,16 @@ mod tests {
             brain: crate::domain::brain::Brain::Haiku,
             furloughed_at: None,
             recalled_at: None,
+        }
+    }
+
+    #[test]
+    fn an_open_item_keeps_its_sandbox_and_a_closed_one_lets_it_go() {
+        for open in [TaskStatus::Todo, TaskStatus::Doing, TaskStatus::InReview] {
+            assert!(open.keeps_its_sandbox(), "{open:?}");
+        }
+        for closed in [TaskStatus::Done, TaskStatus::Dropped, TaskStatus::Blocked] {
+            assert!(!closed.keeps_its_sandbox(), "{closed:?}");
         }
     }
 

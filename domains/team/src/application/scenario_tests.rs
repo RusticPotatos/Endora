@@ -101,7 +101,8 @@ fn a_match_is_played_through_its_tool_alone_and_no_word_closes_it() {
     offered.sort();
     assert_eq!(
         offered,
-        ["claim", "my_turn", "post", "scenario", "set_status"]
+        // The game is the member's: no protocol moves (D30).
+        ["post", "scenario", "set_status"]
     );
     assert!(!hq.may_use_a_shell(run.id).unwrap());
     use_tool(&hq, &w, "claim", &json!({ "task": game.0 })).unwrap();
