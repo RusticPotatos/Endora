@@ -219,6 +219,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         calls: Vec::new(),
     };
     offered.extend(contracts);
+    mark_up_front(&mut offered, &listed);
     // In the workbench, the sandbox's own shell: run here, never sent to HQ or the node, so a
     // tool of theirs named the same is left out.
     let shell = setup
@@ -591,6 +592,20 @@ fn rules_for_found(found: &[Value], rules_later: &mut Option<String>) -> Option<
     rules_later.take().filter(|r| !r.trim().is_empty())
 }
 
+/// HQ's mark on the node's tools a turn is offered up front (D27 of round 3), which it cannot
+/// put on a tool it does not list: the names in its listing's own `_meta`, put on each such
+/// tool as the mark HQ puts on its own. Only what is offered is marked; the mark grants nothing.
+pub(crate) fn mark_up_front(offered: &mut [Value], listed: &Value) {
+    let Some(names) = listed["_meta"][UP_FRONT].as_array() else {
+        return;
+    };
+    for tool in offered.iter_mut() {
+        if names.iter().any(|n| *n == tool["name"]) {
+            tool["_meta"] = json!({ UP_FRONT: true });
+        }
+    }
+}
+
 /// Whether a house turn is offered `tool` in its first call: HQ's core, what HQ marks for the
 /// turn's kind, the workbench's shell, and on a turn with a task [`ON_A_TASK`].
 fn up_front(tool: &Value, task: bool) -> bool {
@@ -904,10 +919,10 @@ pub(crate) fn instructions(
     if shell {
         told.push_str(
             "\n\nYou have a real shell in a disposable sandbox: run commands, git and \
-             python there with the shell tool, and say why. The sandbox is offline: neither the \
-             internet nor the house's services are reachable from the shell, so use the house \
-             through the team's tools. Anything you leave in /work is gone when the \
-             turn ends: write durable findings in the task's thread",
+             python there with the shell tool, and say why. The sandbox has no internet, and the \
+             house's services are not reachable from the shell, so use the house through the \
+             team's tools. It starts empty each turn, and anything you leave in /work is gone \
+             when the turn ends: write durable findings in the task's thread",
         );
         told.push_str(if lessons {
             ", or as a story with tell_story."
@@ -1816,8 +1831,9 @@ fn shell_tool() -> Value {
         "name": SHELL,
         "description": "Run a command with bash in your sandbox, in /work, and read what it \
             printed (stdout and stderr together, its start and end when long) and its exit \
-            code. The sandbox is offline: neither the internet nor the house's services are \
-            reachable from it. Nothing you leave here outlives the turn.",
+            code. The sandbox has no internet, and the house's services are not reachable from \
+            it. It starts empty each turn: the fork comes in with repo_checkout (git clone and \
+            fetch cannot reach it), and nothing you leave here outlives the turn.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3815,6 +3831,20 @@ mod tests {
         assert!(told.ends_with("That reply goes in your task's thread."));
     }
 
+    /// D27 of round 3: "The sandbox is offline" led the house model, meeting an empty sandbox,
+    /// to take its own `git init` failures for no network and give up. The shell says what the
+    /// sandbox lacks and how the fork comes in.
+    #[test]
+    fn the_shell_says_the_sandbox_starts_empty_and_how_the_fork_comes_in() {
+        let about = shell_tool()["description"].as_str().unwrap().to_owned();
+        assert!(!about.contains("offline"), "{about}");
+        assert!(about.contains("no internet"), "{about}");
+        assert!(about.contains("starts empty each turn"), "{about}");
+        assert!(about.contains("repo_checkout"), "{about}");
+        let told = instructions(true, &lab(), true, true);
+        assert!(!told.contains("offline"), "{told}");
+    }
+
     #[test]
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
         let told = instructions(true, &lab(), true, true);
@@ -3830,10 +3860,11 @@ mod tests {
         assert_eq!(
             parts[4],
             "You have a real shell in a disposable sandbox: run commands, git and python there \
-             with the shell tool, and say why. The sandbox is offline: neither the internet nor \
-             the house's services are reachable from the shell, so use the house through the \
-             team's tools. Anything you leave in /work is gone when the turn ends: write \
-             durable findings in the task's thread, or as a story with tell_story."
+             with the shell tool, and say why. The sandbox has no internet, and the house's \
+             services are not reachable from the shell, so use the house through the team's \
+             tools. It starts empty each turn, and anything you leave in /work is gone when the \
+             turn ends: write durable findings in the task's thread, or as a story with \
+             tell_story."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
         let told = instructions(true, &[], false, true);

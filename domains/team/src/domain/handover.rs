@@ -313,9 +313,11 @@ impl KeptWork {
         } else {
             "submitted"
         };
+        // D27 of round 3: an empty sandbox read as an offline one, and the item was blocked.
         format!(
-            "Its work so far is on {} at {at} ({what}): start with repo_checkout with branch {} \
-             and go on from it; do not start again.\n",
+            "Your sandbox starts empty each turn: check out the kept branch first. Its work so \
+             far is on {} at {at} ({what}): start with repo_checkout with branch {} and go on \
+             from it; do not start again.\n",
             self.branch, self.branch
         )
     }
@@ -549,8 +551,13 @@ mod tests {
         for brain in [Brain::Local, Brain::Sonnet] {
             let told = compose(&h, chars_for(brain));
             let line = told.lines().nth(1).unwrap_or("");
+            // D27 of round 3: Bo met an empty sandbox, ran `git init`, and took the failures
+            // for an offline one. The line says first that it starts empty.
             assert!(
-                line.starts_with("Its work so far is on hq/task-7-gluetun at 3c1cc497e55d"),
+                line.starts_with(
+                    "Your sandbox starts empty each turn: check out the kept branch first. Its \
+                     work so far is on hq/task-7-gluetun at 3c1cc497e55d"
+                ),
                 "{told}"
             );
             assert!(

@@ -2318,3 +2318,47 @@ fn work_waiting_for_its_review_is_no_failure_of_its_holder() {
         "the next reviewer is asked: {asked:?}"
     );
 }
+
+/// The fork's tools HQ marks up front for one turn, by name.
+fn fork_up_front(hq: &Hq<'_>, context: &super::ports::RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::node_tools_up_front(hq, &run, &member)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// D27 of round 3 (1 Nov): on the house model, Bo met a fresh, empty sandbox with
+/// `repo_checkout` and `repo_submit` held back beside weather and news tools, and took his own
+/// `git init` failures for an offline sandbox. A turn on a loop's item marks the fork's tools
+/// up front: both for its holder, the checkout alone for its reviewer; none where the loop's
+/// own list of tools leaves the fork out.
+#[test]
+fn a_loop_item_marks_the_forks_tools_up_front_for_its_turn() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let holder = assignee(&hq, fix).expect("the item is handed out");
+    let working = turn_of(&hq, holder);
+    assert_eq!(fork_up_front(&hq, &working), ["repo_checkout", "repo_submit"]);
+    use_tool(&hq, &working, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &working,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Done.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(working.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    let review = turn_of(&hq, reviewer);
+    assert_eq!(fork_up_front(&hq, &review), ["repo_checkout"]);
+    // A loop whose list of tools leaves the fork out marks none.
+    hq.set_project_tools(f.loop_, Some(vec!["homelab_status".to_owned()]))
+        .unwrap();
+    assert!(fork_up_front(&hq, &review).is_empty());
+}

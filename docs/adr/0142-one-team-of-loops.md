@@ -765,3 +765,18 @@ rule changed here, with a scenario of what happened.
     newest submission, if its check passed, is listed on Manage as `kept_blocked` with a bundle
     to download. It is not accepted and HQ never pushes it; moving the item back to work is the
     owner's, as before.
+- **D27. A loop's item has the fork's tools up front, and the sandbox is said to start
+  empty.** On item 950, Bo (the house model) did call `repo_checkout` when he found it behind
+  `find_tools`, but in the turns that asked the owner and the one that blocked he met a fresh,
+  empty sandbox, ran `git init` with a made-up remote, and took the failures for "the sandbox
+  is offline". On the house model the fork's tools stayed held back beside weather and news
+  tools. Now HQ's `tools/list` carries, in its own `_meta` under `endora/up_front`, the node's
+  tools a turn on a loop's item loads up front (`protocol::node_tools_up_front`):
+  `repo_checkout` and `repo_submit` for the member who holds it, `repo_checkout` for its
+  reviewer, none where the loop's own list of tools leaves the fork out. The worker puts HQ's
+  mark on those tools, so they load up front on the house's model and on Claude as D19 made
+  HQ's own marks load (Claude Code loads every tool the bridge offers, so holds none back). The
+  handover's line on kept work now begins "Your sandbox starts empty each turn: check out the
+  kept branch first." The shell's description and the instructions no longer say "offline":
+  the sandbox has no internet, starts empty each turn, and the fork comes in with
+  `repo_checkout`.

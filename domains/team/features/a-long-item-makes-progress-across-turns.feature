@@ -49,3 +49,11 @@ Feature: A long item makes progress across turns
     And Ada passes "A lint rule for secret defaults" on a reading of her own
     Then it is not refused
     And the task "A lint rule for secret defaults" is done
+
+  # Seed (round 3, 950, D27): on the house model Bo met a fresh, empty sandbox with the fork's
+  # tools held back beside weather and news tools, ran git init with a made-up remote, took the
+  # failures for an offline sandbox, and blocked the item.
+  Scenario: A turn on a loop's item has the fork's tools up front, and is told its sandbox starts empty
+    When Kit's turn on "A lint rule for secret defaults" runs out of room, keeping its work on "secret-defaults"
+    Then Kit's turn on "A lint rule for secret defaults" loads the fork's checkout and submit up front
+    And what Kit reads of "A lint rule for secret defaults" says "Your sandbox starts empty each turn: check out the kept branch first."

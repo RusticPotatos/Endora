@@ -140,6 +140,17 @@ fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
 
 /// The same, listing `listed` as the turn's tools.
 fn hq_listing(listed: Value, stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
+    hq_listing_with(listed, Value::Null, stopped, moves)
+}
+
+/// As [`hq_listing`], with `meta` as the listing's own `_meta` when it is not null: HQ's mark
+/// on the node's tools a turn is offered up front (D27).
+fn hq_listing_with(
+    listed: Value,
+    meta: Value,
+    stopped: Option<&'static str>,
+    moves: bool,
+) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         let id = sent.body["id"].clone();
         let tool = sent.body["params"]["name"].as_str().unwrap_or("");
@@ -156,7 +167,8 @@ fn hq_listing(listed: Value, stopped: Option<&'static str>, moves: bool) -> (Str
                 "serverInfo": { "name": "endora-hq", "version": "0" },
             }),
             m if m.starts_with("notifications/") => return (202, String::new()),
-            "tools/list" => json!({ "tools": listed }),
+            "tools/list" if meta.is_null() => json!({ "tools": listed }),
+            "tools/list" => json!({ "tools": listed, "_meta": meta }),
             "tools/call" => {
                 let (text, refused) = match tool {
                     "my_turn" => (BRIEFING, false),
@@ -1507,7 +1519,9 @@ fn the_shell_is_offered_only_in_the_workbench() {
         "{system}"
     );
     assert!(
-        system.contains("Anything you leave in /work is gone when the turn ends"),
+        system.contains(
+            "It starts empty each turn, and anything you leave in /work is gone when the turn ends"
+        ),
         "{system}"
     );
     assert!(
@@ -2568,6 +2582,76 @@ fn a_claude_turn_loads_what_hq_marks_for_its_kind() {
         .expect("consult is sent");
     assert!(consult.get("defer_loading").is_none(), "{consult}");
     assert!(!tools.to_string().contains("up_front"), "{tools}");
+}
+
+/// Many of the node's contracts, with the wing's git among them.
+fn many_contracts_and_the_fork() -> Value {
+    let mut all = many_contracts();
+    for (name, kind, what) in [
+        ("repo_checkout", "read", "Check out the fork."),
+        ("repo_submit", "act", "Submit a branch."),
+    ] {
+        all.as_array_mut().unwrap().push(json!({ "name": name, "kind": kind,
+            "description": what, "inputSchema": { "type": "object", "properties": {} } }));
+    }
+    all
+}
+
+/// HQ's mark on the fork's tools for a loop item that checks it out (D27).
+fn marks_the_fork() -> Value {
+    json!({ "endora/up_front": ["repo_checkout", "repo_submit"] })
+}
+
+/// Live, 1 Nov 2026 (D27): on the house model, Bo met a fresh, empty sandbox with
+/// `repo_checkout` and `repo_submit` held back beside weather and news tools; he ran `git
+/// init` with a made-up remote, took the failures for an offline sandbox, and blocked the item.
+/// What HQ marks of the node's tools for the turn is offered up front, on the house's model and
+/// on Claude, and the mark never reaches the model.
+#[test]
+fn a_loop_item_that_checks_out_the_fork_has_its_git_up_front_on_every_runtime() {
+    let dir = std::env::temp_dir().join(format!("endora-d27-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let workbench = |env: &mut Vec<(&'static str, String)>| {
+        env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+        env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+        env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    };
+    // The house's model.
+    let (hq_url, _) = hq_listing_with(tools(), marks_the_fork(), None, false);
+    let (node_url, _) = node(many_contracts_and_the_fork(), None);
+    let (model_url, to_model) = model(vec![(200, says("Checked."))]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    workbench(&mut env);
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let first = offered(&to_model);
+    for git in ["repo_checkout", "repo_submit"] {
+        assert!(first.iter().any(|n| n == git), "{git}: {first:?}");
+    }
+    assert!(!first.iter().any(|n| n == "ha_lights"), "{first:?}");
+    let sent = to_model.lock().unwrap()[0].body["tools"].to_string();
+    assert!(!sent.contains("up_front"), "{sent}");
+    // Claude.
+    let (hq_url, _) = hq_listing_with(tools(), marks_the_fork(), None, false);
+    let (node_url, _) = node(many_contracts_and_the_fork(), None);
+    let (relay_url, to_relay) = model(vec![(200, claude("Checked.", &[]))]);
+    let mut env = on_claude(&hq_url, &relay_url, &node_url);
+    workbench(&mut env);
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let tools = to_relay.lock().unwrap()[0].body["tools"].clone();
+    for git in ["repo_checkout", "repo_submit"] {
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == git)
+            .cloned()
+            .unwrap_or_else(|| panic!("{git} is sent: {tools}"));
+        assert!(tool.get("defer_loading").is_none(), "{tool}");
+    }
+    assert!(!tools.to_string().contains("up_front"), "{tools}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The guard under on-demand tools: `find_tools` brings in only what HQ and the node listed for

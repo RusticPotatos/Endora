@@ -58,7 +58,14 @@ fn answer(
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
         "tools/list" => {
-            json!({ "tools": protocol::tools_in_v2(hq, run, member) })
+            let tools = protocol::tools_in_v2(hq, run, member);
+            // The node's tools the turn loads up front, which HQ does not list (D27).
+            let node = protocol::node_tools_up_front(hq, run, member);
+            if node.is_empty() {
+                json!({ "tools": tools })
+            } else {
+                json!({ "tools": tools, "_meta": { protocol::UP_FRONT: node } })
+            }
         }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");

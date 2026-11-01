@@ -433,6 +433,43 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tools_for_turn(engine, run, member)
 }
 
+/// The node's tools a turn is to be offered up front, which HQ names in its listing's own
+/// `_meta` (under [`UP_FRONT`]) since it does not list them itself (D27 of round 3): on a loop's
+/// item, the fork's checkout and submit for the member who holds it, and the checkout for its
+/// reviewer, unless the loop's own list of tools leaves the fork out. The worker loads them as
+/// it loads what HQ marks of its own; the node decides every call, as before.
+#[must_use]
+pub fn node_tools_up_front<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Vec<&'static str> {
+    const CHECKOUT: &str = "repo_checkout";
+    let Some(task) = run.task.and_then(|t| engine.store().task(t).ok().flatten()) else {
+        return Vec::new();
+    };
+    if !engine.loop_holds(&task).unwrap_or(false) {
+        return Vec::new();
+    }
+    if engine
+        .lab_tools_of(run.id)
+        .ok()
+        .flatten()
+        .is_some_and(|given| !given.iter().any(|g| g == CHECKOUT))
+    {
+        return Vec::new();
+    }
+    if task.holder() == Some(member.id) {
+        return vec![CHECKOUT, "repo_submit"];
+    }
+    let reviews = engine
+        .loop_reviewer_of(&task)
+        .ok()
+        .flatten()
+        .is_some_and(|r| r.id == member.id);
+    if reviews { vec![CHECKOUT] } else { Vec::new() }
+}
+
 /// Run a v2 tool through the existing token, authority, lineage and drain gates.
 /// This adapter cannot select the legacy task-thread consultation lifecycle.
 /// # Errors

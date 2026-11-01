@@ -157,3 +157,24 @@ fn failures_still_held(w: &mut Office, title: String, failures: u32, name: Strin
     assert_eq!(w.failures(&title), failures);
     assert_eq!(w.holder_of(&title), Some(name));
 }
+
+#[then(regex = r#"^(\w+)'s turn on "(.+)" loads the fork's checkout and submit up front$"#)]
+fn forks_tools_up_front(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let context = w.turn_of(&name);
+    assert_eq!(context.task, Some(task), "{name}'s turn is on {title:?}");
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    assert_eq!(
+        endora_team::application::protocol::node_tools_up_front(&w.hq, &run, &member),
+        ["repo_checkout", "repo_submit"]
+    );
+}
+
+#[then(regex = r#"^what (\w+) reads of "(.+)" says "(.+)"$"#)]
+fn reads_say(w: &mut Office, name: String, title: String, text: String) {
+    let read = w.reads_of(&name, &title);
+    assert!(read.contains(&text), "{read}");
+}

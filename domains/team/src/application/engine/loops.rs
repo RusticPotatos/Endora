@@ -364,7 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether an item is held by a member in the loops: its stalls and failures climb the
     /// ranks, not the ladder, and no guard of coordination looks at it.
-    pub(super) fn loop_holds(&self, task: &Task) -> Done<bool> {
+    pub(crate) fn loop_holds(&self, task: &Task) -> Done<bool> {
         Ok(self.loop_holder(task)?.is_some())
     }
 
