@@ -589,7 +589,7 @@ new agent, orchestration layer or scoring framework.
    Each round adds 2–3 tasks HQ has never seen, drawn from the real backlog and written the same
    way, scored apart: does an improvement carry over, or does HQ only get good at the ten?
 
-   **Round 4's fresh set** (drafted 1 Nov, from the fork's own gaps; same rules as the ten: the
+   **Round 4's fresh set** (drafted 1 Nov from the fork's own gaps, approved by the owner the same day; same rules as the ten: the
    fork's `develop` at `ee878f7` or read-only on the lab, nothing in inventories, `group_vars`,
    `host_vars` or vaults; code tasks end as a branch ready for review). One repeats a kind of the
    ten on roles HQ has not seen, to test carry-over; two are kinds the ten do not have.
