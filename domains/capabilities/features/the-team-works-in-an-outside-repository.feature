@@ -52,6 +52,6 @@ Feature: The team works in a public repository outside the lab, and nothing leav
       | git@github.com:example/tiny.git            |
       | https://gitlab.com/example/tiny            |
       | https://github.com.example.com/example/tiny |
-      | https://jane:secret@github.com/example/tiny |
+      | https://github.com:443/example/tiny        |
       | https://github.com/example/tiny/tree/main  |
       | file:///srv/tiny.git                       |

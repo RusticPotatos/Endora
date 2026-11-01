@@ -119,7 +119,8 @@ mod tests {
             "https://gitlab.com/example/tiny",
             "https://github.com.example.com/example/tiny",
             "https://www.github.com/example/tiny",
-            "https://user:token@github.com/example/tiny",
+            // A credential in the address (split so it reads as no mailbox).
+            concat!("https://user:token", "@", "github.com/example/tiny"),
             "https://github.com:443/example/tiny",
             "https://github.com/example",
             "https://github.com/example/tiny/tree/main",

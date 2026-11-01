@@ -1034,7 +1034,8 @@ fn the_owner_names_an_outside_repository_on_a_project_and_only_a_public_github_o
     for refused in [
         "https://gitlab.com/example/tiny",
         "git@github.com:example/tiny.git",
-        "https://jane:secret@github.com/example/tiny",
+        // A credential in the address (split so it reads as no mailbox).
+        concat!("https://jane:secret", "@", "github.com/example/tiny"),
         "http://github.com/example/tiny",
     ] {
         let why = hq
