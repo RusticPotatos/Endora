@@ -51,6 +51,11 @@ Settings.
   worker's last word or a reviewer's notes, and the limits) in the team's domain,
   `domains/team/src/domain/lessons.rs`. The owner edits them whole through
   `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
+- A loop's repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) is a setting
+  of its project (`project_repo:<project>`), set by the owner through
+  `/v1/hq/projects/{id}/repo`; the rule of which addresses may be named is the kernel's
+  (`shared/kernel/src/lab.rs`, `outside_repo`), and the node's mirrors of such repositories sit
+  in its data folder under `outside-repos/`, beside the fork's. No screen yet.
 - Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
   added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
   them can hold: **Work**
