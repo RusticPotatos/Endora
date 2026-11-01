@@ -1840,12 +1840,11 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         // Every member is offered the same tools, and none of the company's (ADR 0142): the
-        // work's, the record's, chess, and the map.
+        // work's, the record's, chess, and the map. The task is the member's, so neither
+        // `my_turn` nor `claim` (D30).
         assert_eq!(
             names,
             [
-                "my_turn",
-                "claim",
                 "post",
                 "set_status",
                 "create_task",

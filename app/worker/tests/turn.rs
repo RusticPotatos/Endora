@@ -2788,6 +2788,52 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
     );
 }
 
+/// D30 of round 3 (the house-model replay, 1 Nov): both models asked `find_tools` for tools
+/// already offered. `find_tools` says it is already theirs, by name or by what a search names,
+/// and such a round costs the turn none of its rounds (a few at most).
+#[test]
+fn find_tools_asked_for_a_tool_already_offered_says_so_at_no_cost_to_the_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (200, calls(&[("c1", "find_tools", r#"{"names":["post"]}"#)])),
+        (
+            200,
+            calls(&[("c2", "find_tools", r#"{"query":"container logs"}"#)]),
+        ),
+        (200, says("Read the logs.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_MOST_ROUNDS", "2".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_model = to_model.lock().unwrap().clone();
+    assert_eq!(
+        to_model.len(),
+        3,
+        "two rounds that cost nothing, then the answer"
+    );
+    let told = to_model[1].body["messages"].to_string();
+    assert!(
+        told.contains("Already yours: post. Call it directly."),
+        "{told}"
+    );
+    let told = to_model[2].body["messages"].to_string();
+    assert!(told.contains("Already yours: container_logs."), "{told}");
+    assert!(!told.contains("Nothing matched"), "{told}");
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone())
+        .expect("its last word");
+    assert!(
+        last.as_str().unwrap().starts_with("Read the logs."),
+        "answered, not out of rounds: {last}"
+    );
+}
+
 /// HQ's tools with `marked` carrying HQ's mark for a tool the turn is offered up front.
 fn tools_marking(marked: &str) -> Value {
     let mut listed = tools();

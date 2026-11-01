@@ -280,21 +280,25 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         // What the turn has read so far: every call's body, summed (ADR 0142, amended
         // 2026-10-30, after Ralph: every pass fits one fresh context window).
         let mut read = 0usize;
-        for round in 0..setup.most_rounds {
+        // The rounds counted against the turn's, and those spent only on asking find_tools for
+        // tools already offered, which cost the turn none (D30), up to [`FREE_ROUNDS`].
+        let (mut round, mut free) = (0u32, 0u32);
+        while round < setup.most_rounds {
+            let calls_made = round + free;
             let next = talk.body(&setup.model).to_string().len();
             // Counting the conversation, what the turn has read is the conversation it last sent.
             let so_far = if setup.counts_conversation { 0 } else { read };
-            if !has_room(round, so_far, next, setup.prompt_budget) {
+            if !has_room(calls_made, so_far, next, setup.prompt_budget) {
                 let reached = if setup.counts_conversation {
                     format!(
-                        "The turn's conversation reached its budget ({next} bytes after {round} \
-                         calls, of {})",
+                        "The turn's conversation reached its budget ({next} bytes after \
+                         {calls_made} calls, of {})",
                         setup.prompt_budget
                     )
                 } else {
                     format!(
-                        "The turn's prompt reached its budget ({read} bytes read over {round} \
-                         calls, of {})",
+                        "The turn's prompt reached its budget ({read} bytes read over \
+                         {calls_made} calls, of {})",
                         setup.prompt_budget
                     )
                 };
@@ -341,9 +345,12 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 on_the_way.push(said.text.trim().to_owned());
             }
             let mut replies = Vec::new();
+            // Whether every call this round only asked for tools the turn already has.
+            let mut only_already = true;
             for call in &said.calls {
                 if call.name == FIND_TOOLS {
                     let (found, mut reply) = find(&mut deferred, &talk.offered(), &call.arguments);
+                    only_already &= found.is_empty() && reply.text.starts_with(ALREADY_YOURS);
                     if let Some(rules) = rules_for_found(&found, &mut rules_later) {
                         reply.text = format!("{}\n\nThe rules for these tools:{rules}", reply.text);
                     }
@@ -351,6 +358,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                     replies.push((call.id.clone(), reply));
                     continue;
                 }
+                only_already = false;
                 let reply = match (&shell, setup.workbench.as_deref()) {
                     (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
                     (_, Some(dir)) if is_repo_tool(&call.name) => in_the_repo(
@@ -408,6 +416,11 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 }
             }
             talk.answered(replies);
+            if only_already && free < FREE_ROUNDS {
+                free += 1;
+                continue;
+            }
+            round += 1;
         }
         // Out of rounds, what it found so far goes in the thread, said to be unfinished: else
         // the next turn starts again from the thread alone.
@@ -541,6 +554,13 @@ const ON_A_TASK: [&str; 4] = [
 /// HQ's mark on a tool the turn's kind needs up front (`_meta`): a downtime turn's game, a
 /// review turn's verdict, a match's tool. It grants nothing: HQ decides every call.
 const UP_FRONT: &str = "endora/up_front";
+
+/// How `find_tools` begins its answer when every tool asked for is already the turn's.
+const ALREADY_YOURS: &str = "Already yours";
+
+/// The most rounds of a turn that cost it nothing because they only asked `find_tools` for tools
+/// it already had (D30 of round 3): past these, such a round counts like any other.
+const FREE_ROUNDS: u32 = 2;
 
 /// The most tools one `find_tools` call brings in by name.
 const NAMED_AT_MOST: usize = 8;
@@ -751,7 +771,20 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
             not_ours.push(name);
         }
     }
-    let (searched, mut text) = search(deferred, parsed["query"].as_str().unwrap_or(""));
+    let query = parsed["query"].as_str().unwrap_or("");
+    let (searched, mut text) = search(deferred, query);
+    // A search that finds nothing new but names a tool the turn already has says so (D30).
+    if searched.is_empty() {
+        let offered_matching = matching(offered, query);
+        if !offered_matching.is_empty() {
+            text = String::new();
+            for name in offered_matching {
+                if !already.contains(&name) {
+                    already.push(name);
+                }
+            }
+        }
+    }
     found.extend(searched);
     let line = |t: &Value| {
         let about = t["description"].as_str().unwrap_or("");
@@ -765,7 +798,10 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
         );
     }
     if !already.is_empty() {
-        text.push_str(&format!("\nAlready yours: {}.", already.join(", ")));
+        text.push_str(&format!(
+            "\n{ALREADY_YOURS}: {}. Call it directly.",
+            already.join(", ")
+        ));
     }
     if !not_ours.is_empty() {
         text.push_str(&format!(
@@ -782,6 +818,27 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
             moved_on: false,
         },
     )
+}
+
+/// The names in `offered` that `query` names, every part of the name a word of it ("repo
+/// checkout" names `repo_checkout`): a search for a tool the turn already has.
+fn matching(offered: &[String], query: &str) -> Vec<String> {
+    let query = query.to_lowercase();
+    let words: Vec<&str> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    offered
+        .iter()
+        .filter(|name| *name != FIND_TOOLS)
+        .filter(|name| {
+            let name = name.to_lowercase();
+            name.split('_')
+                .filter(|part| !part.is_empty())
+                .all(|part| words.contains(&part))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The deferred tools that best match `query`, taken out of `deferred`, and what the model is

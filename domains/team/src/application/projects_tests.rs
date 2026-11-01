@@ -453,7 +453,8 @@ fn a_projects_tools_are_all_its_turns_are_given_besides_their_own_four() {
 
     let mut offered = offered_by_hq(&hq, &context);
     offered.sort();
-    assert_eq!(offered, ["claim", "my_turn", "post", "set_status"]);
+    // The task is the lead's: no `my_turn` or `claim` to spend moves on (D30).
+    assert_eq!(offered, ["post", "set_status"]);
     assert_eq!(
         hq.lab_tools_of(run.id).unwrap(),
         Some(vec![
@@ -582,6 +583,8 @@ fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
         .unwrap()
         .iter()
         .filter(|tool| tool["name"] != "consult")
+        // The task is the developer's: no protocol moves (D30).
+        .filter(|tool| tool["name"] != "my_turn" && tool["name"] != "claim")
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(

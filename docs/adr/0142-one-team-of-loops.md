@@ -895,3 +895,23 @@ turns (ADR 0117's "per-task `--resume`" stays an alternative), though its folder
 kept `/work`. Scenario: `features/a-long-item-makes-progress-across-turns.feature` ("An item keeps
 its sandbox between its turns until it is closed"); the runner's, the worker's and HQ's tests
 hold the rest.
+
+## Amended 2026-11-01: no protocol moves (round 4, D30)
+
+The house-model replay of 1 Nov and round 3's store: turns opened with `my_turn`, which repeats
+the briefing the first message already holds, and `claim`, for an item already theirs, and both
+models asked `find_tools` for tools they were already offered.
+
+- **A turn on the item its member holds is offered neither `my_turn` nor `claim`**
+  (`protocol::tools_for_turn`): the item was handed to the member, or it goes on with it after a
+  handover, and the worker has already read the briefing and claimed for it before the first
+  round, as before. HQ still answers both calls, for the worker and for a model that asks
+  anyway. A turn on an item someone else holds (a review) keeps them.
+- **`find_tools` asked for a tool the turn already has says so, at no cost to the turn.** By
+  name, or by a search every part of whose name it says ("container logs" names
+  `container_logs`), it answers "Already yours: … Call it directly." A round in which every call
+  was such an answer is not counted against the turn's rounds, two at most; its bytes still count
+  against the budget.
+
+Scenario: `features/a-turn-spends-no-moves-on-the-protocol.feature`; the worker's end-to-end
+test stands for `find_tools`'s.

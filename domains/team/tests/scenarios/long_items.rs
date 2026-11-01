@@ -195,3 +195,27 @@ fn runner_keeps(w: &mut Office, title: String) {
 fn runner_lets_go(w: &mut Office, title: String) {
     assert!(sandboxes_kept(w, &title).is_empty());
 }
+
+/// D30 of round 3: a turn on the item its member holds is offered neither `my_turn` nor `claim`
+/// (`features/a-turn-spends-no-moves-on-the-protocol.feature`).
+#[then(regex = r#"^(\w+)'s turn on "(.+)" is offered neither my_turn nor claim$"#)]
+fn no_protocol_moves(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let context = w.turn_of(&name);
+    assert_eq!(context.task, Some(task), "{name}'s turn is on {title:?}");
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    let listed = endora_team::application::protocol::tools_in(&w.hq, &run, &member);
+    let names: Vec<&str> = listed
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(names.contains(&"post"), "{names:?}");
+    for gone in ["my_turn", "claim"] {
+        assert!(!names.contains(&gone), "{gone} in {names:?}");
+    }
+}

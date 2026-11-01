@@ -238,10 +238,12 @@ fn two_turns_share_their_prompts_opening() {
     // Measured before this change (round3-local at 79a24b06), the same way: 9,760 bytes shared
     // on a house model and 18,898 on Claude, the briefing differing from its first line, and no
     // breakpoint of Claude's where they ended, so no turn read another's from the cache. After:
-    // 10,466 and 19,604, with breakpoints at the system's end and the opening's.
+    // 10,466 and 19,604, with breakpoints at the system's end and the opening's. Since D30
+    // (round 4) a turn on its own item is not offered `my_turn` or `claim`: 424 bytes fewer of
+    // tools, 9,984 and 19,180, still shared up to who the member is.
     for (kind, a, b, floor) in [
-        ("house", &bo_house, &rae_house, 10_400),
-        ("Claude", &bo_claude, &rae_claude, 19_500),
+        ("house", &bo_house, &rae_house, 9_900),
+        ("Claude", &bo_claude, &rae_claude, 19_100),
     ] {
         let (a, b) = (as_cached(a), as_cached(b));
         let same = shared(&a, &b);

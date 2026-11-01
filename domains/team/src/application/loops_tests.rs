@@ -1011,9 +1011,11 @@ fn a_member_in_the_loops_is_offered_the_work_s_tools_alone() {
     ] {
         assert!(!offered.iter().any(|n| n == gone), "{gone} in {offered:?}");
     }
+    // The item is the member's: its briefing is read for it, so no protocol moves (D30).
+    for gone in ["my_turn", "claim"] {
+        assert!(!offered.iter().any(|n| n == gone), "{gone} in {offered:?}");
+    }
     for kept in [
-        "my_turn",
-        "claim",
         "post",
         "set_status",
         "create_task",
@@ -2432,4 +2434,58 @@ fn a_loop_item_marks_the_forks_tools_up_front_for_its_turn() {
     hq.set_project_tools(f.loop_, Some(vec!["homelab_status".to_owned()]))
         .unwrap();
     assert!(fork_up_front(&hq, &review).is_empty());
+}
+
+/// The tools HQ lists for one turn, by name.
+fn listed_for(hq: &Hq<'_>, context: &super::ports::RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// D30 of round 3 (1 Nov): the house-model replay and round 3's store show turns opening with
+/// `my_turn`, which repeats the briefing they already hold, and `claim`. A turn on the item its
+/// member holds is offered neither; HQ still answers both, for the worker that reads the
+/// briefing and claims before the first round. A reviewer, whose item it is not, keeps them.
+#[test]
+fn a_turn_on_its_own_item_is_offered_no_protocol_moves() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let holder = assignee(&hq, fix).expect("the item is handed out");
+    let working = turn_of(&hq, holder);
+    let listed = listed_for(&hq, &working);
+    for gone in ["my_turn", "claim"] {
+        assert!(!listed.iter().any(|n| n == gone), "{gone} in {listed:?}");
+    }
+    assert!(listed.iter().any(|n| n == "post"), "{listed:?}");
+    let briefing = use_tool(&hq, &working, "my_turn", &serde_json::json!({})).unwrap();
+    assert!(briefing.contains("Fix the lint"), "{briefing}");
+    use_tool(
+        &hq,
+        &working,
+        "claim",
+        &serde_json::json!({ "task": fix.0 }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &working,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Done.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(working.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    let review = turn_of(&hq, reviewer);
+    let listed = listed_for(&hq, &review);
+    assert!(listed.iter().any(|n| n == "my_turn"), "{listed:?}");
 }
