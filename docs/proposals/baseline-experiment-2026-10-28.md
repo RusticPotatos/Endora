@@ -709,6 +709,32 @@ gate allows three: **continue** the general development harness, **narrow** its 
 task kinds where it pays, or **redirect** investment into unattended operations. The decision is
 the owner's (money and direction); the report gives the evidence for it.
 
+### The house model: qwen3.5:9b against qwen3:8b, replayed (1 Nov)
+
+The switch on 30 Oct went live with round 1's design changes, so the rounds cannot separate the
+model's effect. A replay can: 30 decision points from Bo's stored transcripts (15 from turns on
+each model; every point the conversation up to a call Bo made, with the tool schemas HQ, the node
+and the worker give a turn), sent once to each model through Ollama as the local relay sends a
+team call (thinking on, 8,192 output tokens), then judged blind, A and B shuffled per point.
+
+| | qwen3.5:9b | qwen3:8b |
+|---|---|---|
+| Made a tool call | 29 / 30 (one cut at the output limit) | 28 / 30 (two ended with nothing) |
+| Arguments fit the schema | 29 / 29 | 25 / 28 (`set_status` without its task, three times) |
+| Receipts cited that the turn never saw | 0 | 2 (one `done` on invented evidence) |
+| Blind judge: better move | 14 (8 ties) | 8 |
+| Judge's mean score (1–5) / moves scored 1 | 2.93 / 3 | 2.73 / 13 |
+| Median seconds, output tokens, thinking characters | 17, 379, 1,277 | 22, 540, 2,172 |
+
+On points from current turns (the 9B's era) the two are even (7 wins each, means 3.1 and 3.3);
+on the older points the 8B made most of the harmful moves (8 of its 13): early `done` or
+`in_review` with invented evidence, a turn ended with nothing. So the 9B is the safer and
+faster model, not the smarter one: both are at "reasonable, not the best" on average, and both
+spend moves on `my_turn` (which repeats the briefing they already have) and on `find_tools` for a
+tool already offered, which is the harness's to remove (item E). One sample per point, one
+judge: a direction, not a measurement to the decimal. The replay's scripts were kept outside the
+repository.
+
 ## Open issues and next steps (kept current)
 
 The one list of what is open, kept up to date as rounds run. Ticked items say where they were
