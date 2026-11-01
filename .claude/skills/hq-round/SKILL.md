@@ -95,6 +95,10 @@ Settings that change speed (items in hand at once, limits) change only at a roun
    --previous <last round's ids> --yes < scripts/experiment.py` (dry-run first, without
    `--yes`, and read the plan: the right sources, nothing else). Record in `### Round N` what
    was released, what changed and why, the task ids and the start time.
+   - From round 4, the fresh set: 2–3 homelab tasks HQ has not seen and one outside the
+     homelab (F4: a small task in a public repository new to HQ, cloned into the sandbox, its
+     branch kept local), each with criteria written before either arm runs; Claude Code does
+     them too. Retire each once run.
    - A task that can no longer be met (round 2's task 8: its window had left the logs) is not
      silently kept: say so, and fix the task's conditions before the round counts it.
 5. **The judge is tested** (from round 4, before its first judging) on its known-good and known-bad branches, on both
@@ -144,7 +148,9 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
 
 1. **The result**: accepted of ten, **reported** (what HQ recorded) and **verified** (what the
    judge finds the work meets, whatever HQ recorded) apart, so a fixed recording defect is not
-   read as better work; interventions, spend; the side-by-side table of every round
+   read as better work, and each of these for the fixed ten, the homelab fresh tasks and the
+   task outside the homelab apart (a gain that does not show outside the homelab did not carry
+   over); interventions, spend; the side-by-side table of every round
    and Claude Code; what held the round back, by the evidence.
 2. **Cost by model** from HQ's scorecard (`by_model`): per turn and share. It drove the review
    cap.
@@ -163,7 +169,9 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
 
 ## 5. The next round (`next`)
 
-Pick the changes from the round's defects, ranked by cost and effect, each with its evidence and,
+Pick the changes from the round's defects, ranked by cost and effect, each labelled **general**
+(helps any task) or **homelab-specific** (helps only the lab's work, and needs a stated reason),
+each with its evidence and,
 for a design choice, published guidance (as the review cap cited Anthropic's and OpenAI's
 evaluation advice). Put each on its own branch from one round branch; build them in parallel
 only when they touch different files, and give each a failing test and a scenario first. Merge

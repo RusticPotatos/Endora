@@ -604,6 +604,22 @@ new agent, orchestration layer or scoring framework.
    They are not run in round 3. A task is retired from the fresh set once it has been run, and
    new ones are drawn each round, so the set stays unseen.
 
+   **Not only the homelab (the owner, 1 Nov).** F1–F3 guard against getting good at the ten,
+   not against getting good only at the house's homelab: the same fork, tools and kind of
+   problem. So:
+   - **One fresh task each round is outside the homelab**: F4, a small task in a public
+     open-source repository HQ has never seen (a bug with a failing test to write and fix, or a
+     documented feature gap), cloned into the sandbox. Its branch stays local and nothing is
+     pushed anywhere. Its criteria are written before either arm runs, and Claude Code does it
+     too, so it has a bar. The round's start chooses it (`hq-round` step 1).
+   - **Every change is labelled general or homelab-specific** when it is planned. General: it
+     helps any task (D17, D19, D20, D21, the money split). Homelab-specific: it helps only the
+     lab's work (a better `image_tags`, a lab tool). A homelab-specific change needs a stated
+     reason, and the round's report says how much of the gain came from each kind.
+   - **The result is reported three ways**: the fixed ten, the homelab fresh tasks, and the
+     task outside the homelab. A gain on the ten that does not show outside the homelab did not
+     carry over.
+
 4. **B. Cost and complexity, not reliability alone.** Each round's report adds the cost of
    building the round (the assistant's sessions, not only HQ's turns), the mechanisms it added
    (handoffs, recovery paths, model calls, settings a task depends on) and the code size. A round
