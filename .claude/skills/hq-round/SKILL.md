@@ -173,6 +173,10 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
    scorecards apart: they are two products. If none improves across two rounds, put the three
    choices to the owner: continue, narrow the development harness, or redirect to unattended
    operations.
+5. **The cheat sheet** (the owner's "Agent teams cheat sheet" Claude Doc, linked from the global
+   instructions): the round's lessons, with their numbers, go into its "Field notes (full)" tab
+   as a dated section, and its current principles change where the evidence does; its "One page"
+   tab stays one page (replace a line, don't add one). Public references only.
 5. **Push the record** after the privacy scan, and summarise for the owner in plain words.
 
 ## 5. The next round (`next`)
