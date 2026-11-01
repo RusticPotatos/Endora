@@ -540,6 +540,16 @@ one intervention on task 3.
 window ends 21:00 UTC, so it runs in both arms after that, on the owner's approval of 31 Oct, and
 its row is filled when it is judged.
 
+**A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
+08:43 UTC (HQ's status call hung for minutes; 335 MB of 16 GB available): Ollama's llama-server
+host prompt cache (llama.cpp's `--cache-ram`, 8192 MiB by default, which Ollama leaves unset)
+filled to 8.2 GB, and the kernel's OOM killer killed the runner at 09:07 UTC (the same on
+31 Oct 10:40). At the owner's request Ollama's container limit was lowered from 12g to 8g at
+about 10:50 UTC (`docker update`, no restart), so a repeat stays inside Ollama; the full fix
+(the cache capped at 1 GB) is on the fork's branch `fix/ollama-prompt-cache`, for after the
+round. Not HQ's doing, and not the VPN stack: task 8's "nothing changed on the lab" is judged
+on gluetun, prowlarr, deluge and nzbget, unrestarted through it.
+
 **Round 3 is a mixed build, and reports two acceptance rates.** Tasks judged before 22:35 UTC ran
 without the D19 fix; the rest with it. And D17 and D19 affect how outcomes are recorded, not
 only what the team did. So the round's result gives both: **reported** (what HQ recorded: done
