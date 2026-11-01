@@ -3495,8 +3495,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                       // Turns of judgment that wait for budget (ADR 0131): none is dropped.
                       "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_budget(&r.end_reason)).count(),
-                      // Turns of work that wait for the day to turn, their member having taken
-                      // its day's turns on the house's own models (ADR 0133).
+                      // Turns of work that wait for the day to turn, their member's turns on
+                      // the house's own models having shown nothing too long (ADR 0133).
                       "capped": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_cap(&r.end_reason)).count() },
             "members": members,

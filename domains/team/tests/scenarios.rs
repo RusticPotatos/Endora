@@ -917,6 +917,42 @@ fn share_spent(w: &mut Office, name: String) {
     assert!(used >= share, "{name} used {used} of {share}");
 }
 
+impl Office {
+    /// `name`'s share for today, as the roster shows it.
+    fn share_today(&self, name: &str) -> Micros {
+        let member = self.member(name);
+        self.hq.snapshot().expect("the snapshot is built")["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|m| m["id"] == member.0)
+            .expect("on the team")["per_day"]
+            .as_i64()
+            .expect("a share")
+    }
+}
+
+#[then(regex = r"^(\w+)'s share for today is more than half the pool's day$")]
+fn share_over_half(w: &mut Office, name: String) {
+    let day = w.hq.snapshot().expect("the snapshot is built")["pool"]["per_day"]
+        .as_i64()
+        .expect("the pool's day");
+    let share = w.share_today(&name);
+    assert!(share * 2 > day, "{name}'s {share} of {day}");
+}
+
+#[then(
+    regex = r"^(\w+)'s share for today is more than (\w+)'s on \w+ and (\w+)'s on \w+ together$"
+)]
+fn share_over_both(w: &mut Office, name: String, one: String, other: String) {
+    let (share, one, other) = (
+        w.share_today(&name),
+        w.share_today(&one),
+        w.share_today(&other),
+    );
+    assert!(share > one + other, "{share} against {one} and {other}");
+}
+
 #[then(regex = r"^the pool shows \$(\d+\.\d\d) spent today$")]
 fn pool_spent(w: &mut Office, dollars: f64) {
     let snap = w.hq.snapshot().expect("the snapshot is built");

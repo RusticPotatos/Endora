@@ -160,6 +160,9 @@ while each of them got $0.52.
    and Zed on Haiku) the lead on Sonnet now has more than a developer on Haiku. The roster shows
    each member's daily share.
 
+   *Superseded 2026-11-01 by the owner (below, "Amendment (2026-11-01): most of the money to
+   Haiku").*
+
 ### Borrowing is capped at one extra share, and a member at the cap asks the owner
 
 Decided by the owner on 2026-10-18. Uncapped borrowing (rule 1 above) meant a member was out
@@ -337,6 +340,35 @@ credit, renewed on the owner's renewal day) is what rule 2 sends HQ, so it must 
    first grant (none kept before) is now refused without the bought credit left, $0 being an
    answer; the owner's own entry (a $100 grant renewing on the 18th, $0 bought) is taken as it
    was. A later balance, with a grant already kept, splits as before.
+
+## Amendment (2026-11-01): most of the money to Haiku
+
+Decided by the owner on 1 November 2026, from round 3 of the baseline experiment
+(`docs/proposals/baseline-experiment-2026-10-28.md`, D21): shares followed price, not work. Ada
+on Haiku, who did most of the work, had a share of $0.19 of a $16.60 day; at twice it and her
+$0.50 allowance she stopped, at $0.88, with $3.77 left in the pool, while Mara on Opus held the
+largest share for the few items that climbed to her. The owner's direction: **most of the money
+goes to Haiku**, the cheapest paid model and the one doing most of the work; the climbs to Sonnet
+and Opus draw on what is left.
+
+- **A claim is weighted by its brain's claim class, not its price.** A member's claim is its
+  role's weight times `Brain::claim_class`: Haiku 8, Sonnet and DeepSeek 2, Opus 1, the house's
+  models 0. Round 3's team (Mara on Opus as CEO, Kit on Sonnet and Ada on Haiku as leads, Rae on
+  DeepSeek as a developer) splits a day about 55% Ada, 22% Rae, 14% Kit and 10% Mara, where it
+  was about 1% Ada and 68% Mara. `Brain::price_class` still prices a turn's opening call
+  (`money::least_a_turn`), and each paid share still affords two of its brain's opening calls.
+- **The climbs draw on what is left.** Nothing else changes: a member past its share borrows what
+  the others left, up to one more share (rule 4); the pool's day is the hard ceiling; and a
+  member out for the day while the pool has money is asked about again after each allowance
+  (rule 5, amended the same day). An item climbs because it failed below; the money it needs at
+  Sonnet or Opus is Haiku's unused share and the top-ups, not a share sized by price.
+- **The floor's part for members not on a Claude** (the amendment of 2026-10-31, rule 2) is their claims'
+  part of the floor, now by claim class: a member on DeepSeek keeps a larger part on top of the
+  credit-sized base, which its own balance pays.
+
+Rejected: sizing shares from the work each rank did on recent days (more machinery and a figure
+that lags; the owner's direction is plain, and a class says it); no shares above Haiku's rank
+(Sonnet and Opus would then wait on every climb for the owner's card).
 
 ## Consequences
 

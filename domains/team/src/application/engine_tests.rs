@@ -1663,8 +1663,11 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
     task_for(&hq, t.goal, Some(t.dev), "Restart prowlarr again");
 }
 
+/// The owner, 1 Nov (ADR 0113, amended 2026-11-01): most of the money goes to Haiku, the
+/// cheapest paid model and the one doing most of the work, and the climbs to Sonnet and Opus
+/// draw on what is left. The roster's daily share says so.
 #[test]
-fn a_members_daily_share_is_weighted_by_its_brains_price() {
+fn most_of_a_members_daily_share_goes_to_haiku() {
     let clock = hands();
     let hq = hq(&clock, 8);
     {
@@ -1696,10 +1699,10 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
             .unwrap()
     };
     assert!(
-        share(ada) > share(rae),
-        "the Sonnet lead's {} against a Haiku developer's {}",
-        share(ada),
-        share(rae)
+        share(rae) > share(ada),
+        "a Haiku developer's {} against the Sonnet lead's {}",
+        share(rae),
+        share(ada)
     );
     assert_eq!(share(local), 0, "the house's model claims nothing");
 }

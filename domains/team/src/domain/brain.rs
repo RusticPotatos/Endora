@@ -134,8 +134,9 @@ impl Brain {
     /// Its price class (ADR 0113, amended): what a token costs on it, in thousandths of what it
     /// costs on Opus, by the relay's input prices (Opus $4, Sonnet $2, Haiku $0.10 a million;
     /// their output prices stand in the same ratios). Nothing for the house's model, which costs
-    /// nothing. A member's claim on the pool is its role's weight times this, so a cheap brain
-    /// claims a small part. `endora-infrastructure`'s relay tests hold this to its prices.
+    /// nothing. What a turn's opening call costs is reckoned from it ([`super::money::least_a_turn`]);
+    /// a member's claim on the pool is not, since 2026-11-01 ([`Self::claim_class`]).
+    /// `endora-infrastructure`'s relay tests hold this to its prices.
     #[must_use]
     pub const fn price_class(self) -> i64 {
         match self {
@@ -144,6 +145,22 @@ impl Brain {
             Self::Sonnet => 500,
             Self::Haiku => 25,
             Self::DeepSeek => 75,
+        }
+    }
+
+    /// Its claim class (ADR 0113, amended 2026-11-01): what a member's claim on the day's pool is
+    /// its role's weight times. The owner, 1 Nov: most of the money goes to Haiku, the cheapest
+    /// paid model and the one doing most of the work; the climbs to Sonnet and Opus draw on what
+    /// is left. So Haiku claims four times what Sonnet or DeepSeek does, and Opus, which only an
+    /// item that failed twice below reaches, half of that. Round 3 weighted claims by price, and
+    /// Ada on Haiku had $0.19 of a $16.60 day. Nothing for the house's model, which costs nothing.
+    #[must_use]
+    pub const fn claim_class(self) -> i64 {
+        match self {
+            Self::Local | Self::Mac => 0,
+            Self::Opus => 1,
+            Self::Sonnet | Self::DeepSeek => 2,
+            Self::Haiku => 8,
         }
     }
 
