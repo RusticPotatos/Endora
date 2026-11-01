@@ -921,11 +921,12 @@ pub(crate) fn instructions(
     told.push_str(&lab_rules(on_the_node));
     if shell {
         told.push_str(
-            "\n\nYou have a real shell in a disposable sandbox: run commands, git and \
+            "\n\nYou have a real shell in a sandbox: run commands, git and \
              python there with the shell tool, and say why. The sandbox has no internet, and the \
              house's services are not reachable from the shell, so use the house through the \
-             team's tools. It starts empty each turn, and anything you leave in /work is gone \
-             when the turn ends: write durable findings in the task's thread",
+             team's tools. Your sandbox keeps the item's work between turns; /work/repo is \
+             there if a turn checked it out. What the team must know still goes in the task's \
+             thread",
         );
         told.push_str(if lessons {
             ", or as a story with tell_story."
@@ -943,8 +944,8 @@ pub(crate) fn instructions(
              in /work/repo, on top of its base, and you read it in the shell: git log, git diff \
              against the base, the files themselves. Cite that checkout's receipt (receipt r12) \
              as a reading of your own, with the check's, when you pass the work or send it back. \
-             You read; you submit and push nothing, and what you leave in /work is gone when \
-             the turn ends. Never cite or copy from group_vars/*.yml, host_vars or any \
+             You read; you submit and push nothing. Never cite or copy from group_vars/*.yml, \
+             host_vars or any \
              inventory: they hold the owner's own values.",
         );
     } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
@@ -1068,6 +1069,45 @@ fn said_of_the_branch(
     )
 }
 
+/// What the model reads when the checkout it asked for is already in its sandbox, kept from an
+/// earlier turn on the item (ADR 0142, amended 2026-11-01): where it stands, and how to have the
+/// node's latest or start over instead. Nothing was fetched.
+pub(crate) fn said_already_there(there: &repo::AlreadyThere, asked: Option<&str>) -> String {
+    let at = &there.head[..12.min(there.head.len())];
+    let (path, on) = (there.path.display(), &there.on);
+    let uncommitted = match there.uncommitted {
+        0 => String::new(),
+        1 => ", with 1 uncommitted change".to_owned(),
+        n => format!(", with {n} uncommitted changes"),
+    };
+    let other = match asked {
+        Some(branch) if branch != on => {
+            format!(" {branch} is a branch here: `cd {path} && git checkout {branch}`.")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "Already checked out: your sandbox kept it from an earlier turn on this item. {path} is \
+         on {on} at {at}{uncommitted}.{other} Go on from it; do not check out again. For the \
+         node's latest beside your work (as node/<branch>, nothing of yours changed), call \
+         repo_checkout with refresh: true; to start over, remove {path} in the shell first."
+    )
+}
+
+/// What the model reads after the node's latest was fetched into its kept checkout: the names
+/// fetched, beside its work, and how to take them.
+fn said_after_refresh(fetched: &[String], base: &str, receipt: &str) -> String {
+    format!(
+        "Fetched the node's latest into your checkout, beside your work{receipt}: {}. Nothing \
+         of yours changed. To build on it: `git rebase node/{base}`.",
+        if fetched.is_empty() {
+            "nothing new".to_owned()
+        } else {
+            fetched.join(", ")
+        }
+    )
+}
+
 /// What a checkout that brought upstream ansible-nas says of it (ADR 0106, amended 2026-10-31),
 /// after the rest: where it is, how to compare it with the base offline, and, to a member who
 /// may submit, that it is never a base. Empty without.
@@ -1187,6 +1227,35 @@ pub(crate) fn in_the_repo(
             moved_on: false,
         });
     }
+    // The sandbox keeps the item's work between turns (ADR 0142, amended 2026-11-01): a checkout
+    // a member who may submit already has is not made again over it, unless it asks for the
+    // node's latest. A reviewer reads what was submitted, and has it from the node every time.
+    let asked = args["branch"]
+        .as_str()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    let refresh = args["refresh"] == true;
+    if can_submit && !refresh {
+        if let Some(there) = repo::already_there(dir, asked) {
+            if let Err(why) = repo::adopt(dir, member, task) {
+                did.note(&call.name, &args, Outcome::Failed);
+                return Ok(refused(format!(
+                    "the kept checkout could not be taken over: {why}"
+                )));
+            }
+            did.calls.push((
+                "found the fork checked out already".to_owned(),
+                true,
+                Outcome::Done,
+            ));
+            return Ok(Reply {
+                text: said_already_there(&there, asked),
+                refused: false,
+                asked: false,
+                moved_on: false,
+            });
+        }
+    }
     let sent = json!({ "branch": args["branch"], "why": args["why"] });
     let (said, outcome, _) = node.call(REPO_CHECKOUT, &sent)?;
     if outcome != Outcome::Done {
@@ -1206,6 +1275,25 @@ pub(crate) fn in_the_repo(
         bundle,
         receipt,
     } = handed;
+    if refresh && can_submit && repo::already_there(dir, None).is_some() {
+        return match repo::refresh(dir, &bundle) {
+            Ok(fetched) => {
+                did.note(&call.name, &args, Outcome::Done);
+                Ok(Reply {
+                    text: said_after_refresh(&fetched, &base, &receipt),
+                    refused: false,
+                    asked: false,
+                    moved_on: false,
+                })
+            }
+            Err(why) => {
+                did.note(&call.name, &args, Outcome::Failed);
+                Ok(refused(format!(
+                    "the node's latest could not be fetched: {why}"
+                )))
+            }
+        };
+    }
     match repo::checkout(dir, &bundle, &branch, &base, kept, member, task) {
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
@@ -1855,8 +1943,9 @@ fn shell_tool() -> Value {
         "description": "Run a command with bash in your sandbox, in /work, and read what it \
             printed (stdout and stderr together, its start and end when long) and its exit \
             code. The sandbox has no internet, and the house's services are not reachable from \
-            it. It starts empty each turn: the fork comes in with repo_checkout (git clone and \
-            fetch cannot reach it), and nothing you leave here outlives the turn.",
+            it. Your sandbox keeps the item's work between turns; /work/repo is there if a turn \
+            checked it out. If it is not, the fork comes in with repo_checkout (git clone and \
+            fetch cannot reach it).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -3867,16 +3956,25 @@ mod tests {
 
     /// D27 of round 3: "The sandbox is offline" led the house model, meeting an empty sandbox,
     /// to take its own `git init` failures for no network and give up. The shell says what the
-    /// sandbox lacks and how the fork comes in.
+    /// sandbox lacks and how the fork comes in; and since round 4 (ADR 0142, amended
+    /// 2026-11-01), that the sandbox keeps the item's work between turns.
     #[test]
-    fn the_shell_says_the_sandbox_starts_empty_and_how_the_fork_comes_in() {
+    fn the_shell_says_the_sandbox_keeps_the_items_work_and_how_the_fork_comes_in() {
         let about = shell_tool()["description"].as_str().unwrap().to_owned();
         assert!(!about.contains("offline"), "{about}");
         assert!(about.contains("no internet"), "{about}");
-        assert!(about.contains("starts empty each turn"), "{about}");
+        assert!(
+            about.contains(
+                "Your sandbox keeps the item's work between turns; /work/repo is there if a \
+                 turn checked it out."
+            ),
+            "{about}"
+        );
+        assert!(!about.contains("starts empty"), "{about}");
         assert!(about.contains("repo_checkout"), "{about}");
         let told = instructions(true, &lab(), true, true);
         assert!(!told.contains("offline"), "{told}");
+        assert!(!told.contains("gone when"), "{told}");
     }
 
     #[test]
@@ -3893,17 +3991,17 @@ mod tests {
         );
         assert_eq!(
             parts[4],
-            "You have a real shell in a disposable sandbox: run commands, git and python there \
-             with the shell tool, and say why. The sandbox has no internet, and the house's \
-             services are not reachable from the shell, so use the house through the team's \
-             tools. It starts empty each turn, and anything you leave in /work is gone when the \
-             turn ends: write durable findings in the task's thread, or as a story with \
-             tell_story."
+            "You have a real shell in a sandbox: run commands, git and python there with the \
+             shell tool, and say why. The sandbox has no internet, and the house's services are \
+             not reachable from the shell, so use the house through the team's tools. Your \
+             sandbox keeps the item's work between turns; /work/repo is there if a turn checked \
+             it out. What the team must know still goes in the task's thread, or as a story \
+             with tell_story."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
         let told = instructions(true, &[], false, true);
         assert!(
-            told.contains("durable findings in the task's thread.\n\n"),
+            told.contains("still goes in the task's thread.\n\n"),
             "no tell_story for a member without it: {told}"
         );
     }

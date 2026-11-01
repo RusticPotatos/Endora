@@ -186,12 +186,13 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_CHECKOUT,
-            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Upstream ansible-nas comes with it, read-only, as upstream/<its default branch>, so `git log --oneline <base>..upstream/<branch>` shows what upstream has that the fork lacks (the checkout names both). Free; the sandbox stays offline.",
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Upstream ansible-nas comes with it, read-only, as upstream/<its default branch>, so `git log --oneline <base>..upstream/<branch>` shows what upstream has that the fork lacks (the checkout names both). Your sandbox keeps the item's work between turns: a checkout already there is said to be, and kept as it is, unless you ask to refresh it. Free; the sandbox stays offline.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug (a submitted one of your work)." },
                 "why": { "type": "string", "description": "Why, in a few words." },
+                "refresh": { "type": "boolean", "description": "Only when the checkout is already there: true fetches the node's latest into it as node/<branch>, beside your work, never over it." },
             }, "required": ["why"] }),
         },
         Contract {

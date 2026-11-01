@@ -187,6 +187,30 @@ pub fn checkout(
     git(&repo, &["config", "user.email", AUTHOR_EMAIL])?;
     git(&repo, &["config", "commit.gpgsign", "false"])?;
     git(&repo, &["config", "core.hooksPath", ".git/hooks"])?;
+    noted(work, branch, base, member, task)?;
+    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    let files = git(&repo, &["ls-files"])?.lines().count();
+    let _ = std::fs::remove_file(&file);
+    Ok(CheckedOut {
+        path: repo,
+        branch: branch.to_owned(),
+        head,
+        files,
+        upstream,
+    })
+}
+
+/// Notes the checkout (`checkout.json`: the branch handed over, its base, and the trailer) and
+/// writes the commit hook that stamps that trailer, naming `member` and `task`: at checkout, and
+/// again when a later turn on the item, perhaps another member's, finds the checkout kept.
+fn noted(
+    work: &Path,
+    branch: &str,
+    base: &str,
+    member: &str,
+    task: Option<i64>,
+) -> Result<(), String> {
+    let repo = work.join(REPO_DIR);
     let for_task = task.map_or_else(|| "for the wing".to_owned(), |t| format!("for task #{t}"));
     let trailer = format!("{TRAILER} ({}) {for_task}", member.trim());
     let hook = format!(
@@ -206,17 +230,115 @@ pub fn checkout(
         work.join("checkout.json"),
         serde_json::json!({ "branch": branch, "base": base, "trailer": trailer }).to_string(),
     )
-    .map_err(|e| format!("the checkout could not be noted: {e}"))?;
-    let head = git(&repo, &["rev-parse", "HEAD"])?;
-    let files = git(&repo, &["ls-files"])?.lines().count();
-    let _ = std::fs::remove_file(&file);
-    Ok(CheckedOut {
+    .map_err(|e| format!("the checkout could not be noted: {e}"))
+}
+
+/// A checkout an earlier turn on the item left in the sandbox, which keeps it between turns
+/// (ADR 0142, amended 2026-11-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlreadyThere {
+    /// Where it is.
+    pub path: PathBuf,
+    /// The branch it is on (`HEAD` when on none).
+    pub on: String,
+    /// Its head.
+    pub head: String,
+    /// How many paths `git status` shows changed and not committed.
+    pub uncommitted: usize,
+}
+
+/// The checkout already in `work/repo` that serves a `repo_checkout` of `asked` (the fork's
+/// default branch when `None`): any checkout for no branch named, else one that has `asked` as
+/// a branch of its own. `None` when there is no checkout, or it lacks that branch.
+#[must_use]
+pub fn already_there(work: &Path, asked: Option<&str>) -> Option<AlreadyThere> {
+    let repo = work.join(REPO_DIR);
+    if !repo.join(".git").exists() {
+        return None;
+    }
+    if let Some(branch) = asked {
+        if !is_plain(branch) {
+            return None;
+        }
+        git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{branch}^{{commit}}"),
+            ],
+        )
+        .ok()?;
+    }
+    let on = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]).ok()?;
+    let head = git(&repo, &["rev-parse", "HEAD"]).ok()?;
+    let uncommitted = git(&repo, &["status", "--porcelain"])
+        .ok()?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    Some(AlreadyThere {
         path: repo,
-        branch: branch.to_owned(),
+        on,
         head,
-        files,
-        upstream,
+        uncommitted,
     })
+}
+
+/// Takes over the checkout kept in `work` for `member`'s turn on `task`: its commits carry
+/// this member's trailer from now on. What it was checked out from is kept.
+///
+/// # Errors
+/// What could not be written.
+pub fn adopt(work: &Path, member: &str, task: Option<i64>) -> Result<(), String> {
+    let was: serde_json::Value = std::fs::read_to_string(work.join("checkout.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let base = base_of(work);
+    let branch = was["branch"].as_str().unwrap_or(&base).to_owned();
+    noted(work, &branch, &base, member, task)
+}
+
+/// Fetches what the node handed over into the checkout already kept in `work`, beside the work
+/// in it, never over it: the bundle's branches as `node/<branch>` (a kept submission's too), and
+/// upstream's as `upstream/<branch>`. Nothing checked out, committed or not, changes: the member
+/// rebases on it if it wants it. The names fetched, for the reply.
+///
+/// # Errors
+/// No checkout, or what git said, in a line.
+pub fn refresh(work: &Path, bundle: &[u8]) -> Result<Vec<String>, String> {
+    let repo = work.join(REPO_DIR);
+    if !repo.join(".git").exists() {
+        return Err("nothing is checked out to refresh".to_owned());
+    }
+    let file = work.join("checkout.bundle");
+    std::fs::write(&file, bundle).map_err(|e| format!("the bundle could not be written: {e}"))?;
+    let fetched = (|| {
+        let path = file.to_string_lossy();
+        git(
+            &repo,
+            &[
+                "fetch",
+                "-q",
+                &path,
+                "+refs/heads/*:refs/remotes/node/*",
+                "+refs/submissions/*:refs/remotes/node/*",
+            ],
+        )?;
+        unpack_upstream(&repo, &file)?;
+        let names = git(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/remotes/node/",
+            ],
+        )?;
+        Ok(names.lines().map(str::to_owned).collect())
+    })();
+    let _ = std::fs::remove_file(&file);
+    fetched
 }
 
 /// Upstream's branch from the bundle (`refs/upstream/<branch>`, ADR 0106, amended 2026-10-31),
@@ -840,6 +962,80 @@ mod tests {
             run(&again.path, &["log", "-1", "--format=%B"]).contains("(Rae) for the wing"),
             "no task: for the wing"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ADR 0142, amended 2026-11-01: the sandbox keeps an item's work between its turns, so a
+    /// later turn finds the checkout where the last one left it, uncommitted work and all. It
+    /// serves a checkout of no branch, or of a branch it has; the next member's commits carry
+    /// that member's trailer; and a refresh fetches the node's latest beside it, never over it.
+    #[test]
+    fn a_kept_checkout_is_found_taken_over_and_refreshed_beside_the_work() {
+        let (root, fork) = a_bundle("kept-checkout");
+        let work = root.join("work");
+        assert_eq!(already_there(&work, None), None, "nothing checked out");
+        let out = checkout(&work, &fork, "main", "main", false, "Rae", Some(12)).unwrap();
+        run(&out.path, &["checkout", "-q", "-b", "hq/task-12-tidy"]);
+        std::fs::write(out.path.join("nas.yml"), "---\n- hosts: nas\n").unwrap();
+
+        // The next turn on the item, Bo's.
+        let there = already_there(&work, None).expect("kept");
+        assert_eq!(there.on, "hq/task-12-tidy");
+        assert_eq!(there.uncommitted, 1);
+        assert_eq!(there.path, out.path);
+        assert!(already_there(&work, Some("hq/task-12-tidy")).is_some());
+        assert!(
+            already_there(&work, Some("main")).is_some(),
+            "a branch here"
+        );
+        assert_eq!(already_there(&work, Some("hq/task-12-other")), None);
+        assert_eq!(already_there(&work, Some("--all")), None);
+        adopt(&work, "Bo", Some(12)).unwrap();
+        run(&out.path, &["add", "-A"]);
+        run(&out.path, &["commit", "-q", "-m", "tidy the play"]);
+        let message = run(&out.path, &["log", "-1", "--format=%B"]);
+        assert!(
+            message.contains("Made-by: Endora HQ (Bo) for task #12"),
+            "{message}"
+        );
+        assert_eq!(base_of(&work), "main", "what it came from is kept");
+
+        // The node's main moves on; a refresh fetches it as node/main, and nothing of Bo's
+        // changes.
+        let seed = root.join("seed");
+        std::fs::write(seed.join("new.yml"), "---\n").unwrap();
+        run(&seed, &["add", "."]);
+        run(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "moved on",
+            ],
+        );
+        let file = root.join("newer.bundle");
+        run(
+            &seed,
+            &["bundle", "create", "-q", file.to_str().unwrap(), "main"],
+        );
+        let mine = run(&out.path, &["rev-parse", "HEAD"]);
+        let fetched = refresh(&work, &std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(fetched, ["node/main"]);
+        assert_eq!(
+            run(&out.path, &["rev-parse", "HEAD"]),
+            mine,
+            "nothing over it"
+        );
+        assert_eq!(
+            run(&out.path, &["rev-parse", "node/main"]),
+            run(&seed, &["rev-parse", "main"])
+        );
+        assert!(!work.join("checkout.bundle").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -53,7 +53,19 @@ Feature: A long item makes progress across turns
   # Seed (round 3, 950, D27): on the house model Bo met a fresh, empty sandbox with the fork's
   # tools held back beside weather and news tools, ran git init with a made-up remote, took the
   # failures for an offline sandbox, and blocked the item.
-  Scenario: A turn on a loop's item has the fork's tools up front, and is told its sandbox starts empty
+  # Since round 4 the sandbox keeps the item's work, so the line says that instead.
+  Scenario: A turn on a loop's item has the fork's tools up front, and is told what its sandbox holds
     When Kit's turn on "A lint rule for secret defaults" runs out of room, keeping its work on "secret-defaults"
     Then Kit's turn on "A lint rule for secret defaults" loads the fork's checkout and submit up front
-    And what Kit reads of "A lint rule for secret defaults" says "Your sandbox starts empty each turn: check out the kept branch first."
+    And what Kit reads of "A lint rule for secret defaults" says "if /work/repo is not there, start with repo_checkout with branch"
+
+  # Seed (round 3, the piping audit, item E): 255 repo_checkout calls for nine tasks and 246 of
+  # 295 turns that changed nothing, because every turn started in an empty sandbox (D27). The
+  # owner, 1 Nov: "let the agents be agents". The runner keeps an item's sandbox between its
+  # turns, by any member, while the item is open, and lets it go once it is closed.
+  Scenario: An item keeps its sandbox between its turns until it is closed
+    When Kit's turn on "A lint rule for secret defaults" runs out of room, keeping its work on "secret-defaults"
+    Then the runner keeps the sandbox of "A lint rule for secret defaults"
+    And what Kit reads of "A lint rule for secret defaults" says "Your sandbox keeps the item's work between turns; /work/repo is there if a turn checked it out."
+    When Kit blocks "A lint rule for secret defaults", saying "The fork's tests need a Python the sandbox does not have."
+    Then the runner lets the sandbox of "A lint rule for secret defaults" go

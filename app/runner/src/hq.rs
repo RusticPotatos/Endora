@@ -236,6 +236,27 @@ impl Hq {
         Err(HqError::Answered(answer.status))
     }
 
+    /// Of the items whose sandboxes the runner keeps (ADR 0142, amended 2026-11-01), those HQ
+    /// says to keep: the ones still open. The rest are done, dropped or blocked, and their
+    /// sandboxes go. An HQ without the route says nothing, and the runner keeps them all until
+    /// they have been idle too long.
+    ///
+    /// # Errors
+    /// [`HqError`] if HQ was not heard, or did not answer with a list.
+    pub fn sandboxes(&self, items: &[u64]) -> Result<Vec<u64>, HqError> {
+        let body = json!({ "items": items });
+        let answer = self.call("POST", &self.route("/sandboxes"), Some(&body))?;
+        if answer.status != 200 {
+            return Err(HqError::Answered(answer.status));
+        }
+        Ok(answer.json()["keep"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .collect())
+    }
+
     /// The runs HQ asks to stop.
     ///
     /// # Errors

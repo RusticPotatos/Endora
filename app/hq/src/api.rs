@@ -2627,8 +2627,8 @@ mod tests {
         );
     }
 
-    /// The runner's three routes, each with a body it might send.
-    const RUNNER_ROUTES: [(&str, &str, &str); 3] = [
+    /// The runner's four routes, each with a body it might send.
+    const RUNNER_ROUTES: [(&str, &str, &str); 4] = [
         ("POST", "/v1/runner/next", r#"{"free":1}"#),
         (
             "POST",
@@ -2636,6 +2636,7 @@ mod tests {
             r#"{"succeeded":true,"lease":1}"#,
         ),
         ("GET", "/v1/runner/stops", ""),
+        ("POST", "/v1/runner/sandboxes", r#"{"items":[1]}"#),
     ];
 
     #[tokio::test]
@@ -3252,6 +3253,37 @@ mod tests {
         .await;
         assert_eq!(found["runtime"], "claude-code", "the relay is told");
         assert_eq!(found["repo"], json!(null), "work in no outside repository");
+    }
+
+    /// ADR 0142, amended 2026-11-01: the runner keeps an item's sandbox between its turns, and
+    /// asks HQ which to go on keeping: the open items, not a closed one nor one HQ has no task
+    /// for.
+    #[tokio::test]
+    async fn the_runner_hears_which_items_sandboxes_to_keep() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let ask = |items: serde_json::Value| {
+            call(
+                "POST",
+                "/v1/runner/sandboxes",
+                Some(RUNNER),
+                &json!({ "items": items }).to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(ask(json!([task.0, 999])))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["keep"], json!([task.0]));
+        st.hq.drop_task(task).unwrap();
+        let res = app.clone().oneshot(ask(json!([task.0]))).await.unwrap();
+        assert_eq!(json_of(res).await["keep"], json!([]), "dropped: it goes");
+        let many: Vec<i64> = (0..1001).collect();
+        let res = app.oneshot(ask(json!(many))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

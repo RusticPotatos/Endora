@@ -1,6 +1,7 @@
 //! The steps of `features/a-long-item-makes-progress-across-turns.feature` (ADR 0142, amended
 //! 2026-10-31, D12): a turn reads the newest handover, not every one; the work a turn leaves is
-//! kept for the next; and a turn out of room that kept new work is no failure.
+//! kept for the next; and a turn out of room that kept new work is no failure. And (amended
+//! 2026-11-01) an item keeps its sandbox between its turns until it is closed.
 
 use cucumber::{then, when};
 use serde_json::json;
@@ -175,4 +176,22 @@ fn forks_tools_up_front(w: &mut Office, name: String, title: String) {
 fn reads_say(w: &mut Office, name: String, title: String, text: String) {
     let read = w.reads_of(&name, &title);
     assert!(read.contains(&text), "{read}");
+}
+
+/// Of `title` and an item HQ has no task for, the ones whose sandboxes HQ tells the runner to
+/// go on keeping (ADR 0142, amended 2026-11-01).
+fn sandboxes_kept(w: &Office, title: &str) -> Vec<endora_team::domain::TaskId> {
+    let task = w.task(title);
+    w.hq.sandboxes_to_keep(&[task, endora_team::domain::TaskId(999_999)])
+        .expect("the store answers")
+}
+
+#[then(regex = r#"^the runner keeps the sandbox of "(.+)"$"#)]
+fn runner_keeps(w: &mut Office, title: String) {
+    assert_eq!(sandboxes_kept(w, &title), [w.task(&title)]);
+}
+
+#[then(regex = r#"^the runner lets the sandbox of "(.+)" go$"#)]
+fn runner_lets_go(w: &mut Office, title: String) {
+    assert!(sandboxes_kept(w, &title).is_empty());
 }

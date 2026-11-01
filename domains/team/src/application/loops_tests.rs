@@ -1694,7 +1694,7 @@ fn work_kept_in_progress_is_handed_to_the_next_turn_unchecked() {
     let bo = turn_of(&hq, f.bo);
     let note = handover_in(&bo.told);
     assert!(
-        note.contains("Its work so far is on hq/task-1-gluetun at 3c1cc497e55d"),
+        note.contains("Its work so far is kept on hq/task-1-gluetun at 3c1cc497e55d"),
         "{note}"
     );
     assert!(

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::ports::{StoreError, TeamStore as _};
-use endora_team::domain::{Exit, RunId};
+use endora_team::domain::{Exit, RunId, TaskId};
 use endora_team::infrastructure::RemoteRunner;
 
 use crate::api::{State, bearer, same};
@@ -29,6 +29,7 @@ pub(crate) fn routes(state: State) -> Router<State> {
         .route("/v1/runner/next", post(next))
         .route("/v1/runner/{run}/ended", post(ended))
         .route("/v1/runner/stops", get(stops))
+        .route("/v1/runner/sandboxes", post(sandboxes))
         .route_layer(middleware::from_fn_with_state(state, signed_by_the_runner))
 }
 
@@ -302,6 +303,39 @@ pub(crate) async fn check_done(
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Sandboxes {
+    /// The items whose sandboxes the runner keeps.
+    items: Vec<i64>,
+}
+
+/// The most items the runner may ask about at once.
+const SANDBOXES_AT_MOST: usize = 1000;
+
+/// Of the items whose sandboxes the runner keeps between their turns (ADR 0142, amended
+/// 2026-11-01), the ones to go on keeping: those open. The runner lets the rest go.
+async fn sandboxes(Extract(state): Extract<State>, Json(req): Json<Sandboxes>) -> Response {
+    if state.hq.runner().remote().is_none() {
+        return no_runner();
+    }
+    if req.items.len() > SANDBOXES_AT_MOST {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "too many items at once" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+    match tokio::task::spawn_blocking(move || hq.sandboxes_to_keep(&items)).await {
+        Ok(Ok(keep)) => {
+            let keep: Vec<i64> = keep.into_iter().map(|t| t.0).collect();
+            Json(json!({ "keep": keep })).into_response()
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
