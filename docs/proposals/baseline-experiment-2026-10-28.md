@@ -332,6 +332,9 @@ run start --round 2 --from-tasks 882-890,903 --yes  # prints the new ids as JSON
 run status --tasks 923-932                          # per task, as JSON
 run fields --tasks 923-932 --header                 # the round's table, to paste below
 run check --task 929                                # the final post's quotes against its receipts
+run metrics --tasks 947-955 --label "Round 3" --verified 947-949,951-955   # the rounds' table
+run metrics --tasks 882-890,903 --label "Round 0" --tasks 913-922 --label "Round 1"  # side by side
+run metrics --tasks 960-973 --label "Round 4" --groups fixed=960-969,fresh=970-972,outside=973
 ```
 
 - **`start`** (the only writing subcommand, and only with `--yes`) sets the previous round aside:
@@ -351,6 +354,23 @@ run check --task 929                                # the final post's quotes ag
   exists and is the task's, and every quoted line (`>` lines, fenced lines, long `inline`
   spans) is in a cited receipt's stored result. It exits 1 on a problem. Judging stays the
   owner's (or the judge's).
+- **`metrics`** scores a round on one measure, the rows of "Rounds side by side" and the piping
+  audit's (round 4's item E), a column a round and one a group (`--groups`, so a round reads
+  three ways: the fixed ten, the homelab's fresh tasks, the task outside it), as Markdown or
+  `--json`. Verified is the judge's and comes from `--verified`; the store cannot know it.
+  Spend is the ledger's charges; turns are the turns that started, and "changed nothing" is
+  HQ's own flag (`runs.moved_forward` unset); checkouts are `repo_checkout` receipts; wakes are
+  by reason, with every refused wake in brackets; handovers and climbs are HQ's own posts
+  ("Handover of #…", "It failed 3 times at …'s rank: it goes to …, one rank up."); time working
+  is the sum of the turns' durations, waiting the time from the task's making to done (or its
+  last turn) with no turn running; the transcript bytes cover only the turns whose transcript
+  is still kept (thirty days), and say how many. Interventions use `fields`' rule (every
+  answered question card), which counts a blocked item's repeated questions and questions after
+  ready, so it reads above a round's judged count where those happened (rounds 0–2).
+  Checked on 1 Nov against rounds 0–3: reported, spend, turns, changed nothing, checkouts,
+  wakes and desk questions match the record's "Rounds side by side, on one measure"; its climbs for rounds 0–2 included a review
+  "one rank up" (that wording ended in round 3), so `metrics` gives 14, 10 and 22 climbs, not
+  27, 19 and 47.
 
 ### Round 1 (30 Oct): the design defects, and a stronger bottom seat
 
