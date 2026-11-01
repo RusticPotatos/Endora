@@ -25,6 +25,18 @@ round stands (step 2's status) and do the next due step.
 is the skill's name, so every tick reads the rules as they are now, never a pasted copy that goes
 stale. Start a fresh session for each round; the record, not the conversation, carries it over.
 
+**Fresh sessions, safely.** A new session in this repository briefs itself: the SessionStart
+hook (`.claude/hooks/round-brief.py`, read-only) gives it the checkout, the round branches
+being built, the latest round's table and the open defects, from the record. So handing over
+is three steps, and nothing is pasted:
+1. The old session brings the record up to date (the round's rows, new defects, what waits on
+   the owner) and pushes it. That is the handoff; a conversation's memory is not.
+2. Start a new session in this repository (the desktop app, or `claude` in the folder) and say
+   `/hq-round` (or `/loop /hq-round tick` for a round in flight).
+3. The old session stops its loop.
+Start one at each round's start, and whenever a session has been summarised or runs long. A
+round branch's builder works in its own worktree; the driver never edits it.
+
 ## The cycle (one round a day)
 
 | When | What |
