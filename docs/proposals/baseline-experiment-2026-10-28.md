@@ -807,6 +807,16 @@ done. Defects are numbered so the next round's changes can name them.
   states its comparison as the measure ("no new findings against develop: met") and the
   reviewer's brief takes the check's verdict for a lint criterion, as it already does for CI;
   keep a blocked item's submission where delivery can reach it.
+- [ ] **D23. Work kept in progress at the head that passed its check shuts the gate for good.**
+  Round 3, 951: submitted at fc36418e20c2 (00:36 UTC), check c55 passed (no worse than develop).
+  At 01:22 a turn of Kit's ran out of room and the worker kept the same head as work in
+  progress; `keep_work_in_progress` sets the gate shut and queues no check, so Ada's approvals at
+  01:26 and 02:10 were both refused ("needs the gate… which has not passed"), and wakes while it
+  sat in review counted three failures at Kit's rank and climbed it to Mara (Opus) (D17). 955
+  is in the same state (head e14515374e33 checked by c61, then kept at 02:05). No route reopens
+  it but a developer's `recheck`, which a reviewer's turn does not have, and the owner has none.
+  Fix proposed: keeping a head the gate already passed leaves the gate as it is (the gate
+  belongs to the head, not to the last write); a scenario of exactly this sequence first.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
