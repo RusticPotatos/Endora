@@ -976,6 +976,73 @@ full reach (inside the container, the registry unfiltered) rather than a pre-che
 make "done" depend on a check of the criterion's failure case; compare runtimes on one model.
 These are what an existing agent runtime already gives, which is the parked proposal's question.
 
+### Runtime proof of concept (1 Nov, 21:30–22:00 UTC): HQ's worker against Claude Code, one model
+
+Step 3 of the parked proposal below, started on the owner's word the same evening. The bridge it
+needed already exists: ADR 0117 built Claude Code as a member's runtime, with `endora-worker
+--mcp` offering HQ's tools and the node's contracts, receipts posted by a hook, and the relay
+in between; it had run one turn since 19 Oct. So the cleanest comparison holds everything else
+still: **the same member (Sol), model (Haiku 5.5), words (R1–R3), tools, loop, sandbox and
+checks, and only the agent loop changed.** Two solo runs with `experiment.py start --solo Sol`:
+labels 401 (worker, tasks 963–965, project 13) and 402 (Sol's runtime set to `claude-code`,
+tasks 966–968, project 14), each capped at $3; Sol put back on the worker after. In each arm
+the first turn was killed on the Pi (`docker kill`, exit 137) about a minute in, to test
+recovery. Both judged by a fresh round judge on round 4's standard.
+
+| | Worker, round 4 (960–962) | Worker, again (963–965) | Claude Code runtime (966–968) | Claude Code alone, Haiku | Claude Code alone, Opus |
+|---|---|---|---|---|---|
+| R1 | No | **Yes** (assert) | **Yes** (assert; ran the unset case itself) | Yes | Yes |
+| R2 | No | No (no where-not, no why; promtail fix) | No (says the file logs leak; no why; "no role setting" unlooked) | No | Yes |
+| R3 | No (10.11.11) | No (10.11.11 again, having seen 12.x) | **Yes** (`12.4ubu2604-ls57`, = `latest`) | Yes | Yes |
+| Verified | 0 of 3 | 1 of 3 | **2 of 3** | 2 of 3 | 3 of 3 |
+| Cost | $0.028 | $0.030 | $0.054 | tokens | tokens |
+| Per verified task | — | $0.030 | **$0.027** | | |
+| First turn to done | 14 min | 13 min | 12 min (with ~1 min lost to the kill) | 8 min | 7 min |
+
+**The proposal's five acceptance points, per arm.**
+
+| Point | Worker | Claude Code runtime |
+|---|---|---|
+| 1. A real task from a clean install | Not tested from clean: both ran on the installed build 81f49915 | The same; but the runtime needed no change, after 13 days unused |
+| 2. Workspace kept across an interruption | Yes: the kept sandbox; the next turn removed a stray `__pycache__` before its one clean commit | Yes: the next turn found itself on its branch, made at the kill's second; no second checkout |
+| 3. Result verified independently | 1 of 3 | 2 of 3 |
+| 4. Receipts show what it ran | No: runs 5133–5136 recorded no receipt for their sandbox shell calls | Partly: 38 sandbox-reported receipts (the agent's word, not the node's), arguments cut at about 120 characters |
+| 5. Recovers from an interruption | Yes, retried (`interrupted: killed (exit 137)`), but the run then reads "succeeded, ended its turn" and Sol's post blamed its 12-round budget | Yes, retried; the fresh session was not told of the interruption and did not need to be |
+
+**What it shows.**
+- **The agent loop was most of the gap, and an existing one closes it inside Endora.** With
+  member, model, words, tools and checks unchanged, Claude Code's loop verified 2 of 3 to the
+  worker's 1 and 0, the same as Claude Code on its own. Its own record says why: it worked R1
+  through to running the unset case (27 receipts in two turns, where the worker's first turn
+  stopped at 12 rounds), and on R3 it read past the `semver_only` filter to the current release
+  with the same tool that misled the worker twice.
+- **Run-to-run variance is real.** The worker went from 0 to 1 of 3 on identical inputs (R1).
+  Three-task samples rank arms only roughly; R3 (the worker twice wrong, the same way) and R2
+  (every Haiku arm wrong) are the steadier signals.
+- **R2 is the model, not the loop.** Four Haiku arms in two harnesses all missed why only the
+  console leaks; only Opus found it. A diagnosis that has to look inside a program needs the
+  larger model, whatever the loop.
+- **Cost.** Claude Code's loop spent more per run ($0.054 to $0.030) and less per verified task
+  ($0.027 to $0.030): ADR 0117's own widening test ("finishes tasks for less, or for about the
+  same with less sent back") is met on this sample.
+- **Its weak points, by the judge:** receipts are the sandbox's word and cut short, so a
+  forbidden read could not be ruled out from them; a thread post quoted a private network address
+  from a log line (in HQ's store only); HQ's mirror kept 968 under `refs/submissions` only.
+
+**By the stop condition: an existing runtime meets the need, so no engine is built.** The
+proposal's direction (an engine of Endora's own, with a CLI) is not supported; what is, is the
+runtime Endora already has: Claude Code, carrying Endora's tools and rules over the MCP bridge
+it was given in October. What the rounds' coordination machinery added (ranks, reviews,
+handovers) showed no value at any point; the solo loop with its kept sandbox and mechanical
+checks is enough scaffolding around it. Not settled here: a clean install, a forbidden-read
+check from the agent's own receipts, and whether a Claude Code member on a larger model clears
+R2 inside HQ.
+
+**For the owner.** The fork now carries HQ branches 960, 962, 963, 965, 966 and 968, all pushed
+by HQ's delivery; only 963, 966 and 968 are judged acceptable, and 962 and 965 carry the jellyfin
+downgrade. Prowlarr's key is still leaking (37 console lines at 21:53 UTC); the fix is the local
+branch `fix/sonarr-console-key-leak`.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
@@ -1003,7 +1070,8 @@ turns, verify its result independently, inspect its receipts, recover from an in
 **Stop condition.** If an existing runtime meets the requirements, no replacement engine is
 built.
 
-**Next action:** none until round 4's decision.
+**Next action:** run (1 Nov): see "Runtime proof of concept" above. An existing runtime met
+the need, so by the stop condition no engine is built.
 
 ### Round 4, planned (owner's review of 31 Oct; superseded on 1 Nov by the section above)
 
