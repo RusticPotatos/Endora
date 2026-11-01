@@ -51,6 +51,10 @@ Settings.
   worker's last word or a reviewer's notes, and the limits) in the team's domain,
   `domains/team/src/domain/lessons.rs`. The owner edits them whole through
   `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
+- A loop worked by one member alone (ADR 0142, amended 2026-11-01, round 4's solo arm) is a
+  setting of the loop's beside its rank and items (`loop_solo:<project>`, set through
+  `/v1/projects/{id}/solo`), and its rules are in the loops' engine
+  (`domains/team/src/application/engine/loops.rs`); no screen.
 - Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
   added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
   them can hold: **Work**
