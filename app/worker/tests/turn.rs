@@ -2658,7 +2658,9 @@ fn many_contracts_and_the_fork() -> Value {
         ("repo_checkout", "read", "Check out the fork."),
         ("repo_submit", "act", "Submit a branch."),
     ] {
-        all.as_array_mut().unwrap().push(json!({ "name": name, "kind": kind,
+        all.as_array_mut()
+            .unwrap()
+            .push(json!({ "name": name, "kind": kind,
             "description": what, "inputSchema": { "type": "object", "properties": {} } }));
     }
     all

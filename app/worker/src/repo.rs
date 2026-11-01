@@ -408,13 +408,14 @@ pub const IN_PROGRESS_MESSAGE: &str =
 
 /// What running Python leaves beside the work (D28 of round 3), as pathspecs left out of a keep:
 /// the fork has no ignore entry for them.
-const BYPRODUCTS: [&str; 2] = [":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc"];
+const BYPRODUCTS: [&str; 2] = [
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+];
 
 /// Whether a path is one of Python's byproducts ([`BYPRODUCTS`]).
 fn a_byproduct(path: &str) -> bool {
-    path.ends_with(".pyc")
-        || path.starts_with("__pycache__/")
-        || path.contains("/__pycache__/")
+    path.ends_with(".pyc") || path.starts_with("__pycache__/") || path.contains("/__pycache__/")
 }
 
 /// Commits what the sandbox's checkout holds as work in progress for `task`, as a turn runs out
@@ -462,7 +463,10 @@ pub fn work_in_progress(work: &Path, task: i64) -> Result<Option<String>, String
             &format!("refs/heads/{base}...refs/heads/{branch}"),
         ],
     )?;
-    if changed.lines().all(|f| f.trim().is_empty() || a_byproduct(f.trim())) {
+    if changed
+        .lines()
+        .all(|f| f.trim().is_empty() || a_byproduct(f.trim()))
+    {
         return Ok(None);
     }
     Ok(Some(branch))
@@ -612,7 +616,11 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join("test_rules.cpython-312.pyc"), b"\x00\x01").unwrap();
         std::fs::write(out.path.join("loose.pyc"), b"\x00\x02").unwrap();
-        assert_eq!(work_in_progress(&work, 7).unwrap(), None, "byproducts alone");
+        assert_eq!(
+            work_in_progress(&work, 7).unwrap(),
+            None,
+            "byproducts alone"
+        );
         // With real work beside them, the work is kept and the byproducts are not.
         std::fs::write(out.path.join("rule.py"), "class SecretDefault: ...\n").unwrap();
         assert_eq!(

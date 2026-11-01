@@ -588,9 +588,15 @@ pub fn asks_for_a_run(criterion: &str) -> bool {
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    let named_run = ["ci run", "workflow run", "actions run", "run of ci", "run of the workflow"]
-        .iter()
-        .any(|r| c.contains(r));
+    let named_run = [
+        "ci run",
+        "workflow run",
+        "actions run",
+        "run of ci",
+        "run of the workflow",
+    ]
+    .iter()
+    .any(|r| c.contains(r));
     let succeeds = words.iter().any(|w| {
         matches!(
             *w,
@@ -953,8 +959,7 @@ impl Ci {
             Some(false) if workflows.is_empty() => format!(
                 "- CI: no CI run can be had for {}: there is no workflow at its head. {} cannot \
                  be met as the fork stands: HQ will not pass the item on it; say so to the owner.\n",
-                self.branch,
-                quoted
+                self.branch, quoted
             ),
             Some(false) => format!(
                 "- CI: no CI run can be had for {}: no workflow at its head runs on a push to it \
@@ -1119,6 +1124,26 @@ impl Report {
             || self.no_ci_run().is_some()
     }
 
+    /// The line on the criteria about lint (D22): the check of the head is their measure.
+    fn lint_said(&self) -> String {
+        if self.lint.is_empty() {
+            return String::new();
+        }
+        let quoted: Vec<String> = self
+            .lint
+            .iter()
+            .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+            .collect();
+        format!(
+            "- Lint: {} is measured by the check of the head against develop: {}. Its verdict \
+             (no new findings against develop: met, or not met) is the criterion's: a \
+             finding develop has too fails nothing. Reviewer: take the check's verdict for a \
+             criterion about lint, as for CI.\n",
+            quoted.join(", "),
+            HeadCheck::said_of(self.check.as_ref())
+        )
+    }
+
     /// The report as the thread and the reviewer read it.
     #[must_use]
     pub fn said(&self) -> String {
@@ -1217,21 +1242,7 @@ impl Report {
                  beside it.\n"
             ));
         }
-        if !self.lint.is_empty() {
-            let quoted: Vec<String> = self
-                .lint
-                .iter()
-                .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
-                .collect();
-            told.push_str(&format!(
-                "- Lint: {} is measured by the check of the head against develop: {}. Its verdict \
-                 (no new findings against develop: met, or not met) is the criterion's: a \
-                 finding develop has too fails nothing. Reviewer: take the check's verdict for a \
-                 criterion about lint, as for CI.\n",
-                quoted.join(", "),
-                HeadCheck::said_of(self.check.as_ref())
-            ));
-        }
+        told.push_str(&self.lint_said());
         if let Some(ci) = &self.ci {
             told.push_str(&ci.said(self.check.as_ref()));
         }

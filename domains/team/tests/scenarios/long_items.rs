@@ -36,10 +36,8 @@ impl Office {
                     &turn.token,
                     &Submission {
                         branch: format!("hq/task-{}-{slug}", task.0),
-                        head: head.map_or_else(
-                            || format!("{:040x}", kept_before + 1),
-                            str::to_owned,
-                        ),
+                        head: head
+                            .map_or_else(|| format!("{:040x}", kept_before + 1), str::to_owned),
                         base: "ee878f7619e9".to_owned(),
                         files: 3,
                         plus: 40,

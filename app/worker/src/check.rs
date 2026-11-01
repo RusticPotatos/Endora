@@ -306,7 +306,10 @@ pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, Str
         .collect();
     let line = parts.join(", ");
     if worse.is_empty() {
-        return (true, format!("{line}: no new findings against develop: met"));
+        return (
+            true,
+            format!("{line}: no new findings against develop: met"),
+        );
     }
     (
         false,

@@ -2343,8 +2343,17 @@ fn a_loop_item_marks_the_forks_tools_up_front_for_its_turn() {
     hq.tick().unwrap();
     let holder = assignee(&hq, fix).expect("the item is handed out");
     let working = turn_of(&hq, holder);
-    assert_eq!(fork_up_front(&hq, &working), ["repo_checkout", "repo_submit"]);
-    use_tool(&hq, &working, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    assert_eq!(
+        fork_up_front(&hq, &working),
+        ["repo_checkout", "repo_submit"]
+    );
+    use_tool(
+        &hq,
+        &working,
+        "claim",
+        &serde_json::json!({ "task": fix.0 }),
+    )
+    .unwrap();
     use_tool(
         &hq,
         &working,
