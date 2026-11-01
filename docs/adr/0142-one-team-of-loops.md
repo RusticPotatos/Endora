@@ -716,3 +716,15 @@ unnoticed. The owner approved both changes on 31 Oct.
   Narrow by design: a GitHub Actions push filter only. Path filters are not read (they make a run
   the branch filter allows conditional, never possible where it was not), nor schedules, manual
   dispatch or pull requests, which HQ does not open.
+
+## Amended 2026-11-01: what round 3 found (D22–D28)
+
+Round 3 of the baseline experiment (31 Oct to 1 Nov) found these in HQ's own record; each is a
+rule changed here, with a scenario of what happened.
+
+- **D23. The gate belongs to the head.** Item 951 was submitted at a head whose check passed;
+  a later turn ran out of room and the worker kept that same head as work in progress, which
+  shut the gate and queued no check, so both of the reviewer's passes were refused and nothing a
+  reviewer or the owner could do reopened it. Keeping work in progress at the head the item's
+  newest branch already holds now leaves the gate as it is; a new head still shuts it until its
+  check passes.

@@ -112,11 +112,17 @@ fn passes_on_own_reading(w: &mut Office, name: String, title: String) {
             .task(task)
             .expect("the store answers")
             .expect("the item");
+    // One list per criterion; an item with none is passed on the one reading.
     let evidence: Vec<_> = found
         .criteria
         .iter()
         .map(|_| json!([format!("r{reading}")]))
         .collect();
+    let evidence = if evidence.is_empty() {
+        vec![json!([format!("r{reading}")])]
+    } else {
+        evidence
+    };
     w.use_tool(
         &name,
         "review",

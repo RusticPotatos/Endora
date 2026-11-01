@@ -236,7 +236,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// node took it by the rules of a submission and keeps it. HQ records the branch as
     /// [`IN_PROGRESS`], so the next turn on the item may check it out and is told to; it writes
     /// no document, queues no check and posts nothing, since the work is not offered as done.
-    /// The item's gate is the newest head's, so it is shut until a check of a later head passes.
+    /// The item's gate is the newest head's, so it is shut until a check of a later head passes;
+    /// a head the newest branch already holds leaves it as it is (D23, amended 2026-11-01).
     /// Work in review is refused: a new head would void its review. Returns the branch's id.
     ///
     /// # Errors
@@ -248,7 +249,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.task(task)?.status == TaskStatus::InReview {
             return Err(EngineError::Refused(Refusal::InReview));
         }
+        // The gate belongs to the head (D23): keeping the head the newest branch already holds
+        // leaves its check's word standing, which no other route could reopen.
+        let same_head = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == task)
+            .max_by_key(|b| b.id)
+            .is_some_and(|b| b.head == s.head);
         let branch = self.keep_branch(&run, task, s, IN_PROGRESS, self.clock.now())?;
+        if same_head {
+            return Ok(branch);
+        }
         self.store.set_gate(task, false)?;
         Ok(branch)
     }

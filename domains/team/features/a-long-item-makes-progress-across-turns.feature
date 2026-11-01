@@ -36,3 +36,16 @@ Feature: A long item makes progress across turns
   Scenario: Turns out of room that keep nothing still count
     When Kit's turns on "A lint rule for secret defaults" run out of room 4 times, keeping nothing
     Then "A lint rule for secret defaults" has 1 failure and is still Kit's
+
+  # Seed (round 3, 951, D23): submitted at a head whose check passed, then a turn ran out of
+  # room and the worker kept the same head as work in progress. Keeping it shut the gate and
+  # queued no check, so both of the reviewer's passes were refused, with no route to reopen it.
+  Scenario: Work kept at the head its check passed leaves the gate as it was
+    When Kit submits the branch "hq/task-1-secret-defaults"
+    And the check passes: "syntax ok, ansible-lint 14 findings (develop 14), yamllint 6 errors (develop 6): no new findings against develop: met"
+    And Kit's turn on "A lint rule for secret defaults" runs out of room, keeping the head it submitted on "secret-defaults"
+    And Kit takes "A lint rule for secret defaults" and reads gluetun's logs: "healthy"
+    And Kit asks for review of "A lint rule for secret defaults", citing his reading
+    And Ada passes "A lint rule for secret defaults" on a reading of her own
+    Then it is not refused
+    And the task "A lint rule for secret defaults" is done

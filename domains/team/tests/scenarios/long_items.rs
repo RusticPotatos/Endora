@@ -23,8 +23,8 @@ const OUT_OF_ROOM: &str = "Now write the rule, its fixtures and its tests.\n\nTh
 impl Office {
     /// One turn of `name`'s on `title` that ends as the worker ends a turn whose prompt reached
     /// its budget, near a Claude turn's 120,000 tokens: keeping its work on `kept` (a slug,
-    /// under the item's own `hq/task-N-`) first, when it has some.
-    fn out_of_room(&mut self, name: &str, title: &str, kept: Option<&str>) {
+    /// under the item's own `hq/task-N-`) first, when it has some, at `head` or a new head.
+    fn out_of_room(&mut self, name: &str, title: &str, kept: Option<&str>, head: Option<&str>) {
         let task = self.task(title);
         let turn = self.turn_of(name);
         assert_eq!(turn.task, Some(task), "{name}'s turn is on {title:?}");
@@ -36,7 +36,10 @@ impl Office {
                     &turn.token,
                     &Submission {
                         branch: format!("hq/task-{}-{slug}", task.0),
-                        head: format!("{:040x}", kept_before + 1),
+                        head: head.map_or_else(
+                            || format!("{:040x}", kept_before + 1),
+                            str::to_owned,
+                        ),
                         base: "ee878f7619e9".to_owned(),
                         files: 3,
                         plus: 40,
@@ -67,20 +70,28 @@ impl Office {
 #[when(regex = r#"^(\w+)'s turns on "(.+)" run out of room (\d+) times, keeping nothing$"#)]
 fn out_of_room_keeping_nothing(w: &mut Office, name: String, title: String, times: usize) {
     for _ in 0..times {
-        w.out_of_room(&name, &title, None);
+        w.out_of_room(&name, &title, None, None);
     }
 }
 
 #[when(regex = r#"^(\w+)'s turns on "(.+)" run out of room (\d+) times, each keeping new work$"#)]
 fn out_of_room_keeping_work(w: &mut Office, name: String, title: String, times: usize) {
     for _ in 0..times {
-        w.out_of_room(&name, &title, Some("secret-defaults"));
+        w.out_of_room(&name, &title, Some("secret-defaults"), None);
     }
 }
 
 #[when(regex = r#"^(\w+)'s turn on "(.+)" runs out of room, keeping its work on "(.+)"$"#)]
 fn out_of_room_keeping(w: &mut Office, name: String, title: String, slug: String) {
-    w.out_of_room(&name, &title, Some(&slug));
+    w.out_of_room(&name, &title, Some(&slug), None);
+}
+
+/// The worker keeps the sandbox as it is, which is the head the turn already submitted.
+#[when(
+    regex = r#"^(\w+)'s turn on "(.+)" runs out of room, keeping the head it submitted on "(.+)"$"#
+)]
+fn out_of_room_keeping_submitted(w: &mut Office, name: String, title: String, slug: String) {
+    w.out_of_room(&name, &title, Some(&slug), Some(super::SUBMITTED_HEAD));
 }
 
 #[then(regex = r#"^what (\w+) reads of "(.+)" holds (\d+) handovers?$"#)]
