@@ -835,6 +835,14 @@ done. Defects are numbered so the next round's changes can name them.
   (DeepSeek Flash) reviewed 955 (run 4978, 02:07 UTC) and 952 (runs 4932, 4941) with one
   `repo_checkout` each and ended, no verdict and no post. Fix proposed: a review turn that ends
   with neither verdict is recorded as not done and the review goes to the next reviewer.
+- [ ] **D27. On the house model, a code item's checkout tool is held back, and Bo never finds it.**
+  Round 3, 950, 1 Nov 04:2x UTC: Bo (the NAS's model) tried `git checkout` and `git init` with a
+  made-up remote in an empty sandbox, then asked the owner (card 5061) for "an HQ tool I haven't
+  seen": `repo_checkout` and `repo_submit` were on his list under "held back", behind
+  `find_tools`, while weather, news and traffic tools sat beside them. The same on 953's turns.
+  Answered with the task's own words (an intervention). Fix proposed: an item of a loop that
+  checks out the fork marks `repo_checkout` and `repo_submit` for the turn, so they are loaded
+  up front on every runtime (D19 did this for a review's verdict).
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
