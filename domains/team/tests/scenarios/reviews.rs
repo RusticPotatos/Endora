@@ -6,7 +6,7 @@ use cucumber::{given, then, when};
 use serde_json::json;
 
 use endora_team::application::{Submission, TeamStore};
-use endora_team::domain::Criterion;
+use endora_team::domain::{Criterion, WakeReason};
 
 use super::Office;
 
@@ -129,4 +129,17 @@ fn passes_on_own_reading(w: &mut Office, name: String, title: String) {
         &json!({ "task": task.0, "verdict": "approve", "notes": "Looks right.",
                  "evidence": evidence }),
     );
+}
+
+/// Who the item's newest review wake went to.
+#[then(expr = "the newest review of {string} is asked of {word}")]
+fn newest_review_asked_of(w: &mut Office, title: String, name: String) {
+    let task = w.task(&title);
+    let wakes = w.hq.wakes().expect("the store answers");
+    let newest = wakes
+        .iter()
+        .filter(|k| k.task == Some(task) && k.reason == WakeReason::ReviewRequested)
+        .max_by_key(|k| k.id.0)
+        .expect("a review was asked for");
+    assert_eq!(newest.member, w.member(&name), "{wakes:#?}");
 }

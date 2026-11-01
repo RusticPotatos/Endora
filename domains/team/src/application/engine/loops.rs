@@ -236,16 +236,56 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
     /// the top rank's work the member just below it; never above Haiku's rank for work done
     /// below it (amended 2026-10-31, D7: [`crate::domain::review::reviewer_among`]). `None` for
-    /// work outside the loops.
+    /// work outside the loops. Nobody reviews work she had a hand in ([`Self::had_a_hand_in`]).
     pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
         let Some(holder) = self.loop_holder(task)? else {
             return Ok(None);
         };
-        let members = self.loop_members()?;
+        let hands = self.had_a_hand_in(task.id)?;
+        let members: Vec<Member> = self
+            .loop_members()?
+            .into_iter()
+            .filter(|m| m.id == holder.id || !hands.contains(&m.id))
+            .collect();
         let ranked: Vec<_> = members.iter().map(|m| (m.id, m.brain.rank())).collect();
         let reviewer =
             crate::domain::review::reviewer_among(holder.id, holder.brain.rank(), &ranked);
         Ok(reviewer.and_then(|id| members.into_iter().find(|m| m.id == id)))
+    }
+
+    /// The members who had a hand in an item's work (D24 of round 3: Ada reviewed and closed
+    /// 952, whose branch carried her commits, because HQ asked only who submitted its head):
+    /// whoever kept a branch of it, its sub-tasks' included, and whoever took a turn of work on
+    /// it (taking it, going on with it, or woken back to it), as against a review.
+    pub(super) fn had_a_hand_in(&self, task: TaskId) -> Done<Vec<MemberId>> {
+        let work = self.work_of(task)?;
+        let mut hands: Vec<MemberId> = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task))
+            .map(|b| b.member)
+            .collect();
+        for run in self.store.runs_of(task)? {
+            if run.started_at.is_none() || hands.contains(&run.member) {
+                continue;
+            }
+            let worked = self.store.wake(run.wake)?.is_some_and(|w| {
+                matches!(
+                    w.reason,
+                    WakeReason::Assigned
+                        | WakeReason::AssignmentRecovery
+                        | WakeReason::Continued
+                        | WakeReason::Recovery
+                        | WakeReason::SentBack
+                        | WakeReason::CheckDone
+                )
+            });
+            if worked {
+                hands.push(run.member);
+            }
+        }
+        Ok(hands)
     }
 
     /// Whether an item is held by a member in the loops: its stalls and failures climb the

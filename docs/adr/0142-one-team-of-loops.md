@@ -728,3 +728,9 @@ rule changed here, with a scenario of what happened.
   reviewer or the owner could do reopened it. Keeping work in progress at the head the item's
   newest branch already holds now leaves the gate as it is; a new head still shuts it until its
   check passes.
+- **D24. Nobody reviews work she had a hand in.** Ada's turns kept work in progress on item
+  952; it climbed to Kit, who squashed her commits into his; Ada then reviewed it and closed it,
+  because the own-work check asked only who submitted the head. The loops' reviewer is now
+  chosen, by the same rule, among members who had no hand in the item: none kept a branch of it
+  or of its sub-tasks, and none took a turn of work on it (taken, gone on with, woken back to it
+  by a send-back, a check or a nudge). Reviewing it is not a hand in it.
