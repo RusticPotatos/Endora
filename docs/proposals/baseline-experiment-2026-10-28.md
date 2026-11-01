@@ -840,7 +840,9 @@ done. Defects are numbered so the next round's changes can name them.
   made-up remote in an empty sandbox, then asked the owner (card 5061) for "an HQ tool I haven't
   seen": `repo_checkout` and `repo_submit` were on his list under "held back", behind
   `find_tools`, while weather, news and traffic tools sat beside them. The same on 953's turns.
-  Answered with the task's own words (an intervention). Fix proposed: an item of a loop that
+  Answered with the task's own words (an intervention). At 04:5x he asked again (card 5062,
+  a second question on one item despite D10), still never having called `repo_checkout`;
+  answered the same way (a second intervention). Fix proposed: an item of a loop that
   checks out the fork marks `repo_checkout` and `repo_submit` for the turn, so they are loaded
   up front on every runtime (D19 did this for a review's verdict).
 
