@@ -277,6 +277,15 @@ shrank each call; nothing bounded the turn.
   stubbed; a Claude turn of that length with every result whole read about 119,500, so 120,000
   lets it finish on its own and cuts only the long ones. Claude Code's runtime keeps its own
   compaction and is out of scope.
+- **A result of the lab's or the shell's adds at most 6 KB to a Claude turn (amended 2026-11-01,
+  D20 of round 3).** A Claude turn reads every result whole, and its budget sums every call's
+  whole prompt, so a 16 KB listing read at the second call was counted again on every call after
+  it: Ada's Haiku turns on 949 ended at the budget after 6 or 7 calls, every turn, and the item
+  climbed to Sonnet after twelve continuations. `image_tags` was not the cause (it answers 30 tags
+  at most, about a kilobyte). Past 6 KB, such a result keeps its first 5 KB and its last
+  kilobyte (where a command's exit, a log's newest lines and the receipt are), and says how much
+  was left out and to ask for less. HQ's own results (a briefing, a document's 20,000-character
+  part) are sized by HQ and read whole; a house turn's are read through a gist as before.
 - **Its last word says it goes on.** The worker posts what the model said on the way and that
   the prompt reached its budget, as its last word (not progress), marked `continues`. Only the
   worker sets the mark: it strips `last_word` and `continues` from the model's own posts, so a

@@ -744,11 +744,22 @@ done. Defects are numbered so the next round's changes can name them.
   `codex/agent-collaboration` (`app/worker/src/turn.rs`, test
   `a_claude_turn_loads_what_hq_marks_for_its_kind`); the worker has no scenario suite, so its
   end-to-end test stands for one. Released in `1340e5b3` mid-round, by the owner's word.*
-- [ ] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
+- [x] **D20. Haiku's turns on 949 filled their prompt budget on every turn, and the item climbed
   to Sonnet.** Ada read 400–460 KB over 6–7 calls a turn (mostly `image_tags` and the
   checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
   it in 10 turns for $0.94 (22:02–22:20 UTC), of the task's $1.38. The cap on results a turn
   reads, or a smaller `image_tags` answer, would keep it at Haiku's price. Related to D12 and D17.
+  *Fixed on `round4`. The cause was not `image_tags`, which already answers 30 tags at most
+  (about a kilobyte, `MOST_TAGS` in `domains/capabilities/src/registry.rs`), nor the checkout,
+  whose answer the model reads as a paragraph. A Claude turn reads every result whole (no stubs,
+  no gist, so the cache holds) and its budget sums every call's whole prompt: a 16 KB shell
+  listing read at the second call is counted again on each call after it. Now a result of the
+  shell's or the node's lab tools adds at most 6 KB to a Claude turn: its first 5 KB and last
+  kilobyte (the receipt), with how much was left out and to ask for less (`for_the_model`,
+  `app/worker/src/turn.rs`; ADR 0142, amended 2026-11-01). Test
+  `a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn`: a turn of 949's shape on a
+  measured Haiku opening (23 KB) made 9 of its 11 calls read whole, all 11 held to size. The
+  worker has no scenario suite; its test stands for one, as D19's did.*
 - [ ] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
   Round 3, 31 Oct: Ada had today's $0.50 allowance (card 5025, approved) and reached her limit
   ($0.89 of $0.88: twice her $0.19 share plus the allowance) at about 22:42 UTC. HQ asks about a

@@ -363,6 +363,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         talk.gist(&call.id, gist);
                     }
                 }
+                let mut reply = reply;
+                reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
                 let ended = if reply.asked {
                     Some(Taken::AskedTheOwner)
                 } else if reply.moved_on {
@@ -1573,6 +1575,47 @@ fn stub(tool: &str, args: &Value, text: &str) -> String {
         at_most(&args.to_string(), STUB_SAYS_AT_MOST),
         text.chars().count(),
         at_most(gist, STUB_SAYS_AT_MOST)
+    )
+}
+
+/// The most one result of the lab's or the shell's adds to a Claude turn, in bytes (D20 of round
+/// 3). A Claude turn reads every result whole, its prompt cached, and its budget sums every
+/// call's whole prompt: a 16 KB listing read at the second call was counted again on each call
+/// after it, and Ada's Haiku turns on 949 ended at the budget after 6 or 7 calls, every turn.
+pub(crate) const RESULT_AT_MOST: usize = 6 * 1024;
+
+/// Of a result cut to [`RESULT_AT_MOST`], how much of its end is kept: its last lines, where a
+/// command's exit, a log's newest lines and the receipt are.
+const RESULT_END_KEPT: usize = 1024;
+
+/// A result as the model reads it: on a Claude turn, one from the shell or the node's lab tools
+/// (`on_the_node`) past [`RESULT_AT_MOST`] keeps its start and its end, and says what was left
+/// out and how to ask for less. HQ's own results (a briefing, a document's part) are sized by
+/// HQ and read whole; a house turn's long results are read through a gist and cut as it goes.
+pub(crate) fn for_the_model(api: Api, tool: &str, on_the_node: &[String], text: String) -> String {
+    let the_labs = tool == SHELL || on_the_node.iter().any(|n| n == tool);
+    if api != Api::Anthropic || !the_labs || text.len() <= RESULT_AT_MOST {
+        return text;
+    }
+    let start_at_most = RESULT_AT_MOST - RESULT_END_KEPT;
+    let mut start_end = start_at_most;
+    while !text.is_char_boundary(start_end) {
+        start_end -= 1;
+    }
+    let start_end = text[..start_end].rfind('\n').map_or(start_end, |at| at + 1);
+    let mut end_from = text.len() - RESULT_END_KEPT;
+    while !text.is_char_boundary(end_from) {
+        end_from += 1;
+    }
+    let end_from = text[end_from..]
+        .find('\n')
+        .map_or(end_from, |at| end_from + at + 1);
+    let left_out = end_from.saturating_sub(start_end);
+    format!(
+        "{}[{left_out} bytes of this result's middle left out, to keep the turn within its \
+         budget: ask for less (a path, grep, head, tail or sed -n, fewer lines).]\n{}",
+        &text[..start_end],
+        &text[end_from..]
     )
 }
 
@@ -4053,5 +4096,208 @@ mod tests {
         answered.forget(&key);
         assert!(!answered.said.contains_key(&key));
         assert!(answered.last.is_none());
+    }
+
+    /// A Haiku turn on an ansible-nas item as its first call goes: HQ's tools, the node's and
+    /// the shell, the instructions and the briefing, on Claude.
+    fn a_haiku_opening() -> (Talk, Vec<String>) {
+        use endora_team::domain::Brain;
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(8),
+            Noon,
+            Settings::default(),
+        );
+        let mut seats = Vec::new();
+        for (name, model, role) in [
+            ("Mara", "opus", Role::Ceo),
+            ("Kit", "sonnet", Role::Lead),
+            ("Ada", "haiku", Role::Lead),
+            ("Bo", "local", Role::Developer),
+        ] {
+            let id = hq.hire(name, role, 10, 2, 0).unwrap();
+            hq.set_model(id, model).unwrap();
+            seats.push(id);
+        }
+        let goal = hq.set_goal("Improve the lab", "", Author::Owner).unwrap();
+        let project = hq
+            .add_project(goal, "ansible-nas", "the fork's work", seats[0], None)
+            .unwrap();
+        hq.set_loop_rank(project, Brain::Haiku.rank()).unwrap();
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Pin the homepage and stats roles off the latest image tag".to_owned(),
+                description: "Each tag a release that exists on its registry.".to_owned(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+        let context = running_turn_of(&hq, seats[2]);
+        let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+        let mut offered: Vec<Value> =
+            endora_team::application::protocol::tools_in(&hq, &run, &member)
+                .as_array()
+                .cloned()
+                .unwrap();
+        let contracts: Vec<Value> = endora_capabilities::contracts::all()
+            .iter()
+            .filter(|c| c.offered_to(member.role.name(), true))
+            .map(endora_capabilities::contracts::Contract::as_tool)
+            .collect();
+        let on_the_node: Vec<String> = contracts
+            .iter()
+            .filter_map(|c| c["name"].as_str().map(str::to_owned))
+            .collect();
+        offered.extend(contracts);
+        offered.push(shell_tool());
+        let briefing =
+            endora_team::application::protocol::call(&hq, &run, &member, "my_turn", &json!({}))
+                .unwrap();
+        let Opening { talk, .. } = opening(
+            Api::Anthropic,
+            offered,
+            briefing,
+            &on_the_node,
+            true,
+            false,
+            true,
+        );
+        (talk, on_the_node)
+    }
+
+    /// A listing as the shell gives one at its most: 16 KB of `grep -rn` over the roles.
+    fn a_large_listing() -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while out.len() < crate::shell::OUTPUT_AT_MOST - 200 {
+            out.push_str(&format!(
+                "roles/role{i}/defaults/main.yml:3:role{i}_image: \"example/role{i}:latest\"\n"
+            ));
+            i += 1;
+        }
+        out + "exit 0 (receipt r412)"
+    }
+
+    /// The calls of a turn on task 3 (pin `homepage` and `stats`), in round 3's shape on 949:
+    /// the checkout, listings and files read with the shell, the registries asked with
+    /// `image_tags`, the lint, the commit and the submission.
+    fn the_949_turn() -> Vec<(&'static str, Value, String)> {
+        let tags = r#"{"image":"ghcr.io/gethomepage/homepage","tags_read":412,"all_read":true,"matching":30,"newest":["v1.10.0","v1.9.2","v1.9.1","v1.9.0","v1.8.4","v1.8.3","v1.8.2","v1.8.1","v1.8.0","v1.7.5","v1.7.4","v1.7.3","v1.7.2","v1.7.1","v1.7.0","v1.6.3","v1.6.2","v1.6.1","v1.6.0","v1.5.9","v1.5.8","v1.5.7","v1.5.6","v1.5.5","v1.5.4","v1.5.3","v1.5.2","v1.5.1","v1.5.0","v1.4.9"],"tag":"v1.10.0","exists":true} (receipt r410)"#;
+        let file = "    - name: Run the container\n      image: \"{{ image }}\"\n".repeat(80);
+        let shell = |cmd: &str| json!({ "command": cmd });
+        vec![
+            ("repo_checkout", json!({ "branch": "develop", "why": "to pin" }),
+             "Checked out develop at 0123456789ab into /work/repo (1412 files) (receipt r409). Your base is develop.".to_owned()),
+            (SHELL, shell("grep -rn image roles/"), a_large_listing()),
+            ("image_tags", json!({ "image": "ghcr.io/gethomepage/homepage" }), tags.to_owned()),
+            ("image_tags", json!({ "image": "example/stats" }), tags.replace("homepage", "stats")),
+            (SHELL, shell("cat roles/homepage/tasks/main.yml roles/stats/tasks/main.yml"), file.clone()),
+            (SHELL, shell("ls -R roles/homepage roles/stats"), a_large_listing()),
+            (SHELL, shell("ansible-lint nas.yml"), a_large_listing()),
+            ("image_tags", json!({ "image": "ghcr.io/gethomepage/homepage", "tag": "v1.10.0" }), tags.to_owned()),
+            (SHELL, shell("git diff develop"), file.clone()),
+            (SHELL, shell("git commit -am 'Pin homepage and stats'"), "1 file changed (receipt r415)".to_owned()),
+            ("repo_submit", json!({ "branch": "hq/task-949-pin", "why": "pinned" }), "Submitted (receipt r416)".to_owned()),
+        ]
+    }
+
+    /// How many of `calls` a turn makes from `opening` within `budget`, each result as the
+    /// model reads it (held to its size by [`for_the_model`]).
+    fn calls_of_a_claude_turn(
+        opening: &Talk,
+        on_the_node: &[String],
+        calls: &[(&str, Value, String)],
+        budget: usize,
+    ) -> usize {
+        let (mut talk, mut read) = (opening.clone(), 0);
+        for (i, (tool, args, text)) in calls.iter().enumerate() {
+            let next = talk.body("claude-haiku").to_string().len();
+            if !has_room(u32::try_from(i).unwrap(), read, next, budget) {
+                return i;
+            }
+            read += next;
+            let text = for_the_model(Api::Anthropic, tool, on_the_node, text.clone());
+            round(&mut talk, &format!("c{i}"), tool, args, &text);
+        }
+        calls.len()
+    }
+
+    /// D20 of round 3 (1 Nov): Ada's Haiku turns on 949 (pin homepage and stats) read 400 to
+    /// 460 KB over 6 or 7 calls, every turn, and after twelve continuations the item climbed to
+    /// Sonnet. `image_tags` was not the cause: it answers 30 tags at most, about a kilobyte. A
+    /// Claude turn reads every result whole, and its budget sums every call's whole prompt, so
+    /// a 16 KB listing read at the second call is counted again on every call after it. What
+    /// one result of the lab's or the shell's adds to a Claude turn is now held to
+    /// [`RESULT_AT_MOST`], its start and its end (the receipt) kept, with how to ask for less.
+    #[test]
+    fn a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn() {
+        let on_the_node = vec!["image_tags".to_owned(), "container_logs".to_owned()];
+        let listing = a_large_listing();
+        let read = for_the_model(Api::Anthropic, SHELL, &on_the_node, listing.clone());
+        assert!(read.len() <= RESULT_AT_MOST + 400, "{}", read.len());
+        assert!(
+            read.starts_with("roles/role0/defaults/main.yml"),
+            "its start is kept"
+        );
+        assert!(
+            read.ends_with("exit 0 (receipt r412)"),
+            "its end and receipt are kept"
+        );
+        assert!(read.contains("left out"), "it says what was cut: {read}");
+        // The lab's results are held alike; a small one, HQ's own and a house turn's are not.
+        let logs = for_the_model(
+            Api::Anthropic,
+            "container_logs",
+            &on_the_node,
+            listing.clone(),
+        );
+        assert!(logs.len() < listing.len());
+        let small = "a short answer (receipt r1)".to_owned();
+        assert_eq!(
+            for_the_model(Api::Anthropic, SHELL, &on_the_node, small.clone()),
+            small
+        );
+        assert_eq!(
+            for_the_model(Api::Anthropic, "read_doc", &on_the_node, listing.clone()),
+            listing
+        );
+        assert_eq!(
+            for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone()),
+            listing
+        );
+        // A turn of 949's shape: read whole, the budget ends it before its submission (9 of 11
+        // calls here; live, with the bridged tools and a longer thread, 6 or 7); held to size,
+        // it makes all of them.
+        let (opening, on_the_node) = a_haiku_opening();
+        let calls = the_949_turn();
+        let whole = {
+            let (mut talk, mut read, mut made) = (opening.clone(), 0, calls.len());
+            for (i, (tool, args, text)) in calls.iter().enumerate() {
+                let next = talk.body("claude-haiku").to_string().len();
+                if !has_room(u32::try_from(i).unwrap(), read, next, CLAUDE_PROMPT_BUDGET) {
+                    made = i;
+                    break;
+                }
+                read += next;
+                round(&mut talk, &format!("c{i}"), tool, args, text);
+            }
+            made
+        };
+        let held = calls_of_a_claude_turn(&opening, &on_the_node, &calls, CLAUDE_PROMPT_BUDGET);
+        eprintln!(
+            "949's turn: {whole} calls read whole, {held} held to size, of {}",
+            calls.len()
+        );
+        assert!(
+            whole < calls.len(),
+            "read whole, the budget ends it early: {whole}"
+        );
+        assert_eq!(held, calls.len(), "held to size, the turn does its work");
     }
 }
