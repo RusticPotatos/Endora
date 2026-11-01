@@ -928,6 +928,54 @@ Endora's development down; the Sonarr leak fix (a local fork branch,
 `fix/sonarr-console-key-leak`, ready to apply), then rotating Prowlarr's key; not merging HQ's
 `hq/task-960-…` and `hq/task-962-…`; the rework check on 8 Nov.
 
+### Why HQ failed round 4: the same model outside HQ (1 Nov, a diagnostic, not a round)
+
+Asked for by the owner to learn from the failure, not to rescue HQ; the decision stands. To
+separate the model from the harness (point 3 above), R1–R3 were run a third time by Claude Code
+on **Haiku 5.5, Sol's model**, given **exactly HQ's words** (title, description, criteria) and no
+brief of its own beyond where to work, the read-only lab access HQ's tools also allow, and a key
+redaction filter. Branches `exp/h-r4-1` and `exp/h-r4-3` of the fork (local), and a report for
+R2. Judged by a fresh round judge on the standard the round applied to both other arms.
+
+| # | HQ, Haiku (Sol) | Claude Code, Haiku | Claude Code, Opus |
+|---|---|---|---|
+| R1 | No: unset deploys an empty password | **Yes**: an assert fails unset, empty, or half set; lint identical (judge played it). Outside the criteria: the database password is not URL-encoded | Yes |
+| R2 | No: wrong about the file log; no why; a fix that leaves the source | No: right about where (35 raw-key lines in the console, 0 in every file log), but no why, and "no fix needed in the role" without looking | Yes |
+| R3 | No: jellyfin two majors back | **Yes**: `12.4ubu2604-ls57` and `1.35.0`, both digests equal to today's `latest` | Yes |
+| Verified | 0 of 3 | **2 of 3** | 3 of 3 |
+| Tool calls, time | 5 turns (the first cut at 12 rounds), 14 min | 32 + 17 + 14 calls, 4 + 3 + 1 min | 26 + 13 + 9 calls, 3 + 3 + 1 min |
+
+**What it shows.** With the same model, Claude Code's harness verified two tasks HQ's did not,
+and would have met the decision rule's part 1 (Claude Code's count minus one). So most of round
+4's gap was HQ's harness, and some of it the model: R2's depth (finding *why* only the console
+leaks, and the setting that stops it) needed the larger model in both harnesses.
+
+**Where HQ's harness lost each task, by its own record** (HQ's runs 5120–5124, posts 8190–8215,
+receipts 3591–3607):
+- **R1, a turn budget and no test of the failure case.** Sol's first turn ended at its 12-call
+  budget mid-edit; the work went on in a second turn from a summary. It copied cloudflared's
+  "print a reminder" pattern, not 951's and 952's assert, and its own check measured "unset, both
+  are empty" and moved on: nothing in the loop asks a worker to run the criterion's failure case,
+  and the item closed on lint and syntax alone. Claude Code on Haiku spent 32 calls in one sitting
+  and played the assert unset and set.
+- **R2, the tools' reach.** Sol had `container_logs` (60 lines, already redacted) and
+  `homelab_status`; it could not look inside a container, so it could not read Sonarr's file logs
+  or compare Radarr's, and it filled the gap with a claim (the file log leaks too). Claude Code on
+  Haiku used read-only `docker exec` and got the where right. Neither Haiku found the why.
+- **R3, a tool's filter.** Sol asked `image_tags` for plain version numbers only, which hid
+  linuxserver's `12.x` tags; its next call listed `12.4ubu2604-ls57` first, and it pinned
+  `10.11.11` anyway. Claude Code on Haiku read Docker Hub's tag list whole with `curl` and chose
+  the current release.
+- **Common to all three:** a solo item is done when HQ's mechanical checks pass, and none of them
+  tests what the criterion is about. The same model, left to check its own work in a plain loop,
+  checked the failure case on R1 and the newest release on R3.
+
+**What carries forward** (findings, not fixes to build now): give an agent the whole working
+session a task needs rather than a call budget split across turns; give read-only tools their
+full reach (inside the container, the registry unfiltered) rather than a pre-chewed slice;
+make "done" depend on a check of the criterion's failure case; compare runtimes on one model.
+These are what an existing agent runtime already gives, which is the parked proposal's question.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
