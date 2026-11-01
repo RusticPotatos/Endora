@@ -859,6 +859,75 @@ decision test, not a benchmark, and it shows no general claim either way.
   marked done on mechanical checks with nobody reading the work, and R2's repository claims cited
   no read receipt.
 
+### The experiment as a whole (1 Nov, after round 4): full analysis
+
+Five rounds in five days (28 Oct – 1 Nov), from HQ's own store, the rows above and the
+repository's history. Read-only throughout; nothing here reopens round 4's decision.
+
+| | Claude Code | Round 0 | Round 1 | Round 2 | Round 3 | Round 4 (fresh, solo) |
+|---|---|---|---|---|---|---|
+| Tasks | 10 + 3 | 10 | 10 | 10 | 10 | 3 |
+| Verified | 10 of 10, 3 of 3 | 1 | 3 | 7 | 8 | **0** |
+| Interventions | 0 | 9 | 7 | 7 | 10 | 0 |
+| Spend on the tasks | tokens | $0.81 | $1.67 | $8.35 | $8.68 | $0.03 |
+| Turns (that changed nothing) | one agent a task | 112 (84) | 92 (65) | 320 (267) | 347 (293) | 5 (0) |
+| Verified per dollar | — | 1.2 | 1.8 | 0.8 | 0.9 | 0 |
+
+**1. The gains did not carry over.** Rounds 1–3 rose from 1 to 8 verified on the *same* ten
+tasks, each round fixing what the last one failed on: a registry tool for task 3, budgets and
+kept work for the long tasks, reviews capped for cost. On three tasks HQ had never seen, with
+the piping removed, it verified none. What the rounds improved was HQ's fit to the ten tasks and
+to its own process, not the judgement in the work. The playbook named this risk ("a gain that
+does not show outside the homelab did not carry over"); round 4 is where it showed.
+
+**2. The piping was the cost, and removing it fixed the cost only.** In rounds 2 and 3, 83–84%
+of turns changed nothing by HQ's own flag; handovers (249, 274) and climbs (22, 24) re-read the
+work each time, and three fifths of round 3's money reached Sonnet through climbs, not choice.
+The solo arm cut that to 5 turns, none wasted, $0.03 for three tasks. So the company structure
+(ranks, reviews, handovers, the desk) cost money and hours and did not buy quality: round 3's
+reviews passed work that still had to be re-verified by an outside judge, and lost four finished
+tasks of their own (D19, D22, D23, D25).
+
+**3. A confound to keep in view: the models differed.** Claude Code's arm ran as general-purpose
+agents of an Opus 5.5 session (the driver's model, which subagents inherit); HQ's arm was Sol on
+Haiku 5.5, by the owner's money-to-Haiku word. Round 4's failures are all judgement (a weaker
+guard than the fork's own assert, a downgrade its own receipt showed, a cause asserted without
+reading), which is where model strength tells most. This does not change the decision (the rule
+was set on HQ as it would be run, and no round 5 rescues it), but it means round 4 did not
+measure HQ's *harness* against Claude Code's at equal models. Any later comparison of runtimes
+must hold the model fixed. Claude Code's 237.5k tokens are not priced here.
+
+**4. What HQ's design still gets right, by the record.** No arm of HQ broke the lab after round 0
+(read-only tasks refused restarts; every receipt in rounds 3–4 a read); every delivered branch
+passed a privacy scan; the kept sandbox and D30 made a solo turn efficient. Its weak points were
+also mechanical, and they are findings for whatever comes next, not fixes to build: the scope
+check sees changed files only, so a forbidden *read* passes (R1); `image_tags` with `semver_only`
+hides versioned tags (R3); a solo item is closed on mechanical checks, with nobody reading the
+work (R1–R3); claims about repositories cite no read receipt (R2).
+
+**5. What it cost to build.** Since 28 Oct: 274 commits on this branch, 51 of them touching ADRs;
+the product grew to 103,464 lines (round 4's gate; 33,837 of tests), against the owner's figure
+of about 62k for team, node and HQ before the rounds. Task spend across all five rounds was
+$19.54; HQ's store holds $44.25 of runs in all. The cost that matters was the owner's and the
+agents' time on the machinery, which no round's task spend shows.
+
+**6. Where that leaves Endora.** By the rule: HQ's development side retires. Its unattended side
+was not shown to have an advantage either (R2, the only operations task, failed), so it stays as
+it is, without new investment, and is judged by whether the owner uses it. HQ is idle now: empty
+wakes every half hour or so at about $0.0006 each. What the parked proposal below calls Endora's
+distinct value (the house and lab integrations, local models, one spending limit, the
+private-data rules) was not what failed; the coordination and the judgement in the work were.
+The parked proposal's step 3 (a bounded proof of concept, an existing agent runtime with
+Endora's tools against the extracted worker, on R1–R3 at a fixed effort budget) is now the next
+step in its own sequence, only if the owner wants to put more time into Endora; it must hold the
+model fixed (point 3). Its stop condition stands: if an existing runtime meets the need, no
+engine is built.
+
+**Open for the owner** (none blocks anything): whether to start that proof of concept or put
+Endora's development down; the Sonarr leak fix (a local fork branch,
+`fix/sonarr-console-key-leak`, ready to apply), then rotating Prowlarr's key; not merging HQ's
+`hq/task-960-…` and `hq/task-962-…`; the rework check on 8 Nov.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
