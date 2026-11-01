@@ -1361,6 +1361,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
         }
+        // Set ready in a loop worked alone, the item is done by HQ's checks: they must pass
+        // first (ADR 0142, amended 2026-11-01).
+        if to == TaskStatus::InReview && self.solo_of(&current)?.is_some() {
+            self.ready_alone(&current)?;
+        }
         self.store.set_task_status(task, to)?;
         if to == TaskStatus::Blocked {
             self.mark_turn(member, task, &|run| run.blocked = true)?;
@@ -1405,6 +1410,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // that touches a forbidden path goes back without a reviewer.
         if self.checked_at_review(task)? {
             return Ok(());
+        }
+        // A loop worked alone has no review: HQ's checks passed, so it is done.
+        if let Some(alone) = self.solo_of(task)? {
+            return self.done_alone(task, alone);
         }
         // In the loops, a member at Haiku's rank or below reviews it, when there is one (ADR
         // 0142, amended 2026-10-31).
@@ -1632,6 +1641,46 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let gate = self.store.gate(task)?.unwrap_or(false);
         work::is_done(gate, current.owner, reviewer).map_err(EngineError::Refused)?;
+        self.accept(&current)
+    }
+
+    /// Whether an item set ready in a loop worked alone may be (ADR 0142, amended 2026-11-01):
+    /// the check of its newest head passed, for work the gate holds, and a CI run its criteria
+    /// ask for can be had, as a reviewer's pass would need.
+    ///
+    /// # Errors
+    /// [`Refusal::GateNotPassed`]; what [`Self::ci_can_be_had`] refuses.
+    fn ready_alone(&self, task: &Task) -> Done<()> {
+        if self.gated(task)? && !self.store.gate(task.id)?.unwrap_or(false) {
+            return Err(EngineError::Refused(Refusal::GateNotPassed));
+        }
+        self.ci_can_be_had(task)
+    }
+
+    /// An item of a loop `alone` works by itself passed HQ's checks as it was set ready: it is
+    /// done with no review, and goes on as accepted work does (ADR 0142, amended 2026-11-01).
+    fn done_alone(&self, task: &Task, alone: MemberId) -> Done<()> {
+        let name = self.member(alone)?.name;
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "HQ's checks passed and {name} set it ready: done, with no review ({name} works \
+                 this loop alone)."
+            ),
+        )?;
+        if self.gated(task)? {
+            return self.accept(task);
+        }
+        self.store.set_task_status(task.id, TaskStatus::Done)?;
+        self.emit_status(task, TaskStatus::Done)?;
+        self.after_finishing(task)
+    }
+
+    /// Work accepted, its gate passed: done, listed for the merge (or carded, if the owner put
+    /// the cards back), and on to what follows a finish.
+    fn accept(&self, current: &Task) -> Done<()> {
+        let task = current.id;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.emit(
             EventKind::TaskChanged,
@@ -1655,8 +1704,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "item": desk.0, "kind": kind, "task": task.0 }),
             )?;
         }
-        self.after_finishing(&current)?;
-        Ok(())
+        self.after_finishing(current)
     }
 
     /// The owner drops a task, giving no reason: work that will not be done (ADR 0124; see

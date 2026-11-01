@@ -20,7 +20,7 @@ const OUT_OF_ROOM: &str =
 
 impl Office {
     /// The newest reading `name`'s running turn took, as it is cited: `r12`.
-    fn newest_reading(&mut self, name: &str) -> String {
+    pub(super) fn newest_reading(&mut self, name: &str) -> String {
         let run = self.turn_of(name).run;
         let receipts = self
             .hq

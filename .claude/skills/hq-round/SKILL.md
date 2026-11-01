@@ -85,6 +85,9 @@ Settings that change speed (items in hand at once, limits) change only at a roun
    was released, what changed and why, the task ids and the start time.
    - A task that can no longer be met (round 2's task 8: its window had left the logs) is not
      silently kept: say so, and fix the task's conditions before the round counts it.
+   - Round 4's solo arm (item E): the same tasks again, with `start --round N --from-tasks
+     <ids> --solo <name>` (dry-run first), in a project that member works alone (ADR 0142,
+     amended 2026-11-01); the member is a Haiku member hired for the arm, not one of the team's.
 5. **The judge is tested** (from round 4, before its first judging) on its known-good and known-bad branches, on both
    counts: it accepts and refuses rightly, and its verdict is recorded and acted on (D19 was
    the second, with the reasoning right). The cases are `domains/team/tests/fixtures/judge.json`,

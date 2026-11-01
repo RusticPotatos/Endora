@@ -269,6 +269,32 @@ fn a_loop_gives_its_top_item_to_the_member_at_its_starting_rank_one_at_a_time() 
     assert_eq!(assignee(&hq, later), Some(f.bo));
 }
 
+/// The owner names the member who works a loop alone, and may give the loop back to the team
+/// (ADR 0142, amended 2026-11-01); a loop that does not exist is refused.
+///
+/// Given a loop worked alone by Ada, when HQ ticks, then its item is Ada's though the loop
+/// starts at Bo's rank; set back to the team, the loop names nobody.
+#[test]
+fn the_owner_sets_a_loop_to_be_worked_alone_and_back() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    assert!(
+        hq.set_loop_solo(crate::domain::ProjectId(999), Some(f.ada))
+            .is_err(),
+        "no such loop"
+    );
+    hq.set_loop_solo(f.loop_, Some(f.ada)).unwrap();
+    assert_eq!(hq.loop_solo(f.loop_).unwrap(), Some(f.ada));
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let tidy = item(&hq, &f, "Tidy the README", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, fix), Some(f.ada), "to Ada alone");
+    assert_eq!(assignee(&hq, tidy), None, "one at a time");
+    hq.set_loop_solo(f.loop_, None).unwrap();
+    assert_eq!(hq.loop_solo(f.loop_).unwrap(), None);
+}
+
 /// A loop may start higher, for hard work: its items go to the member at that rank.
 #[test]
 fn a_loop_may_start_at_a_higher_rank() {

@@ -801,3 +801,44 @@ rule changed here, with a scenario of what happened.
   the turn "kept new work"; 947 and 951 carried the same file. The worker's keep now never adds
   `__pycache__/` or `*.pyc`, and a branch whose only change from its base is such byproducts is
   not kept (nothing is sent to the node). Work the model committed itself is kept as it is.
+
+## Amended 2026-11-01: a loop worked by one member alone (round 4's solo arm)
+
+Round 4's piping audit (item E of the baseline experiment; the owner, 1 Nov: "let the agents be
+agents") asks whether HQ's process, not the models, causes the failures, and settles it with an
+arm of "one member, one long turn, no ladder" beside the team's. Configuration could not give
+that arm: a loop's starting rank (`loop_rank:<project>`) and items at once (`loop_items:`) choose
+who takes an item, but not who reviews it (`review::reviewer_among`, any other member at work),
+where a failure goes (`loop_failed` climbs to the member one rank up), nor whom the item goes to
+by name; only pausing every other member would cut the hand-offs, which stops the team's arm, and
+no `ENDORA_*` variable touches the loops. So:
+
+- **The owner may set a loop to be worked by one member alone** (`loop_solo:<project>`, a
+  member's id; `POST /v1/projects/{id}/solo` with `{"member": id}` or `null`, or `"solo": id` when
+  making the project). Its items go to that member only, one at a time, whatever its starting
+  rank.
+- **Its item is done when HQ's checks pass and the member sets it ready.** Setting it in review is
+  refused until the check of its newest head has passed (for work the gate holds) and while a CI
+  run its criteria ask for cannot be had (D6), as a reviewer's pass would be (the refusal tells
+  the member, who has nobody to send it back to, to block it with the reason); then HQ's
+  mechanical checks at review run as for any item (a forbidden path sends it back, one of its
+  failures), and with nothing sent back it is done with no review, and goes on as accepted work
+  does (the push, the merge). The member's own judged evidence on setting it ready is unchanged.
+- **Nothing hands it on.** A failure (a failed check, a send-back by HQ's checks, turns that kept
+  running out of room) is counted and said on the thread, and the item stays with its member: no
+  climb, no hold for an away member, no hand-up while the member is paused. A turn that runs
+  out of room goes on with the same member, as for every item. The ninth failure (three ranks'
+  worth, the team arm's ceiling) blocks it with the reason and asks the owner, as the team's
+  top rank's last failure does, so neither arm's spend on one item is unbounded.
+- **The member takes no part in the team's loops** while it works a loop alone (an active or
+  paused one): no hand-out, climb, hand-up or review of another loop's item goes to it, so the two
+  arms share nobody. The arm wants its own Haiku member, hired for it, so the team keeps Ada.
+
+Everything else (the turn, its briefing and tools, the checks, the delivery) is the team's own:
+the arm differs from the team only by the hand-offs it leaves out, and by one paragraph of the
+briefing that tells the member it works alone and that setting the item ready, once HQ's check
+has passed, closes it with no review. A member named on two loops worked alone would hold an
+item of each at once; the round's script makes one such loop a member. A round starts it with
+`scripts/experiment.py start --round N --from-tasks <ids> --solo <name>`, which makes the tasks
+in a project of their own, `Round N solo (<name>)`, worked by that member alone, and archives
+nothing. Scenario: `features/one-member-works-a-loop-alone.feature`.

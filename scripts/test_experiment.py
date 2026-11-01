@@ -30,7 +30,8 @@ T0 = 1_800_000_000_000
 
 # The tables the script reads, with the columns it uses (HQ's own schema has more).
 SCHEMA = """
-CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+    brain TEXT NOT NULL DEFAULT 'local', furloughed_at INTEGER);
 CREATE TABLE goals (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
 CREATE TABLE projects (id INTEGER PRIMARY KEY, goal INTEGER NOT NULL, title TEXT NOT NULL,
     reason TEXT NOT NULL, lead INTEGER NOT NULL, status TEXT NOT NULL);
@@ -76,6 +77,7 @@ class Store:
             "INSERT INTO members (id, name) VALUES (?, ?)",
             [(1, "John Doe"), (2, "Jane Doe")],
         )
+        db.execute("INSERT INTO members (id, name, brain) VALUES (3, 'Richard Roe', 'haiku')")
         db.execute("INSERT INTO goals VALUES (1, 'Tidy the fork', 'active')")
         db.execute("INSERT INTO projects VALUES (1, 1, 'Fork clean-up', '', 2, 'active')")
         db.execute("INSERT INTO projects VALUES (9, 1, 'Round 0 (archived)', '', 2, 'dropped')")
@@ -118,6 +120,7 @@ class FakeHq(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), FakeHandler)
         self.store = store
         self.calls = []
+        self.solo = {}
 
     @property
     def url(self):
@@ -154,6 +157,8 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
                 "INSERT INTO projects (goal, title, reason, lead, status) VALUES (?,?,?,?,'active')",
                 (body["goal"], body["title"], body["reason"], body["lead"]),
             )
+            if "solo" in body:
+                self.server.solo[cur.lastrowid] = body["solo"]
             return {"project": cur.lastrowid}
         if parts[0] == "projects":
             assert body == {"action": "drop"}
@@ -275,6 +280,65 @@ class Start(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("project 1 is paused", out)
         self.assertEqual(self.hq.calls, [])
+
+
+class StartSolo(unittest.TestCase):
+    """Round 4's solo arm (ADR 0142, amended 2026-11-01): the round's tasks in a project of
+    their own, worked by one member alone, beside the team's arm."""
+
+    setUp = Start.setUp
+    tearDown = Start.tearDown
+
+    def test_without_yes_nothing_is_written(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "Richard Roe"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        shown = json.loads(out)["would"]
+        self.assertIsNone(shown["archive"])
+        self.assertEqual(shown["solo"]["solo"], 3)
+        self.assertEqual(self.hq.calls, [])
+
+    def test_makes_a_project_worked_alone_and_archives_nothing(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "richard roe", "--yes"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        done = json.loads(out)
+        paths = [p for p, _ in self.hq.calls]
+        self.assertEqual(paths, ["/v1/projects", "/v1/tasks", "/v1/tasks"])
+        made = self.hq.calls[0][1]
+        self.assertEqual((made["lead"], made["solo"], made["goal"]), (3, 3, 1))
+        self.assertEqual(made["title"], "Round 4 solo (richard roe)")
+        self.assertEqual(done["solo"], {"project": 10, "member": 3})
+        self.assertEqual(self.hq.solo, {10: 3})
+        self.assertIsNone(done["archived"])
+        self.assertEqual(done["mismatches"], [])
+        db = self.store.db()
+        projects = [r[0] for r in db.execute("SELECT project FROM tasks WHERE id IN (6, 7)")]
+        self.assertEqual(projects, [10, 10])
+        statuses = dict(db.execute("SELECT id, status FROM tasks WHERE id IN (3, 4)").fetchall())
+        self.assertEqual(statuses, {3: "doing", 4: "todo"}, "the team's arm is left alone")
+        db.close()
+
+    def test_refuses_a_member_who_is_not_there_or_retired(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "Nobody", "--yes"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 1)
+        self.assertIn("no member is called Nobody", out)
+        db = self.store.db()
+        db.execute("UPDATE members SET furloughed_at = 1 WHERE id = 3")
+        db.commit()
+        db.close()
+        argv[-2] = "Richard Roe"
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 1)
+        self.assertIn("Richard Roe has retired", out)
+        self.assertEqual(self.hq.calls, [])
+
+    def test_a_member_off_haiku_is_noted(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "John Doe"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        self.assertIn("not haiku", json.loads(out)["would"]["notes"][0])
 
 
 class Reading(unittest.TestCase):

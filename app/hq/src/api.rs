@@ -94,6 +94,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}/tools", post(project_tools))
         .route("/v1/projects/{id}/rank", post(loop_rank))
         .route("/v1/projects/{id}/items", post(loop_items))
+        // A loop worked by one member alone (ADR 0142, amended 2026-11-01), or by the team.
+        .route("/v1/projects/{id}/solo", post(loop_solo))
         // A loop's lessons (ADR 0142, amended 2026-10-31): read, and set whole by the owner.
         .route(
             "/v1/projects/{id}/lessons",
@@ -743,9 +745,12 @@ struct ProjectRequest {
     lead: i64,
     #[serde(default)]
     cap: Option<serde_json::Value>,
+    /// The member who works the loop alone (ADR 0142, amended 2026-11-01), if any.
+    #[serde(default)]
+    solo: Option<i64>,
 }
 
-/// The owner makes a project, active at once.
+/// The owner makes a project, active at once, worked alone by `solo` when it names a member.
 async fn add_project(
     Extract(state): Extract<State>,
     Json(req): Json<ProjectRequest>,
@@ -753,13 +758,17 @@ async fn add_project(
     let cap = cap_of(req.cap.as_ref())?;
     let hq = state.hq.clone();
     let id = blocking(move || {
-        hq.add_project(
+        let id = hq.add_project(
             GoalId(req.goal),
             &req.title,
             &req.reason,
             MemberId(req.lead),
             cap,
-        )
+        )?;
+        if let Some(solo) = req.solo {
+            hq.set_loop_solo(id, Some(MemberId(solo)))?;
+        }
+        Ok(id)
     })
     .await?;
     Ok(Json(json!({ "project": id.0 })))
@@ -961,6 +970,23 @@ async fn loop_items(
     let hq = state.hq.clone();
     blocking(move || hq.set_loop_items(ProjectId(id), req.items)).await?;
     Ok(Json(json!({ "project": id, "items": req.items })))
+}
+
+#[derive(Deserialize)]
+struct LoopSolo {
+    member: Option<i64>,
+}
+
+/// The owner sets a loop to be worked by one member alone, or (`null`) by the team again
+/// (ADR 0142, amended 2026-11-01).
+async fn loop_solo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopSolo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_solo(ProjectId(id), req.member.map(MemberId))).await?;
+    Ok(Json(json!({ "project": id, "solo": req.member })))
 }
 
 /// A loop's lessons, oldest first (ADR 0142, amended 2026-10-31).
@@ -3559,6 +3585,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Round 4's solo arm (ADR 0142, amended 2026-11-01): the owner makes a loop worked by one
+    /// member alone, and may give it back to the team.
+    #[tokio::test]
+    async fn the_owner_makes_a_loop_worked_alone() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st.clone());
+        let post = |uri: String, body: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", &uri, Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, made) = post(
+            "/v1/projects".to_owned(),
+            json!({ "goal": goal.0, "title": "Round 4 solo", "lead": lead.0, "solo": lead.0 })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = ProjectId(made["project"].as_i64().unwrap());
+        assert_eq!(st.hq.loop_solo(id).unwrap(), Some(lead));
+        let (status, _) = post(
+            format!("/v1/projects/{}/solo", id.0),
+            json!({ "member": null }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(st.hq.loop_solo(id).unwrap(), None);
+        let (status, _) = post(
+            "/v1/projects/999/solo".to_owned(),
+            json!({ "member": lead.0 }).to_string(),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "no such loop");
     }
 
     #[tokio::test]
