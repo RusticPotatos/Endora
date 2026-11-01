@@ -568,7 +568,7 @@ closed at 13:30 UTC, about 16.5 hours from 31 Oct 21:00 UTC, not 24. Task 8 was 
 as HQ task 956 from source 909, its words unchanged but for the window ("31 Oct 21:00 UTC to
 1 Nov 13:30 UTC"), in 909's project (the gluetun timer, project 4) and goal; Claude Code's arm
 started on the same words at 13:3x UTC, a fresh agent in its own worktree of the fork at
-ee878f7 (`exp/a-08-r3`, local), as in round 0. **Arm A accepted** (round judge, 13:5x UTC): remove; the four
+ee878f7 (`exp/a-08-r3`, local), as in round 0. **Arm A accepted** (round judge, 13:4x UTC): remove; the four
 containers' RestartCount 0 since 31 Oct 21:00:41–21:02:08 UTC, the timer inactive since 27 Oct
 00:10 UTC, sonarr's 64 and radarr's 32 RSS syncs through Prowlarr, five sampled points in the live
 logs, and one gluetun tunnel outage (08:53–09:03 UTC, inside the NAS's memory stall, recovered
