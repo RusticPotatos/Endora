@@ -579,7 +579,13 @@ changed on the lab. 152k tokens, about 7.6 minutes, no intervention. A rule slip
 arm A: it read 20 lines of `group_vars/nas.yml` while finding the timer; nothing of it is in the
 branch. For round 4's item 8: only the outage needed more than the last few hours (4.5 hours
 before the close), and it did not change the verdict; the night's Watchtower run with no recreate
-of the stack is the other thing a short afternoon window would not show.
+of the stack is the other thing a short afternoon window would not show. **HQ's arm so far:** Bo
+(house model) read logs only, recommended remove, and twice asked the owner to approve instead of
+making the branch (cards 5064 at 14:15 and 5065 at 14:4x UTC, a second question on one item
+despite D10); both answered with the task's own words (two interventions). It climbed to Rae,
+whose turns each ran out of room after three to five log reads (D20); at 15:01 she was out for
+the day (card 5066: $0.45 spent, the pool $2.46 left) and was given $0.50 within the pool at
+15:2x UTC (a money decision, not an intervention).
 
 **A lab fault outside the round (1 Nov, from the coordinator).** The NAS stalled from about
 08:43 UTC (HQ's status call hung for minutes; 335 MB of 16 GB available): Ollama's llama-server
