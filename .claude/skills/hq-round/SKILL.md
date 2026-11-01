@@ -87,7 +87,12 @@ Settings that change speed (items in hand at once, limits) change only at a roun
      silently kept: say so, and fix the task's conditions before the round counts it.
 5. **The judge is tested** (from round 4, before its first judging) on its known-good and known-bad branches, on both
    counts: it accepts and refuses rightly, and its verdict is recorded and acted on (D19 was
-   the second, with the reasoning right).
+   the second, with the reasoning right). The cases are `domains/team/tests/fixtures/judge.json`,
+   each with the verdict a right judge gives and why. **Delivery** (and what HQ's rules find) is
+   `features/the-judge-is-tested.feature` with the worker's
+   `a_claude_turn_loads_what_hq_marks_for_its_kind`, both in the gate. **Correctness**: give the
+   `round-judge` agent each case (its criteria and files, not its verdict or why) and compare
+   its verdict with the case's; one wrong is a finding to fix before judging.
 
 ## 2. During the round (`tick`)
 

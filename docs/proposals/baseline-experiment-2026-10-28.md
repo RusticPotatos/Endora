@@ -588,6 +588,13 @@ new agent, orchestration layer or scoring framework.
    round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
    delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
    reasoning alone would have passed it.
+   *Built on `round4`: four cases (one known-good README, a wrong default, the owner's own values
+   touched, a CI run no push can give) in `domains/team/tests/fixtures/judge.json`, each with its
+   right verdict. `the-judge-is-tested.feature` runs each through HQ: what HQ's rules find, the
+   reviewer (Ada, at Haiku's rank) offered the review tool up front, a wrong pass refused where a
+   rule knows it cannot hold, and the verdict recorded in the thread and acted on (done; or back
+   to the worker, woken, with one failure). Correctness of a model judge: `hq-round` step 1.5
+   gives the round's judge each case and compares.*
 
 **Two scorecards, because they are two products.** HQ's development work and its standing,
 unattended work have different measures. HQ could fall short of Claude Code at development and

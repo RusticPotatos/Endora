@@ -1,0 +1,51 @@
+{
+  "about": "Known-good and known-bad work for testing the judge before a round (the baseline experiment's round 4, item D). Each case is self-contained: the item's criteria, what its branch changes and the files HQ's checks read at its head, the verdict a right judge gives, and why. features/the-judge-is-tested.feature runs every case through HQ for judgment delivery and for what HQ's rules find; a model judge (an HQ reviewer, or the round's judge) is tested for judgment correctness by giving it each case and comparing its verdict with `verdict`.",
+  "cases": [
+    {
+      "name": "every default in the README",
+      "verdict": "approve",
+      "why": "The README names both defaults with their values.",
+      "criteria": ["roles/media/README.md lists every variable in the role's defaults/main.yml with its default"],
+      "changed": ["roles/media/README.md"],
+      "files": {
+        "roles/media/README.md": "# media\n\n| Variable | Default |\n|---|---|\n| `media_enabled` | `false` |\n| `media_port` | `8096` |\n",
+        "roles/media/defaults/main.yml": "---\nmedia_enabled: false\nmedia_port: 8096\n"
+      },
+      "workflows": [],
+      "hq_finds": "every default covered"
+    },
+    {
+      "name": "a default with the wrong value",
+      "verdict": "send_back",
+      "why": "media_port is 8096 in the defaults; the README says 8080.",
+      "criteria": ["roles/media/README.md lists every variable in the role's defaults/main.yml with its default"],
+      "changed": ["roles/media/README.md"],
+      "files": {
+        "roles/media/README.md": "# media\n\n| Variable | Default |\n|---|---|\n| `media_enabled` | `false` |\n| `media_port` | `8080` |\n",
+        "roles/media/defaults/main.yml": "---\nmedia_enabled: false\nmedia_port: 8096\n"
+      },
+      "workflows": [],
+      "hq_finds": "a default not covered"
+    },
+    {
+      "name": "the owner's own values touched",
+      "verdict": "send_back",
+      "why": "The branch changes group_vars/all.yml, which is never to be touched.",
+      "criteria": ["roles/media/tasks/main.yml names its image by a release tag, not latest"],
+      "changed": ["roles/media/tasks/main.yml", "group_vars/all.yml"],
+      "files": {},
+      "workflows": [],
+      "hq_finds": "a forbidden path"
+    },
+    {
+      "name": "a CI run no push can give",
+      "verdict": "send_back",
+      "why": "The criterion asks for a CI run on the branch, and the only workflow runs on a push to main and develop alone.",
+      "criteria": ["A CI run on the branch passes"],
+      "changed": [".github/workflows/ci.yml"],
+      "files": {},
+      "workflows": [[".github/workflows/ci.yml", "name: CI\non:\n  push:\n    branches: [main, develop]\n"]],
+      "hq_finds": "no CI run"
+    }
+  ]
+}

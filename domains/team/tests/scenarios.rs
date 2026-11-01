@@ -117,6 +117,11 @@ mod reviews;
 #[path = "scenarios/delivery.rs"]
 mod delivery;
 
+/// The judge tested on known-good and known-bad work, for its verdict's delivery and what HQ's
+/// rules find (the baseline experiment's round 4, item D), in its own file.
+#[path = "scenarios/judge.rs"]
+mod judge;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 
