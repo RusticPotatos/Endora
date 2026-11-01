@@ -528,6 +528,18 @@ reviewer on Claude never had its verdict tool loaded, so 947's four approvals we
 team's work. The release changes the worker's opening only (what HQ marks for the turn is
 loaded on Claude too). One turn ended before the restart; none was cut.
 
+**The D19 fix held on its first live review (1 Nov 00:42 UTC).** Ada's review of 949 (run 4909)
+had `review` among its loaded tools, not held back, and her verdict landed: she sent it back on
+criterion 2 (`ansible-lint nas.yml` gives develop's 14 findings, not a pass), with criteria 1 and
+3 holding on her own readings. Kit then blocked 949 on a question (card 5055: does "no worse than
+develop" meet criterion 2?). Answered at 00:57 UTC with the task's own words and "If your tools
+cannot meet these, record that and end it as blocked", as round 2's task 3 was (931, card 5031):
+one intervention on task 3.
+
+**Timing.** The 24-hour box ends 1 Nov 16:58 UTC for the nine tasks started at 12:58 EDT; task 8's
+window ends 21:00 UTC, so it runs in both arms after that, on the owner's approval of 31 Oct, and
+its row is filled when it is judged.
+
 **Round 3 is a mixed build, and reports two acceptance rates.** Tasks judged before 22:35 UTC ran
 without the D19 fix; the rest with it. And D17 and D19 affect how outcomes are recorded, not
 only what the team did. So the round's result gives both: **reported** (what HQ recorded: done
@@ -539,7 +551,7 @@ against the verified rate, so fixing the measurement is not counted as better wo
 |---|---|---|---|---|---|---|
 | 1 | 947 | No: blocked by HQ at 22:38 UTC, "failed at every rank". The work was ready at 19:36 and Ada approved it four times on her own readings (all 46 defaults, ports, lint same as develop), but no verdict could land (D19), and wakes refused while it waited in review counted as Mara's failures (D17). Never delivered | $0.50 | 158 min to first ready; never accepted | 1 | |
 | 2 | 948 | Yes (all 39 defaults with exact values against `defaults/main.yml`; ports and the VPN rule match the tasks; lint the same as develop, 14 and 6; pushed by delivery as `hq/task-948-role-readmes`, its privacy scan clean; rechecked by the round judge) | $0.36 (two thirds after it was ready, see D17) | 32 min | 0 | |
-| 3 | 949 | | | | | |
+| 3 | 949 | (blocked 00:43 UTC on card 5055; answered with its own words; back with Kit) | | | 1 | |
 | 4 | 950 | | | | | |
 | 5 | 951 | | | | | |
 | 6 | 952 | | | | | |
