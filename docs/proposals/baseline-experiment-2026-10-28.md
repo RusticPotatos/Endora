@@ -680,6 +680,35 @@ a decision test, not a statistical benchmark: passing it shows no general superi
 protocol moves (D30). The metrics and replay scripts stop at their first usable point. During the
 round: blockers only, each logged with the run it affected.
 
+### Parked proposal: Endora runtime simplification (owner, 1 Nov)
+
+**Status:** deferred until round 4's decision. Research and implementation are not authorised: no
+ADRs, crates, interfaces or SDK investigation. This is a decision bookmark, not a project.
+
+**Problem.** HQ's coordination costs more than the work: round 3 recorded 246 of 295 turns that
+changed nothing, while the single-agent baseline did all ten tasks. Most of the execution needed
+already exists: `app/worker`, the sandbox tooling and the task's kept workspace.
+
+**Direction.** The engine owns execution and task state; a CLI is the main control; a UI is an
+optional client. Keep deterministic verification, permissions, budgets, receipts and kept
+workspaces; remove the coordination and organisational machinery.
+
+**Endora's distinct value.** The house and lab integrations, unattended runs, local models, one
+spending limit across providers, and the private-data safety rules.
+
+**Decision sequence.** (1) Round 4 completes without changing scope. (2) HQ continues, narrows or
+redirects. (3) Only if it narrows or redirects: a bounded proof of concept, on R1–R3 with a
+fixed effort budget, comparing an existing agent runtime with Endora's tools against the
+extracted HQ worker. (4) The smallest that meets the need wins.
+
+**Proof-of-concept acceptance.** From a clean install: run a real task, keep its workspace across
+turns, verify its result independently, inspect its receipts, recover from an interruption.
+
+**Stop condition.** If an existing runtime meets the requirements, no replacement engine is
+built.
+
+**Next action:** none until round 4's decision.
+
 ### Round 4, planned (owner's review of 31 Oct; superseded on 1 Nov by the section above)
 
 The purpose of harness engineering is not to make the harness more sophisticated. It is to make
