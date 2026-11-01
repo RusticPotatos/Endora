@@ -716,6 +716,19 @@ new agent, orchestration layer or scoring framework.
    valuable against a shorter test"). The judge of task 8 notes whether anything either arm
    found needed more than the window's last few hours.
 
+8. **F. Faster rounds, and no fitting to the lab (owner, 1 Nov: "drastically reduce the time
+   wasters", "ensure we don't hyper fit the system around lab health").** Built on `round4`
+   before its release: an item keeps its sandbox between its turns (the 255 re-checkouts); no
+   `my_turn`/`claim` moves on a turn already holding the item (D30); downtime and chess pause
+   while a round runs (67 such turns cost $0.58 in round 3's 48 hours); `experiment.py metrics`
+   scores a round from the store in one command, three ways; a replay bench
+   (`scripts/replay-bench/`) tests a change to prompts, tools or models on real decision points
+   before a live round. A round runs 8 hours at most, judged as each task ends. Against fitting
+   to the lab: every change is labelled general or lab; no new lab tool or lab-only prompt while
+   the outside-the-homelab score trails the others; a gain on the ten that does not show on F4
+   does not count. Off the critical path until the investment gate: sound, the office and game
+   view, chess (kept, costing the rounds nothing).
+
 **Two scorecards, because they are two products.** HQ's development work and its standing,
 unattended work have different measures. HQ could fall short of Claude Code at development and
 still be worth more for the house's running; that would be a result, not a failed experiment.

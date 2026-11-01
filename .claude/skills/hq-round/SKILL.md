@@ -37,13 +37,14 @@ is three steps, and nothing is pasted:
 Start one at each round's start, and whenever a session has been summarised or runs long. A
 round branch's builder works in its own worktree; the driver never edits it.
 
-## The cycle (one round a day)
+## The cycle (a round in 8 hours)
 
 | When | What |
 |---|---|
-| Round N runs, **24 hours** at most | Ticks (step 2); each task judged as it reaches done or blocked (step 3). Meanwhile round N+1's fixes are built on one branch, `round<N+1>`, in its own worktree and session: a failing test and a scenario first, the gate on each (step 5) |
-| Hour 24, or all judged | Close round N (step 4): a task not finished is not accepted |
-| The same day | Merge `round<N+1>`, gate, release, start round N+1 (step 1) |
+| Round N runs, **8 hours** at most (owner, 1 Nov) | Ticks (step 2); each task judged as it reaches done or blocked (step 3). Meanwhile round N+1's fixes are built on one branch, `round<N+1>`, in its own worktree and session: a failing test and a scenario first, the gate on each (step 5) |
+| Hour 8, or all judged | Close round N (step 4): a task not finished is not accepted |
+| Before the next round | Every change for round N+1 tried first on the replay bench (`scripts/replay-bench/`, real decision points from round N, minutes not hours); score round N with `experiment.py metrics`, three ways (the fixed ten, homelab fresh, outside the homelab) |
+| Then | Merge `round<N+1>`, gate, release, start round N+1 (step 1) |
 
 Speed comes from removing waits, not from more agents: what held round 3 was members stopped
 with money in the pool (D21, D15), verdicts that could not land (D19) and tasks never started.
