@@ -334,13 +334,6 @@ run fields --tasks 923-932 --header                 # the round's table, to past
 run check --task 929                                # the final post's quotes against its receipts
 ```
 
-- **`start --solo <name>`** starts round 4's solo arm (item E, "one member, one long turn, no
-  ladder"; ADR 0142, amended 2026-11-01): the tasks given are made again, as for `start`, but in
-  a new project of their own, `Round N solo (<name>)`, led and worked by that member alone, and
-  nothing is archived, since the team's arm runs beside it. The tasks must serve one goal; the
-  member must exist and be at work, and one not on Haiku is noted. Hire the arm's own Haiku
-  member first, so the team keeps Ada.
-
 - **`start`** (the only writing subcommand, and only with `--yes`) sets the previous round aside:
   every open task bearing one of round 0's titles (or the tasks given with `--previous`), with
   any open task under it, is moved into a new project "Round N-1 (archived)", led by an existing
