@@ -560,18 +560,31 @@ new agent, orchestration layer or scoring framework.
 1. **The three infrastructure defects:** D17 (a refused wake counts as a failure and climbs the
    item), D19 (released mid-round 3; round 4 is its first full measure), D20 (a turn's results
    fill a Haiku prompt and the item climbs).
-2. **A. A fresh set beside the fixed ten.** The ten stay unchanged as the regression benchmark.
+2. **Architecture: limits that stop working members (owner, 1 Nov).** A limit should stop
+   waste, not work that is moving. Three in round 3 stopped members while the pool had money:
+   - **Shares follow price, not work.** A member's claim is its role's weight times its model's
+     price class (`money::claim`, ADR 0113), so Opus has the largest share and Haiku the
+     smallest, though Haiku does most of the work and is the cheapest paid model. Ada's share
+     was $0.19 of a $16.60 day; she stopped at $0.88 with $3.77 left (D21). The owner's
+     direction: **most of the money goes to Haiku.** Size shares from the work each rank does
+     (or give the cheapest paid rank the largest claim), and let the climbs to Sonnet and Opus
+     draw on what is left; an ADR 0113 amendment.
+   - **Asked once a day** (D21): a member capped a second time stalls with no card.
+   - **A count of turns for a free model** (D15): Bo stops at 60 turns whatever they achieve.
+   Each is replaced by a check on waste (no progress, repeated failure, a judged item) rather
+   than a fixed count, and each gets a scenario in the owner's words.
+3. **A. A fresh set beside the fixed ten.** The ten stay unchanged as the regression benchmark.
    Each round adds 2–3 tasks HQ has never seen, drawn from the real backlog and written the same
    way, scored apart: does an improvement carry over, or does HQ only get good at the ten?
-3. **B. Cost and complexity, not reliability alone.** Each round's report adds the cost of
+4. **B. Cost and complexity, not reliability alone.** Each round's report adds the cost of
    building the round (the assistant's sessions, not only HQ's turns), the mechanisms it added
    (handoffs, recovery paths, model calls, settings a task depends on) and the code size. A round
    that gains a task by doubling cost or adding coordinating agents may not be worth keeping.
-4. **C. The playbook kept small.** `hq-round` holds its standing rules, its procedure and its
+5. **C. The playbook kept small.** `hq-round` holds its standing rules, its procedure and its
    lessons as three recognisable parts. When a defect is fixed and has held, the extra
    instruction it needed is retired; its history (the defect, its evidence, its fix) stays in
    this document, so a later regression can be understood. Not automatically after one round.
-5. **D. The judge tested, on two counts.** A few known-good and known-bad branches, run before a
+6. **D. The judge tested, on two counts.** A few known-good and known-bad branches, run before a
    round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
    delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
    reasoning alone would have passed it.
