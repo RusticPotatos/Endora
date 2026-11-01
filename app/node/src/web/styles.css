@@ -453,6 +453,13 @@
   .hq-replay-names { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; margin-top: 4px; }
   .hq-replay-names code { font: 11px var(--hq-mono); padding: 1px 5px; border: 1px solid var(--hq-line); border-radius: 3px; overflow-wrap: anywhere; max-width: 100%; }
   .hq-replay-fold[open] summary { color: var(--hq-muted); }
+  /* A live turn (ADR 0129, amended 2026-11-01), and what the model thought, folded under each step. */
+  .hq-live { color: var(--hq-green); margin-left: 4px; }
+  .hq-card .hq-replay-thought summary { display: list-item; font: inherit; letter-spacing: normal; color: var(--hq-muted); margin: 4px 0 0; cursor: pointer; }
+  .hq-replay-thought .hq-replay-said { display: block; color: var(--hq-muted); font-style: italic; overflow-wrap: anywhere; }
+  /* Activity's "Running now" strip: a line a turn, each with its Watch link. */
+  .hq-running-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+  .hq-running-list li { overflow-wrap: anywhere; }
   @media (min-width: 720px) { .hq-replay-moment { grid-template-columns: 70px 64px minmax(0, 1fr); } .hq-replay-tag { grid-column: 2; grid-row: 1; padding-top: 2px; } .hq-replay-body { grid-column: 3; grid-row: 1; } }
   /* Games in the office (ADR 0121): a chess board of 64 squares, light and dark, with the pieces as letters. */
   .hq-chess { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(8, minmax(0, 1fr)); width: min(100%, 288px); aspect-ratio: 1; border: 2px solid var(--hq-line); margin: 6px 0; }
