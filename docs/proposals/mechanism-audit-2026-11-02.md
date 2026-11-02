@@ -140,5 +140,31 @@ settled offline from stored turns: no live runs).
 - **Run 4060 (Opus) ran 60.1 minutes** past the 30-minute limit, ending when its project was
   dropped; cause not found.
 
+## Done the same day
+
+- **The evidence rule stays.** The replay, run as set above (1,489 stored turns; today's rule
+  ported and checked against its own unit cases): of 426 refusals, 195 would have passed
+  (45.8%; 59.6% of the "not a reference" ones), against a bar of 90%; and 8 calls that would
+  have passed came before 7 tasks a judge later failed (883, 885, 915, 962, 965, 972, 974),
+  though in each the cited document was the task's own and accurate and the work, not the
+  citation, was what failed. Most of what remains refused is one list cited for two criteria
+  (102) and free text in a judged list (98), which the change could not help. No further rounds
+  on it. A side finding: a branch name such as `hq/task-974-…` inside a finding is read as
+  "task 974".
+- **#864 closed as obsolete, not done, and the lab check restored.** Live state checked first:
+  in review since 28 Oct 23:28, when Kit (Sonnet) set it ready after it climbed from Bo; its
+  review one rank up went to Mara on Opus, whose turn the relay refused with "Opus is the CEO's
+  alone" (the role rule left from 0111, which the duplicated per-turn rules above keep alive),
+  and no reviewer was woken again. The routine skips while its last task is open, so it had not
+  checked since 1 Nov. The dependency was removed, not worked around: **Home lab upkeep
+  (project 1) is now worked by Bo alone**, so a lab check closes on its own checks with no review
+  step; #864 was closed through a project of its own, dropped (no owner route closes one task;
+  HQ recorded it as obsolete); a fresh check was fired at once (#1041). HQ refuses posts on a
+  closed task, so this record is where the reason lives.
+- **The lesson:** removing a mechanism must also remove what depends on it. The reviewer was
+  retired in practice on 1 Nov, but an item already waiting for it, and a routine waiting for
+  that item, kept the retired mechanism in control. Before each removal above: find the open
+  items and settings that wait on it, and settle them first.
+
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
