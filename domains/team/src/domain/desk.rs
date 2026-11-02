@@ -65,11 +65,11 @@ pub fn placing(
     if !from_a_turn {
         return Placing::New;
     }
-    let print = super::retraction::fingerprint(text);
+    let print = super::guards::fingerprint(text);
     questions()
         .find(|d| {
             d.task.is_some_and(|t| t != task)
-                && super::guards::same_ask(&super::retraction::fingerprint(d.text), &print)
+                && super::guards::same_ask(&super::guards::fingerprint(d.text), &print)
         })
         .map_or(Placing::New, |open| Placing::SameAs(open.id))
 }

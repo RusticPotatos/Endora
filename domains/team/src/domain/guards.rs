@@ -27,8 +27,8 @@ pub struct Thresholds {
     /// Turns in a row that showed nothing, each after a wake, before a member stops being woken
     /// on a task.
     pub redundant_wakes: usize,
-    /// The fewest shingles a text must share with a retraction to match it.
-    pub retracted_shared_least: usize,
+    /// The fewest shingles a new ask must share with one waiting to be the same ask.
+    pub same_ask_shared_least: usize,
     /// How often the tick looks for process-health findings.
     pub look_every_ms: Millis,
     /// How alike, both ways, a new question or decision for the owner must be to one waiting
@@ -51,7 +51,7 @@ pub struct Thresholds {
 /// bite, from each finding's verdict.
 pub const THRESHOLDS: Thresholds = Thresholds {
     redundant_wakes: 3,
-    retracted_shared_least: 2,
+    same_ask_shared_least: 2,
     look_every_ms: 5 * MINUTE,
     same_ask_percent: 60,
     free_turns_wasted: 10,
@@ -61,15 +61,73 @@ pub const THRESHOLDS: Thresholds = Thresholds {
 
 /// Whether a new ask for the owner (`new`, a fingerprint) is the same as one waiting
 /// (`waiting`): each holds at least [`Thresholds::same_ask_percent`] of the other's shingles,
-/// and at least [`Thresholds::retracted_shared_least`] of them (ADR 0124).
+/// and at least [`Thresholds::same_ask_shared_least`] of them (ADR 0124).
 #[must_use]
 pub fn same_ask(waiting: &[String], new: &[String]) -> bool {
-    let one = super::retraction::likeness(waiting, new);
-    let other = super::retraction::likeness(new, waiting);
-    let least = THRESHOLDS.retracted_shared_least;
+    let one = likeness(waiting, new);
+    let other = likeness(new, waiting);
+    let least = THRESHOLDS.same_ask_shared_least;
     one.shared >= least
         && one.percent >= THRESHOLDS.same_ask_percent
         && other.percent >= THRESHOLDS.same_ask_percent
+}
+
+/// A text's words, as a fingerprint reads them: lowercase, letters and digits only.
+#[must_use]
+pub fn words(text: &str) -> Vec<String> {
+    let cleaned: String = text
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    cleaned.split_whitespace().map(str::to_owned).collect()
+}
+
+/// A text's fingerprint: its words two at a time (one at a time for a one-word text), each
+/// once, sorted. An ask is compared by its fingerprint, never as an exact string: model text
+/// paraphrases, and an exact comparison of model output is a mistake this project has made.
+#[must_use]
+pub fn fingerprint(text: &str) -> Vec<String> {
+    let words = words(text);
+    let mut shingles: Vec<String> = if words.len() < 2 {
+        words
+    } else {
+        words.windows(2).map(|w| w.join(" ")).collect()
+    };
+    shingles.sort();
+    shingles.dedup();
+    shingles
+}
+
+/// How alike a text is to another: how many of the other's shingles it holds, and what share of
+/// them that is, in whole percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Likeness {
+    /// The other's shingles the text holds.
+    pub shared: usize,
+    /// What share of the other's shingles that is.
+    pub percent: usize,
+}
+
+/// How alike `text` (a fingerprint) is to `claim`, the other (one too).
+#[must_use]
+pub fn likeness(claim: &[String], text: &[String]) -> Likeness {
+    if claim.is_empty() {
+        return Likeness {
+            shared: 0,
+            percent: 0,
+        };
+    }
+    let shared = claim.iter().filter(|s| text.contains(s)).count();
+    Likeness {
+        shared,
+        percent: shared * 100 / claim.len(),
+    }
 }
 
 /// What a guard refuses (ADR 0124), as the member or the owner reads it.
@@ -413,6 +471,22 @@ pub const fn turn_kind(t: &TurnSeen) -> TurnKind {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_fingerprint_is_its_words_two_at_a_time_lowercase_without_punctuation() {
+        assert_eq!(
+            fingerprint("Sonarr needs a restart, every night!"),
+            [
+                "a restart",
+                "every night",
+                "needs a",
+                "restart every",
+                "sonarr needs"
+            ]
+        );
+        assert_eq!(fingerprint("Deluge."), ["deluge"]);
+        assert_eq!(fingerprint("  "), Vec::<String>::new());
+    }
+
     fn idle(status: TaskStatus) -> TaskFacts {
         TaskFacts {
             status,
@@ -722,7 +796,6 @@ mod tests {
     /// task, both checks exiting 127.
     #[test]
     fn the_same_ask_from_two_tasks_is_one_and_a_different_one_is_not() {
-        use super::super::retraction::fingerprint;
         let first = fingerprint(
             "Decision: Install ansible-playbook, ansible-lint and yamllint on the dev node?\n\
              Recommendation: Yes.\nWhy: The check exited 127.\nEvidence: task 671",

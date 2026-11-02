@@ -14,20 +14,7 @@ use crate::domain::world::{Address, Stage};
 /// The most hops of a chain of superseded sections followed before giving up.
 const HOPS: usize = 5;
 
-/// What reporting a gap came to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GapReported {
-    /// The gap's number.
-    pub id: i64,
-    /// Whom it went to, by name.
-    pub steward: String,
-    /// Whether the same gap was reported before: it is one item, and now has one more report.
-    pub already: bool,
-}
-
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    // ---- gaps ------------------------------------------------------------------------------
-
     // ---- broken roads ----------------------------------------------------------------------
 
     /// One step along a section's chain: why it does not resolve (or `None` when it does), or

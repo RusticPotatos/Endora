@@ -70,7 +70,6 @@ mod world;
 
 pub use delivery::{Delivered, Deliveries, Due};
 pub use evidence::Called;
-pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use runtime::ModelSet;

@@ -20,8 +20,9 @@ pub const POOL_PER_MONTH: Micros = 70 * DOLLAR;
 pub const DAYS_A_MONTH: i64 = 30;
 /// The most one turn may spend: $0.40.
 pub const MOST_A_TURN: Micros = 400_000;
-/// The most one of the CEO's turns may spend: $1.00 (ADR 0111).
-pub const CEO_MOST_A_TURN: Micros = DOLLAR;
+/// The most one turn on Opus may spend: $1.00, the dollar the CEO had (ADR 0111) and the relay
+/// still gives an Opus turn.
+pub const OPUS_MOST_A_TURN: Micros = DOLLAR;
 /// Less than this left for today, and a member cannot start a turn.
 pub const LEAST_A_TURN: Micros = 10_000;
 /// The prompt a turn's opening call writes to Anthropic's cache, in tokens: the runtime's own
@@ -89,7 +90,7 @@ pub const fn most_top_up(pool_per_month: Micros) -> Micros {
 #[must_use]
 pub const fn most_a_turn_of(brain: Brain) -> Micros {
     if matches!(brain, Brain::Opus) {
-        return CEO_MOST_A_TURN;
+        return OPUS_MOST_A_TURN;
     }
     MOST_A_TURN
 }

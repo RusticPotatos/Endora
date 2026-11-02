@@ -189,7 +189,8 @@ pub enum Refused {
     /// it back or the owner speaks.
     InReview,
     /// The CEO is not woken for that: only for escalations, the board's word and its own work
-    /// (ADR 0111).
+    /// (ADR 0111). No longer raised (ADR 0142: there is no CEO); kept because it was, and a
+    /// refused wake on record whose reason does not read is a corrupt row.
     NotForTheCeo,
     /// The task's project is paused by the owner (ADR 0113): nobody takes a turn on it until
     /// the owner resumes it.

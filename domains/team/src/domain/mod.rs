@@ -34,7 +34,6 @@ pub mod pgn;
 pub mod projects;
 pub mod record;
 pub mod relevance;
-pub mod retraction;
 pub mod review;
 pub mod routines;
 pub mod runs;
