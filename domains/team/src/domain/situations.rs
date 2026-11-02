@@ -1,4 +1,4 @@
-//! Situations and the briefing's budget (ADR 0122): a turn starts from one of six situations,
+//! Situations and the briefing's budget (ADR 0122): a turn starts from one of four situations,
 //! decided by code from the record, and what it is told of the team's world is composed for that
 //! situation within a budget. What does not fit is named at the end of the briefing, with how
 //! to read it: nothing is ever cut without a word, and what the situation needs most is never
@@ -23,21 +23,18 @@ pub enum Situation {
     AfterGap,
     /// The work was handed to it, or it is new to work another member took turns on.
     Handover,
-    /// Its first turn after a furlough (ADR 0118): kept for the briefings recorded before
-    /// ADR 0142, which recalls nobody.
+    /// Its first turn after a furlough (ADR 0118): never decided since ADR 0142, which recalls
+    /// nobody, and kept so that the briefings recorded before still read.
     Recalled,
-    /// A runtime that carries its own earlier conversation (later: not yet built).
-    Resumed,
 }
 
-/// Every situation, in the order they are decided.
-pub const ALL: [Situation; 6] = [
+/// Every situation, in the order they were decided.
+pub const ALL: [Situation; 5] = [
     Situation::Recalled,
     Situation::Handover,
     Situation::Fresh,
     Situation::AfterGap,
     Situation::Continuing,
-    Situation::Resumed,
 ];
 
 impl Situation {
@@ -50,7 +47,6 @@ impl Situation {
             Self::AfterGap => "after_gap",
             Self::Handover => "handover",
             Self::Recalled => "recalled",
-            Self::Resumed => "resumed",
         }
     }
 
