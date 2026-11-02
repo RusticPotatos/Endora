@@ -1120,6 +1120,14 @@ seen or run:
   counts against B: a task B leaves unfinished or blocked where A finished it.
 - **No tuning on these six.** If H2 fails here, these tasks become ones it has seen; a further
   attempt needs a new set picked the same way.
+- **A second set, off the domain** (added the same day, before any of its tasks was seen). The
+  owner, on the first set's titles: all six are container roles in the same fork, so H2 could
+  still be fitted to the homelab rather than to R1–R3. A second blind pick: six tasks in two or
+  three public open-source repositories of ordinary software (libraries, parsers, CLIs), far
+  from containers and infrastructure, checkable with Python's standard library alone, as the
+  sandbox has. The same three arms (A and B through the outside-repository mirror), the same
+  blind judging, and the same bar on its own 12 attempts. H2 counts as holding up only if it
+  clears the bar on both sets; on one alone, it is recorded as fitted to that domain.
 
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
