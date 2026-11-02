@@ -1087,3 +1087,66 @@ fn a_branch_of_an_outside_repository_is_kept_for_judging_and_never_delivered() {
     assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
     assert!(hq.deliveries().unwrap().push.is_empty());
 }
+
+/// #1048 of set 3: Sol's simpleeval fix was submitted and its gate open, and Sol asked for it
+/// to be checked again for a receipt to cite. HQ queued the lab's check on the outside branch;
+/// the check box fetched its bundle where the lab's branches live, got the node's 404, and the
+/// failed check shut the gate and counted as one of the item's failures, twice. No check of the
+/// lab's applies to an outside repository, so asking for one is refused, saying how the work is
+/// evidenced instead, and nothing is queued or shut.
+#[test]
+fn a_check_again_of_an_outside_branch_is_refused_and_the_gate_stays_open() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
+        .unwrap();
+    let (task, rae, _) = submitted(&hq, &t, true);
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let said = use_tool(
+        &hq,
+        &rae,
+        "recheck",
+        &json!({ "task": task.0, "why": "a receipt to cite for in_review" }),
+    )
+    .unwrap_err();
+    assert!(
+        said.contains("no check of the lab's applies to https://github.com/example/tiny")
+            && said.contains("set_status in_review")
+            && said.contains("repo_submit"),
+        "{said}"
+    );
+    assert!(hq.store().checks().unwrap().is_empty(), "nothing is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(
+        hq.store().gate(task).unwrap(),
+        Some(true),
+        "the gate stays open"
+    );
+    // As the refusal says: in review, citing the submission's receipt for each criterion.
+    let receipt = hq
+        .record_receipt(
+            &rae.token,
+            &super::engine::Called {
+                tool: "repo_submit".to_owned(),
+                args: r#"{"branch":"hq/task-3-tidy-the-deluge-role"}"#.to_owned(),
+                excerpt: "Submitted hq/task-3-tidy-the-deluge-role".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    // Rae's task has one criterion.
+    let evidence = json!([[format!("r{receipt}")]]);
+    let moved = use_tool(
+        &hq,
+        &rae,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "its tests pass",
+                 "evidence": evidence }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let status = hq.store().task(task).unwrap().unwrap().status;
+    assert_eq!(status, TaskStatus::InReview, "{moved}");
+}

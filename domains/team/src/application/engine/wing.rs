@@ -319,7 +319,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`EngineError::Unknown`] for work with
-    /// no submitted branch; [`Refusal::CheckPending`].
+    /// no submitted branch; [`Refusal::NoLabCheck`] for a repository outside the lab;
+    /// [`Refusal::CheckPending`].
     pub fn recheck_in(&self, run: RunId, task: TaskId, why: &str) -> Done<i64> {
         let _held = self.held();
         let turn = self.running(run)?;
@@ -335,6 +336,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         else {
             return Err(EngineError::Unknown("submitted branch on that work"));
         };
+        // The lab's check is ansible's, and its box fetches the lab's branches: one queued on
+        // an outside branch could only fail, shutting the gate its submission opened (#1048).
+        if let Some(repo) = self.outside_repo_of_task(branch.task)? {
+            return Err(EngineError::Refused(Refusal::NoLabCheck(repo)));
+        }
         if let Some(pending) = self
             .store
             .checks()?

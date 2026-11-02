@@ -122,6 +122,11 @@ mod delivery;
 #[path = "scenarios/judge.rs"]
 mod judge;
 
+/// A branch outside the lab is never given the lab's check (ADR 0115, amended 2026-11-01), in
+/// its own file.
+#[path = "scenarios/outside.rs"]
+mod outside;
+
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
 

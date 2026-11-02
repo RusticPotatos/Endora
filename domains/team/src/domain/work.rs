@@ -476,6 +476,9 @@ pub enum Refusal {
     ForwardTheDraft,
     /// A check of the branch is still waiting or running: one at a time (ADR 0115).
     CheckPending(i64),
+    /// No check of the lab's applies to a branch of the repository outside the lab its item
+    /// names (ADR 0115, amended 2026-11-01): the item's criteria are its gate.
+    NoLabCheck(String),
     /// Work is not handed to a member on furlough.
     Furloughed(String),
     /// A game of chess refuses a move or a challenge (ADR 0121).
@@ -713,6 +716,13 @@ impl fmt::Display for Refusal {
                 f,
                 "check c{check} of this branch is still waiting or running: its result comes \
                  back as a receipt, and you may ask again once it has"
+            ),
+            Self::NoLabCheck(repo) => write!(
+                f,
+                "no check of the lab's applies to {repo}: the item's criteria are its gate, and \
+                 its submission opened it. Run the repository's own tests in your sandbox, then \
+                 set_status in_review citing your repo_submit's receipt (and the checkout's) for \
+                 each criterion"
             ),
             Self::Furloughed(name) => write!(
                 f,
