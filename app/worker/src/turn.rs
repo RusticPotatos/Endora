@@ -434,9 +434,19 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         last_word(&mut hq, task, &newest(&on_the_way, room), &line)?;
         Ok(Taken::OutOfRounds)
     })();
-    // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended: the
-    // node scrubs it of secrets on the way.
-    node.tell_conversation("worker", &talk.as_text());
+    // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended, and
+    // ends saying how (measured before building, 2 Nov): the node scrubs it of secrets on the way.
+    let (how, why) = match &taken {
+        Ok(Taken::Answered) => ("answered", String::new()),
+        Ok(Taken::MovedOn) => ("moved on", String::new()),
+        Ok(Taken::AskedTheOwner) => ("asked the owner", String::new()),
+        Ok(Taken::OutOfRounds) => ("out of rounds", String::new()),
+        Ok(Taken::OutOfRoom) => ("out of room", String::new()),
+        Err(Stopped::Over(why)) => ("over", quiet(why, &setup.token)),
+        Err(Stopped::Failed(why)) => ("failed", quiet(why, &setup.token)),
+    };
+    let text = talk.as_text() + &crate::transcript::ended(how, &why);
+    node.tell_conversation("worker", &text);
     taken
 }
 
@@ -1446,6 +1456,10 @@ struct Said {
     message: Value,
     /// The provider stopped at its output/context limit, so this proposal is incomplete.
     limit_reached: bool,
+    /// Why the provider says the reply stopped (`end_turn`, `tool_use`, `max_tokens`, `stop`,
+    /// `length`), and how many tokens it wrote: for the transcript alone.
+    stop: String,
+    tokens_out: Option<u64>,
 }
 
 /// What the worker answers one call with.
@@ -1486,6 +1500,9 @@ struct Talk {
     /// What an OpenAI-shaped model reasoned before a reply, by the reply's place in
     /// `messages`: kept for the owner's replay (ADR 0129, amended 2026-11-01), never sent back.
     thoughts: std::collections::HashMap<usize, Value>,
+    /// Why each reply stopped and what it wrote, by the reply's place in `messages`: kept for
+    /// the transcript ([`crate::transcript::REPLY`]), never sent back.
+    replies: std::collections::HashMap<usize, Value>,
 }
 
 /// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
@@ -1515,6 +1532,7 @@ impl Talk {
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
                 thoughts: std::collections::HashMap::new(),
+                replies: std::collections::HashMap::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1527,6 +1545,7 @@ impl Talk {
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
                 thoughts: std::collections::HashMap::new(),
+                replies: std::collections::HashMap::new(),
             },
         }
     }
@@ -1609,9 +1628,14 @@ impl Talk {
 
     /// The conversation so far as plain text (ADR 0129), in the shape of the API it was held in.
     fn as_text(&self) -> String {
+        let mut messages = self.messages.clone();
+        for (at, reply) in &self.replies {
+            if let Some(m) = messages.get_mut(*at) {
+                m[crate::transcript::REPLY] = reply.clone();
+            }
+        }
         let said = match self.api {
             Api::OpenAi => {
-                let mut messages = self.messages.clone();
                 for (at, thought) in &self.thoughts {
                     if let Some(m) = messages.get_mut(*at) {
                         m[crate::transcript::THOUGHT] = thought.clone();
@@ -1619,7 +1643,7 @@ impl Talk {
                 }
                 crate::transcript::openai(&messages)
             }
-            Api::Anthropic => crate::transcript::anthropic(&self.system, &self.messages),
+            Api::Anthropic => crate::transcript::anthropic(&self.system, &messages),
         };
         format!("{}{said}", self.given_tools)
     }
@@ -1635,6 +1659,12 @@ impl Talk {
             .and_then(|m| m.remove(crate::transcript::THOUGHT))
         {
             self.thoughts.insert(self.messages.len(), thought);
+        }
+        if !said.stop.is_empty() {
+            self.replies.insert(
+                self.messages.len(),
+                json!({ "stop": said.stop, "out": said.tokens_out }),
+            );
         }
         self.messages.push(message);
         let Some(keep) = self.keep_whole else {
@@ -2735,6 +2765,11 @@ impl<'a> Model<'a> {
                     .collect(),
                 message: kept,
                 limit_reached: reply["choices"][0]["finish_reason"] == "length",
+                stop: reply["choices"][0]["finish_reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+                tokens_out: reply["usage"]["completion_tokens"].as_u64(),
             });
         }
         let Some(content) = reply["content"].as_array() else {
@@ -2759,6 +2794,8 @@ impl<'a> Model<'a> {
             calls,
             message: json!({ "role": "assistant", "content": content }),
             limit_reached: reply["stop_reason"] == "max_tokens",
+            stop: reply["stop_reason"].as_str().unwrap_or("").to_owned(),
+            tokens_out: reply["usage"]["output_tokens"].as_u64(),
         })
     }
 }
@@ -3166,6 +3203,8 @@ mod tests {
                     "id": id, "type": "function",
                     "function": { "name": tool, "arguments": args.to_string() } }] }),
                 limit_reached: false,
+                stop: String::new(),
+                tokens_out: None,
             });
             let text = endora_team::application::protocol::call(hq, &run, &member, tool, args)
                 .unwrap_or_else(|e| e);
@@ -4095,6 +4134,8 @@ mod tests {
                 "id": id, "type": "function",
                 "function": { "name": tool, "arguments": args.to_string() } }] }),
             limit_reached: false,
+            stop: String::new(),
+            tokens_out: None,
         });
         talk.answered(vec![(
             json!(id),
@@ -4256,6 +4297,39 @@ mod tests {
         assert!(talk.as_text().contains(&logs), "the raw log kept");
     }
 
+    /// Measured before building (2 Nov): why a reply stopped is kept for the transcript, and
+    /// what the model is sent stays byte for byte what it was, on either API.
+    #[test]
+    fn why_a_reply_stopped_is_in_the_transcript_and_never_in_what_the_model_is_sent() {
+        for api in [Api::OpenAi, Api::Anthropic] {
+            let reply = |stop: &str, out: Option<u64>| Said {
+                text: "Looking.".to_owned(),
+                calls: Vec::new(),
+                message: json!({ "role": "assistant",
+                                 "content": [{ "type": "text", "text": "Looking." }] }),
+                limit_reached: false,
+                stop: stop.to_owned(),
+                tokens_out: out,
+            };
+            let mut kept = Talk::new(api, "Rules.".into(), "Your turn.".into(), &[]);
+            kept.said(&reply("end_turn", Some(37)));
+            let mut plain = Talk::new(api, "Rules.".into(), "Your turn.".into(), &[]);
+            plain.said(&reply("", None));
+            assert_eq!(
+                kept.body("m").to_string(),
+                plain.body("m").to_string(),
+                "{api:?}"
+            );
+            assert!(
+                kept.as_text()
+                    .contains("--- reply ---\nend_turn, 37 tokens out\n"),
+                "{api:?}: {}",
+                kept.as_text()
+            );
+            assert!(!plain.as_text().contains("--- reply ---"), "{api:?}");
+        }
+    }
+
     #[test]
     fn a_result_the_model_has_not_replied_to_is_never_cut() {
         let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
@@ -4278,6 +4352,8 @@ mod tests {
             calls: Vec::new(),
             message: json!({ "role": "assistant", "content": null, "tool_calls": calls }),
             limit_reached: false,
+            stop: String::new(),
+            tokens_out: None,
         });
         talk.answered(
             (0..4)
@@ -4315,6 +4391,8 @@ mod tests {
                 message: json!({ "role": "assistant", "content": [{ "type": "tool_use",
                     "id": id, "name": "container_logs", "input": { "container": "sonarr" } }] }),
                 limit_reached: false,
+                stop: String::new(),
+                tokens_out: None,
             });
             assert!(cut.is_empty());
             talk.answered(vec![(

@@ -1842,6 +1842,77 @@ fn on_claude(hq: &str, relay: &str, node: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Measured before building (2 Nov): a turn's transcript did not say why the turn ended, nor
+/// why each reply stopped and how long it ran, so a reply cut at its token limit, a turn out of
+/// rounds and one that finished looked alike. The transcript now says both; the model is sent
+/// exactly what it was before.
+#[test]
+fn a_turns_transcript_says_why_each_reply_stopped_and_why_the_turn_ended() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let mut first = claude("Looking.", &[("toolu_1", "homelab_status", json!({}))]);
+    first["usage"]["output_tokens"] = json!(37);
+    let mut last = claude("All is well.", &[]);
+    last["usage"]["output_tokens"] = json!(12);
+    let (model_url, to_model) = model(vec![(200, first), (200, last)]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_node = to_node.lock().unwrap().clone();
+    let told = to_node
+        .iter()
+        .rev()
+        .find(|s| s.path == "/team-relay/transcript")
+        .expect("the transcript is told");
+    let text = told.body["text"].as_str().unwrap();
+    assert!(
+        text.contains("--- call: homelab_status ---\n{}\n--- reply ---\ntool_use, 37 tokens out\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("All is well.\n--- reply ---\nend_turn, 12 tokens out\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("--- ended ---\nanswered\n"), "{text}");
+    for sent in to_model.lock().unwrap().iter() {
+        let body = sent.body.to_string();
+        assert!(!body.contains("tokens out"), "{body}");
+        assert!(!body.contains("endora_reply"), "{body}");
+    }
+}
+
+/// A turn that fails says so at the end of its transcript, with why: the reply cut at its token
+/// limit is the failure measured on 2 Nov.
+#[test]
+fn a_turn_cut_at_its_reply_limit_ends_its_transcript_saying_so() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(json!([]), None);
+    let mut limited = claude(
+        "Partial",
+        &[("toolu_1", "post", json!({"task":7,"text":"Partial"}))],
+    );
+    limited["stop_reason"] = json!("max_tokens");
+    limited["usage"]["output_tokens"] = json!(4096);
+    let (model_url, _) = model(vec![(200, limited)]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    let to_node = to_node.lock().unwrap().clone();
+    let text = to_node
+        .iter()
+        .rev()
+        .find(|s| s.path == "/team-relay/transcript")
+        .and_then(|s| s.body["text"].as_str())
+        .expect("the transcript is told")
+        .to_owned();
+    assert!(
+        text.contains("--- reply ---\nmax_tokens, 4096 tokens out\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("--- ended ---\nfailed\nthe model reached its token limit; its incomplete reply cannot finish the turn or execute tool calls\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
     let (hq_url, to_hq) = hq(None);

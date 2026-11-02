@@ -16,6 +16,12 @@ use serde_json::Value;
 /// worker keeps it for the replay: `--- thinking ---` before the reply's words and calls.
 pub const THOUGHT: &str = "reasoning";
 
+/// Where an assistant message holds why its reply stopped and how many tokens it wrote, as the
+/// worker keeps them for the transcript alone (measured before building, 2 Nov): a `--- reply ---`
+/// part saying `end_turn, 37 tokens out` after the reply's words and calls. Never sent to the
+/// model.
+pub const REPLY: &str = "endora_reply";
+
 /// The most bytes the worker sends: more than HQ keeps, so the node's cut is the cut that
 /// counts, and far less than the node would refuse.
 const SENT_AT_MOST: usize = 2 * 1024 * 1024;
@@ -47,6 +53,30 @@ fn said(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Why a reply stopped and what it wrote, when the worker kept them ([`REPLY`]).
+fn reply_line(m: &Value) -> String {
+    let Some(stop) = m[REPLY]["stop"].as_str() else {
+        return String::new();
+    };
+    let line = match m[REPLY]["out"].as_u64() {
+        Some(out) => format!("{stop}, {out} tokens out"),
+        None => stop.to_owned(),
+    };
+    divider("reply") + &said(&line)
+}
+
+/// How the turn ended, the transcript's last part: `answered`, `moved on`, `asked the owner`,
+/// `out of rounds`, `out of room`, `over` or `failed`, and on the next line why, when there is
+/// one.
+#[must_use]
+pub fn ended(how: &str, why: &str) -> String {
+    let why = why.trim();
+    if why.is_empty() {
+        return divider("ended") + &said(how);
+    }
+    divider("ended") + &said(&format!("{how}\n{why}"))
 }
 
 /// A tool call's arguments as one line of JSON text; OpenAI's carry them as text already.
@@ -100,6 +130,7 @@ pub fn openai(messages: &[Value]) -> String {
                     )));
                     out.push_str(&said(&arguments(&call["function"]["arguments"])));
                 }
+                out.push_str(&reply_line(m));
             }
             other => {
                 out.push_str(&divider(other));
@@ -155,6 +186,7 @@ pub fn anthropic(system: &str, messages: &[Value]) -> String {
                 _ => {}
             }
         }
+        out.push_str(&reply_line(m));
     }
     out
 }
