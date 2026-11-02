@@ -1096,6 +1096,31 @@ through `-980`); only 963, 966, 968, 975, 977, 978 and 980 are judged acceptable
 978 carry a `.pyc` in history. Two posts (8357, 8362) quote a private address from a log line,
 in HQ's store only. Prowlarr's key still leaks (41 console lines at 23:00 UTC).
 
+### Held-out test of H2, set before any run (2 Nov)
+
+The owner, on the result above: "I'm worried about over fitting again." The worry is sound. H2
+was written after reading how R1 and R3 failed and then scored on R1 and R3; its two examples
+(the value missing; compare with what is current) are those two failures in general words. A
+gain counts only when it shows on tasks it was not written from. Fixed before any task was
+seen or run:
+
+- **Tasks.** Six fresh tasks on the fork at `ee878f7`, picked by an agent told nothing of H1,
+  H2, the arms or round 4's failures, of at least four kinds, none a repeat of an earlier task.
+  It writes each task's criteria and a judge's note (hidden from the arms); neither is edited
+  after.
+- **Arms**, all on Claude Haiku 5.5, with the same words, two samples each (12 attempts an arm):
+  A, the worker as released for round 4 (`81f49915`: 12 rounds, no H2); B, the worker with H1
+  and H2 (`fa5cfe15`); C, Claude Code alone in a worktree. A and B run as Sol, solo, at a $3
+  cap a run, released one after the other on the same day.
+- **Judging is blind.** Each result is relabelled and shuffled; the judge sees the task, its
+  criteria and note, and the branch or report, never the arm. Round 4's standard: every claim
+  re-checked read-only.
+- **The bar.** H2 holds up if B verifies at least 3 more of 12 than A, and no more than 2 fewer
+  than C. Anything less, and the R1–R3 result is recorded as not shown to carry over. Harm
+  counts against B: a task B leaves unfinished or blocked where A finished it.
+- **No tuning on these six.** If H2 fails here, these tasks become ones it has seen; a further
+  attempt needs a new set picked the same way.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
