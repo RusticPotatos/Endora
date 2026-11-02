@@ -306,20 +306,19 @@ fn held_not_stuck(w: &mut Office, title: String) {
 #[then(expr = "nobody was nudged, sent to decide or climbed to about {string}")]
 fn nobody_was_nudged(w: &mut Office, title: String) {
     let task = w.task(&title);
-    let woken: Vec<_> = w
-        .hq
-        .wakes()
-        .expect("the store answers")
-        .into_iter()
-        .skip(w.wakes_when_waiting)
-        .filter(|wake| wake.task == Some(task))
-        .filter(|wake| {
-            matches!(
-                wake.reason,
-                WakeReason::Recovery | WakeReason::AssignmentRecovery
-            )
-        })
-        .collect();
+    let woken: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .skip(w.wakes_when_waiting)
+            .filter(|wake| wake.task == Some(task))
+            .filter(|wake| {
+                matches!(
+                    wake.reason,
+                    WakeReason::Recovery | WakeReason::AssignmentRecovery
+                )
+            })
+            .collect();
     assert!(woken.is_empty(), "{woken:?}");
     let climbed = w
         .hq

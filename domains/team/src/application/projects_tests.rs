@@ -131,7 +131,8 @@ fn last_wake(hq: &Hq<'_>) -> (MemberId, Option<TaskId>, WakeReason, Receipt) {
 /// A turn of the lead's on `task` that spends `amount`, then ends. It is a decision, the turn
 /// that is paid for (ADR 0131).
 fn spend(hq: &Hq<'_>, lead: MemberId, task: TaskId, amount: i64) {
-    hq.wake(lead, Some(task), WakeReason::ProposalDecided).unwrap();
+    hq.wake(lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let context = turn(hq, lead);
     assert_eq!(context.task, Some(task));
     hq.report_usage(context.run, amount).unwrap();
@@ -230,7 +231,8 @@ fn a_cloud_turn_on_a_capped_project_reserves_no_more_than_is_left_of_it() {
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
     // The lead is asked to decide it: the turn of judgment, which is paid for (ADR 0131).
-    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let context = turn(&hq, t.lead);
     assert_eq!(context.task, Some(task));
     let run = hq.store().run(context.run).unwrap().unwrap();
@@ -250,7 +252,8 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
         .add_project(t.goal, "Upkeep", "", t.lead, Some(DOLLAR / 2))
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
-    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     hq.tick().unwrap();
     let first = hq.runner().started().pop().unwrap();
     hq.report_usage(first.run, 400_000).unwrap();
@@ -264,7 +267,8 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
     hq.runner().finish(first.run, true);
     hq.tick().unwrap();
     // Still at work, and told no second time this month.
-    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let again = turn(&hq, t.lead);
     assert_ne!(again.run, first.run);
     hq.report_usage(again.run, 10_000).unwrap();
@@ -299,7 +303,8 @@ fn at_its_cap_a_project_pauses_its_cloud_turns_and_its_local_members_go_on() {
     );
     // The lead's decision needs Claude: it is kept, and waits for the month. The developer's
     // work on the house's model goes on.
-    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     assert_eq!(last_wake(&hq).3, Receipt::Queued, "nothing is turned away");
     hq.tick().unwrap();
     let decision = hq

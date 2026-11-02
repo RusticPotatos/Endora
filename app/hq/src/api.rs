@@ -2267,7 +2267,11 @@ mod tests {
             .expect("the demo hands Ada a task")
             .id;
         st.hq
-            .wake(ada, Some(hers), endora_team::domain::WakeReason::ProposalDecided)
+            .wake(
+                ada,
+                Some(hers),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -3112,7 +3116,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(lead, Some(look), endora_team::domain::WakeReason::ProposalDecided)
+            .wake(
+                lead,
+                Some(look),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -3268,7 +3276,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(dev, Some(tidy), endora_team::domain::WakeReason::ProposalDecided)
+            .wake(
+                dev,
+                Some(tidy),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(

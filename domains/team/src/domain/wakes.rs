@@ -108,10 +108,7 @@ impl WakeReason {
     pub const fn reaches_work_in_review(self) -> bool {
         matches!(
             self,
-            Self::OwnerReplied
-                | Self::ProposalDecided
-                | Self::SentBack
-                | Self::CheckDone
+            Self::OwnerReplied | Self::ProposalDecided | Self::SentBack | Self::CheckDone
         )
     }
 

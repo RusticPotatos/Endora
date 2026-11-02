@@ -114,7 +114,8 @@ fn status_of(hq: &Hq<'_>, task: TaskId) -> TaskStatus {
 /// decision waits for budget instead of starting. Returns the turn that waits.
 fn spend_the_day(hq: &Hq<'_>, member: MemberId, task: TaskId) -> Run {
     loop {
-        hq.wake(member, Some(task), WakeReason::ProposalDecided).unwrap();
+        hq.wake(member, Some(task), WakeReason::ProposalDecided)
+            .unwrap();
         hq.tick().unwrap();
         let run = latest(hq, member);
         if run.status == RunStatus::Queued {

@@ -2385,7 +2385,14 @@ CREATE TABLE IF NOT EXISTS projects (
         let store = SqliteTeamStore::in_memory().unwrap();
         let a = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::ProposalDecided, Receipt::Queued, None, 0)
+            .add_wake(
+                a,
+                None,
+                WakeReason::ProposalDecided,
+                Receipt::Queued,
+                None,
+                0,
+            )
             .unwrap();
         let id = store.add_run(a, None, wake, 0).unwrap();
         let mut run = store.run(id).unwrap().unwrap();
