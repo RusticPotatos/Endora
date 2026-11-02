@@ -188,8 +188,6 @@ pub type Done<T> = Result<T, EngineError>;
 /// What one tick did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
-    /// Wakes raised by timers.
-    pub timers: usize,
     /// Routines whose time came, fired or skipped.
     pub routines: usize,
     /// Check-backs that woke their member.
@@ -1871,7 +1869,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the tick ----------------------------------------------------------------------------
 
-    /// The engine's regular pass (every 30 seconds), in the spec's order: timers, routines and
+    /// The engine's regular pass (every 30 seconds), in the spec's order: routines and
     /// check-backs, ended and vanished turns, retries, starts, stuck work, finished waits. A
     /// late tick runs once.
     pub fn tick(&self) -> Done<TickReport> {
@@ -1886,7 +1884,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(report);
         }
 
-        // 1. Timers that are due raise their wakes; a late one fires once.
+        // 1. Routines that are due fire; a late one fires once.
         self.fire_due(now, &mut report)?;
         // Check-backs whose time came wake their member, while the task is still open.
         self.fire_check_backs(now, &mut report)?;
@@ -1965,16 +1963,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(report)
     }
 
-    /// Due timers raise their wakes and due routines fire, each once however late (tick step 1).
+    /// Due routines fire, each once however late, and count on from now (tick step 1).
     fn fire_due(&self, now: Millis, report: &mut TickReport) -> Done<()> {
-        for timer in self.store.timers()? {
-            if timer.due_at <= now {
-                self.wake_held_lock(timer.member, None, timer.reason)?;
-                self.store.set_timer_due(timer.id, now + timer.every_ms)?;
-                report.timers += 1;
-            }
-        }
-        // Routines whose time came fire once, however late, and count on from now.
         for mut routine in self.store.routines()? {
             if !routine.enabled || routine.next_due_at > now {
                 continue;

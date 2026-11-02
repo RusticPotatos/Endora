@@ -522,12 +522,10 @@ fn a_check_back_waits_at_most_twelve_hours_replaces_its_own_and_not_for_finished
 }
 
 #[test]
-fn a_timer_with_nothing_to_do_starts_no_turn() {
+fn a_wake_on_a_clock_with_nothing_to_do_starts_no_turn() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, t) = office(&clock);
-    hq.store()
-        .add_timer(t.lead, WakeReason::LeadReview, NOON, HOUR_MS)
-        .unwrap();
+    hq.wake(t.lead, None, WakeReason::Alarm).unwrap();
     hq.tick().unwrap();
     let wake = hq.wakes().unwrap().pop().unwrap();
     assert_eq!(wake.receipt, Receipt::Refused(Refused::NothingToDo));
@@ -549,12 +547,13 @@ fn a_timer_with_nothing_to_do_starts_no_turn() {
     )
     .unwrap();
     clock.forward(HOUR_MS);
+    hq.wake(t.lead, None, WakeReason::Alarm).unwrap();
     hq.tick().unwrap();
     let looked = hq
         .wakes()
         .unwrap()
         .into_iter()
-        .rfind(|w| w.reason == WakeReason::LeadReview)
+        .rfind(|w| w.reason == WakeReason::Alarm)
         .unwrap();
     assert_ne!(looked.receipt, Receipt::Refused(Refused::NothingToDo));
 }

@@ -1,26 +1,11 @@
-//! What the engine needs from the store for what comes back on time: timers, routines and the
+//! What the engine needs from the store for what comes back on time: routines and the
 //! check-backs members set.
 
-use super::ports::{NewRoutine, Stored, Timer};
-use crate::domain::{
-    CheckBack, CheckBackStatus, MemberId, Millis, Routine, RoutineId, TaskId, WakeReason,
-};
+use super::ports::{NewRoutine, Stored};
+use crate::domain::{CheckBack, CheckBackStatus, MemberId, Millis, Routine, RoutineId, TaskId};
 
-/// The timers', routines' and check-backs' part of HQ's store.
+/// The routines' and check-backs' part of HQ's store.
 pub trait ScheduleStore {
-    /// Adds a timer.
-    fn add_timer(
-        &self,
-        member: MemberId,
-        reason: WakeReason,
-        due_at: Millis,
-        every_ms: Millis,
-    ) -> Stored<i64>;
-    /// Every timer.
-    fn timers(&self) -> Stored<Vec<Timer>>;
-    /// Moves a timer to its next time.
-    fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()>;
-
     /// Adds a routine, on, first due at `next_due_at`.
     fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId>;
     /// Every routine, oldest first.

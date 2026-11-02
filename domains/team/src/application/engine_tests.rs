@@ -1290,25 +1290,6 @@ fn a_paused_member_is_turned_away_and_a_runner_that_says_no_is_a_retry() {
 }
 
 #[test]
-fn a_timer_wakes_the_lead_and_a_late_tick_fires_it_once() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.store()
-        .add_timer(t.lead, WakeReason::LeadReview, NOON, 60 * 60 * 1000)
-        .unwrap();
-    clock.forward(5 * 60 * 60 * 1000); // five hours late
-    assert_eq!(hq.tick().unwrap().timers, 1);
-    assert_eq!(
-        hq.tick().unwrap().timers,
-        0,
-        "missed ticks are not replayed"
-    );
-    let wake = &hq.wakes().unwrap()[0];
-    assert_eq!((wake.member, wake.reason), (t.lead, WakeReason::LeadReview));
-}
-
-#[test]
 fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let clock = hands();
     let hq = hq(&clock, 4);

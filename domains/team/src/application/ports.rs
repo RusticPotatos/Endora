@@ -256,21 +256,6 @@ pub struct DeskItem {
     pub at: Millis,
 }
 
-/// A regular wake: the lead's look over the team's work, for one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Timer {
-    /// Its id.
-    pub id: i64,
-    /// Whose turn it raises.
-    pub member: MemberId,
-    /// Why.
-    pub reason: WakeReason,
-    /// When it is next due.
-    pub due_at: Millis,
-    /// How often.
-    pub every_ms: Millis,
-}
-
 /// HQ's own store (spec section 14). Every change the engine makes goes through it, and the
 /// engine is its only writer, one change at a time.
 pub trait TeamStore:
