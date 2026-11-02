@@ -436,10 +436,6 @@ pub(super) async fn messages(
     body: Bytes,
 ) -> Response {
     let token = token_of(&headers);
-    // The bench's credential is no turn of HQ's (ADR 0123): its calls never reach HQ.
-    if let Some(bench) = super::bench::opened_by(&state, &token) {
-        return super::bench::messages(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -687,9 +683,6 @@ pub(super) async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(bench) = super::bench::opened_by(&state, &token_of(&headers)) {
-        return super::bench::count_tokens(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,

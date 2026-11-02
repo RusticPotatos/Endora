@@ -254,18 +254,6 @@ fn ledger() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// What the bench paid Anthropic (blocking): counted after any renewal due, so it lands in the
-/// cycle it was spent in. The bench has no HQ turn to tell the owner through.
-pub(super) fn after_bench_charge(state: &AppState, micros: i64) {
-    let _held = ledger();
-    renew_if_due(state, state.clock.now().unix_millis());
-    if micros > 0 {
-        if let Err(e) = state.store.add_provider_spent("anthropic", micros) {
-            eprintln!("credits: could not count {micros} micros the bench paid Anthropic: {e}");
-        }
-    }
-}
-
 fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i64) {
     let provider = if model.starts_with("claude-") {
         "anthropic"
