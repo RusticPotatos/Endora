@@ -21,8 +21,9 @@ use super::work::{Millis, Refusal, RunId, TaskId};
 pub const EXCERPT_MOST: usize = 300;
 /// The most of a call's arguments a receipt keeps, in characters.
 pub const ARGS_MOST: usize = 120;
-/// The most a criterion says, in characters.
-pub const CRITERION_MOST: usize = 200;
+/// The most a criterion says, in characters. Set 3's longest was 582; at 200, 21 of its 49 were
+/// cut, and a member never read what they ended with (#1049).
+pub const CRITERION_MOST: usize = 1000;
 /// The most criteria a task has.
 pub const MOST_CRITERIA: usize = 8;
 /// The most references one claim cites.
@@ -220,8 +221,10 @@ impl Criterion {
     }
 
     /// The owner's criteria from the screen, a line each: `live:` before one marks it live.
-    #[must_use]
-    pub fn from_lines(lines: &[String]) -> Vec<Self> {
+    ///
+    /// # Errors
+    /// A criterion past [`CRITERION_MOST`], naming it ([`Self::written`]).
+    pub fn from_lines(lines: &[String]) -> Result<Vec<Self>, String> {
         lines
             .iter()
             .filter_map(|line| {
@@ -230,10 +233,28 @@ impl Criterion {
                     Some(head) if head.eq_ignore_ascii_case("live:") => (line[5..].trim(), true),
                     _ => (line, false),
                 };
-                (!text.is_empty()).then(|| Self::new(text, live))
+                (!text.is_empty()).then_some((text, live))
             })
             .take(MOST_CRITERIA)
+            .enumerate()
+            .map(|(i, (text, live))| Self::written(i + 1, text, live))
             .collect()
+    }
+
+    /// Criterion `n` as the owner or a member wrote it: whole, or refused when it is past
+    /// [`CRITERION_MOST`], since a criterion cut short is a different one (#1049).
+    ///
+    /// # Errors
+    /// Saying which criterion, how long it is and the most it may be.
+    pub fn written(n: usize, text: &str, live: bool) -> Result<Self, String> {
+        let long = super::record::clean(text).chars().count();
+        if long > CRITERION_MOST {
+            return Err(format!(
+                "criterion {n} is {long} characters, more than the {CRITERION_MOST} characters \
+                 one may be: say it shorter, or split it in two"
+            ));
+        }
+        Ok(Self::new(text, live))
     }
 }
 
@@ -859,7 +880,7 @@ mod tests {
         assert_eq!(Criterion::read(""), []);
         let lines = ["live: radarr answers", "  ", "the queue is empty"].map(str::to_owned);
         assert_eq!(
-            Criterion::from_lines(&lines),
+            Criterion::from_lines(&lines).unwrap(),
             [
                 Criterion::new("radarr answers", true),
                 Criterion::new("the queue is empty", false)
@@ -986,6 +1007,24 @@ mod tests {
         assert!(
             words.contains("live:"),
             "it says how to mark a live one: {words}"
+        );
+    }
+
+    /// Set 3's #1049: the owner's third criterion was 582 characters, and HQ kept its first 200,
+    /// so the member never read its last requirement ("plain SimpleEval still raises
+    /// FeatureNotAvailable for a set comprehension"), and the blind judge failed the work for
+    /// the missing test. 21 of the set's 49 criteria were longer than 200. A criterion that long
+    /// is now kept whole, and one past the most is refused, saying which, never cut.
+    #[test]
+    fn a_criterion_as_long_as_set_threes_is_kept_whole_and_a_longer_one_refused() {
+        let third = "EvalWithCompoundTypes evaluates set comprehensions: `{x % 3 for x in [1, 2, 3, 4]}` -> {0, 1, 2} and `{(x, y) for x in [1, 2] for y in [1, 2] if x != y}` -> {(1, 2), (2, 1)}; the loop variable is not visible after evaluation; a set comprehension producing more than MAX_COMPREHENSION_LENGTH items raises IterableTooLong; plain SimpleEval still raises FeatureNotAvailable for a set comprehension.";
+        let kept = Criterion::from_lines(&[third.to_owned()]).unwrap();
+        assert_eq!(kept[0].text, third);
+        let long = "x".repeat(CRITERION_MOST + 1);
+        let why = Criterion::from_lines(&["fine".to_owned(), long]).unwrap_err();
+        assert!(
+            why.contains("criterion 2") && why.contains(&format!("{CRITERION_MOST} characters")),
+            "{why}"
         );
     }
 

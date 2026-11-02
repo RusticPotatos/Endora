@@ -479,6 +479,8 @@ pub enum Refusal {
     /// No check of the lab's applies to a branch of the repository outside the lab its item
     /// names (ADR 0115, amended 2026-11-01): the item's criteria are its gate.
     NoLabCheck(String),
+    /// A criterion past the most one may be, said whole rather than cut (#1049).
+    Criterion(String),
     /// Work is not handed to a member on furlough.
     Furloughed(String),
     /// A game of chess refuses a move or a challenge (ADR 0121).
@@ -724,6 +726,7 @@ impl fmt::Display for Refusal {
                  set_status in_review citing your repo_submit's receipt (and the checkout's) for \
                  each criterion"
             ),
+            Self::Criterion(why) => f.write_str(why),
             Self::Furloughed(name) => write!(
                 f,
                 "{name} is on furlough and takes no work: hand it to a member at work, or ask for staff with request_staff"

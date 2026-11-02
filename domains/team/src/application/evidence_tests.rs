@@ -184,6 +184,18 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
     let parent = owners_task(&hq, &t, t.lead, "Keep sonarr up");
     let ada = turn(&hq, t.lead);
     use_tool(&hq, &ada, "claim", &json!({ "task": parent.0 })).unwrap();
+    // A criterion past the most one may be is refused, saying which, not cut (#1049).
+    let made = hq.store().tasks().unwrap().len();
+    let long = use_tool(
+        &hq,
+        &ada,
+        "create_task",
+        &json!({ "title": "Tidy sonarr's role", "description": "and check it is up",
+                 "criteria": ["the role's tasks are named", "z".repeat(1001)] }),
+    )
+    .unwrap_err();
+    assert!(long.contains("criterion 2 is 1001 characters"), "{long}");
+    assert_eq!(hq.store().tasks().unwrap().len(), made, "nothing is made");
     use_tool(
         &hq,
         &ada,

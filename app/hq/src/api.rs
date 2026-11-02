@@ -404,7 +404,8 @@ async fn add_task(
         return Err(Failed(EngineError::Unknown("task title")));
     }
     let hq = state.hq.clone();
-    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria);
+    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria)
+        .map_err(|why| Failed(EngineError::Refused(Refusal::Criterion(why))))?;
     let task = blocking(move || {
         hq.add_task_with(
             Author::Owner,
@@ -2671,6 +2672,42 @@ mod tests {
                 ("The backups finish by 6 am", false),
                 ("the disk is under 80% full", true)
             ]
+        );
+        // #1049 of set 3: a criterion as long as the set's longest (582 characters) is kept
+        // whole; one past the most is refused, saying which, and nothing is made.
+        let long = format!("{} plain SimpleEval still refuses it.", "x".repeat(540));
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Support set comprehensions",
+                "criteria": [long.clone()] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let task = json_of(res).await["task"].as_i64().unwrap();
+        let kept = st.hq.store().task(TaskId(task)).unwrap().unwrap().criteria;
+        assert_eq!(kept[0].text, long);
+        let made = st.hq.store().tasks().unwrap().len();
+        let res = app
+            .clone()
+            .oneshot(give(json!({ "goal": goal, "title": "Too long",
+                "criteria": ["fine", "y".repeat(1001)] })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("criterion 2 is 1001 characters"),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
         );
     }
 

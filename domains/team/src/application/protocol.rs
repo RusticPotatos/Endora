@@ -118,34 +118,35 @@ fn evidence_flat(args: &Value) -> Result<Vec<Ref>, String> {
 }
 
 /// The `criteria` argument: each `{ text, live }`, or a line of text.
-fn criteria_arg(args: &Value) -> Vec<Criterion> {
-    args["criteria"]
-        .as_array()
-        .map(|all| {
-            all.iter()
-                .filter_map(|c| {
-                    let (text, live) = match c {
-                        Value::String(s) => (s.as_str(), false),
-                        other => (
-                            other["text"].as_str()?,
-                            other["live"].as_bool() == Some(true),
-                        ),
-                    };
-                    if text.trim().is_empty() {
-                        return None;
-                    }
-                    let made = Criterion::new(text, live);
-                    // A wait, in minutes from the work's last change (ADR 0120).
-                    Some(
-                        match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
-                            Some(minutes) => made.after(minutes),
-                            None => made,
-                        },
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+///
+/// # Errors
+/// A criterion past the most one may be ([`Criterion::written`]).
+fn criteria_arg(args: &Value) -> Result<Vec<Criterion>, String> {
+    let Some(all) = args["criteria"].as_array() else {
+        return Ok(Vec::new());
+    };
+    let mut criteria = Vec::new();
+    for c in all {
+        let (text, live) = match c {
+            Value::String(s) => (s.as_str(), false),
+            other => match other["text"].as_str() {
+                Some(text) => (text, other["live"].as_bool() == Some(true)),
+                None => continue,
+            },
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let made = Criterion::written(criteria.len() + 1, text, live)?;
+        // A wait, in minutes from the work's last change (ADR 0120).
+        criteria.push(
+            match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
+                Some(minutes) => made.after(minutes),
+                None => made,
+            },
+        );
+    }
+    Ok(criteria)
 }
 
 /// The `handover` a post may carry (ADR 0134): only when HQ has told the turn a restart is
@@ -818,7 +819,7 @@ fn tool_create_task<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 priority: Priority::Normal,
                 waits_on,
             },
-            &criteria_arg(args),
+            &criteria_arg(args)?,
         )
         .map_err(|e| said(&e))?;
     Ok(format!("Created task {}.", id.0))
