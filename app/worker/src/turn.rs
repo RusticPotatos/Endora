@@ -2646,12 +2646,29 @@ impl<'a> Node<'a> {
         if matches!(status, 401 | 402) {
             return Err(Stopped::Over(format!("the node answered {status}")));
         }
-        let body: Value = response
+        // A checkout carries its bundle in the answer: read up to the most one may be, and an
+        // answer past it is said to be that, not taken for an empty one.
+        let most = endora_protocol::team::CONTRACT_ANSWER_MOST;
+        let text = match response
             .body_mut()
+            .with_config()
+            .limit(most as u64)
             .read_to_string()
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or(Value::Null);
+        {
+            Ok(text) => text,
+            Err(ureq::Error::BodyExceedsLimit(_)) => {
+                let why = format!(
+                    "the node's answer is more than the {} MB one may be",
+                    most >> 20
+                );
+                return Ok((why, Outcome::Failed, false));
+            }
+            Err(e) => {
+                let why = format!("the node's answer could not be read: {e}");
+                return Ok((why, Outcome::Failed, false));
+            }
+        };
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
             return Ok((
                 body["text"].as_str().unwrap_or("").to_owned(),

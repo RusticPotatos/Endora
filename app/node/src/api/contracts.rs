@@ -248,8 +248,13 @@ pub(super) async fn call(
 /// A contract's answer with the receipt's id after its text, or its error.
 async fn with_receipt(response: Response, receipt: &str) -> Response {
     let status = response.status();
-    let Ok(bytes) = axum::body::to_bytes(response.into_body(), 1 << 24).await else {
-        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed");
+    let most = endora_protocol::team::CONTRACT_ANSWER_MOST;
+    let Ok(bytes) = axum::body::to_bytes(response.into_body(), most).await else {
+        let why = format!(
+            "the contract's answer is more than the {} MB one may be",
+            most >> 20
+        );
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", &why);
     };
     let mut answer: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     for key in ["text", "error"] {
@@ -4274,6 +4279,125 @@ mod tests {
                 .contains("only a public https://github.com/"),
             "{said}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository whose history is `size` bytes of noise, which no compression shrinks: a
+    /// checkout's bundle of it is about as big.
+    fn a_big_repository(name: &str, size: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (root, fork) = a_fork_on(name, "master", "print('big')\n");
+        let seed = root.join("seed");
+        let mut noise = Vec::with_capacity(size);
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        while noise.len() < size {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            noise.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(seed.join("noise.bin"), &noise).unwrap();
+        git_in(&seed, &["add", "."]);
+        git_in(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "noise",
+            ],
+        );
+        git_in(&seed, &["push", "-q", "origin", "HEAD:master"]);
+        (root, fork)
+    }
+
+    /// Set 3 of HQ's experiment (tasks 1051-1053): pyparsing's checkout is a 14.3 MB bundle,
+    /// about 19 MB as base64 in the answer's JSON, and the node read a contract's answer at
+    /// most 16 MiB to put its receipt after it: every checkout came back "the contract
+    /// failed". A checkout of that size now reaches the turn whole, with its receipt; the turn
+    /// still has only its own repository, and a stranger nothing. With
+    /// `ENDORA_PYPARSING_MIRROR` naming a copy of the node's pyparsing mirror, the real one is
+    /// checked out too.
+    #[tokio::test]
+    async fn a_checkout_the_size_of_pyparsings_reaches_the_turn_whole_and_only_its_own() {
+        use super::super::relay::tests::fake;
+        const BIG: &str = "https://github.com/example/big";
+        let (root, big) = a_big_repository("outside-big", 15 << 20);
+        let real = std::env::var("ENDORA_PYPARSING_MIRROR").ok();
+        let (hq_url, _) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
+                            "cloud": true, "task": 1051, "repo": BIG }),
+                ),
+                ("/v1/team/turn", "ann") => said(
+                    200,
+                    json!({ "run": 9, "member": "Ann", "left": 40_000, "cloud": true,
+                            "task": 1052, "repo": "https://github.com/pyparsing/pyparsing" }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/big" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let mut lab = LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+            .with_repo(
+                root.join("data"),
+                big.to_str().unwrap(),
+                "master",
+                big.to_str().unwrap(),
+            )
+            .with_outside(BIG, big.to_str().unwrap());
+        if let Some(real) = &real {
+            lab = lab.with_outside("https://github.com/pyparsing/pyparsing", real);
+        }
+        state.lab = Arc::new(lab);
+        let mut turns = vec![("rae", git_in(&big, &["rev-parse", "refs/heads/master"]))];
+        if let Some(real) = &real {
+            let real = std::path::Path::new(real);
+            turns.push(("ann", git_in(real, &["rev-parse", "refs/heads/master"])));
+        }
+        for (token, head) in turns {
+            let (status, said) =
+                as_turn(&state, token, REPO_CHECKOUT, json!({ "why": "start" })).await;
+            assert_eq!(status, StatusCode::OK, "{token}: {}", said["error"]);
+            let (payload, receipt) = said["text"]
+                .as_str()
+                .unwrap()
+                .rsplit_once(" (receipt ")
+                .unwrap();
+            assert_eq!(receipt, "r41)");
+            let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(handed["head"].as_str(), Some(head.as_str()), "{token}");
+            let bundle = repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap();
+            assert!(bundle.len() > 13 << 20, "{token}: {} bytes", bundle.len());
+            let file = root.join(format!("{token}.bundle"));
+            std::fs::write(&file, &bundle).unwrap();
+            let into = format!("{token}-work");
+            git_in(&root, &["clone", "-q", file.to_str().unwrap(), &into]);
+            assert_eq!(git_in(&root.join(&into), &["rev-parse", "HEAD"]), head);
+        }
+        // Only a public GitHub repository, and only the turn's own: a stranger has nothing.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        let (status, said) = as_turn(&state, "mallory", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{said}");
+        assert!(said["text"].is_null(), "{said}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

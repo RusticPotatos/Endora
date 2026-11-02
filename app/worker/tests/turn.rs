@@ -3455,3 +3455,143 @@ fn a_claude_turn_makes_no_gist_call() {
         "the log whole"
     );
 }
+
+/// A bundle of `master` with about `size` bytes of noise in its history, which no compression
+/// shrinks, or of the real pyparsing mirror when `ENDORA_PYPARSING_MIRROR` names a copy of the
+/// node's: its bytes and the head.
+fn a_big_bundle(dir: &std::path::Path, size: usize) -> (Vec<u8>, String) {
+    let repo = std::env::var("ENDORA_PYPARSING_MIRROR").map_or_else(
+        |_| {
+            let repo = dir.join("big");
+            std::fs::create_dir_all(&repo).unwrap();
+            git_in(&repo, &["init", "-q", "-b", "master"]);
+            let mut noise = Vec::with_capacity(size);
+            let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+            while noise.len() < size {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                noise.extend_from_slice(&x.to_le_bytes());
+            }
+            std::fs::write(repo.join("noise.bin"), &noise).unwrap();
+            git_in(&repo, &["add", "."]);
+            git_in(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=John Doe",
+                    "-c",
+                    "user.email=john@example.com",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "noise",
+                ],
+            );
+            repo
+        },
+        std::path::PathBuf::from,
+    );
+    let file = dir.join("big.bundle");
+    git_in(
+        &repo,
+        &[
+            "bundle",
+            "create",
+            file.to_str().unwrap(),
+            "refs/heads/master",
+        ],
+    );
+    let head = git_in(&repo, &["rev-parse", "refs/heads/master"]);
+    (std::fs::read(&file).unwrap(), head)
+}
+
+/// A node that offers `repo_checkout` and answers it with `answer`, as its JSON body.
+fn node_handing(answer: String) -> (String, Seen) {
+    fake(Box::new(move |sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+            ] })
+            .to_string(),
+        ),
+        "/team-relay/contracts/repo_checkout" => (200, answer.clone()),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }))
+}
+
+/// A turn that checks out once, in an empty sandbox at `dir`, and stops: what the model was told.
+fn checking_out(dir: &std::path::Path, node_url: &str) -> String {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[("call_1", "repo_checkout", r#"{"why": "to start"}"#)]),
+        ),
+        (200, says("Started.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push((
+        "ENDORA_WORKBENCH_DIR",
+        dir.join("work").display().to_string(),
+    ));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let asked = to_model.lock().unwrap()[1].body.clone();
+    asked["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .map(|m| m["content"].to_string())
+        .unwrap_or_default()
+}
+
+/// Set 3 of HQ's experiment (tasks 1051-1053): pyparsing's checkout came to the worker as a
+/// 14.3 MB bundle, about 19 MB of JSON, and the worker read every answer of the node's at most
+/// ureq's 10 MB, swallowed the error and told the model the checkout "could not be read as a
+/// bundle". An answer of that size is now read whole and unpacked. (The worker has no scenario
+/// suite; this end-to-end test stands for one.)
+#[test]
+fn a_checkout_the_size_of_pyparsings_is_read_whole_and_unpacked() {
+    use base64::Engine as _;
+    let dir = std::env::temp_dir().join(format!("endora-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (bundle, head) = a_big_bundle(&dir, 15 << 20);
+    let handed = json!({ "branch": "master", "head": head, "base": "master",
+                         "bundle": base64::engine::general_purpose::STANDARD.encode(&bundle) });
+    let answer = json!({ "text": format!("{handed} (receipt r41)") }).to_string();
+    assert!(
+        answer.len() > 16 << 20,
+        "as big as pyparsing's: {}",
+        answer.len()
+    );
+    let (node_url, _) = node_handing(answer);
+    let told = checking_out(&dir, &node_url);
+    assert!(!told.contains("could not be read"), "{told}");
+    assert_eq!(
+        git_in(&dir.join("work").join("repo"), &["rev-parse", "HEAD"]),
+        head
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An answer past the most one may be is said to be that, not that it was no bundle.
+#[test]
+fn a_node_answer_too_big_to_read_is_said_to_be_so() {
+    let dir = std::env::temp_dir().join(format!("endora-too-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let answer =
+        json!({ "text": "x".repeat(endora_protocol::team::CONTRACT_ANSWER_MOST) }).to_string();
+    let (node_url, _) = node_handing(answer);
+    let told = checking_out(&dir, &node_url);
+    assert!(
+        told.contains("the node's answer is more than the 48 MB"),
+        "{told}"
+    );
+    assert!(!told.contains("as a bundle"), "{told}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
