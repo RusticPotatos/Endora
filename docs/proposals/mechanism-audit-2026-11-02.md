@@ -161,10 +161,21 @@ settled offline from stored turns: no live runs).
   step; #864 was closed through a project of its own, dropped (no owner route closes one task;
   HQ recorded it as obsolete); a fresh check was fired at once (#1041). HQ refuses posts on a
   closed task, so this record is where the reason lives.
+- **"Opus is the CEO's alone" is current policy, not a remnant, and is no longer stranding
+  work.** ADR 0142 made it "Opus for the member whose model is Opus; every other member is
+  refused it"; the relay has enforced exactly that since 30 Oct (`7af1301f`), with a regression
+  test (`since_one_team_the_member_whose_brain_is_opus_thinks_with_it_at_the_dollar_cap`). The
+  37 refusals, #864's among them, all fell between 25 Oct and 30 Oct 03:23, before that fix; 84
+  Opus turns since, none refused. What stranded #864 was the fixed bug plus no re-wake of a
+  reviewer whose turn was refused, which goes with the reviewer. Kept; only the refusal's
+  wording still names the CEO.
 - **The lesson:** removing a mechanism must also remove what depends on it. The reviewer was
   retired in practice on 1 Nov, but an item already waiting for it, and a routine waiting for
   that item, kept the retired mechanism in control. Before each removal above: find the open
-  items and settings that wait on it, and settle them first.
+  items and settings that wait on it, and settle them first. Removing code is not retiring a
+  mechanism: it is retired when no task, routing rule, permission or completion condition still
+  needs it. So every decision above also answers **what active work or policy still depends on
+  this mechanism?**
 
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
