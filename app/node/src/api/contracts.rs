@@ -1403,6 +1403,10 @@ fn portainer(code: &str) -> Refused {
             StatusCode::BAD_GATEWAY,
             "Portainer refused Endora's key".to_owned(),
         ),
+        "too_large" => (
+            StatusCode::BAD_GATEWAY,
+            "Portainer's answer was over 2 MB, more than Endora reads".to_owned(),
+        ),
         other => (
             StatusCode::BAD_GATEWAY,
             format!("Portainer did not answer ({})", other.replace('_', " ")),
