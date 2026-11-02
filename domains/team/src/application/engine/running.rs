@@ -1,6 +1,6 @@
 //! Turns: queued, started, ended and retried.
 
-use super::{COLLEAGUE_HELP, Done, Engine, EngineError, STANDARDS};
+use super::{Done, Engine, EngineError, STANDARDS};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::handover;
 use crate::domain::mac;
@@ -234,19 +234,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             // amended 2026-10-30).
             told.push_str(&self.handover_briefed(member, run)?);
         }
-        // Decided last, once the briefing has recorded what it showed the turn: a turn is told
-        // of colleague help only when it is offered the tools (downtime lists them itself).
-        if self.reason_for(run)? != WakeReason::Downtime.name()
-            && self.colleague_help_said(member, run)?
-        {
-            told.push_str(COLLEAGUE_HELP);
-        }
         Ok(told)
-    }
-
-    pub(super) fn colleague_help_said(&self, _member: &Member, _run: &Run) -> Done<bool> {
-        // Colleagues are no longer asked (ADR 0142): the loops' checks and ranks are the help.
-        Ok(false)
     }
 
     /// The briefing, around what it carries of the world (`memory`). Every member is told the

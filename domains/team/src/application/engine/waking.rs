@@ -140,9 +140,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: Option<TaskId>,
         reason: WakeReason,
     ) -> Done<Receipt> {
-        if reason == WakeReason::Consulted {
+        if let WakeReason::Retired(_) = reason {
             return Err(EngineError::Refused(Refusal::Conversation(
-                "legacy consultation wakes are retired; use authorized assistance",
+                "a retired wake reason is only read from history, never raised",
             )));
         }
         let decision = self.decide_wake(member, task, reason)?;

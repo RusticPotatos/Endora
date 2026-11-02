@@ -28,7 +28,7 @@ pub(super) struct Seen {
 }
 
 /// The wakes that ask for a review round: coordination by their nature.
-const CHECKING: [WakeReason; 2] = [WakeReason::ReviewRequested, WakeReason::AcceptanceAsked];
+const CHECKING: [WakeReason; 1] = [WakeReason::ReviewRequested];
 
 /// Where HQ keeps the owner's newest answer in words to a question about `task` (ADR 0142,
 /// amended 2026-11-01).

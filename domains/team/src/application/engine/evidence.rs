@@ -703,29 +703,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Who a briefing's turn on a task is, for the checking path: what the tester is told on
-    /// work submitted, and the lead on work to accept.
+    /// work submitted.
     pub(super) fn checking_said(&self, member: &Member, run: &Run, task: &Task) -> Done<String> {
         let reason = self.reason_for(run)?;
         let cloud = member.brain.cloud();
-        if reason == WakeReason::AcceptanceAsked.name() {
-            let tested = self.cited_said(task, TESTED, cloud)?;
-            let mut told = String::new();
-            if tested.is_empty() {
-                told.push_str("Nobody else tests this work: you accept it alone.\n");
-            } else {
-                told.push_str(&format!("The tester passed it on this evidence:\n{tested}"));
-            }
-            let submitted = self.cited_said(task, SUBMITTED, cloud)?;
-            if !submitted.is_empty() {
-                told.push_str(&format!("Its member submitted it on:\n{submitted}"));
-            }
-            told.push_str(
-                "Accept it against its criteria with accept (verdict accept, evidence one list \
-                 per criterion: receipts, the tester's among them, count as fresh), or send it \
-                 back with exactly what does not hold.\n",
-            );
-            return Ok(told);
-        }
         if reason == WakeReason::ReviewRequested.name() && !self.is_draft(task)? {
             let submitted = self.cited_said(task, SUBMITTED, cloud)?;
             if submitted.is_empty() {

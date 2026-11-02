@@ -430,13 +430,6 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
     for c in &contexts {
         hq.runner().finish(c.run, true);
     }
-    let decided_before = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .iter()
-        .filter(|w| w.reason == WakeReason::Decide)
-        .count();
     for _ in 0..40 {
         clock.0.fetch_add(15 * 60 * 1000, Ordering::SeqCst);
         hq.tick().unwrap();
@@ -449,14 +442,6 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
         .map(|t| hq.store().task(*t).unwrap().unwrap().status)
         .collect();
     assert!(!statuses.contains(&TaskStatus::Blocked), "{statuses:?}");
-    let decided = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .iter()
-        .filter(|w| w.reason == WakeReason::Decide)
-        .count();
-    assert_eq!(decided, decided_before, "no lead woken to decide it");
 }
 
 // A world that has ended with its tasks still open (as live, when its end came from a rule

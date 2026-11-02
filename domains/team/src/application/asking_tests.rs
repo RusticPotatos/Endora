@@ -164,7 +164,7 @@ fn a_turn_on_claude_is_given_what_a_turn_that_read_confidential_data_said() {
     // Ada with the house's own model.
     hq.set_brain(t.rae, "claude-haiku-5-5").unwrap();
     let proxy = task_for(&hq, t.goal, t.rae, "Check the proxy");
-    hq.wake(t.rae, Some(proxy), WakeReason::Decide).unwrap();
+    hq.wake(t.rae, Some(proxy), WakeReason::ProposalDecided).unwrap();
     let (_, ada) = ada_asks_in_a_turn(&hq, &t);
     hq.tick().unwrap();
     let rae = turn_of(&hq, t.rae);

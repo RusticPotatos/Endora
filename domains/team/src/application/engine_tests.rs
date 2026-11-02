@@ -9,7 +9,6 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::application::desk_ports::DeskStore;
 use crate::application::event_ports::EventStore;
-use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
 use crate::domain::{
@@ -820,7 +819,7 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
 
 /// What wakes a member for a turn that is paid for. Only a turn of judgment is (ADR 0131), and
 /// the tests of the pool, the shares and the caps are about money: they ask for a decision.
-const PAID: WakeReason = WakeReason::Decide;
+const PAID: WakeReason = WakeReason::ProposalDecided;
 
 /// A task the owner hands to `to`, which `to` is also asked to decide: the turn it starts is the
 /// owner's asking, and one of judgment, so it is paid from the pool.

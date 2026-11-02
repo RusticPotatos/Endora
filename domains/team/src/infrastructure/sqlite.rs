@@ -2153,7 +2153,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let store = SqliteTeamStore::in_memory().unwrap();
         let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let mut ids = Vec::new();
         for status in [
@@ -2193,7 +2193,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let mine = store.add_task(&task("Mine"), 0).unwrap();
         let other = store.add_task(&task("Other"), 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let first = store.add_run(a, Some(mine), wake, 0).unwrap();
         store.add_run(a, Some(other), wake, 0).unwrap();
@@ -2269,7 +2269,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let store = SqliteTeamStore::in_memory().unwrap();
         let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 1, 400_000, 0).unwrap();
@@ -2283,7 +2283,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let store = SqliteTeamStore::in_memory().unwrap();
         let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 10, 400_000, 0).unwrap();
@@ -2385,7 +2385,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let store = SqliteTeamStore::in_memory().unwrap();
         let a = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::Decide, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::ProposalDecided, Receipt::Queued, None, 0)
             .unwrap();
         let id = store.add_run(a, None, wake, 0).unwrap();
         let mut run = store.run(id).unwrap().unwrap();

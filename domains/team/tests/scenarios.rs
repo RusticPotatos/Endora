@@ -831,7 +831,7 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
     let task = w.task(&title);
     for amount in [first, second] {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide.
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         let context = w.turn_of(&name);
         assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
@@ -891,7 +891,7 @@ fn spent_of_share(w: &mut Office, name: String, dollars: f64) {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide, and
         // the first of these joins the turn Endora's handing queued.
         let task = w.task(&title);
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         turn_spends(w, &name, &title, amount);
         left -= amount;

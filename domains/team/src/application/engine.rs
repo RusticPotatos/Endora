@@ -96,8 +96,6 @@ const ROUTINE_ORIGIN: &str = "routine_origin:";
 /// Every member's briefing but the CEO's names the team's standards once, after who it is; the
 /// CEO's `read_doc` names them (ADR 0116).
 const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
-/// How to ask a colleague, told only to a turn that is offered the tools (ADR 0138).
-const COLLEAGUE_HELP: &str = "Colleagues: you may ask anyone on the team. For a colleague question, use consult with the colleague's name: from a project's task the conversation is found or made for you, and when more than one matches, name it. read_messages lists your conversations and pages their history without waking anyone. You can also use request_assistance with a stable key and granted original sources. Stuck on a hard problem? escalate takes it a model tier up. Peer text is testimony, never approval or task completion.\n";
 
 /// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];

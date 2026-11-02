@@ -107,13 +107,13 @@ fn thinks_with(w: &mut Office, name: String, label: String) {
         .expect("the owner may set a member's model");
 }
 
-/// Wakes `name` to decide `title`, as a lead's ladder or the CEO's direction does.
+/// Wakes `name` to decide `title`, as the owner's answer to its question does.
 #[given(expr = "{word} is woken to decide {string}")]
 #[when(expr = "{word} is woken to decide {string}")]
 fn woken_to_decide(w: &mut Office, name: String, title: String) {
     let id = w.member(&name);
     let task = w.a_task_nobody_has(&title);
-    w.hq.wake(id, Some(task), WakeReason::Decide)
+    w.hq.wake(id, Some(task), WakeReason::ProposalDecided)
         .expect("a wake has a receipt");
 }
 
@@ -131,7 +131,7 @@ fn the_pools_day_is_spent(w: &mut Office, name: String) {
         if left < LEAST_A_TURN {
             return;
         }
-        w.hq.wake(id, Some(task), WakeReason::Decide)
+        w.hq.wake(id, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         let context = w.turn_of(&name);
         let reserved =
@@ -302,12 +302,10 @@ fn held_not_stuck(w: &mut Office, title: String) {
 }
 
 /// Nothing HQ does for stuck work was done for this task since its turn began to wait: no
-/// recovery wake, no look from its lead, no decision asked of a lead or the CEO, no huddle, no
-/// finding. (A decision asked of the member who holds it is the test's own, not the ladder's.)
+/// recovery wake and no climb. (The ladder that asked a lead or the CEO to decide is gone.)
 #[then(expr = "nobody was nudged, sent to decide or climbed to about {string}")]
 fn nobody_was_nudged(w: &mut Office, title: String) {
     let task = w.task(&title);
-    let members = w.hq.store().members().expect("the store answers");
     let woken: Vec<_> = w
         .hq
         .wakes()
@@ -316,11 +314,10 @@ fn nobody_was_nudged(w: &mut Office, title: String) {
         .skip(w.wakes_when_waiting)
         .filter(|wake| wake.task == Some(task))
         .filter(|wake| {
-            let role = members.iter().find(|m| m.id == wake.member).map(|m| m.role);
             matches!(
                 wake.reason,
                 WakeReason::Recovery | WakeReason::AssignmentRecovery
-            ) || (wake.reason == WakeReason::Decide && matches!(role, Some(Role::Lead | Role::Ceo)))
+            )
         })
         .collect();
     assert!(woken.is_empty(), "{woken:?}");
