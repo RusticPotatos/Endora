@@ -298,3 +298,38 @@ benchmark is needed to show three blocked tasks would have had their source.
 
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
+
+## Milestone 1 results (2 Nov, branch `milestone1`, commits local, not released)
+
+Each change went in test-first: the test reproduced the failure before the fix, then passed after it.
+
+- **Repository access (#1051–1053), `ab0fb8fb`.** Both caps reproduced: node 500 "the contract
+  failed", worker "could not be read as a bundle". One shared cap now, `CONTRACT_ANSWER_MOST`
+  = 48 MiB in the protocol crate (base64 of the 32 MiB bundle cap, plus room); an answer past it
+  says it is too big on either side. Verified against a read-only copy of the node's pyparsing
+  mirror: the real 14,341,705-byte bundle goes through the node's route with its receipt, and
+  the worker unpacks it at master's head. Negative tests: a non-GitHub repository is still 403,
+  and an unknown token gets 401 with no text.
+- **#1048 completion, `bbf009d3`.** The gate was open after the first submission (no lab check
+  for an outside repository), and all four criteria were `live:false`, so the checkout and
+  submit receipts would have satisfied the evidence rule. Sol never called `in_review`: it
+  believed only a lab receipt counted, and it asked `recheck`. `recheck_in` had no outside-repo
+  guard and queued the ansible check; the check box fetched the bundle from the lab's branches
+  and got a 404. Each failure then shut the gate and counted as a loop failure (c105, c108). Now
+  `recheck` on outside work is refused with how to evidence it. Unit test and seeded scenario;
+  `in_review` is then taken on the submit receipt. Verdict: a harness defect plus model
+  judgement (Sol never tried `in_review`, and it ignored r3979's "now submit for review").
+- **#1049, reclassified as a harness restriction, `efceca76`.** HQ stored each criterion cut
+  at 200 characters. The worker read criterion 3 as "...the loop variable i…[cut]" (0 mentions
+  in both transcripts); the lost tail, "plain SimpleEval still raises FeatureNotAvailable for a
+  set comprehension", is the judge's only failure. 21 of set 3's 49 criteria were longer than
+  200, and HQ holds 84 cut criteria on 57 tasks. The Claude Code arm read them whole, so set 3
+  compared the arms on different criteria. The cap is now 1,000 (set 3's longest criterion is
+  582 characters); a longer criterion is refused, never cut (owner route returns 400, and
+  `create_task` refuses). Seeded scenario.
+- **#1042, still model judgement.** The visible criterion kept "exactly when it is on". The
+  turn read FlareSolverr's own default (`false`) and the stack's optional switches (`false`),
+  wrote a default-on switch anyway, and noted that for the owner. Nothing to correct.
+- **Seen, not fixed:** 7 of 13 runs on #1048 ended "HQ answered 502" or timed out (HQ
+  unavailable around releases). `from_lines` still drops criteria past 8 without saying so
+  (never observed).
