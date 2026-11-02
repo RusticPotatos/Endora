@@ -954,7 +954,13 @@ form's title and the office's seating by title:
   every row as it did; nothing reads them now. HQ no longer says a turn's role to the node or the
   runner.
 - **What was given up:** a read-only member (the old researcher or reviewer). No member at work
-  was one; a furloughed member recalled now works as any other. Read-only work is asked for in the
+  was one. The two who were, Cy and Dee, are on furlough, and nothing in Endora brings a member
+  back: recall retired with the reporting lines (this ADR's cut-over), no route, desk decision or
+  store call clears a furlough (`furlough_member` is the only writer of `recalled_at`, and it
+  writes NULL), and a furloughed member is refused every wake, is handed no task, has no turn and
+  so no token the node offers a tool to, and changes no lab
+  (`a_furloughed_member_never_gets_a_turn_so_no_tool_reaches_it`). Bringing one back would take a
+  change to Endora, which is where its permissions are decided. Read-only work is asked for in the
   task's words and held by HQ's `only` and `never` lists, which bind whoever takes the task.
 - **Found on the way:** the console's New project form offered as leads only members titled lead
   or CEO, which since the cut-over was nobody. It now offers every member at work.

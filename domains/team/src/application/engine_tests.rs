@@ -2206,3 +2206,68 @@ fn what_the_desk_keeps_of_a_long_text_shows_where_it_was_cut() {
         .unwrap();
     assert_eq!(fits.text, "fits");
 }
+
+/// Roles retired (ADR 0142, amended 2026-11-02): Cy and Dee, the read-only researcher and
+/// reviewer, are on furlough, and a member at work may read and act alike. What keeps a write
+/// from reaching them is that nothing in Endora brings a member back from furlough: recall was
+/// retired with the reporting lines, and nothing clears a furlough. A furloughed member is never
+/// woken, never handed work, never given a turn (so the node never offers it a tool), and is
+/// never one that changes the lab. Bringing one back is a change to Endora, not a quiet one.
+#[test]
+fn a_furloughed_member_never_gets_a_turn_so_no_tool_reaches_it() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    let t = team(&hq);
+    let cy = hq.hire("Cy", 15, 2, 0).unwrap();
+    hq.store().furlough_member(cy, NOON).unwrap();
+    let task = endoras_task(&hq, t.goal, "Read the NAS fans");
+
+    for reason in [
+        WakeReason::Assigned,
+        WakeReason::Mentioned,
+        WakeReason::Downtime,
+    ] {
+        assert_eq!(
+            hq.wake(cy, Some(task), reason).unwrap(),
+            Receipt::Refused(Refused::Furloughed),
+            "{reason:?}"
+        );
+    }
+    let handed = hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal: t.goal,
+            project: None,
+            parent: None,
+            title: "Restart sonarr".to_owned(),
+            description: String::new(),
+            assignee: Some(cy),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    );
+    assert!(
+        matches!(handed, Err(EngineError::Refused(Refusal::Furloughed(_)))),
+        "{handed:?}"
+    );
+    for _ in 0..3 {
+        hq.tick().unwrap();
+        clock.forward(60_000);
+    }
+    assert!(
+        hq.store().runs().unwrap().iter().all(|r| r.member != cy),
+        "a furloughed member has no turn, so no token the node would offer a tool to"
+    );
+    assert!(!hq.changes_the_lab(cy).unwrap(), "and submits no branch");
+    let cy_now = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == cy)
+        .unwrap();
+    assert!(
+        cy_now.furloughed() && !cy_now.at_work(),
+        "and nothing brought it back"
+    );
+}
