@@ -189,21 +189,6 @@ pub trait ButlerModelConfigRepository {
     fn set(&self, config: &ButlerModelConfig) -> Result<(), RepositoryError>;
 }
 
-/// Persists the person's [`AutonomyEnvelope`] (ADR 0051).
-pub trait AutonomyEnvelopeRepository {
-    /// The stored envelope, or the default if never set.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError>;
-
-    /// Stores the envelope (replacing any previous one).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError>;
-}
-
 /// Persists per-capability **settings** — the values a skill needs to run (a model
 /// name, an API key, a URL), keyed by capability id then setting key (ADR 0054).
 /// Secrets live only here and are never echoed back to clients.
