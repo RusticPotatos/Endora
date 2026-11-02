@@ -1129,6 +1129,41 @@ seen or run:
   blind judging, and the same bar on its own 12 attempts. H2 counts as holding up only if it
   clears the bar on both sets; on one alone, it is recorded as fitted to that domain.
 
+### What the worker's gaps cost, measured before building (2 Nov)
+
+The owner, on the list of what Claude Code has and the worker lacks: build nothing unless
+measurement shows it is needed. A read-only pass over the 496 stored Haiku worker turns
+(10-19 to 11-02, 2,517 rounds; only 53% of Haiku runs have a transcript, and thinking is stored
+empty) counted, for each gap, the turns where it caused harm, not where its marker merely shows:
+
+| Gap | Turns affected | Harm | Verdict |
+|---|---|---|---|
+| Reply cap, 4,096 tokens | 7 of 463 runs since 10-29 (1.5%), 13 attempts | each hit fails the turn and HQ redoes it from zero; one cut a shell edit mid-call; one task failed nine times running | needed: rare, costly each time |
+| Prompt budget cuts | 43 turns (8.7%), 10-31 to 11-01; none since | the next turn spent 16% of its rounds re-reading (1–4% after a turn that ended itself); one task dropped after five | needed then; re-measure on today's budget |
+| Held-back tools called with guessed arguments | 44 of 134 calls (33%), against 0 of 38 for a tool up front | about 0.1 round a turn | small; deferred |
+| Results cut at 6 KB | 21 of 53 turns since 1 Nov 16:55 | about one round of re-reading a cut; whether a turn acted on what was cut cannot be told | not shown; instrument |
+| API failures, no retry | 0 model API failures on Haiku in 463 runs | — | not shown: no retry built |
+| Edits through the shell | 3 of 105 failed, each caught by the turn's own check | about two rounds | not shown: no edit tool built |
+| Twelve rounds | 21 turns; the next one usually finished | no work lost | weak; 30 stays as built |
+| Unrelated tools (chess, quiz) | 0 calls on work tasks | — | not shown |
+
+**Next, in this order, each set before it runs:**
+
+1. **Finish the held-out test** above, with every arm unchanged. Every arm also reports its cost
+   per verified task beside its completion.
+2. **Logging only.** The worker writes, against the run and task it already has: why the turn
+   ended (its own word, out of rounds, budget, reply cap, failure), each reply's stop reason and
+   output tokens, a cut result's full size, and a shell result flagged when it holds a traceback
+   or error under exit 0. No new subsystem. Accepted only if a test shows the model's requests
+   unchanged, byte for byte, with the same tools and the same endings; then a baseline is taken.
+3. **Reply cap 4,096 to 8,192**, alone, on a fresh blind set: control and treatment on the same
+   tasks, model and day, scored per task, not per turn (nine failures on one task are one task
+   badly hurt). Cap hits are rare (1.5% of turns), so twelve tasks cannot show the gain; the set
+   checks for harm instead: the treatment must verify no fewer tasks and use no more than 25% more
+   tokens or rounds per verified task. The gain is read from step 2's logs: cap failures should
+   go to none. Not raised to the model's maximum: output length is not progress.
+4. **Re-measure the budget cuts** from step 2's logs before any change to the budget.
+
 ### Parked proposal: Endora runtime simplification (owner, 1 Nov)
 
 **Status:** deferred until round 4's decision. Research and implementation are not authorised: no
