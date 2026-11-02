@@ -1208,6 +1208,23 @@ Step 3 above, fixed before the tasks exist:
   reply's stop reason on today's build.
 - These twelve become seen tasks; no tuning on them.
 
+**Superseded the same day, before any task ran (owner's decision).** The owner, on an
+engineering review: evidence in proportion to the consequence. A one-line constant, reversible in
+minutes, aimed at measured harm, does not earn 48 runs and 12 judges (about half a day). So
+`49677595` ships now (full gate: 2,234 tests, none failed) and is judged on real traffic:
+- **Window:** 25–50 finished tasks or 24 hours, whichever comes first; an early check for a
+  regression, not proof that rare cuts are gone.
+- **Keep it unless:** a turn still ends at the cap (look into each), tokens or rounds per finished
+  task rise more than 25%, or the share finished drops meaningfully. Failed and dropped tasks are
+  counted apart, so cheaper finishes cannot hide more failures. Inconclusive: keep it, let the
+  logs run, start no new experiment. A regression the change caused: back to 4,096 at once.
+- **Before, for comparison** (Haiku turns, 29 Oct to 2 Nov): 80 tasks done, 12 blocked,
+  7 dropped; 4.7 turns, 556k tokens and $0.021 per done task; 1.5% of turns cut at the cap.
+  Rounds a task were not stored before the logging release; the first window gives them.
+- Not done for this: no new instrumentation, no budget-cut work unless the logs show it again,
+  no cap above 8,192 without new evidence. The two blind task sets being picked are kept unused
+  for a decision that is costly to undo.
+
 ### What the worker's gaps cost, measured before building (2 Nov)
 
 The owner, on the list of what Claude Code has and the worker lacks: build nothing unless
