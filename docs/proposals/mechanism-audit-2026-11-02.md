@@ -206,5 +206,32 @@ ownership correction with the existing tests, then stop and reassess. The candid
 what a turn may do instead of sending a role. It touches the node's authorization, so it waits
 for the owner's word.
 
+## Why the worker could not read a log Claude Code could (2 Nov, read-only, ~15 minutes)
+
+The first divergence that decided a held-out result: on the drive-health investigation both of
+the worker's runs were blocked reading `stats-smartctl`'s log, where Claude Code ran `docker
+logs` and named the failing NVMe.
+- **Where:** not Portainer's permissions and not Endora's authorization. Every refusal (10, on
+  tasks 992, 998, 1022 and 1028) reads "Portainer did not answer (protocol)", and only for this
+  container; 272 other log reads in the window succeeded. The cause is in the capability's
+  Portainer client (`domains/capabilities/src/infrastructure/terminal.rs`): a log read always
+  asks Portainer for the last 100 lines, reads at most **64 KB** of the answer, and turns
+  anything longer into the error "protocol". `stats-smartctl` writes 1.3 KB lines; its last 100
+  lines are 134.8 KB (40 lines: 53.9 KB). The model's `lines` argument cannot help: it is
+  applied by the node afterwards, to what came back.
+- **Intentional?** No security boundary is involved. The 64 KB cap came with the handheld's
+  read view of the lab (15 Oct, ADR 0092/0093), before agents read logs through the same call.
+  Secrets are scrubbed after the read, and what a model may see is already cut by the contract
+  (`log_size`: lines and bytes by model). Every other Portainer answer is read up to 2 MB.
+- **Smallest correction:** read a log answer up to the same 2 MB as every other Portainer
+  answer, decode it, and let the existing cuts (the contract's for a model, the handheld's own)
+  decide what is shown; only past 2 MB say plainly that the log is too large. One limit, no new
+  tool or mechanism.
+- **How it would be verified:** a unit test in which a 100-line log over 64 KB is decoded and
+  returned cut to the contract's size, not refused; then live, one read of `stats-smartctl`
+  succeeds, while a read of Endora's own container and of an unknown name stay refused as now.
+  Also check that the handheld's log view still cuts what it shows.
+- Not started, as asked.
+
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
