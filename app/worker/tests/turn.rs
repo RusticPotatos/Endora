@@ -1963,7 +1963,7 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
         "only what the relay meters, and no effort when HQ names none"
     );
     assert_eq!(body["model"], "claude-sonnet-5-5");
-    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["max_tokens"], 8192);
     // The system as one block, a cache breakpoint at its end (ADR 0142, amended 2026-10-31).
     assert!(
         body["system"][0]["text"]

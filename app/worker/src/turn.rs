@@ -42,8 +42,10 @@ const ASK_AT_MOST: usize = 1200;
 const NAMES_AT_MOST: usize = 12;
 
 /// The most a cloud model may say in one round. The relay lowers it to what the turn can
-/// still pay for; a round's answer is a few sentences and tool calls, far less than this.
-const MOST_A_REPLY: u32 = 4096;
+/// still pay for; a round's answer is a few sentences and tool calls, far less than this, but
+/// a whole file written in one call can pass 4,096 (1.5% of turns, 29 Oct to 2 Nov), and a
+/// reply cut there fails the turn.
+const MOST_A_REPLY: u32 = 8192;
 
 /// The most a house model may say in one round: it costs nothing, and a reasoning model
 /// thinking over a chess move overran the cloud's limit (8 of 441 house turns, 23-26 Oct, each
