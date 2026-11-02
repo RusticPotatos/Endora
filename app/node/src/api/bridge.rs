@@ -108,17 +108,10 @@ pub(super) fn catalog(state: &AppState) -> Vec<Bridged> {
         .collect()
 }
 
-/// The tools a turn is offered: what its role may use, and what its model may see, less, when it
-/// thinks on the house's own model on the NAS, whatever can end on the owner's desk (ADR 0131,
-/// amended).
+/// The tools a turn is offered: what its model may see, less, when it thinks on the house's own
+/// model on the NAS, whatever can end on the owner's desk (ADR 0131, amended).
 pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
-    bridge::offered(
-        catalog(state),
-        bridge::Asker {
-            role: &turn.role,
-            thinks: turn.thinks(),
-        },
-    )
+    bridge::offered(catalog(state), turn.thinks())
 }
 
 /// Why a turn on the NAS's own model is refused a tool it names that can end on the owner's
@@ -166,12 +159,12 @@ pub(super) fn call(
     if let Some(why) = turn.thinks().keeps_from(tool) {
         return Err((StatusCode::FORBIDDEN, kept_from_the_bridge(&tool.name, why)));
     }
-    if !bridge::may_see(tool.tier, &tool.id, &turn.role, turn.cloud) {
+    if !bridge::may_see(tool.tier) {
         return Err((StatusCode::FORBIDDEN, confidential(&tool.name)));
     }
     let store = BridgeStore::new(state.store.db()).map_err(|_| broken())?;
     let marked = store.marked(turn.run).map_err(|_| broken())?;
-    let way = bridge::way(tool, &turn.role, marked).map_err(|why| (StatusCode::FORBIDDEN, why))?;
+    let way = bridge::way(tool, marked).map_err(|why| (StatusCode::FORBIDDEN, why))?;
     let why = one_line(args["why"].as_str().unwrap_or(""));
     // What the member says of the call, and not the tool's arguments: the reason, and which of
     // its task's criteria it serves.
@@ -250,9 +243,7 @@ pub(super) fn call(
             };
             let now = state.clock.now().unix_millis();
             let id = store
-                .add_approval(
-                    &tool.id, &tool.name, &given, &why, &member, &turn.role, turn.run, now,
-                )
+                .add_approval(&tool.id, &tool.name, &given, &why, &member, turn.run, now)
                 .map_err(|_| broken())?;
             let text = asked_as(&member, &tool.name, &given, &why);
             // HQ holds the task's criteria: it reads what the call serves, refuses one that
@@ -504,16 +495,12 @@ pub(super) fn decide(
             "that approval was already decided".to_owned(),
         ));
     }
-    // The stance and the member's role, again, now: what is off now does not run.
+    // The stance, again, now: what is off now does not run.
     let now_offered = catalog(state).into_iter().find(|b| b.id == approval.tool);
     let ran = match now_offered {
         None => Err(format!(
             "{} is switched off or no longer offered, so it was not run",
             approval.name
-        )),
-        Some(tool) if !bridge::may(&approval.role, tool.kind) => Err(format!(
-            "a {} may not run {}, so it was not run",
-            approval.role, approval.name
         )),
         Some(tool) => run(state, &tool.id, &args)
             .map(|text| marked_if(&tool, text))
@@ -555,18 +542,18 @@ mod tests {
     /// HQ knowing one turn (token `good`, run 7, Linus's, in `role`, on a cloud model when
     /// `cloud`, else on the owner's Mac, which is offered the bridge), taking approvals as desk
     /// item 40.
-    fn hq(role: &'static str, cloud: bool) -> (String, Seen) {
-        hq_thinking(role, cloud, if cloud { "claude-haiku-5-5" } else { "mac" })
+    fn hq(cloud: bool) -> (String, Seen) {
+        hq_thinking(cloud, if cloud { "claude-haiku-5-5" } else { "mac" })
     }
 
     /// The same, the turn thinking on `brain` as HQ names it: `local` is the house's own model
     /// on the NAS (ADR 0131), which is kept from the tools that can end on the owner's desk. An
     /// approval is taken only when it says which criterion it serves, as HQ takes one (ADR 0124).
-    fn hq_thinking(role: &'static str, cloud: bool, brain: &'static str) -> (String, Seen) {
+    fn hq_thinking(cloud: bool, brain: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| {
             let reply = match path {
                 "/v1/team/turn" if body.contains("\"good\"") => {
-                    json!({ "run": 7, "member": "Linus", "role": role, "left": 40_000,
+                    json!({ "run": 7, "member": "Linus", "left": 40_000,
                             "cloud": cloud, "brain": brain })
                 }
                 "/v1/team/turn" => {
@@ -701,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_catalog_is_the_contracts_and_every_eligible_capability_with_its_kind() {
-        let (hq_url, _) = hq("developer", false);
+        let (hq_url, _) = hq(false);
         let (sonarr_url, _) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let listed = tools(&state).await;
@@ -753,40 +740,25 @@ mod tests {
         );
     }
 
+    /// Every member reads and acts alike (ADR 0142, one team), at home and on Claude, where
+    /// Confidential is open too (ADR 0141): a title HQ once sent decides nothing.
     #[tokio::test]
-    async fn a_reviewer_reads_only_and_a_cloud_turn_sees_confidential_too() {
-        let (hq_url, _) = hq("reviewer", false);
+    async fn every_turn_at_home_or_on_claude_reads_the_queues_and_is_offered_the_acts() {
         let (sonarr_url, _) = sonarr();
-        let state = bridged(&hq_url, &sonarr_url);
-        let listed = tools(&state).await;
-        assert!(listed.iter().any(|(n, _)| n == "sonarr_queue"));
-        assert!(
-            listed
-                .iter()
-                .all(|(n, k)| k != "act" || n == "restart_container"),
-            "a reviewer is offered no bridged act: {listed:?}"
-        );
-        let (status, said) = send(
-            &state,
-            "POST",
-            "/team-relay/contracts/sonarr_retry_import",
-            r#"{"why":"stuck"}"#,
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-
-        // A turn on a cloud model (as HQ will say one is): Confidential is open to it too
-        // (ADR 0141).
-        let (hq_url, _) = hq("developer", true);
-        let state = bridged(&hq_url, &sonarr_url);
-        let listed = tools(&state).await;
-        assert!(
-            listed.iter().any(|(n, _)| n == "sonarr_queue"),
-            "{listed:?}"
-        );
-        assert!(listed.iter().any(|(n, _)| n == "weather"), "{listed:?}");
-        let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::OK, "{said}");
+        for cloud in [false, true] {
+            let (hq_url, _) = hq(cloud);
+            let state = bridged(&hq_url, &sonarr_url);
+            let listed = tools(&state).await;
+            for name in ["sonarr_queue", "weather", "sonarr_retry_import"] {
+                assert!(
+                    listed.iter().any(|(n, _)| n == name),
+                    "{name}, cloud {cloud}: {listed:?}"
+                );
+            }
+            let (status, said) =
+                send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+        }
     }
 
     #[test]
@@ -800,49 +772,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cloud_turn_reads_the_download_queues_and_acts_as_its_role_may() {
-        // ADR 0141: Confidential is open to Claude; what a role may do is unchanged.
-        let (sonarr_url, _) = sonarr();
-        let (hq_url, _) = hq("lead", true);
-        let state = bridged(&hq_url, &sonarr_url);
-        let listed = tools(&state).await;
-        assert!(
-            listed.iter().any(|(n, _)| n == "sonarr_queue"),
-            "{listed:?}"
-        );
-        assert!(
-            listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
-            "a lead acts on the queue on Claude as at home: {listed:?}"
-        );
-        let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-
-        let (hq_url, _) = hq("reviewer", true);
-        let state = bridged(&hq_url, &sonarr_url);
-        assert!(
-            tools(&state).await.iter().any(|(n, _)| n == "sonarr_queue"),
-            "a cloud reviewer reads the queue"
-        );
-        let (status, _) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
-        assert_eq!(status, StatusCode::OK);
-
-        // The CEO on Claude reads the queue, and acts on nothing (ADR 0120).
-        let (hq_url, _) = hq("ceo", true);
-        let state = bridged(&hq_url, &sonarr_url);
-        let listed = tools(&state).await;
-        assert!(
-            listed.iter().any(|(n, _)| n == "sonarr_queue"),
-            "{listed:?}"
-        );
-        assert!(
-            !listed.iter().any(|(n, _)| n == "sonarr_retry_import"),
-            "and is offered no act: {listed:?}"
-        );
-    }
-
-    #[tokio::test]
     async fn a_read_runs_through_endoras_own_path_and_keeps_a_strangers_mark() {
-        let (hq_url, _) = hq("developer", false);
+        let (hq_url, _) = hq(false);
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let (status, said) = send(&state, "POST", "/team-relay/contracts/sonarr_queue", "{}").await;
@@ -865,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_act_that_is_on_runs_within_its_limit_and_the_owner_is_told() {
-        let (hq_url, to_hq) = hq("developer", false);
+        let (hq_url, to_hq) = hq(false);
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let retry = |why: &str| json!({ "why": why }).to_string();
@@ -936,7 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_act_that_asks_waits_on_the_desk_and_runs_exactly_what_was_approved() {
-        let (hq_url, to_hq) = hq("developer", false);
+        let (hq_url, to_hq) = hq(false);
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let (status, said) = send(
@@ -1020,7 +951,7 @@ mod tests {
 
     #[tokio::test]
     async fn declined_switched_off_or_a_day_old_an_approval_never_runs() {
-        let (hq_url, to_hq) = hq("developer", false);
+        let (hq_url, to_hq) = hq(false);
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let store = BridgeStore::new(state.store.db()).unwrap();
@@ -1033,7 +964,6 @@ mod tests {
                     &json!({ "item": 102 }),
                     "stuck",
                     "Linus",
-                    "developer",
                     7,
                     at,
                 )
@@ -1097,7 +1027,7 @@ mod tests {
 
     #[tokio::test]
     async fn after_a_strangers_words_an_act_given_arguments_asks_the_owner() {
-        let (hq_url, to_hq) = hq("developer", false);
+        let (hq_url, to_hq) = hq(false);
         let (sonarr_url, _) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         // The owner lets the removal run on its own; then the turn reads the queue's titles.
@@ -1131,16 +1061,13 @@ mod tests {
     #[tokio::test]
     async fn a_turn_on_the_nas_model_keeps_its_trusted_reads_and_is_refused_what_can_end_on_the_desk()
      {
-        let (hq_url, to_hq) = hq_thinking("lead", false, "local");
+        let (hq_url, to_hq) = hq_thinking(false, "local");
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let listed = tools(&state).await;
         let names: Vec<&str> = listed.iter().map(|(n, _)| n.as_str()).collect();
         // The lab's contracts are not the bridge, and stay.
-        for contract in endora_capabilities::contracts::all()
-            .iter()
-            .filter(|c| c.offered_to("lead", false))
-        {
+        for contract in &endora_capabilities::contracts::all() {
             assert!(
                 names.contains(&contract.name),
                 "{}: {names:?}",
@@ -1220,7 +1147,7 @@ mod tests {
         let (hq_url, _) = fake(Arc::new(|path, body| {
             let reply = match path {
                 "/v1/team/turn" if body.contains("\"good\"") => json!({ "run": 7,
-                    "member": "Linus", "role": "lead", "left": 40_000, "cloud": false }),
+                    "member": "Linus", "left": 40_000, "cloud": false }),
                 _ => json!({ "ok": true }),
             };
             (200, "application/json", reply.to_string())
@@ -1239,7 +1166,7 @@ mod tests {
     #[tokio::test]
     async fn an_act_that_asks_without_saying_what_it_serves_is_refused_and_never_reaches_the_desk()
     {
-        let (hq_url, to_hq) = hq("developer", false);
+        let (hq_url, to_hq) = hq(false);
         let (sonarr_url, to_sonarr) = sonarr();
         let state = bridged(&hq_url, &sonarr_url);
         let ask = |serves: serde_json::Value| {

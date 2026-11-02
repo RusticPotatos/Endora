@@ -243,29 +243,27 @@ pub(super) async fn hq_decide(
 #[derive(Deserialize)]
 pub(super) struct HqHire {
     name: String,
-    role: String,
     /// Its model (ADR 0142); the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
 }
 
-/// The owner hires a member (ADR 0115): HQ decides the rules (one CEO, a brain the role may
-/// use in each slot); the node records who joined.
+/// The owner hires a member (ADR 0115, 0142): HQ refuses a model it does not have; the node
+/// records who joined.
 pub(super) async fn hq_hire(State(state): State<AppState>, Json(req): Json<HqHire>) -> Answer {
     let answer = ask(
         &state,
         "/v1/members".to_owned(),
         Some(json!({
-            "name": req.name, "role": req.role, "brain": req.brain
+            "name": req.name, "brain": req.brain
         })),
     )
     .await?;
     record(
         &state,
         &format!(
-            "you hired {} as {} (member {})",
+            "you hired {} (member {})",
             req.name.trim(),
-            req.role.trim(),
             answer.0["member"]
         ),
     );

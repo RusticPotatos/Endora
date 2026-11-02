@@ -13,7 +13,7 @@ use crate::application::event_ports::EventStore;
 use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::routines::{HOUR_MS, MINUTE_MS};
 use crate::domain::{
-    CheckBackStatus, GoalId, MemberId, Priority, Receipt, Refusal, Refused, Role, RoutineId, RunId,
+    CheckBackStatus, GoalId, MemberId, Priority, Receipt, Refusal, Refused, RoutineId, RunId,
     RunStatus, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -50,8 +50,8 @@ fn office(clock: &Hands) -> (Hq<'_>, Team) {
         clock,
         Settings::default(),
     );
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 0).unwrap();
     let goal = hq
         .set_goal(
             "Keep the home lab healthy",

@@ -12,7 +12,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::DOLLAR;
-use crate::domain::{Brain, GoalId, MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{Brain, GoalId, MemberId, Priority, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -82,8 +82,8 @@ fn a_member_is_its_model_whatever_woke_it() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let g = goal(&hq);
-    let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
-    let kit = hq.hire("Kit", Role::Developer, 10, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 10, 2, 0).unwrap();
+    let kit = hq.hire("Kit", 10, 2, 0).unwrap();
     assert_eq!(hq.set_model(bo, "local").unwrap().brain, Brain::Local);
     assert_eq!(hq.set_model(kit, "sonnet").unwrap().brain, Brain::Sonnet);
     let asked = task(&hq, g, "A question for Bo");
@@ -122,7 +122,7 @@ fn members_are_ranked_by_their_model() {
     assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let rae = hq.hire("Rae", Role::Developer, 10, 2, 0).unwrap();
+    let rae = hq.hire("Rae", 10, 2, 0).unwrap();
     hq.set_brain(rae, "mac").unwrap();
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["members"][0]["rank"], 5, "{}", snap["members"][0]);
@@ -133,7 +133,7 @@ fn members_are_ranked_by_their_model() {
 fn any_member_may_be_any_model() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let mara = hq.hire("Mara", Role::Developer, 10, 2, 0).unwrap();
+    let mara = hq.hire("Mara", 10, 2, 0).unwrap();
     assert_eq!(hq.set_model(mara, "opus").unwrap().brain, Brain::Opus);
     assert!(hq.set_model(mara, "gpt").is_err(), "not a model Endora has");
 }
@@ -168,7 +168,7 @@ fn names_are_the_eight_then_generated_and_never_shared() {
 fn a_member_hired_without_a_name_is_given_one() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let first = hq.hire("", Role::Developer, 10, 2, 0).unwrap();
+    let first = hq.hire("", 10, 2, 0).unwrap();
     let names: Vec<String> = hq
         .store()
         .members()
@@ -191,16 +191,16 @@ struct Five {
 
 fn five(hq: &Hq<'_>) -> Five {
     let g = goal(hq);
-    let seat = |name: &str, model: &str, role: Role| {
-        let id = hq.hire(name, role, 10, 2, 0).unwrap();
+    let seat = |name: &str, model: &str| {
+        let id = hq.hire(name, 10, 2, 0).unwrap();
         hq.set_brain(id, model).unwrap();
         id
     };
-    let mara = seat("Mara", "opus", Role::Ceo);
-    seat("Kit", "sonnet", Role::Lead);
-    let ada = seat("Ada", "haiku", Role::Lead);
-    let rae = seat("Rae", "mac", Role::Developer);
-    let bo = seat("Bo", "local", Role::Developer);
+    let mara = seat("Mara", "opus");
+    seat("Kit", "sonnet");
+    let ada = seat("Ada", "haiku");
+    let rae = seat("Rae", "mac");
+    let bo = seat("Bo", "local");
     let loop_ = hq
         .add_project(g, "ansible-nas", "the fork's work", mara, None)
         .unwrap();
@@ -904,15 +904,15 @@ fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
 /// Today's team of eight, with roles, routines and work, as production has it.
 fn the_old_team(hq: &Hq<'_>) -> (GoalId, TaskId) {
     let g = goal(hq);
-    let hired = |name: &str, role: Role| hq.hire(name, role, 10, 2, 0).unwrap();
-    let mara = hired("Mara", Role::Ceo);
-    let kit = hired("Kit", Role::Lead);
-    let ada = hired("Ada", Role::Lead);
-    hired("Rae", Role::Developer);
-    hired("Bo", Role::Developer);
-    let cy = hired("Cy", Role::Researcher);
-    hired("Dee", Role::Reviewer);
-    hired("Zed", Role::Developer);
+    let hired = |name: &str| hq.hire(name, 10, 2, 0).unwrap();
+    let mara = hired("Mara");
+    let kit = hired("Kit");
+    let ada = hired("Ada");
+    hired("Rae");
+    hired("Bo");
+    let cy = hired("Cy");
+    hired("Dee");
+    hired("Zed");
     let routine = |title: &str, to: MemberId| {
         hq.add_routine(
             Author::Owner,
@@ -956,7 +956,6 @@ fn the_team_becomes_one_team_of_five_ranked_models() {
     ] {
         let m = by(name);
         assert_eq!(m.brain, brain, "{name}");
-        assert_eq!(m.role, Role::Developer, "{name}: no titles in the code");
         assert!(m.at_work(), "{name}");
     }
     for name in ["Cy", "Dee", "Zed"] {
@@ -1200,7 +1199,7 @@ fn a_member_s_model_survives_a_restart() {
             &clock,
             Settings::default(),
         );
-        let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
+        let bo = hq.hire("Bo", 10, 2, 0).unwrap();
         hq.set_brain(bo, "local").unwrap();
         bo
     };

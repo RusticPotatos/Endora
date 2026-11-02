@@ -16,7 +16,7 @@ use super::ports::{Run, TeamStore};
 use crate::application::desk_ports::DeskStore;
 use crate::domain::guards::{Stopped, THRESHOLDS};
 use crate::domain::turns;
-use crate::domain::{MemberId, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
+use crate::domain::{MemberId, Receipt, Refused, RunStatus, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 const MINUTE: i64 = 60_000;
@@ -186,7 +186,7 @@ fn ten_turns_in_a_row_that_show_nothing_wait_for_tomorrow_and_start_when_the_day
 fn one_members_day_is_its_own() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
-    let dee = hq.hire("Dee", Role::Developer, 40, 2, 4).unwrap();
+    let dee = hq.hire("Dee", 40, 2, 4).unwrap();
     for _ in 0..THRESHOLDS.free_turns_wasted {
         one_turn(&hq, linus, task, false);
         later(&clock, 2 * MINUTE);
@@ -212,7 +212,7 @@ fn forty_turns_in_ten_minutes_stop_the_team_and_the_forty_first_never_starts() {
         .members()
         .unwrap()
         .into_iter()
-        .find(|m| m.role == Role::Lead)
+        .find(|m| m.name == "Ada")
         .unwrap()
         .id;
     let tried = runaway(&hq, &clock, &[ada, linus], task, 100);
@@ -356,8 +356,8 @@ fn a_scripted_team_is_never_stopped_by_the_wire_and_is_not_held_to_a_day_of_turn
                 ..Settings::default()
             },
         );
-        let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-        let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+        let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+        let linus = hq.hire("Linus", 40, 2, 4).unwrap();
         let goal = hq
             .set_goal(
                 "Keep the home lab healthy",
@@ -400,7 +400,7 @@ fn a_scenarios_turn_is_bounded_by_its_world_not_by_its_players_day_of_free_turns
     let goal = hq
         .set_goal("Holodeck", "", super::engine::Author::Owner)
         .unwrap();
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
     let project = hq.add_project(goal, "Holodeck", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
         .unwrap();

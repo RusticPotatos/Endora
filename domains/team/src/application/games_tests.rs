@@ -15,7 +15,7 @@ use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::application::event_ports::EventStore;
 use crate::domain::chess::{self, Status};
-use crate::domain::{MemberId, Role, RunStatus, WakeReason};
+use crate::domain::{MemberId, RunStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -53,10 +53,10 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-    let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 40, 2, 4).unwrap();
+    let cy = hq.hire("Cy", 20, 1, 1).unwrap();
+    let dee = hq.hire("Dee", 20, 1, 2).unwrap();
     Team { ada, bo, cy, dee }
 }
 
@@ -173,20 +173,15 @@ fn the_snapshot_carries_chess_and_no_tracked_ping_pong_or_pool() {
 // ---- chess --------------------------------------------------------------------------------
 
 #[test]
-fn every_role_is_offered_the_chess_tool() {
-    for role in [
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
+fn every_member_is_offered_the_chess_tool() {
+    {
         let all = tools();
         let tool = all
             .as_array()
             .unwrap()
             .iter()
             .find(|t| t["name"] == "chess")
-            .unwrap_or_else(|| panic!("{role:?} lacks the chess tool"));
+            .expect("a member is offered the chess tool");
         let actions = tool["inputSchema"]["properties"]["action"]["enum"].clone();
         assert_eq!(actions, json!(["board", "move", "challenge"]));
     }

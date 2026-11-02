@@ -8,7 +8,7 @@ use crate::application::desk_ports::DeskStore;
 use super::engine::{Author, Engine, STRANDED_AFTER_MS, Settings};
 use super::guard_ports::GuardStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
-use crate::domain::{MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{MemberId, Priority, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 pub(super) struct Hands(pub(super) AtomicI64);
@@ -39,9 +39,9 @@ pub(super) fn team_over(
 ) -> (Hq<'_>, MemberId, TaskId) {
     let hq = Engine::new(store, SimulatedRunner::new(4), clock, Settings::default());
     if lead {
-        hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+        hq.hire("Ada", 25, 2, 0).unwrap();
     }
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();

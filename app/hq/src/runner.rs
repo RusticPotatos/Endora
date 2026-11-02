@@ -140,7 +140,6 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "lease": handed.lease,
             "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
-            "role": member.as_ref().map_or("", |m| m.role.name()),
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),

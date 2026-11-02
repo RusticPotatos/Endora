@@ -928,3 +928,37 @@ items (both arms' starts add up, finished ones are let go), `{"close": true}` en
 `GET /v1/round` says what it holds. `scripts/experiment.py start --yes` sets it with the tasks it
 makes. Scenario: `features/the-office.feature` ("Downtime waits while a round of the experiment
 is under way").
+
+## Amended 2026-11-02: roles retired
+
+The cut-over made every member a plain one and a title a name only, but the code still carried
+`Role` (CEO, lead, developer, researcher, reviewer) and decided by it in eight places. Live, every
+member at work was a developer and the two holding other roles were on furlough, so none of those
+decisions separated anyone. They are gone, and with them the type, the member's field, the hire
+form's title and the office's seating by title:
+
+- **What a member may do with the bridge's tools and the node's contracts** no longer reads a
+  role (`bridge::PROFILES`, `Contract::offered_to`). Every protection that refused anything live
+  stays and keeps its tests: a tool the owner switched off is never run, an approval re-checks the
+  stance, Restricted is never offered, a turn on the NAS's own model is kept from what can end on
+  the owner's desk, an act given arguments asks after a stranger's words, Endora's own containers
+  are refused, HQ's per-task `only` and `never` lists hold, and a member not at work (`wing:
+  false`) submits no branch.
+- **What models a turn may call** follows its brain alone (`relay::may_use`, `most_a_turn`):
+  Sonnet or Haiku for every member, Opus and Sonnet (a dollar a turn) for the member who thinks
+  with Opus, no Claude for one on DeepSeek, nothing for a brain HQ did not name.
+- **A recheck** of a kept branch may be asked by any member with reach of the task.
+- **Hiring** takes a name and a model; the share is `A_MEMBERS_SHARE` (40). A title an older
+  console still sends is ignored. The `role` columns of `members` and the node's
+  `team_approvals` are kept and written as `developer`, so a build from before (a rollback) reads
+  every row as it did; nothing reads them now. HQ no longer says a turn's role to the node or the
+  runner.
+- **What was given up:** a read-only member (the old researcher or reviewer). No member at work
+  was one; a furloughed member recalled now works as any other. Read-only work is asked for in the
+  task's words and held by HQ's `only` and `never` lists, which bind whoever takes the task.
+- **Found on the way:** the console's New project form offered as leads only members titled lead
+  or CEO, which since the cut-over was nobody. It now offers every member at work.
+
+Scenarios: `domains/capabilities/features/tools-that-fit-the-turn.feature` (every member is
+offered the same, by where it thinks); the team's scenarios hire by the old titles only to set a
+share.

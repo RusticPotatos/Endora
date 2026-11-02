@@ -7,8 +7,8 @@ use crate::domain::{Criterion, Label, Ref};
 use crate::domain::{Evidence, ProjectId, ProjectStatus};
 use crate::domain::{Exit, Goal, Liveness, Project};
 use crate::domain::{
-    GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
-    RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
+    GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 
 /// A store that failed.
@@ -272,14 +272,7 @@ pub trait TeamStore:
     + super::office_ports::OfficeStore
 {
     /// Adds a member.
-    fn add_member(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Stored<MemberId>;
+    fn add_member(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Stored<MemberId>;
     /// Every member, in the order they joined.
     fn members(&self) -> Stored<Vec<Member>>;
     /// Pauses or resumes a member.
@@ -296,8 +289,6 @@ pub trait TeamStore:
     fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()>;
     /// Renames a member.
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
-    /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
-    fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 
     /// Adds a goal.
     fn add_goal(

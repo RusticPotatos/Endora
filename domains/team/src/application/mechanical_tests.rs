@@ -9,7 +9,7 @@ use super::engine::{Author, Called, Engine, Settings, Submission};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::money::DOLLAR;
 use crate::domain::{
-    Criterion, GoalId, MemberId, Priority, ProjectId, Role, TaskId, TaskStatus, WakeReason,
+    Criterion, GoalId, MemberId, Priority, ProjectId, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -48,16 +48,16 @@ fn team(hq: &Hq<'_>) -> Team {
     let goal = hq
         .set_goal("Keep the fork tidy", "you asked", Author::Owner)
         .unwrap();
-    let seat = |name: &str, model: &str, role: Role| {
-        let id = hq.hire(name, role, 10, 2, 0).unwrap();
+    let seat = |name: &str, model: &str| {
+        let id = hq.hire(name, 10, 2, 0).unwrap();
         hq.set_brain(id, model).unwrap();
         id
     };
-    let mara = seat("Mara", "opus", Role::Ceo);
-    seat("Kit", "sonnet", Role::Lead);
-    seat("Ada", "haiku", Role::Lead);
-    let rae = seat("Rae", "mac", Role::Developer);
-    let bo = seat("Bo", "local", Role::Developer);
+    let mara = seat("Mara", "opus");
+    seat("Kit", "sonnet");
+    seat("Ada", "haiku");
+    let rae = seat("Rae", "mac");
+    let bo = seat("Bo", "local");
     let loop_ = hq
         .add_project(goal, "ansible-nas", "the fork's work", mara, None)
         .unwrap();

@@ -11,8 +11,8 @@ use super::ports::{Cited, Clock, LedgerRow, NewTask, Post, Run, TeamStore, Threa
 use super::replay::{Moment, Record, What, replay, replay_all};
 use crate::application::event_ports::EventStore;
 use crate::domain::{
-    Brain, CallReceipt, Event, Label, Member, MemberId, Priority, Receipt, Ref, Role, RunId,
-    RunStatus, TaskId, TaskStatus, WakeId, WakeReason,
+    Brain, CallReceipt, Event, Label, Member, MemberId, Priority, Receipt, Ref, RunId, RunStatus,
+    TaskId, TaskStatus, WakeId, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -24,7 +24,6 @@ fn kit() -> Member {
     Member {
         id: MemberId(1),
         name: "Kit".to_owned(),
-        role: Role::Developer,
         share_percent: 40,
         slots: 2,
         look: 3,
@@ -318,7 +317,7 @@ fn the_screen_is_given_everything_as_written_confidential_excerpts_too() {
     let rows = tagged();
     let shown = replay(&rows.record(Some(NOON - 3_600 * SECOND)), &turn()).shown();
     assert_eq!(shown["member"]["name"], "Kit");
-    assert_eq!(shown["member"]["role"], "developer");
+    assert!(shown["member"].get("role").is_none(), "no title is shown");
     assert_eq!(shown["member"]["brain"], "claude-haiku-5-5");
     assert_eq!(shown["reason"], "assigned");
     assert_eq!(shown["label"], "advanced");
@@ -503,8 +502,8 @@ fn office(clock: &Hands) -> (Hq<'_>, TaskId) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "a test", Author::Owner)
         .unwrap();

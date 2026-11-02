@@ -7,8 +7,8 @@
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::{
-    Brain, Member, MemberId, Millis, ProjectId, ProjectStatus, Refusal, Role, Task, TaskId,
-    TaskStatus, WakeReason,
+    Brain, Member, MemberId, Millis, ProjectId, ProjectStatus, Refusal, Task, TaskId, TaskStatus,
+    WakeReason,
 };
 
 /// The setting that keeps, by item, the reviewers passed over on its review (D26).
@@ -124,7 +124,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
             {
                 self.store.set_brain(member.id, *model)?;
-                self.store.set_role(member.id, Role::Developer)?;
                 seated.push(member.name.clone());
                 continue;
             }

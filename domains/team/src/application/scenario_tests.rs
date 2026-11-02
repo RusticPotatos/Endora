@@ -13,7 +13,7 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools_in};
 use crate::application::receipt_ports::ReceiptStore;
-use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{MemberId, ProjectId, Refusal, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -40,8 +40,8 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// A lead, a developer on the house's model, and a Holodeck project that gives its work the
 /// scenario tool alone.
 fn holodeck(hq: &Hq<'_>) -> (MemberId, ProjectId) {
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq.set_goal("Holodeck", "", Author::Owner).unwrap();
     let project = hq.add_project(goal, "Chess", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
@@ -190,8 +190,8 @@ fn a_scenario_starts_only_in_a_project_that_gives_it_the_tool_alone() {
 /// Three members on the house's models, and a Holodeck project for scenarios.
 fn crew(hq: &Hq<'_>) -> ([MemberId; 3], ProjectId) {
     let (dev, project) = holodeck(hq);
-    let zed = hq.hire("Zed", Role::Developer, 40, 2, 4).unwrap();
-    let rae = hq.hire("Rae", Role::Developer, 40, 2, 4).unwrap();
+    let zed = hq.hire("Zed", 40, 2, 4).unwrap();
+    let rae = hq.hire("Rae", 40, 2, 4).unwrap();
     ([dev, zed, rae], project)
 }
 

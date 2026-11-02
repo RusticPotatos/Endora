@@ -10,7 +10,7 @@ use super::engine::{Author, Called, Engine, Settings};
 use super::history_ports::HistoryStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::history::{DAY_MS, KEPT_DAYS, TRANSCRIPT_MOST};
-use crate::domain::{GoalId, MemberId, Priority, Role, TaskId};
+use crate::domain::{GoalId, MemberId, Priority, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use endora_kernel::tier::Tier;
 
@@ -43,12 +43,12 @@ pub(super) fn engine(clock: &Hands) -> Hq<'_> {
 /// Mara the CEO, Ada the lead and Linus the developer under her, all on the house's model.
 fn team(hq: &Hq<'_>) -> Team {
     {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let linus = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -78,8 +78,8 @@ fn retained_task_questions_are_owner_readable_in_bounded_pages_without_peer_enab
     use crate::domain::consult::{Consult, Status};
     let clock = Hands(AtomicI64::new(NOON));
     let hq = engine(&clock);
-    let requester = hq.hire("Member 1", Role::Developer, 40, 2, 0).unwrap();
-    let expert = hq.hire("Member 2", Role::Researcher, 30, 2, 0).unwrap();
+    let requester = hq.hire("Member 1", 40, 2, 0).unwrap();
+    let expert = hq.hire("Member 2", 30, 2, 0).unwrap();
     let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
     let task = task_for(&hq, goal, requester, "Fixture task");
     hq.tick().unwrap();
@@ -461,9 +461,7 @@ fn the_replay_of_a_turn_carries_its_conversation_while_it_is_kept_and_not_after(
 #[test]
 fn the_history_tables_are_made_again_without_changing_a_row() {
     let store = SqliteTeamStore::in_memory().unwrap();
-    store
-        .add_member("Linus", Role::Developer, 40, 2, 4)
-        .unwrap();
+    store.add_member("Linus", 40, 2, 4).unwrap();
     let before = store.members().unwrap();
     // Opening the store again over the same file runs the schema again; here the schema is the
     // same text, so run what a second start would.

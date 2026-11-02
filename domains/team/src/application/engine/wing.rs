@@ -9,8 +9,8 @@ use super::{Author, Done, Engine, EngineError};
 use crate::application::ports::{Clock, DeskItem, Run, TeamStore, WorkerAdapter};
 use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
-    Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId, Refusal, Role, RunId,
-    TaskId, TaskStatus, WakeReason,
+    A_MEMBERS_SHARE, Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId,
+    Refusal, RunId, TaskId, TaskStatus, WakeReason,
 };
 
 /// The most a document holds: the diff shown (64 KB) and its stat.
@@ -309,7 +309,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(branch)
     }
 
-    /// A lead or a developer asks for the newest kept branch of a piece of work to be checked
+    /// A member asks for the newest kept branch of a piece of work to be checked
     /// again (ADR 0115, amended), without submitting it again: a check queued for the branch the
     /// node still keeps, with no sandbox and no new submission, whose result comes back as the
     /// first's did (a receipt, a document, the task's gate). A check was queued only by
@@ -318,17 +318,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// One at a time: refused while a check of that branch waits or runs. Returns the check.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYourToRecheck`] for the
-    /// tester or the CEO; [`EngineError::Unknown`] for work with no submitted branch;
-    /// [`Refusal::CheckPending`].
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`EngineError::Unknown`] for work with
+    /// no submitted branch; [`Refusal::CheckPending`].
     pub fn recheck_in(&self, run: RunId, task: TaskId, why: &str) -> Done<i64> {
         let _held = self.held();
         let turn = self.running(run)?;
         self.reach(&turn, task, false)?;
         let member = self.member(turn.member)?;
-        if !matches!(member.role, Role::Lead | Role::Developer) {
-            return Err(EngineError::Refused(Refusal::NotYourToRecheck));
-        }
         let work = self.work_of(task)?;
         let Some(branch) = self
             .store
@@ -875,37 +871,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- hiring (ADR 0115) ---------------------------------------------------------------
 
-    /// The owner hires a member: a name, a title (a name only, ADR 0142) and its model. Nobody
-    /// reports to anyone. Said in the feed as the owner's.
+    /// The owner hires a member: a name and its model (ADR 0142). Nobody reports to anyone. Said in the feed as the owner's.
     ///
     /// # Errors
     /// [`Refusal::NotAName`], [`Refusal::NotABrain`]; a store failure.
-    pub fn hire_by_owner(&self, name: &str, role: Role, brain: &str) -> Done<MemberId> {
-        self.hire_by_owner_with(name, role, Some(brain))
+    pub fn hire_by_owner(&self, name: &str, brain: &str) -> Done<MemberId> {
+        self.hire_by_owner_with(name, Some(brain))
     }
 
     /// As [`Self::hire_by_owner`], the brain named or not: one not named is the house's model.
     ///
     /// # Errors
     /// As [`Self::hire_by_owner`].
-    pub fn hire_by_owner_with(
-        &self,
-        name: &str,
-        role: Role,
-        brain: Option<&str>,
-    ) -> Done<MemberId> {
+    pub fn hire_by_owner_with(&self, name: &str, brain: Option<&str>) -> Done<MemberId> {
         let _held = self.held();
-        self.hire_held_lock(name, role, brain, "owner")
+        self.hire_held_lock(name, brain, "owner")
     }
 
     /// Hires a member (the lock held), on the brain named. A blank name or brain is none.
-    fn hire_held_lock(
-        &self,
-        name: &str,
-        role: Role,
-        brain: Option<&str>,
-        by: &str,
-    ) -> Done<MemberId> {
+    fn hire_held_lock(&self, name: &str, brain: Option<&str>, by: &str) -> Done<MemberId> {
         let members = self.store.members()?;
         let name = super::one_line(name, 41);
         let taken = members.iter().any(|m| m.name.eq_ignore_ascii_case(&name));
@@ -918,15 +902,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .transpose()
             .map_err(EngineError::Refused)?;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
-        let id = self.store.add_member(&name, role, role.share(), 2, look)?;
+        let id = self.store.add_member(&name, A_MEMBERS_SHARE, 2, look)?;
         if let Some(brain) = named {
             self.store.set_brain(id, brain)?;
         }
         let hired = self.member(id)?;
         self.emit(
             EventKind::MemberHired,
-            json!({ "member": id.0, "name": name, "role": role.name(),
-                    "brain": hired.brain.name(), "by": by }),
+            json!({ "member": id.0, "name": name, "brain": hired.brain.name(), "by": by }),
         )?;
         Ok(id)
     }

@@ -12,7 +12,7 @@ use crate::application::event_ports::EventStore;
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
 use crate::domain::{
-    GoalId, MemberId, Priority, Receipt, Refusal, Refused, Role, RunStatus, TaskId, TaskStatus,
+    GoalId, MemberId, Priority, Receipt, Refusal, Refused, RunStatus, TaskId, TaskStatus,
     WakeReason,
 };
 use crate::infrastructure::{Script, SimulatedRunner, SqliteTeamStore};
@@ -56,9 +56,9 @@ struct Team {
 
 fn team(hq: &Hq<'_>) -> Team {
     Team {
-        lead: hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap(),
-        dev: hq.hire("Linus", Role::Developer, 40, 2, 0).unwrap(),
-        reviewer: hq.hire("Grace", Role::Reviewer, 20, 2, 0).unwrap(),
+        lead: hq.hire("Ada", 25, 2, 0).unwrap(),
+        dev: hq.hire("Linus", 40, 2, 0).unwrap(),
+        reviewer: hq.hire("Grace", 20, 2, 0).unwrap(),
         goal: hq
             .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
             .unwrap(),
@@ -66,10 +66,11 @@ fn team(hq: &Hq<'_>) -> Team {
 }
 
 /// Every member thinks with Claude, so every turn is paid from the pool: a member on the
-/// house's model costs nothing and is never turned away for money (ADR 0111).
+/// house's model costs nothing and is never turned away for money (ADR 0111). Cy, when hired,
+/// thinks with Haiku and the rest with Sonnet.
 fn all_paid(hq: &Hq<'_>) {
     for m in hq.store().members().unwrap() {
-        let brain = if m.role == Role::Researcher {
+        let brain = if m.name == "Cy" {
             "claude-haiku-5-5"
         } else {
             "claude-sonnet-5-5"
@@ -1651,22 +1652,22 @@ fn most_of_a_members_daily_share_goes_to_haiku() {
     let clock = hands();
     let hq = hq(&clock, 8);
     {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let on = |name: &str, role: Role, brain: &str| {
-        let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
+    let on = |name: &str, brain: &str| {
+        let id = hq.hire(name, crate::domain::A_MEMBERS_SHARE, 2, 0).unwrap();
         hq.set_brain(id, brain).unwrap();
         id
     };
-    let ada = on("Ada", Role::Lead, "claude-sonnet-5-5");
-    on("Kit", Role::Lead, "claude-sonnet-5-5");
-    on("Cy", Role::Researcher, "claude-haiku-5-5");
-    let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
-    on("Zed", Role::Developer, "claude-haiku-5-5");
+    let ada = on("Ada", "claude-sonnet-5-5");
+    on("Kit", "claude-sonnet-5-5");
+    on("Cy", "claude-haiku-5-5");
+    let rae = on("Rae", "claude-haiku-5-5");
+    on("Zed", "claude-haiku-5-5");
     // Dee is hired as she is, so she is the house's own model.
-    let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
+    let local = hq.hire("Dee", 20, 1, 0).unwrap();
     let snap = hq.snapshot().unwrap();
     let share = |id: MemberId| {
         snap["members"]
@@ -1874,7 +1875,7 @@ fn a_member_capped_again_after_an_allowance_is_asked_about_again() {
     );
     let t = team(&hq);
     // Cy on Haiku claims most of the day (ADR 0113, amended 2026-11-01), as Ada did.
-    hq.hire("Cy", Role::Researcher, 15, 2, 0).unwrap();
+    hq.hire("Cy", 15, 2, 0).unwrap();
     all_paid(&hq);
     let work = endoras_task(&hq, t.goal, "Add a list");
     linus_spends_all_he_may(&hq, &t, work);

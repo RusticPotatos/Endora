@@ -268,7 +268,6 @@ pub struct Turn {
     lease: u64,
     token: String,
     member: String,
-    role: String,
     task: Option<u64>,
     /// The Claude model the member thinks with, or `None` for the house's own.
     cloud: Option<String>,
@@ -321,7 +320,7 @@ fn effort_of(effort: &Value) -> Result<Option<String>, ()> {
 /// The Claude model a turn's brain names, `None` for the house's own model, or `Err` for a
 /// brain that is neither. Only a plain model name passes (`claude-`, then lowercase letters,
 /// digits and dashes, at most 64 in all): it goes into the worker's environment, and which
-/// model a role may use is the relay's to decide.
+/// model a member may use is the relay's to decide.
 fn cloud_of(brain: &Value) -> Result<Option<String>, ()> {
     let name = match brain {
         Value::Null => return Ok(None),
@@ -383,7 +382,6 @@ impl Turn {
             lease,
             token: token.to_owned(),
             member: text("member"),
-            role: text("role"),
             task: handed["task"].as_u64(),
             cloud,
             effort,
@@ -1013,10 +1011,9 @@ impl<D: Docker> Runner<D> {
             return self.never_ran(turn.run, turn.lease, &e);
         }
         println!(
-            "runner: run {} started: {:?}, {:?}, task {}",
+            "runner: run {} started: {:?}, task {}",
             turn.run,
             turn.member,
-            turn.role,
             turn.task
                 .map_or_else(|| "none".to_owned(), |t| t.to_string())
         );
@@ -1092,7 +1089,7 @@ mod tests {
 
     /// A turn as HQ hands it out.
     fn turn(run: u64) -> Value {
-        json!({ "run": run, "lease": lease(run), "token": token(run), "member": "John Doe", "role": "developer", "task": 4 })
+        json!({ "run": run, "lease": lease(run), "token": token(run), "member": "John Doe", "task": 4 })
     }
 
     /// HQ, pretending: hands out its turns in order, asks for its stops, and keeps what it
@@ -2180,7 +2177,6 @@ mod tests {
     fn a_cloud_brain_points_the_worker_at_the_anthropic_relay_on_the_same_listener() {
         let mut lead = turn(21);
         lead["brain"] = json!("claude-sonnet-5-5");
-        lead["role"] = json!("lead");
         lead["effort"] = json!("medium");
         let mut local = turn(22);
         local["brain"] = json!("local");

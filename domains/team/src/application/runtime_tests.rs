@@ -3,7 +3,7 @@
 
 use super::engine::{Engine, EngineError, Settings};
 use super::ports::{Clock, TeamStore};
-use crate::domain::{Refusal, Role, Runtime};
+use crate::domain::{Refusal, Runtime};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Noon;
@@ -25,8 +25,8 @@ fn engine() -> Engine<SqliteTeamStore, SimulatedRunner, Noon> {
 #[test]
 fn claude_code_is_set_for_a_member_on_claude_and_refused_on_the_house() {
     let hq = engine();
-    let dev = hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
-    let lead = hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
+    let dev = hq.hire("Jane Doe", 40, 2, 0).unwrap();
+    let lead = hq.hire("John Doe", 25, 2, 1).unwrap();
     assert_eq!(hq.runtime_of(dev).unwrap(), Runtime::Worker, "the default");
     // A developer on Claude may be set to Claude Code.
     hq.set_brain(dev, "claude-haiku-5-5").unwrap();
@@ -70,7 +70,7 @@ fn a_model_claude_code_cannot_run_puts_the_member_on_the_worker_and_says_so() {
     // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
     // turn of hers for three hours.
     let hq = engine();
-    let rae = hq.hire("Rae", Role::Developer, 40, 2, 0).unwrap();
+    let rae = hq.hire("Rae", 40, 2, 0).unwrap();
     hq.set_brain(rae, "claude-sonnet-5-5").unwrap();
     hq.set_runtime(rae, "claude-code").unwrap();
     let set = hq.set_model(rae, "deepseek-flash").unwrap();

@@ -9,7 +9,7 @@ use cucumber::{given, then, when};
 use endora_team::application::{Author, Engine, NewTask, TeamStore};
 use endora_team::domain::guards::Stopped;
 use endora_team::domain::money::{DAY_MS, DOLLAR, LEAST_A_TURN};
-use endora_team::domain::{Brain, Priority, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
+use endora_team::domain::{Brain, Priority, Receipt, Refused, RunStatus, TaskId, WakeReason};
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 use super::Office;
@@ -82,13 +82,8 @@ fn a_pool_of(w: &mut Office, dollars: f64) {
 
 /// A member the owner hires on the house's model.
 #[given(expr = "{word} is hired as a {word} on the house's model")]
-fn hired_on_the_house_model(w: &mut Office, name: String, role: String) {
-    let role = if role == "tester" {
-        Role::Reviewer
-    } else {
-        Role::from_name(&role).unwrap_or_else(|| panic!("the team has no role called {role}"))
-    };
-    let hired = w.hq.hire_by_owner(&name, role, "local");
+fn hired_on_the_house_model(w: &mut Office, name: String, _title: String) {
+    let hired = w.hq.hire_by_owner(&name, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }

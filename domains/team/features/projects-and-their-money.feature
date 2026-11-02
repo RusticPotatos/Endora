@@ -37,7 +37,7 @@ Feature: Projects, their caps and their money
   # left (ADR 0113, amended 2026-11-01).
   Scenario: Most of the day's money goes to the member on Haiku
     Given Cy is the researcher
-    And Cy thinks with Claude
+    And Cy thinks with Claude Haiku
     Then Cy's share for today is more than half the pool's day
     And Cy's share for today is more than Ada's on Sonnet and Mara's on Opus together
 
@@ -55,7 +55,7 @@ Feature: Projects, their caps and their money
   # her day reaches $1.14.
   Scenario: A member may borrow one more share, then asks the owner
     Given Cy is the researcher
-    And Cy thinks with Claude
+    And Cy thinks with Claude Haiku
     And Ada has spent $1.00 of her share today
     When Ada is woken to decide "Look at sonarr"
     Then Ada's turn starts on "Look at sonarr"
@@ -72,7 +72,7 @@ Feature: Projects, their caps and their money
   # next day. Capped again after an allowance, a member is asked about again.
   Scenario: A member out for the day again after the owner's allowance is asked about again
     Given Cy is the researcher
-    And Cy thinks with Claude
+    And Cy thinks with Claude Haiku
     And Ada has spent $1.00 of her share today
     When Ada is woken to decide "Look at sonarr"
     And Ada's turn on "Look at sonarr" spends $0.10

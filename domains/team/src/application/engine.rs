@@ -28,8 +28,8 @@ use crate::domain::wakes::{self};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
     Brain, CheckBackStatus, EventKind, Fault, Firing, GoalId, GoalStatus, Liveness, Member,
-    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
-    RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason,
+    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Routine, RoutineId, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeDecision, WakeReason,
 };
 
 mod allowance;
@@ -572,14 +572,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the team and the work ---------------------------------------------------------
 
     /// Adds a member. (Hiring goes through the owner's desk once HQ is a service.)
-    pub fn hire(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Done<MemberId> {
+    pub fn hire(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Done<MemberId> {
         let _held = self.held();
         let members = self.store.members()?;
         // No name given: the next free one (ADR 0142).
@@ -589,9 +582,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             name.to_owned()
         };
-        let id = self
-            .store
-            .add_member(&given, role, share_percent, slots, look)?;
+        let id = self.store.add_member(&given, share_percent, slots, look)?;
         Ok(id)
     }
 
@@ -3605,7 +3596,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
             shown.push(json!({
-                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
+                "id": m.id.0, "name": m.name, "look": m.look,
                 "paused": m.paused, "slots": m.slots,
                 // On furlough (ADR 0118): when it began, and when it ended if it has.
                 "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,

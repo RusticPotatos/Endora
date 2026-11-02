@@ -12,7 +12,7 @@ use super::ports::{Clock, NewTask, Run, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::application::desk_ports::DeskStore;
 use crate::application::schedule_ports::ScheduleStore;
-use crate::domain::{Member, MemberId, Priority, Role, TaskId};
+use crate::domain::{Member, MemberId, Priority, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -36,9 +36,9 @@ fn started(clock: &Hands) -> (Hq<'_>, Setup, RunContext) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -138,13 +138,7 @@ fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
 #[test]
 fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
     const NEVER_BUILT: [&str; 2] = ["run_gate", "request_action"];
-    for role in [
-        Role::Ceo,
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
+    {
         let offered: Vec<String> = tools()
             .as_array()
             .unwrap()
@@ -154,7 +148,7 @@ fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
         for tool in NEVER_BUILT {
             assert!(
                 !offered.contains(&tool.to_owned()),
-                "{role:?} is offered {tool}"
+                "a member is offered {tool}"
             );
         }
     }
@@ -367,9 +361,9 @@ struct Tree {
 }
 
 fn tree(hq: &Hq<'_>) -> Tree {
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -551,12 +545,7 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn measure_tool_descriptions() {
-    for role in [
-        Role::Developer,
-        Role::Lead,
-        Role::Reviewer,
-        Role::Researcher,
-    ] {
+    {
         let all = tools();
         let mut sizes: Vec<(usize, String)> = all
             .as_array()
@@ -567,7 +556,7 @@ fn measure_tool_descriptions() {
         sizes.sort_by(|a, b| b.cmp(a));
         let total: usize = sizes.iter().map(|s| s.0).sum();
         println!(
-            "{role:?}: {} tools, {total} chars; top: {:?}",
+            "{} tools, {total} chars; top: {:?}",
             sizes.len(),
             &sizes[..8]
         );

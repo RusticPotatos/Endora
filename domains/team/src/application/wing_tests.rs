@@ -15,7 +15,7 @@ use crate::application::receipt_ports::ReceiptStore;
 use crate::application::wing_ports::WingStore;
 use crate::domain::wing::{WING_GOAL, WING_PROJECT};
 use crate::domain::{
-    Brain, Criterion, GoalId, MemberId, Priority, Refusal, Role, TaskId, TaskStatus, WakeReason,
+    Brain, Criterion, GoalId, MemberId, Priority, Refusal, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -49,15 +49,11 @@ struct Wing {
 }
 
 fn wing(hq: &Hq<'_>) -> Wing {
-    let lead = hq
-        .hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
-        .unwrap();
+    let lead = hq.hire("Kit", 25, 2, 5).unwrap();
     hq.set_brain(lead, Brain::Sonnet.name()).unwrap();
     let mut developers = Vec::new();
     for (name, look) in [("Rae", 2), ("Zed", 4)] {
-        let id = hq
-            .hire(name, Role::Developer, Role::Developer.share(), 2, look)
-            .unwrap();
+        let id = hq.hire(name, 40, 2, look).unwrap();
         hq.set_brain(id, Brain::Haiku.name()).unwrap();
         developers.push(id);
     }
@@ -99,12 +95,12 @@ struct Team {
 
 fn team(hq: &Hq<'_>) -> Team {
     let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dee = hq.hire("Dee", 20, 2, 1).unwrap();
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
     let seeded = wing(hq);
@@ -610,11 +606,7 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
     let woken = wakes_after(&hq, before);
     assert!(woken.contains(&(t.kit, WakeReason::CheckDone)), "{woken:?}");
     assert!(woken.contains(&(t.rae, WakeReason::CheckDone)), "{woken:?}");
-    // The tester judges and does not run the lab's checks; work with no branch has nothing to check.
-    quiet(&hq);
-    let dee = woken_turn(&hq, t.dee, task);
-    let refused = ask(&dee).unwrap_err();
-    assert!(refused.contains("lead or developer"), "{refused}");
+    // Work with no branch has nothing to check.
     quiet(&hq);
     let other = raes_other_task(&hq, &t);
     let rae_again = woken_turn(&hq, t.rae, other);
@@ -894,15 +886,10 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
-    let sam = hq
-        .hire_by_owner("Sam", Role::Developer, "claude-haiku-5-5")
-        .unwrap();
+    let sam = hq.hire_by_owner("Sam", "claude-haiku-5-5").unwrap();
     let members = hq.store().members().unwrap();
     let found = members.iter().find(|m| m.id == sam).unwrap();
-    assert_eq!(
-        (found.role, found.brain, found.share_percent),
-        (Role::Developer, Brain::Haiku, 40)
-    );
+    assert_eq!((found.brain, found.share_percent), (Brain::Haiku, 40));
     let hired = hq
         .events_after(0)
         .unwrap()
@@ -914,16 +901,14 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
         (Some("Sam"), Some("owner"))
     );
     // A title is a name only (ADR 0142): a second CEO, or a researcher on Sonnet, is a member.
-    hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5")
-        .unwrap();
-    hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5")
-        .unwrap();
+    hq.hire_by_owner("Second", "claude-opus-5-5").unwrap();
+    hq.hire_by_owner("Pat", "claude-sonnet-5-5").unwrap();
     assert!(matches!(
-        hq.hire_by_owner("Quinn", Role::Researcher, "gpt-5"),
+        hq.hire_by_owner("Quinn", "gpt-5"),
         Err(super::EngineError::Refused(Refusal::NotABrain { .. }))
     ));
     assert_eq!(
-        hq.hire_by_owner("sam", Role::Developer, "local"),
+        hq.hire_by_owner("sam", "local"),
         Err(super::EngineError::Refused(Refusal::NotAName)),
         "names stay unique"
     );

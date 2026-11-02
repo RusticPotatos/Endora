@@ -14,7 +14,7 @@ use super::*;
 
 use endora_team::application::{Author, Clock, Engine, NewTask, RunContext, Settings};
 use endora_team::domain::money::DOLLAR;
-use endora_team::domain::{MemberId, Priority, ProjectId, Role};
+use endora_team::domain::{MemberId, Priority, ProjectId};
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -46,10 +46,9 @@ fn first_call(hq: &Hq<'_>, context: &RunContext, api: Api) -> (Talk, String) {
         .as_array()
         .cloned()
         .unwrap();
-    let role = member.role.name();
     let contracts: Vec<Value> = endora_capabilities::contracts::all()
         .iter()
-        .filter(|c| c.offered_to(role, false) && !is_repo_tool(c.name))
+        .filter(|c| !is_repo_tool(c.name))
         .map(endora_capabilities::contracts::Contract::as_tool)
         .chain((0..10).map(bridged))
         .collect();
@@ -184,14 +183,14 @@ fn two_turns_share_their_prompts_opening() {
     let goal = hq
         .set_goal("Keep the lab healthy", "you asked", Author::Owner)
         .unwrap();
-    let seat = |name: &str, model: &str, role: Role| {
-        let id = hq.hire(name, role, 10, 2, 0).unwrap();
+    let seat = |name: &str, model: &str| {
+        let id = hq.hire(name, 10, 2, 0).unwrap();
         hq.set_model(id, model).unwrap();
         id
     };
-    let mara = seat("Mara", "opus", Role::Ceo);
-    let rae = seat("Rae", "mac", Role::Developer);
-    let bo = seat("Bo", "local", Role::Developer);
+    let mara = seat("Mara", "opus");
+    let rae = seat("Rae", "mac");
+    let bo = seat("Bo", "local");
     let (_, bos) = turn_on_an_item(
         &hq,
         goal,

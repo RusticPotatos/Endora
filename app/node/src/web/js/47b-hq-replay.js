@@ -259,7 +259,7 @@ function replayGiven(r) {
 // A turn's header: who, why, what it came to, what it cost, how long.
 function replayHead(r) {
   const m = r.member, money = r.money || {}, tokens = r.tokens || {};
-  const who = m ? `${esc(m.name)} · ${esc(hqRole(m.role))}` : "someone no longer on the team";
+  const who = m ? esc(m.name) : "someone no longer on the team";
   const brain = m ? esc(m.brain_label || m.brain || "") : "";
   const ran = r.started_at ? replaySpan((r.ended_at || Date.now()) - r.started_at) : "";
   const cost = `${hqDollars(r.money && r.money.spent)} spent · ${hqDollars(money.reserved)} held · ${hqDollars(money.released)} released`;

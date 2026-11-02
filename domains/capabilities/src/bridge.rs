@@ -8,10 +8,10 @@
 //!    anything about the team, its money, or the owner's chat, brain, memory or mail; and a
 //!    switch of the owner's own devices (an act of the tool server paired with Home
 //!    Assistant), which the team's remit never was.
-//! 2. **The data tier**: a Confidential tool's result is given only to a turn on a local
-//!    model, but for the few the owner allowed a lead thinking with Claude ([`may_see`]).
-//! 3. **The member's role**: reads for every role, acts only for the roles that act
-//!    ([`PROFILES`]). And **where the turn thinks** ([`Thinks`], ADR 0131 amended): a turn on
+//! 2. **The data tier**: Restricted is never given; Confidential is open to every turn
+//!    (ADR 0141, [`may_see`]).
+//! 3. **Where the turn thinks** ([`Thinks`], ADR 0131 amended): every member reads and acts
+//!    alike (ADR 0142, one team), but a turn on
 //!    the house's own small model on the NAS is offered none that can end on the owner's desk,
 //!    and the reads and the acts the owner lets run on their own it keeps ([`offered`]).
 //! 4. **The owner's stance**: an act that is on runs at once, within [`ACTS_AN_HOUR`] a tool
@@ -76,25 +76,6 @@ impl Kind {
         }
         Self::Act
     }
-}
-
-/// What each role may do with a bridged tool. A small table that a later owner setting could
-/// replace: the lead and developers read and act; the CEO (ADR 0111), reviewers and
-/// researchers only read. A role not listed may do nothing.
-pub const PROFILES: [(&str, &[Kind]); 5] = [
-    ("ceo", &[Kind::Read]),
-    ("lead", &[Kind::Read, Kind::Act]),
-    ("developer", &[Kind::Read, Kind::Act]),
-    ("reviewer", &[Kind::Read]),
-    ("researcher", &[Kind::Read]),
-];
-
-/// Whether a member in `role` may use a tool of `kind`.
-#[must_use]
-pub fn may(role: &str, kind: Kind) -> bool {
-    PROFILES
-        .iter()
-        .any(|(r, kinds)| *r == role && kinds.contains(&kind))
 }
 
 /// How a stranger's words are marked when they reach a team turn (ADR 0064), so the model reads
@@ -329,31 +310,18 @@ pub enum Way {
 }
 
 /// How a call goes, in the policy's order, or why it is refused: the stance (off is never),
-/// the role, then for an act the stance and whether the turn has read a stranger's words.
+/// then for an act the stance and whether the turn has read a stranger's words.
 ///
 /// # Errors
 /// Why it is refused, as the model reads it.
-pub fn way(tool: &Bridged, role: &str, marked: bool) -> Result<Way, String> {
+pub fn way(tool: &Bridged, marked: bool) -> Result<Way, String> {
     if tool.stance == Stance::Off {
         return Err(format!("the owner has switched {} off", tool.name));
-    }
-    if role == "ceo" && tool.kind == Kind::Act {
-        return Err(
-            "the CEO reads the lab and never acts on it (ADR 0120): direct the lead of the \
-             task's area with direct, who decides; or hand it to the lead"
-                .to_owned(),
-        );
-    }
-    if !may(role, tool.kind) {
-        return Err(format!(
-            "a {} may only use tools that read; ask the owner, or hand it to the lead",
-            if role.is_empty() { "member" } else { role }
-        ));
     }
     Ok(run_as(tool, marked))
 }
 
-/// How a call goes once the stance is not off and the role may make it: a read reads, an act that
+/// How a call goes once the stance is not off: a read reads, an act that
 /// asks waits on the owner's desk, and so does an act given arguments in a turn that has read a
 /// stranger's words (`marked`); any other act runs.
 fn run_as(tool: &Bridged, marked: bool) -> Way {
@@ -405,7 +373,7 @@ impl Thinks {
     }
 
     /// Why `tool` is kept from a turn thinking so, as the member reads it, or `None` when it is
-    /// offered as its role allows. Only the NAS's model is kept from anything, and only from a
+    /// offered. Only the NAS's model is kept from anything, and only from a
     /// tool that can end on the owner's desk ([`Bridged::can_end_on_the_owners_desk`]).
     #[must_use]
     pub fn keeps_from(self, tool: &Bridged) -> Option<&'static str> {
@@ -419,37 +387,22 @@ impl Thinks {
     }
 }
 
-/// Who asks for the bridge's tools: a turn's role, and where it thinks.
-#[derive(Debug, Clone, Copy)]
-pub struct Asker<'a> {
-    /// The member's role, as HQ names it.
-    pub role: &'a str,
-    /// Where the turn thinks.
-    pub thinks: Thinks,
-}
-
-/// The tools of `tools` a turn is offered (ADR 0108, 0131): what its role may use and what its
-/// model may see, less, when it thinks on the NAS's own model, whatever can end on the owner's
-/// desk ([`Thinks::keeps_from`]).
+/// The tools of `tools` a turn thinking so is offered (ADR 0108, 0131): what its model may
+/// see, less, when it thinks on the NAS's own model, whatever can end on the owner's desk
+/// ([`Thinks::keeps_from`]).
 #[must_use]
-pub fn offered(tools: Vec<Bridged>, asker: Asker<'_>) -> Vec<Bridged> {
-    let cloud = asker.thinks == Thinks::OnClaude;
+pub fn offered(tools: Vec<Bridged>, thinks: Thinks) -> Vec<Bridged> {
     tools
         .into_iter()
-        .filter(|b| {
-            asker.thinks.keeps_from(b).is_none()
-                && may(asker.role, b.kind)
-                && may_see(b.tier, &b.id, asker.role, cloud)
-        })
+        .filter(|b| thinks.keeps_from(b).is_none() && may_see(b.tier))
         .collect()
 }
 
 /// Whether a turn may be given what a tool of `tier` returns: anything but Restricted, to any
-/// role on any model (ADR 0141, the owner's decision of 2026-10-25: Confidential is open to
-/// Claude). Restricted is never offered at all. `id`, `role` and `on_a_cloud_model` no longer
-/// decide it, and are kept so a later rule can again.
+/// member on any model (ADR 0141, the owner's decision of 2026-10-25: Confidential is open to
+/// Claude). Restricted is never offered at all.
 #[must_use]
-pub fn may_see(tier: Tier, _id: &str, _role: &str, _on_a_cloud_model: bool) -> bool {
+pub fn may_see(tier: Tier) -> bool {
     tier != Tier::Restricted
 }
 
@@ -492,8 +445,6 @@ pub struct Approval {
     pub why: String,
     /// The member who asked.
     pub member: String,
-    /// The member's role.
-    pub role: String,
     /// The turn it was asked in.
     pub run: i64,
     /// The owner's desk item in HQ, once HQ has it.
@@ -605,15 +556,16 @@ impl BridgeStore {
         args: &Value,
         why: &str,
         member: &str,
-        role: &str,
         run: i64,
         now: i64,
     ) -> Result<i64, RepositoryError> {
         let conn = self.db.lock()?;
+        // The role column is kept for the rows already there; a build before roles were retired
+        // (a rollback) runs an approval only for a member that acts, as every member now does.
         conn.execute(
             "INSERT INTO team_approvals (tool, name, args, why, member, role, run, at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![tool, name, args.to_string(), why, member, role, run, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, 'developer', ?6, ?7)",
+            params![tool, name, args.to_string(), why, member, run, now],
         )
         .map_err(failed)?;
         Ok(conn.last_insert_rowid())
@@ -678,7 +630,7 @@ impl BridgeStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT id, tool, name, args, why, member, role, run, desk, at, status
+                "SELECT id, tool, name, args, why, member, run, desk, at, status
                  FROM team_approvals {filter} ORDER BY id"
             ))
             .map_err(failed)?;
@@ -690,11 +642,10 @@ impl BridgeStore {
                 args: r.get(3)?,
                 why: r.get(4)?,
                 member: r.get(5)?,
-                role: r.get(6)?,
-                run: r.get(7)?,
-                desk: r.get(8)?,
-                at: r.get(9)?,
-                status: r.get(10)?,
+                run: r.get(6)?,
+                desk: r.get(7)?,
+                at: r.get(8)?,
+                status: r.get(9)?,
             })
         })
         .map_err(failed)?
@@ -862,8 +813,10 @@ mod tests {
         assert_eq!(tool_name("a server.do it!"), "a_server__do_it_");
     }
 
+    /// Every member reads and acts alike (ADR 0142, one team): what decides the way is the
+    /// owner's stance and whether the turn has read a stranger's words, never a title.
     #[test]
-    fn the_role_then_the_stance_then_a_strangers_words_decide_the_way() {
+    fn the_stance_then_a_strangers_words_decide_the_way() {
         let tool = |kind, stance, args: bool| Bridged {
             takes_arguments: args,
             ..bridge(&candidate("sonarr_retry_import", kind, stance)).unwrap()
@@ -872,36 +825,25 @@ mod tests {
         let on = tool(Kind::Act, Stance::Auto, false);
         let on_with_args = tool(Kind::Act, Stance::Auto, true);
         let ask = tool(Kind::Act, Stance::Ask, false);
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            assert_eq!(way(&read, role, false), Ok(Way::Read), "{role}");
-        }
-        assert!(
-            way(&on, "ceo", false).unwrap_err().contains("direct"),
-            "the CEO only reads, and directs the area's lead"
-        );
-        assert!(way(&ask, "ceo", false).is_err(), "nor asks to act");
-        assert_eq!(way(&on, "developer", false), Ok(Way::Act));
-        assert_eq!(way(&on, "lead", false), Ok(Way::Act));
-        assert!(way(&on, "reviewer", false).is_err());
-        assert!(way(&ask, "researcher", false).is_err());
-        assert!(
-            way(&read, "", false).is_err(),
-            "a role not listed does nothing"
-        );
-        assert_eq!(way(&ask, "developer", false), Ok(Way::AskTheOwner));
+        assert_eq!(way(&read, false), Ok(Way::Read));
+        assert_eq!(way(&on, false), Ok(Way::Act));
+        assert_eq!(way(&ask, false), Ok(Way::AskTheOwner));
         assert_eq!(
-            way(&on, "developer", true),
+            way(&on, true),
             Ok(Way::Act),
             "given nothing, it is steered by nothing"
         );
         assert_eq!(
-            way(&on_with_args, "developer", true),
+            way(&on_with_args, true),
             Ok(Way::AskTheOwner),
             "after a stranger's words, an act given arguments asks"
         );
-        let mut off = on.clone();
-        off.stance = Stance::Off;
-        assert!(way(&off, "lead", false).unwrap_err().contains("switched"));
+        for tool in [read, on, ask] {
+            let mut off = tool.clone();
+            off.stance = Stance::Off;
+            assert!(way(&off, false).unwrap_err().contains("switched"));
+            assert!(way(&off, true).unwrap_err().contains("switched"));
+        }
     }
 
     #[test]
@@ -913,27 +855,11 @@ mod tests {
     }
 
     #[test]
-    fn confidential_is_given_to_every_turn_on_any_model_and_restricted_to_none() {
+    fn confidential_is_given_to_every_turn_and_restricted_to_none() {
         // ADR 0141: Confidential is open to Claude; Restricted stays home.
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher", ""] {
-            for cloud in [false, true] {
-                for id in ["home_assistant", "container_logs", "mail", "network-pihole"] {
-                    assert!(
-                        may_see(Tier::Confidential, id, role, cloud),
-                        "{id} to {role}"
-                    );
-                }
-                assert!(may_see(Tier::Internal, "homelab_status", role, cloud));
-                assert!(
-                    !may_see(Tier::Restricted, "location", role, cloud),
-                    "Restricted stays home: {role}"
-                );
-                assert!(
-                    !may_see(Tier::Restricted, "container_logs", role, cloud),
-                    "Restricted stays home whatever its name"
-                );
-            }
-        }
+        assert!(may_see(Tier::Confidential));
+        assert!(may_see(Tier::Internal));
+        assert!(!may_see(Tier::Restricted), "Restricted stays home");
     }
 
     #[test]
@@ -980,8 +906,8 @@ mod tests {
         .iter()
         .map(|c| bridge(c).unwrap())
         .collect();
-        let ids = |role, thinks| -> Vec<String> {
-            offered(tools.clone(), Asker { role, thinks })
+        let ids = |thinks| -> Vec<String> {
+            offered(tools.clone(), thinks)
                 .into_iter()
                 .map(|b| b.id)
                 .collect()
@@ -992,29 +918,16 @@ mod tests {
             "radarr_queue",
             "home-assistant.GetLiveContext",
         ];
-        // The NAS's model: the trusted reads, whoever reads, and for a role that acts the act
-        // that runs on its own with nothing to steer it. Nothing that can end on the desk.
-        for role in ["ceo", "reviewer", "researcher"] {
-            assert_eq!(ids(role, Thinks::OnTheNas), trusted_reads, "{role}");
-        }
-        for role in ["lead", "developer"] {
-            assert_eq!(
-                ids(role, Thinks::OnTheNas),
-                [trusted_reads.as_slice(), &["sonarr_retry_import"]].concat(),
-                "{role}"
-            );
-        }
-        // The Mac is a stronger model in the house: a developer is offered what its role allows,
-        // what asks included, and a reviewer only what reads. Nothing changed for it.
-        assert_eq!(ids("developer", Thinks::OnTheMac).len(), tools.len());
-        assert_eq!(ids("reviewer", Thinks::OnTheMac), trusted_reads);
-        // On Claude a turn is offered what its role allows, as on the Mac: Confidential is open
-        // to Claude (ADR 0141).
+        // The NAS's model: the trusted reads, and the act that runs on its own with nothing to
+        // steer it. Nothing that can end on the desk.
         assert_eq!(
-            ids("developer", Thinks::OnClaude),
-            ids("developer", Thinks::OnTheMac)
+            ids(Thinks::OnTheNas),
+            [trusted_reads.as_slice(), &["sonarr_retry_import"]].concat()
         );
-        assert_eq!(ids("reviewer", Thinks::OnClaude), trusted_reads);
+        // The Mac is a stronger model in the house: it is offered every tool, what asks
+        // included. On Claude the same: Confidential is open to Claude (ADR 0141).
+        assert_eq!(ids(Thinks::OnTheMac).len(), tools.len());
+        assert_eq!(ids(Thinks::OnClaude), ids(Thinks::OnTheMac));
     }
 
     /// What can end on the owner's desk is what asks, and what asks once a turn has read a
@@ -1041,14 +954,14 @@ mod tests {
             tool(Kind::Act, Stance::Auto, true).can_end_on_the_owners_desk(),
             "given arguments, it asks once a stranger's words were read"
         );
-        // And it is the policy's own answer: some way a role that acts may call it ends there.
+        // And it is the policy's own answer: some way a member may call it ends there.
         for kind in [Kind::Read, Kind::Act] {
             for stance in [Stance::Auto, Stance::Ask] {
                 for args in [false, true] {
                     let tool = tool(kind, stance, args);
                     let asks = [false, true]
                         .iter()
-                        .any(|marked| way(&tool, "developer", *marked) == Ok(Way::AskTheOwner));
+                        .any(|marked| way(&tool, *marked) == Ok(Way::AskTheOwner));
                     assert_eq!(
                         tool.can_end_on_the_owners_desk(),
                         asks,
@@ -1168,7 +1081,6 @@ mod tests {
                 &json!({ "item": 102 }),
                 "stuck",
                 "Linus",
-                "developer",
                 7,
                 NOON,
             )

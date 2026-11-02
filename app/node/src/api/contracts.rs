@@ -73,16 +73,11 @@ fn offered(switches: Switches) -> Vec<Contract> {
         .collect()
 }
 
-/// Whether a turn may be given what a contract returns: a Confidential one (a container's
-/// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
-/// (ADR 0109); and an act never to the CEO, which takes no step on the house (ADR 0111).
+/// Whether a turn is offered a contract: every one (ADR 0142, one team; no contract is
+/// Restricted), but a branch's submission to a member outside the engineering wing (ADR 0120),
+/// who reads a branch and submits none.
 fn may_see(contract: &Contract, turn: &Turn) -> bool {
-    // Changing the lab is the engineering wing's (ADR 0120): a lead outside it reads a branch
-    // and submits none, so nothing is kept for it.
-    if contract.name == REPO_SUBMIT && turn.wing == Some(false) {
-        return false;
-    }
-    contract.offered_to(&turn.role, turn.cloud)
+    !(contract.name == REPO_SUBMIT && turn.wing == Some(false))
 }
 
 /// The switches as the HQ screen shows them.
@@ -350,28 +345,11 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_SUBMIT && turn.wing == Some(false) && turn.role != "reviewer" {
-            "changing the lab is the engineering wing's: its lead and developers submit the \
-             branches. Ask for the change with propose_project, with its criteria and evidence; \
-             the CEO decides and the wing builds it. Read a branch with repo_checkout"
-                .to_owned()
-        } else if name == REPO_SUBMIT && turn.role == "reviewer" {
-            "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
-             lead or a developer submits one"
-                .to_owned()
-        } else if name == REPO_CHECKOUT || name == REPO_SUBMIT {
-            "the wing's git is a lead's or a developer's, and a tester may check a branch out: \
-             read the branch's document (read_document) and the check's receipt instead"
-                .to_owned()
-        } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
-            "the CEO reads the house and takes no step on it itself: direct the lead of the \
-             task's area with direct, who decides; or hand it to the lead"
-                .to_owned()
-        } else {
-            super::bridge::confidential(&name)
-        };
-        refused_for(&why);
-        return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
+        let why = "changing the lab is the engineering wing's: its members submit the branches. \
+                   Ask for the change with propose_project, with its criteria and evidence; the \
+                   wing builds it. Read a branch with repo_checkout";
+        refused_for(why);
+        return (refuse(StatusCode::FORBIDDEN, "", why), came(why, false));
     }
     let state2 = state.clone();
     let name2 = name.clone();
@@ -1856,7 +1834,7 @@ mod tests {
     /// The node with HQ knowing one turn (token `good`, run 7, Linus's) and `lab` as its
     /// console. What HQ was sent is the second.
     fn with(lab: Arc<Lab>) -> (AppState, super::super::relay::tests::Seen) {
-        let (hq_url, seen) = hq_as(40_000, "developer");
+        let (hq_url, seen) = hq_as(40_000);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab;
         (state, seen)
@@ -1954,7 +1932,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Bo", "role": "developer", "left": 0, "cloud": false,
+                json!({ "run": 7, "member": "Bo", "left": 0, "cloud": false,
                         "brain": "local", "task": 9, "wing": true,
                         "never": ["restart_container"] })
                 .to_string(),
@@ -1991,7 +1969,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0, "cloud": false,
+                json!({ "run": 7, "member": "Ada", "left": 0, "cloud": false,
                         "brain": "local", "task": 9, "wing": false,
                         "only": ["homelab_status", "container_logs", "nas_status"] })
                 .to_string(),
@@ -2173,8 +2151,8 @@ mod tests {
     }
 
     /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.
-    fn on_claude(role: &'static str) -> AppState {
-        let (hq_url, _) = hq_thinking(40_000, role, true);
+    fn on_claude() -> AppState {
+        let (hq_url, _) = hq_thinking(40_000, true);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab();
         state
@@ -2191,42 +2169,28 @@ mod tests {
             .collect()
     }
 
+    /// Every member reads the lab and is offered its acts alike (ADR 0142, one team): the
+    /// CEO who read and never acted is gone, and a title no longer keeps a restart from a turn.
     #[tokio::test]
-    async fn the_cloud_ceo_reads_the_home_lab_as_the_lead_does_and_never_restarts_anything() {
-        // The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose system
-        // it is; acting on the lab is the areas' own.
-        let state = on_claude("ceo");
-        let offered = listed(&state).await;
-        for read in ["homelab_status", "container_logs", "homelab_map"] {
-            assert!(offered.contains(&read.to_owned()), "{read}: {offered:?}");
-        }
-        assert!(
-            !offered.contains(&"restart_container".to_owned()),
-            "{offered:?}"
-        );
-        let (status, said) = use_contract(
-            &state,
+    async fn a_cloud_turn_reads_the_home_lab_and_is_offered_its_restart() {
+        let offered = listed(&on_claude()).await;
+        for name in [
+            "homelab_status",
+            "container_logs",
+            "homelab_map",
             "restart_container",
-            json!({ "container": "sonarr", "why": "it is unhealthy" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-        assert!(
-            said["error"]
-                .as_str()
-                .unwrap()
-                .contains("direct the lead of the task's area"),
-            "{said}"
-        );
+        ] {
+            assert!(offered.contains(&name.to_owned()), "{name}: {offered:?}");
+        }
     }
 
-    /// The node with HQ knowing one turn of a lead (token `good`), as HQ says it (`turn`'s
-    /// fields beside its run, member and role), and a lab whose sonarr log is 150 lines long.
+    /// The node with HQ knowing one turn (token `good`), as HQ says it (`turn`'s fields beside
+    /// its run and member), and a lab whose sonarr log is 150 lines long.
     fn with_a_long_log(turn: serde_json::Value) -> AppState {
         use super::super::relay::tests::fake;
         let (hq_url, _) = fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => {
-                let mut said = json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0 });
+                let mut said = json!({ "run": 7, "member": "Ada", "left": 0 });
                 for (k, v) in turn.as_object().unwrap() {
                     said[k] = v.clone();
                 }
@@ -2293,19 +2257,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cloud_turn_reads_logs_whatever_its_role() {
+    async fn a_cloud_turn_reads_logs() {
         // ADR 0141: Confidential is open to Claude; a log is read by any member on it.
-        for role in ["reviewer", "developer", "researcher"] {
-            let state = on_claude(role);
-            assert!(
-                listed(&state).await.contains(&"container_logs".to_owned()),
-                "a cloud {role} is offered logs"
-            );
-            let (status, said) =
-                use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
-            assert_eq!(status, StatusCode::OK, "{role}: {said}");
-        }
-        let state = on_claude("lead");
+        let state = on_claude();
+        assert!(listed(&state).await.contains(&"container_logs".to_owned()));
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let state = on_claude();
         let offered = listed(&state).await;
         assert!(
             offered.contains(&"container_logs".to_owned()),
@@ -2329,7 +2288,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": "developer", "left": 0,
+                json!({ "run": 7, "member": "Linus", "left": 0,
                         "cloud": false })
                 .to_string(),
             ),
@@ -2751,15 +2710,10 @@ mod tests {
         );
         let (status, _) = use_contract(&state, "ansible_nas_doc", json!({ "path": 7 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Every role on any brain is offered both (names and wiring, Internal).
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            let offered = listed(&on_claude(role)).await;
-            for name in ["homelab_map", "ansible_nas_doc"] {
-                assert!(
-                    offered.contains(&name.to_owned()),
-                    "{name} to a cloud {role}"
-                );
-            }
+        // Every member on any brain is offered both (names and wiring, Internal).
+        let offered = listed(&on_claude()).await;
+        for name in ["homelab_map", "ansible_nas_doc"] {
+            assert!(offered.contains(&name.to_owned()), "{name} to a cloud turn");
         }
     }
 
@@ -2931,17 +2885,17 @@ mod tests {
             match (path, body["token"].as_str().unwrap_or("")) {
                 ("/v1/team/turn", "rae") => said(
                     200,
-                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", "dee") => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", "zed") => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
@@ -3261,22 +3215,22 @@ mod tests {
                 "/v1/team/turn" if body["token"] == "good" => (
                     200,
                     "application/json",
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 3 })
                     .to_string(),
                 ),
                 "/v1/team/turn" if body["token"] == "dee" => (
                     200,
                     "application/json",
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 0,
-                            "cloud": false, "task": 3 })
+                    json!({ "run": 8, "member": "Dee", "left": 0,
+                            "cloud": false, "task": 3, "wing": false })
                     .to_string(),
                 ),
                 // The Ops lead: a lead, outside the engineering wing (ADR 0120).
                 "/v1/team/turn" if body["token"] == "ada" => (
                     200,
                     "application/json",
-                    json!({ "run": 10, "member": "Ada", "role": "lead", "left": 40_000,
+                    json!({ "run": 10, "member": "Ada", "left": 40_000,
                             "cloud": true, "task": 4, "wing": false })
                     .to_string(),
                 ),
@@ -3360,9 +3314,9 @@ mod tests {
             .collect();
         assert!(
             names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
-            "a tester is offered checkout, never submit: {names:?}"
+            "a member not at work is offered checkout, never submit: {names:?}"
         );
-        // Dee's refusal of a submission says the tester's rule, not the CEO's.
+        // Dee's refusal of a submission says the wing's rule.
         let (refused, why) = answer(
             &state,
             ask(
@@ -3378,7 +3332,7 @@ mod tests {
             why["error"]
                 .as_str()
                 .unwrap()
-                .contains("reads a branch by checking it out"),
+                .contains("Read a branch with repo_checkout"),
             "{why}"
         );
         // A lead outside the wing is offered no submission, and one she asks for is refused
@@ -3673,19 +3627,19 @@ mod tests {
                 // Kit leads task 7; Zed is a developer on task 9.
                 ("/v1/team/turn", Some("kit" | "late")) => said(
                     200,
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", Some("zed")) => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 // Dee, the tester, is on task 7 too, on Haiku: a turn of judgment.
                 ("/v1/team/turn", Some("dee")) => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
                 ("/v1/team/branch", _) => {
@@ -4020,8 +3974,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Kit", "role": "lead", "left": 0, "cloud": false })
-                    .to_string(),
+                json!({ "run": 7, "member": "Kit", "left": 0, "cloud": false }).to_string(),
             ),
             _ => (404, "application/json", "{}".to_owned()),
         }));
@@ -4159,12 +4112,12 @@ mod tests {
             match (path, body["token"].as_str().unwrap_or("")) {
                 ("/v1/team/turn", "rae") => said(
                     200,
-                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
                             "cloud": true, "task": 940, "repo": TINY }),
                 ),
                 ("/v1/team/turn", "eve") => said(
                     200,
-                    json!({ "run": 8, "member": "Eve", "role": "developer", "left": 40_000,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
                             "cloud": true, "task": 941,
                             "repo": "https://gitlab.com/example/tiny" }),
                 ),

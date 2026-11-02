@@ -15,8 +15,8 @@ use crate::application::event_ports::EventStore;
 use crate::domain::money::DOLLAR;
 use crate::domain::routines::DAY_MS;
 use crate::domain::{
-    GoalId, MemberId, Pause, Priority, ProjectId, ProjectStatus, Receipt, Refusal, Refused, Role,
-    TaskId, TaskStatus, WakeReason,
+    GoalId, MemberId, Pause, Priority, ProjectId, ProjectStatus, Receipt, Refusal, Refused, TaskId,
+    TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -50,11 +50,11 @@ struct Team {
 /// The CEO on Opus, a lead on Sonnet, a developer on the house's model, and the home lab's
 /// goal.
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    let ceo = hq.hire("Mara", 35, 1, 3).unwrap();
     hq.set_brain(ceo, "claude-opus-5-5").unwrap();
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();

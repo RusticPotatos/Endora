@@ -352,9 +352,6 @@ function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars
 function hqMemberMoney(m) {
   return m.brain === "mac" ? "the owner's Mac: costs nothing, runs only while the Mac is free" : m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`);
 }
-// A role as the owner reads it.
-// The reviewer's role is shown as the tester (ADR 0114).
-function hqRole(role) { return role === "ceo" ? "CEO" : role === "reviewer" ? "Tester" : String(role || ""); }
 
 // A moment as the activity log says it: hours and minutes.
 function hqClock(at) { return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); }
@@ -463,7 +460,7 @@ function hqLogEntry(e) {
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
       `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.result !== "succeeded" && d.why ? `: ${d.why}` : ""}${d.label ? " · " + d.label : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.input != null ? ` · in ${d.input} / out ${d.output || 0}` : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
-    "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : ""}a ${hqRole(d.role)} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
+    "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : "a member"} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
     "budget.crossed": ["bad", `${name} crossed its limit; R${d.run} stopped`],
     "stopped": ["bad", d.by === "tripwire"
@@ -479,7 +476,7 @@ function hqLogEntry(e) {
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
     "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : d.slot === "work" ? "works" : "thinks"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
     // The CEO and the chain of command (ADR 0111).
-    "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
+    "member.hired": ["you", `${d.name} joined the team`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
     "house.noted": ["you", d.entry ? `${d.by} noted ${d.page ? "on the house page" : "in the house log"}: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
     // The team's world (ADR 0122): sections, canon, stories and handovers.
@@ -623,29 +620,11 @@ function hqWrap(text, width, most, lines = 2) {
   return out;
 }
 
-// A team's name, on the roster and over its pod alike: Engineering for the engineering wing's
-// lead, Ops for any other.
-function hqTeamLabel(lead, wingLeads) {
-  return `${(wingLeads || []).includes(lead.id) ? "Engineering" : "Ops"} · ${lead.name}`;
-}
-
-// The teams, from the snapshot alone (ADR 0119): one team since the one-team clean-up (ADR
-// 0142), nobody reporting to anybody, so every member but the CEO and the leads joins the first
-// lead's team; the CEO sits in its office, outside every team. Within a team the lead first, then those at work, then those on
-// furlough, whose desks stay and are drawn empty. With no lead at all there is one team.
+// The team, from the snapshot alone (ADR 0119, 0142): one team, nobody reporting to anybody
+// and no titles, every member at work in it, by rank. The retired leave the floor.
 function hqTeams(members) {
-  const wingLeads = ((HQ.snap && HQ.snap.wing) || {}).leads || [];
-  // One team of loops (ADR 0142): the retired leave the floor, and the rest sit by rank.
   members = members.filter((m) => !m.furloughed).slice().sort((a, b) => (Number(a.rank) || 9) - (Number(b.rank) || 9));
-  const leads = members.filter((m) => m.role === "lead");
-  const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
-  if (!leads.length) return rest.length ? [{ lead: null, label: "Team", people: rest }] : [];
-  const teams = leads.map((l) => ({ lead: l, label: hqTeamLabel(l, wingLeads), people: [] }));
-  teams[0].people.push(...rest);
-  for (const t of teams) {
-    t.people = [t.lead].concat(t.people.filter((m) => !m.furloughed), t.people.filter((m) => m.furloughed));
-  }
-  return teams;
+  return members.length ? [{ lead: null, label: "Team", people: members }] : [];
 }
 
 // The pods and the seats (ADR 0119): one pod for each team, side by side from the left of the
@@ -691,33 +670,17 @@ function hqLayout(members) {
     pods.push(pod);
     x += width + between; shelf = Math.max(shelf, rows * P.desk.h);
   }
-  const ceo = (members || []).find((m) => m.role === "ceo");
-  if (ceo) {
-    seats[ceo.id] = { desk: { ...HQ_CEO.desk, w: 3, h: 2, member: ceo.id }, work: HQ_CEO.work, visit: HQ_ROOMS.ceo.out, rest: HQ_CEO.rest, pod: -1 };
-  }
   return { pods, seats };
 }
 
 // Each member's seat, by id.
 function hqSeats(members) { return hqLayout(members).seats; }
 
-// The CEO's daily review: its turn on the task of a routine of its own. The CEO takes the
-// head of the meeting table for it.
-function hqReview(members) {
-  const ceo = (members || []).find((m) => m.role === "ceo");
-  const run = ceo && (ceo.running || [])[0], task = run && run.task ? hqTask(run.task) : null;
-  if (!task || !task.routine) return false;
-  const routine = ((HQ.snap && HQ.snap.routines) || []).find((r) => r.id === task.routine);
-  return !!routine && routine.assignee === ceo.id;
-}
-
-// Where a working member goes when its turn's work is not at its own desk (ADR 0119): a tester
-// on someone's task goes to whose it is; work in another team's project goes to that project
-// lead's desk (the CEO's door, for a project the CEO leads). Otherwise nowhere: its own desk.
+// Where a working member goes when its turn's work is not at its own desk (ADR 0119): work in
+// another pod's project goes to that project lead's desk. Otherwise nowhere: its own desk.
 function hqVisit(m, task) {
-  if (!task || m.role === "ceo") return null;
-  const seats = HQ.seats, mine = seats[m.id], owner = task.owner || task.assignee;
-  if (m.role === "reviewer" && owner && owner !== m.id && seats[owner]) return seats[owner].visit;
+  if (!task) return null;
+  const seats = HQ.seats, mine = seats[m.id];
   const project = task.project ? ((HQ.snap && HQ.snap.projects) || []).find((x) => x.id === task.project) : null;
   const there = project && project.lead !== m.id ? seats[project.lead] : null;
   return there && mine && there.pod !== mine.pod ? there.visit : null;
@@ -728,7 +691,7 @@ function hqVisit(m, task) {
 // member is not there: its desk stands empty. Someone who joins after the office has been
 // seen walks in at the front door.
 function hqPlacePeople() {
-  const members = (HQ.snap && HQ.snap.members) || [], review = hqReview(members);
+  const members = (HQ.snap && HQ.snap.members) || [];
   const layout = hqLayout(members);
   HQ.pods = layout.pods; HQ.seats = layout.seats; HQ.world = hqWorld(); HQ_FURN = hqFurniture();
   for (const m of members) {
@@ -741,7 +704,7 @@ function hqPlacePeople() {
       p = HQ.people[m.id] = { id: m.id, x: from.x * HQ_T, y: from.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
         working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 8 + HQ.rand() * 12 };
     }
-    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat;
+    p.look = m.look || 0; p.name = m.name; p.paused = m.paused; p.seat = seat;
     const run = (m.running || [])[0];
     const task = run && run.task ? hqTask(run.task) : null;
     // What a working member is doing, said above their head: their latest word on the task.
@@ -752,8 +715,6 @@ function hqPlacePeople() {
     p.visit = p.working ? hqVisit(m, task) : null;
     if (p.working) p.wander = null;
     if (was && !p.working) p.idleT = 3 + HQ.rand() * 5;
-    // The review: the CEO at the head of the table, the lead on a chair if between turns.
-    p.meeting = !review ? null : m.role === "ceo" ? HQ_MEETING.head : m.role === "lead" && !p.working ? HQ_MEETING.chairs[0] : null;
     // One who went to ask the CEO and has since been woken goes back to work.
     if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
     // On the page's first drawing everyone is simply where the record says they are: at work at
@@ -1170,7 +1131,6 @@ function hqDrawItem(g, it) {
 function hqFurniture() {
   const T = HQ_T, out = [], c = HQ_CEO.desk, m = HQ_MEETING.table, members = (HQ.snap && HQ.snap.members) || [];
   const f = (key, x, y, extra = {}) => { const i = HQ_IMG[key]; if (i) out.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
-  const ceo = members.find((x) => x.role === "ceo");
   // Every pod's desks, a PC on each, lit while its member works; a furloughed member's stands
   // empty with a small card that says it is away (ADR 0119).
   for (const pod of HQ.pods) {
@@ -1192,7 +1152,7 @@ function hqFurniture() {
   f("PLANT_2", 0.2 * T, 4.8 * T);
   // Mara's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
   f("DESK_FRONT", c.x * T, c.y * T);
-  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pcOf: ceo ? ceo.id : -1 });
+  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pcOf: -1 });
   f("CUSHIONED_CHAIR_BACK", 22 * T, 5 * T);
   f("BOOKSHELF", 24 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5 * T); f("PLANT", 26 * T, 4 * T);
   // The meeting room: the table, two chairs before it, a large plant in the corner.
@@ -1289,7 +1249,7 @@ function hqFrame(p) {
     return { dir, frame: [0, 1, 2, 1][Math.floor(p.frame) % 4] };
   }
   const at = p.at || {}, dir = at.dir || "down";
-  const reads = p.role === "researcher" || p.role === "reviewer" || !at.desk;
+  const reads = !at.desk;
   if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
   const pong = hqPong();
   if (pong && pong.includes(p)) return { dir: at.pong === "L" ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
@@ -1311,7 +1271,6 @@ function hqSitDy(p) { return HQ_SIT_DY[hqSits(p)] || 0; }
 function hqDepth(p) { return hqSits(p) === "couch" ? (p.at.cy + 1) * HQ_T + 0.5 : p.y + 16 + hqSitDy(p); }
 
 // When idle, who says what.
-const HQ_IDLE = { researcher: "zZ", reviewer: "heads down", lead: "", developer: "" };
 
 function hqDraw() {
   const cv = document.getElementById("hq-office");
@@ -1447,7 +1406,7 @@ function hqBubble(ctx, p) {
   const playing = [hqPong(), hqPool(), hqChessPair()].some((pair) => pair && pair.includes(p));
   const said = p.bubbleT > 0 ? p.bubble : "";
   const doing = p.working && !p.path.length ? hqShort(p.doing) : "";
-  const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : HQ_IDLE[p.role] || "") : "";
+  const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : "") : "";
   const text = said || doing || idle;
   if (!text) return;
   const quiet = !said && !doing;
@@ -1958,7 +1917,7 @@ function hqRosterLine(m) {
   const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today`;
   const open = !!HQ.roster[m.id];
   const controls = open ? `<div class="hq-controls">${hqBackLink()}
-      <p class="hq-who">${esc(hqRole(m.role))} · <span class="hq-tag">${esc(hqBrainTag(m.brain) + (m.brain === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : ""))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainTag(m.brain) + (m.brain === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : ""))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
   return `<li class="hq-member"><button class="hq-line" id="hq-member-${Number(m.id)}" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
@@ -2079,16 +2038,13 @@ function hqBundleOf(d) {
   return m ? m[1] : "";
 }
 
-// The owner hires (ADR 0115, 0142): a name, a title (a name only) and the model it is. HQ
-// refuses a model it does not have; this only asks.
+// The owner hires (ADR 0115, 0142): a name and the model it is. HQ refuses a model it does not
+// have; this only asks.
 function hqHireForm() {
-  const roles = [["developer", "Developer"], ["lead", "Lead"], ["researcher", "Researcher"], ["reviewer", "Tester"], ["ceo", "CEO"]]
-    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   const brains = [["local", "Local"], ["mac", "Mac"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"], ["deepseek-flash", "DeepSeek Flash"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
   return `<h3>Hire</h3><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
-      <select id="hq-hire-role" aria-label="Title">${roles}</select>
       <label>thinks with <select id="hq-hire-brain" aria-label="The model the member is">${brains}</select></label>
       <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div>`;
 }
@@ -2176,9 +2132,10 @@ function hqProjects(s) {
   const loose = routines.filter((r) => !listed.has(r.goal) && (r.enabled || showOff)).map(hqRoutineRow).join("");
   const offFold = off ? `<div class="hq-row"><button class="hq-btn hq-more" aria-expanded="${showOff}" data-act="hq:more:routinesoff:toggle">${showOff ? "Hide" : "Show"} the ${off} that ${off === 1 ? "is" : "are"} off</button></div>` : "";
   const goalOpts = (s.goals || []).filter((g) => g.status === "active").map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("");
-  const leadOpts = (s.members || []).filter((m) => m.role === "lead" || m.role === "ceo")
-    .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
-  const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
+  // Any member at work may lead a project (ADR 0142): there are no titles to pick by.
+  const leadOpts = (s.members || []).filter((m) => !m.furloughed)
+    .map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const who = (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
     ${loose ? `<ul class="hq-team hq-projects">${loose}</ul>` : ""}${offFold}
@@ -2543,7 +2500,7 @@ function hqSelected() {
   if (sel.type === "member") {
     const m = hqMember(sel.id); if (!m) return "";
     const run = (m.running || [])[0], t = run && run.task ? hqTask(run.task) : null;
-    return `<div class="hq-sel">${esc(m.name)} · ${esc(hqRole(m.role))}</div><dl class="hq-kv">
+    return `<div class="hq-sel">${esc(m.name)}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
       <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
@@ -2705,10 +2662,9 @@ async function hqDispatch(verb, noun, id, arg) {
   // The owner hires (ADR 0115, 0142): HQ refuses a model it does not have.
   if (noun === "hire") {
     const name = val("hq-hire-name");
-    const role = (document.getElementById("hq-hire-role") || {}).value || "developer";
     const brain = (document.getElementById("hq-hire-brain") || {}).value || "local";
     if (!name) { flash("Give the new member a name.", "warn"); return true; }
-    try { await api("POST", "/v1/hq/members", { name, role, brain }); flash(`${name} joined the team.`, "ok"); }
+    try { await api("POST", "/v1/hq/members", { name, brain }); flash(`${name} joined the team.`, "ok"); }
     catch (e) { flash("Couldn't hire: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }

@@ -191,7 +191,6 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         Ok(Ok(Some((run, member, runtime, wing, only, never, repo)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
-            "role": member.role.name(),
             "left": (run.reserved - run.spent).max(0),
             // The check point the node's relays, contracts and bridge ask (ADR 0109): a turn
             // on a cloud model is given no Confidential result beyond what the owner allowed,

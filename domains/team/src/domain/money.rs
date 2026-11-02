@@ -168,7 +168,6 @@ pub const fn crossed(spent: Micros, reserved: Micros) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::work::Role;
 
     #[test]
     fn the_pool_is_split_per_day_among_the_paid_by_their_weights() {
@@ -186,8 +185,8 @@ mod tests {
         );
         // Only the CEO and the lead paid: they split the day by 35 to 25.
         let (ceo, lead) = (
-            member_a_day(POOL_PER_MONTH, i64::from(Role::Ceo.share()), 60),
-            member_a_day(POOL_PER_MONTH, i64::from(Role::Lead.share()), 60),
+            member_a_day(POOL_PER_MONTH, 35, 60),
+            member_a_day(POOL_PER_MONTH, 25, 60),
         );
         assert_eq!((ceo, lead), (1_361_110, 972_222), "$1.36 and $0.97");
         assert!(ceo + lead <= pool_a_day(POOL_PER_MONTH));
@@ -207,11 +206,11 @@ mod tests {
         // Round 3's team: Mara on Opus, Kit on Sonnet, Ada on Haiku, Rae on DeepSeek, Bo on the
         // house's model.
         let (mara, kit, ada, rae, bo) = (
-            claim(Role::Ceo.share(), Brain::Opus),
-            claim(Role::Lead.share(), Brain::Sonnet),
-            claim(Role::Lead.share(), Brain::Haiku),
-            claim(Role::Developer.share(), Brain::DeepSeek),
-            claim(Role::Developer.share(), Brain::Local),
+            claim(35, Brain::Opus),
+            claim(25, Brain::Sonnet),
+            claim(25, Brain::Haiku),
+            claim(40, Brain::DeepSeek),
+            claim(40, Brain::Local),
         );
         let paid = mara + kit + ada + rae + bo;
         let day = 16_600_000;

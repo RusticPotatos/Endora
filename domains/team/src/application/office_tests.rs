@@ -11,7 +11,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::office;
-use crate::domain::{GoalId, MemberId, Priority, Role, WakeReason};
+use crate::domain::{GoalId, MemberId, Priority, WakeReason};
 use crate::infrastructure::simulated::Script;
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -51,10 +51,10 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-    let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 40, 2, 4).unwrap();
+    let cy = hq.hire("Cy", 20, 1, 1).unwrap();
+    let dee = hq.hire("Dee", 20, 1, 2).unwrap();
     Team { ada, bo, cy, dee }
 }
 

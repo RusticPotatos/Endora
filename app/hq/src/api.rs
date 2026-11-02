@@ -19,7 +19,7 @@ use serde_json::json;
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
-    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, RunId, TaskId,
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, RoutineId, RunId, TaskId,
 };
 
 use crate::Hq;
@@ -458,7 +458,6 @@ async fn decide(
 #[derive(Deserialize)]
 struct HireRequest {
     name: String,
-    role: String,
     /// Its model; the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
@@ -469,9 +468,8 @@ async fn hire(
     Extract(state): Extract<State>,
     Json(req): Json<HireRequest>,
 ) -> Result<Json<serde_json::Value>, Failed> {
-    let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
     let hq = state.hq.clone();
-    let id = blocking(move || hq.hire_by_owner_with(&req.name, role, req.brain.as_deref())).await?;
+    let id = blocking(move || hq.hire_by_owner_with(&req.name, req.brain.as_deref())).await?;
     Ok(Json(json!({ "member": id.0 })))
 }
 
@@ -1260,7 +1258,7 @@ mod tests {
     use endora_team::application::receipt_ports::ReceiptStore;
     use endora_team::application::run_ports::RunStore;
     use endora_team::application::wing_ports::WingStore;
-    use endora_team::domain::{Role, RunId, RunStatus, TaskId};
+    use endora_team::domain::{RunId, RunStatus, TaskId};
     use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
@@ -1284,10 +1282,10 @@ mod tests {
             Settings::default(),
         ));
         if simulated {
-            let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-            hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-            hq.hire("Cy", Role::Researcher, 15, 2, 2).unwrap();
-            hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+            let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+            hq.hire("Bo", 40, 2, 4).unwrap();
+            hq.hire("Cy", 15, 2, 2).unwrap();
+            hq.hire("Dee", 20, 2, 1).unwrap();
             let goal = hq
                 .set_goal("Keep the home lab healthy", "", Author::Owner)
                 .unwrap();
@@ -1327,7 +1325,7 @@ mod tests {
 
     /// A developer is handed a task, and the tick starts their turn: it waits for a runner.
     fn a_turn_starts(st: &State) -> (RunId, TaskId) {
-        let dev = st.hq.hire("John Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("John Doe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
@@ -1358,7 +1356,7 @@ mod tests {
     /// from its turns alone.
     fn a_wing_turn_starts(st: &State) -> (RunId, TaskId) {
         let (run, task) = a_turn_starts(st);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 1).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 1).unwrap();
         let wing = st
             .hq
             .set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
@@ -1423,8 +1421,8 @@ mod tests {
     #[tokio::test]
     async fn a_game_is_read_as_pgn() {
         let st = state(false);
-        let white = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 4).unwrap();
-        let black = st.hq.hire("John Doe", Role::Developer, 40, 2, 4).unwrap();
+        let white = st.hq.hire("Jane Doe", 40, 2, 4).unwrap();
+        let black = st.hq.hire("John Doe", 40, 2, 4).unwrap();
         let goal = st.hq.set_goal("Holodeck", "", Author::Owner).unwrap();
         let project = st.hq.add_project(goal, "Chess", "", white, None).unwrap();
         st.hq
@@ -2769,7 +2767,7 @@ mod tests {
         let turn = json_of(res).await;
         assert_eq!(turn["run"], run.0);
         assert_eq!(turn["member"], "John Doe");
-        assert_eq!(turn["role"], "developer");
+        assert!(turn.get("role").is_none(), "no title is said: {turn}");
         assert_eq!(turn["task"], task.0);
         assert_eq!(
             turn["brain"], "local",
@@ -3046,7 +3044,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_gives_a_member_a_cloud_brain_and_the_runner_and_the_node_hear_it() {
         let st = state(false);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, brain: &str| {
             call(
@@ -3151,7 +3149,7 @@ mod tests {
         .await;
         assert_eq!(found["cloud"], true, "the node's check point is told");
         assert_eq!(found["brain"], "claude-sonnet-5-5");
-        assert_eq!(found["role"], "lead");
+        assert!(found.get("role").is_none(), "no title is said: {found}");
     }
 
     #[tokio::test]
@@ -3159,7 +3157,7 @@ mod tests {
         // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
         // turn of hers until the runtime was set by hand.
         let st = state(false);
-        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
         st.hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
         st.hq.set_runtime(dev, "claude-code").unwrap();
         let app = app(st.clone());
@@ -3197,9 +3195,9 @@ mod tests {
     #[tokio::test]
     async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
         let st = state(false);
-        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
         st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 1).unwrap();
         st.hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, runtime: &str| {
@@ -3383,7 +3381,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_switches_and_runs_a_routine_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3505,7 +3503,7 @@ mod tests {
 
     /// The home lab's routine, which takes its alarms: a member's, under the lab's goal.
     fn lab_routine(st: &State) {
-        let member = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let member = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3663,7 +3661,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_renames_a_member_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let res = app
             .clone()
@@ -3702,7 +3700,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_a_loop_worked_alone() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3782,11 +3780,9 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_caps_and_pauses_a_project() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq
-            .hire("Richard Roe", Role::Developer, 40, 2, 0)
-            .unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Richard Roe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3979,10 +3975,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let members = st.hq.store().members().unwrap();
         let rae = members.iter().find(|m| m.name == "Rae").unwrap();
-        assert_eq!(
-            (rae.role, rae.brain.name()),
-            (Role::Developer, "claude-haiku-5-5")
-        );
+        assert_eq!(rae.brain.name(), "claude-haiku-5-5");
         // A model Endora lacks is refused, whatever the title.
         let res = app
             .clone()
@@ -3993,11 +3986,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // A title an older console still sends is a name only (ADR 0142): it decides nothing.
         let res = app
             .oneshot(hire(Some(TOKEN), json!({ "name": "X", "role": "wizard" })))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     /// D12 (ADR 0142, amended 2026-10-31): work in progress the node kept as a turn ran out of

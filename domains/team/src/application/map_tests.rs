@@ -13,7 +13,7 @@ use super::engine::{Author, Engine, Settings};
 use super::map_ports::MapStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
-use crate::domain::{GoalId, MemberId, Priority, ProjectId, Role, TaskId};
+use crate::domain::{GoalId, MemberId, Priority, ProjectId, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -48,12 +48,12 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Mara the CEO; Ada and Bo, two leads; Linus a developer and Dee the tester, both under Ada;
 /// one goal and the project "Upkeep", Ada's.
 fn team(hq: &Hq<'_>) -> Team {
-    let mara = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    let mara = hq.hire("Mara", 35, 1, 3).unwrap();
     hq.set_brain(mara, "claude-opus-5-5").unwrap();
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    hq.hire("Bo", Role::Lead, 25, 2, 3).unwrap();
-    let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    hq.hire("Bo", 25, 2, 3).unwrap();
+    let linus = hq.hire("Linus", 40, 2, 4).unwrap();
+    let dee = hq.hire("Dee", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();

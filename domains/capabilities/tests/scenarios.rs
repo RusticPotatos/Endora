@@ -13,7 +13,7 @@ use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
 use endora_capabilities::Stance;
 use endora_capabilities::bridge::{
-    Asker, Bridged, Candidate, Kind, Thinks, bridge, offered as offered_to_a_turn,
+    Bridged, Candidate, Kind, Thinks, bridge, offered as offered_to_a_turn,
     switches_the_owners_devices,
 };
 
@@ -143,23 +143,17 @@ fn thinks(where_: &str) -> Thinks {
 
 /// The list a turn is offered, drawn up the way the node does it (`app/node/src/api/bridge.rs`).
 #[when(
-    regex = r"^the team's tools are drawn up for a (\w+) thinking on (the NAS's model|the Mac|Claude)$"
+    regex = r"^the team's tools are drawn up for a member thinking on (the NAS's model|the Mac|Claude)$"
 )]
-fn drawn_up_for(w: &mut Bridge, role: String, where_: String) {
+fn drawn_up_for(w: &mut Bridge, where_: String) {
     let all: Vec<Bridged> = w.candidates.iter().filter_map(|c| bridge(c).ok()).collect();
-    w.offered = offered_to_a_turn(
-        all,
-        Asker {
-            role: &role,
-            thinks: thinks(&where_),
-        },
-    );
+    w.offered = offered_to_a_turn(all, thinks(&where_));
 }
 
 /// A call by name, resolved against every tool Endora has, as the node does, so that one this
 /// turn may not use is refused with the reason and not as unknown.
-#[when(regex = r#"^a (\w+) thinking on (the NAS's model|the Mac|Claude) calls "(.+)" anyway$"#)]
-fn calls_while_thinking(w: &mut Bridge, _role: String, where_: String, name: String) {
+#[when(regex = r#"^a member thinking on (the NAS's model|the Mac|Claude) calls "(.+)" anyway$"#)]
+fn calls_while_thinking(w: &mut Bridge, where_: String, name: String) {
     let tool = w
         .candidates
         .iter()

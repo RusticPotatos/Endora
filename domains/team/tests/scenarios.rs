@@ -25,7 +25,7 @@ use endora_team::application::{
 use endora_team::domain::money::DOLLAR;
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
-    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt, Role,
+    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt,
     TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -358,15 +358,9 @@ impl Office {
 
     // ---- One helper a job, for every feature's steps (review of 31 Oct) --------------------
 
-    /// The owner's team member `name`, one model: hired under the role its model is ranked to
-    /// (ADR 0142), as production's five were.
+    /// The owner's team member `name`, one model (ADR 0142).
     fn hires_model(&mut self, name: &str, model: &str) {
-        let role = match model {
-            "opus" => Role::Ceo,
-            "sonnet" | "haiku" => Role::Lead,
-            _ => Role::Developer,
-        };
-        let id = self.hq.hire(name, role, 10, 2, 0).expect("HQ hires");
+        let id = self.hq.hire(name, 10, 2, 0).expect("HQ hires");
         self.hq.set_model(id, model).expect("a model Endora has");
         self.members.insert(name.to_owned(), id);
     }
@@ -532,48 +526,42 @@ fn alarm(w: &mut Office, said: String) {
 
 // --- The team ----------------------------------------------------------------------------
 
-/// The owner hires a member by role.
+/// The owner hires a member, its title a name only (ADR 0142): the title the scenario gives
+/// it sets the share and slots the member was hired with when titles were roles.
 #[given(expr = "{word} is the {word}")]
-fn hire(w: &mut Office, name: String, role: String) {
-    if role == "CEO" {
-        let id =
-            w.hq.hire(&name, Role::Ceo, 35, 1, 3)
-                .expect("the owner hires a CEO");
+fn hire(w: &mut Office, name: String, title: String) {
+    if title == "CEO" {
+        let id = w.hq.hire(&name, 35, 1, 3).expect("the owner hires a CEO");
         w.hq.set_brain(id, "claude-opus-5-5")
             .expect("a CEO thinks with Opus");
         w.members.insert(name, id);
         return;
     }
-    let (role, share) = match role.as_str() {
-        "lead" => (Role::Lead, 25),
-        "developer" => (Role::Developer, 40),
-        // The reviewer's role is what the owner reads as the tester (ADR 0114).
-        "reviewer" | "tester" => (Role::Reviewer, 20),
-        "researcher" => (Role::Researcher, 15),
-        other => panic!("the team has no role called {other}"),
+    let share = match title.as_str() {
+        "lead" => 25,
+        "developer" => 40,
+        "reviewer" | "tester" => 20,
+        "researcher" => 15,
+        other => panic!("the team never had a title called {other}"),
     };
-    let id = w.hq.hire(&name, role, share, 2, 0).expect("HQ hires");
+    let id = w.hq.hire(&name, share, 2, 0).expect("HQ hires");
     w.members.insert(name, id);
 }
 
 #[given(expr = "{word} thinks with Claude")]
 fn thinks_with_claude(w: &mut Office, name: String) {
     let id = w.member(&name);
-    let role =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired")
-            .role;
-    let brain = if role == Role::Researcher {
-        "claude-haiku-5-5"
-    } else {
-        "claude-sonnet-5-5"
-    };
-    w.hq.set_brain(id, brain)
-        .expect("a brain the role may think with");
+    w.hq.set_brain(id, "claude-sonnet-5-5")
+        .expect("a brain a member may think with");
+}
+
+/// A member on Claude's cheapest model, which most of the pool goes to (ADR 0113, amended
+/// 2026-11-01).
+#[given(expr = "{word} thinks with Claude Haiku")]
+fn thinks_with_claude_haiku(w: &mut Office, name: String) {
+    let id = w.member(&name);
+    w.hq.set_brain(id, "claude-haiku-5-5")
+        .expect("a brain a member may think with");
 }
 
 #[when(regex = r#"^the owner sets (\w+)'s brain to "(.+)"$"#)]
@@ -1044,15 +1032,13 @@ struct Wing {
 /// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task, the plan.
 #[given("the engineering wing")]
 fn the_wing(w: &mut Office) {
-    let kit =
-        w.hq.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
-            .expect("Kit is hired");
+    let kit = w.hq.hire("Kit", 25, 2, 5).expect("Kit is hired");
     w.hq.set_brain(kit, "claude-sonnet-5-5")
         .expect("Kit thinks with Sonnet");
     w.members.insert("Kit".to_owned(), kit);
     for (name, look) in [("Rae", 2), ("Zed", 4)] {
         let id =
-            w.hq.hire(name, Role::Developer, Role::Developer.share(), 2, look)
+            w.hq.hire(name, 40, 2, look)
                 .expect("the developer is hired");
         w.hq.set_brain(id, "claude-haiku-5-5")
             .expect("the developer thinks with Haiku");
@@ -1239,9 +1225,8 @@ fn task_is(w: &mut Office, title: String, status: String) {
 
 #[given(expr = "the owner hires {word} as a {word}")]
 #[when(expr = "the owner hires {word} as a {word}")]
-fn owner_hires(w: &mut Office, name: String, role: String) {
-    let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
-    let hired = w.hq.hire_by_owner(&name, role, "local");
+fn owner_hires(w: &mut Office, name: String, _title: String) {
+    let hired = w.hq.hire_by_owner(&name, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }

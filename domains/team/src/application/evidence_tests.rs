@@ -18,8 +18,8 @@ use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::evidence::NUDGE;
 use crate::domain::routines::HOUR_MS;
 use crate::domain::{
-    Criterion, GoalId, Label, MemberId, Priority, Refusal, Role, RunId, RunStatus, TaskId,
-    TaskStatus, WakeReason,
+    Criterion, GoalId, Label, MemberId, Priority, Refusal, RunId, RunStatus, TaskId, TaskStatus,
+    WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -53,12 +53,12 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Grace the tester when `tester`.
 fn team(hq: &Hq<'_>, ceo: bool, tester: bool) -> Team {
     if ceo {
-        hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.hire("Mara", 35, 1, 3).unwrap();
     }
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     if tester {
-        hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+        hq.hire("Grace", 20, 2, 1).unwrap();
     }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)

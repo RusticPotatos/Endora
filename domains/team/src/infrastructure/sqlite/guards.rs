@@ -132,11 +132,10 @@ mod tests {
     use super::*;
     use crate::application::desk_ports::DeskStore;
     use crate::application::ports::TeamStore;
-    use crate::domain::Role;
 
     fn store_with_a_task() -> (SqliteTeamStore, TaskId, MemberId) {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let member = store.add_member("Jane", Role::Developer, 40, 1, 0).unwrap();
+        let member = store.add_member("Jane", 40, 1, 0).unwrap();
         let goal = store
             .add_goal(
                 "Keep the home lab healthy",

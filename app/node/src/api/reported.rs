@@ -281,7 +281,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"tok\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": false, "brain": "local", "runtime": "worker" })
                 .to_string(),
             ),
@@ -357,14 +357,14 @@ mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "claude-code" })
                 .to_string(),
             ),
             "/v1/team/turn" if body.contains("\"worker\"") => (
                 200,
                 "application/json",
-                json!({ "run": 8, "member": "Zed", "role": "developer", "left": 1000,
+                json!({ "run": 8, "member": "Zed", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "worker" })
                 .to_string(),
             ),
@@ -461,7 +461,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "claude-code" })
                 .to_string(),
             ),

@@ -9,9 +9,7 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use super::protocol::call;
 use crate::application::event_ports::EventStore;
-use crate::domain::{
-    GoalId, MemberId, Priority, Receipt, Refusal, Role, TaskId, TaskStatus, WakeReason,
-};
+use crate::domain::{GoalId, MemberId, Priority, Receipt, Refusal, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -33,8 +31,8 @@ fn office(clock: &Hands) -> (Hq<'_>, MemberId, GoalId, TaskId) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal(
             "Keep the home lab healthy",
@@ -204,7 +202,7 @@ fn the_owner_sets_what_a_member_thinks_with() {
         "a refusal changes nothing"
     );
     // A title is a name only (ADR 0142): a researcher may think with Sonnet.
-    let researcher = hq.hire("Marie", Role::Researcher, 15, 1, 2).unwrap();
+    let researcher = hq.hire("Marie", 15, 1, 2).unwrap();
     hq.set_brain(researcher, "claude-sonnet-5-5").unwrap();
     assert!(matches!(
         hq.set_brain(MemberId(99), "local"),

@@ -524,19 +524,19 @@ if (failures.length) {
     HQ.snap = { stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000,
         sized: { by: "credit", why: "Sized from the Claude credit: $70.23 left, 18 days to the 18th." } },
-      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [],
+      members: [{ id: 1, name: "Ada", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
-                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], rescues: 2,
+                { id: 2, name: "Bo", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }], rescues: 2,
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
-                { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], rescues: null, brain: "local", brains: [] },
-                { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
-                { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
+                { id: 3, name: "Cy", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], rescues: null, brain: "local", brains: [] },
+                { id: 4, name: "<i>Dee</i>", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
+                { id: 5, name: "Mara", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] },
                 // The engineering wing (ADR 0115): its lead and a developer, who sit in the wing.
-                { id: 6, name: "Kit", role: "lead", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-sonnet-5-5", brains: [] },
-                { id: 7, name: "Rae", role: "developer", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], brain: "claude-haiku-5-5", brains: [] },
+                { id: 6, name: "Kit", look: 5, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-sonnet-5-5", brains: [] },
+                { id: 7, name: "Rae", look: 2, paused: false, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [{ run: 30, task: 9 }], brain: "claude-haiku-5-5", brains: [] },
                 // Elastic staffing (ADR 0118): a developer on furlough, who keeps her place.
-                { id: 8, name: "Zed", role: "developer", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-haiku-5-5", brains: [] }],
+                { id: 8, name: "Zed", look: 4, paused: false, furloughed: true, slots: 2, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "claude-haiku-5-5", brains: [] }],
       wing: { goal: "Improve the lab", leads: [6], members: [6, 7] },
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
       // The team's world (ADR 0122): sections by stage, the timeline and the derived pages;
@@ -678,7 +678,7 @@ if (failures.length) {
     hqTell({ id: 46, at: 0, kind: "lesson.noted", data: { member: 1, task: 7, goal: 1, lesson: "An RSS sync that grabs nothing is normal." } }, false);
     hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5", slot: "judgment" } }, false);
     hqTell({ id: 55, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "mac", slot: "work" } }, false);
-    hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", role: "ceo", brain: "claude-opus-5-5", by: "endora" } }, false);
+    hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", brain: "claude-opus-5-5", by: "endora" } }, false);
     hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);
     hqTell({ id: 50, at: 0, kind: "project.budget", data: { project: 1, title: "Upkeep", level: "spent", said: "spent its $0.50 cap for the month ($0.46): its Claude turns wait" } }, false);
     hqTell({ id: 52, at: 0, kind: "run.ended", data: { run: 10, member: 2, task: 7, result: "succeeded", label: "talk only" } }, false);
@@ -752,7 +752,7 @@ if (failures.length) {
     "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
-    "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
+    "Mara joined the team", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
     "Bo asked Ada for help (EL-7)", "Ada answered Bo (EL-7)", "Bo concluded from Ada&#39;s answer",
     // Caps on talk and runaway (ADR 0133).
     "Bo waits: EL-7 is being worked (mentioned)",
@@ -1111,7 +1111,7 @@ if (failures.length) {
   if (office.includes("hq:decide:24:approve")) fail("hq: a push the node cannot make was offered Approve");
   if (office.includes("hq:bundle:9:task-9-tidy")) fail("hq: a push the node can make offers a download instead");
   if (office.includes("<b>with nobody free</b>")) fail("hq: a lead's hire request became markup");
-  for (const id of ["hq-hire-name", "hq-hire-role", "hq-hire-brain"]) {
+  for (const id of ["hq-hire-name", "hq-hire-brain"]) {
     if (!office.includes(`id="${id}"`)) fail(`hq: the hire form lacks ${id}`);
   }
   // A member out for the day (ADR 0113): an allowance with an amount box, or tomorrow; the
@@ -1232,11 +1232,11 @@ if (failures.length) {
   if (!office.includes("&lt;s&gt;Backups&lt;/s&gt;")) fail("hq: a project's title is not shown as text");
   if (office.includes("<b>Haiku</b>")) fail("hq: a brain's label became markup");
   // Evidence (ADR 0114): each criterion with its evidence, the tester's pass, the turns' labels,
-  // posts that cite nothing marked, the reviewer shown as the tester, and the rounds the owner's.
+  // posts that cite nothing marked, and the rounds the owner's.
   for (const said of ["What done means", "&lt;b&gt;sonarr&lt;/b&gt; is running", "live: a reading the same turn", "submitted, Bo", "r12 · homelab_status",
     "&lt;img src=e onerror=alert(7)&gt; sonarr: running", "the tester passed it, ", "Tester's pass: given.", "No evidence yet.",
     '<span class="hq-unsupported">unsupported</span>: Probably fine.', "R2 Bo · EL-7 · talk only", "R1 Bo · EL-7 · checked",
-    "R10 Bo finished · talk only", "Tester · ", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
+    "R10 Bo finished · talk only", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
     // Read as words: a name in a line of Activity is a link (the owner, 1 Nov).
     if (!office.replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1").includes(said)) fail(`hq: the evidence does not show ${said}`);
   }
@@ -1248,7 +1248,7 @@ if (failures.length) {
   // The team board takes a line a member (the owner's notes of 31 Oct): no groups and no
   // headings (ADR 0142: no roles, no reporting lines), and each line says only the name, the
   // model, what it is doing now and today's money, kept to one line by the stylesheet; the
-  // rest of the member's card (its role, both brains, its budget, its controls) on a tap.
+  // rest of the member's card (its brains, its budget, its controls) on a tap.
   {
     const roster = runInContext("HQ.roster = {}; hqRoster(HQ.snap)", context);
     if (/<h3|hq-group/.test(roster)) fail("hq: the team board still has groups or headings");
@@ -1266,13 +1266,13 @@ if (failures.length) {
       // Name, model and doing, then the money: in that order.
       if (!(l.indexOf(`<b>${name}</b>`) < l.indexOf(said[0]) && l.indexOf(said[0]) < l.indexOf(said[1]))) fail(`hq: ${name}'s line is not name, model, doing, money`);
     }
-    // The role, the day's allowance and the brains wait for the tap.
+    // No title anywhere; the day's allowance and the brains wait for the tap.
     for (const shut of ["Tester", "CEO", "lead ·", "developer", "of $0.58", '<span class="hq-tag">Sonnet</span>']) {
       if (roster.includes(shut)) fail(`hq: "${shut}" is on the team board's shut lines`);
     }
     const openedLine = runInContext("HQ.roster = { 6: true, 4: true }; const html = hqRoster(HQ.snap); HQ.roster = {}; html", context);
     if (!openedLine.includes('<span class="hq-tag">Sonnet</span>')) fail("hq: a member's brains are not in its opened line");
-    if (!openedLine.includes("Tester")) fail("hq: a member's role is not in its opened line");
+    if (/Tester|CEO|Lead|Developer|Researcher/.test(openedLine)) fail("hq: a member's opened line names a title (ADR 0142: none)");
     if (roster.includes("<i>Dee</i>")) fail("hq: a member's name became markup on the roster");
     // One line, by the stylesheet: the line does not wrap, and what is doing gives way first.
     const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
@@ -1351,14 +1351,14 @@ if (failures.length) {
     if (runInContext('hqBrainTag("mac")', context) !== "Mac") fail("mac: the roster does not tag the Mac brain");
     if (!runInContext('hqMemberMoney({ brain: "mac" })', context).includes("costs nothing")) fail("mac: a Mac member is said to cost money");
     if (!runInContext("hqHireForm()", context).includes('<option value="mac">Mac</option>')) fail("mac: the hire form does not offer the Mac");
-    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("Mac · between turns</small> <span>costs nothing")) fail("mac: a Mac member's roster line is wrong");
-    if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac (free)</span>')) fail("mac: a Mac member's opened line does not say the Mac's state");
-    if (!runInContext('(() => { const keep = HQ.mac; HQ.mac = Object.assign({}, keep, { busy: true }); HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; HQ.mac = keep; return line; })()', context).includes('<span class="hq-tag">Mac (busy)</span>')) fail("mac: a busy Mac is not said busy where a member's model is named");
-    if (!runInContext('(() => { const keep = HQ.mac; HQ.mac = null; HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", role: "developer", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; HQ.mac = keep; return line; })()', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac the node cannot say about is given a state");
+    if (!runInContext('hqRosterLine({ id: 9, name: "Zed", brain: "mac", running: [], spent: 0, per_day: 0 }, [])', context).includes("Mac · between turns</small> <span>costs nothing")) fail("mac: a Mac member's roster line is wrong");
+    if (!runInContext('HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; line', context).includes('<span class="hq-tag">Mac (free)</span>')) fail("mac: a Mac member's opened line does not say the Mac's state");
+    if (!runInContext('(() => { const keep = HQ.mac; HQ.mac = Object.assign({}, keep, { busy: true }); HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; HQ.mac = keep; return line; })()', context).includes('<span class="hq-tag">Mac (busy)</span>')) fail("mac: a busy Mac is not said busy where a member's model is named");
+    if (!runInContext('(() => { const keep = HQ.mac; HQ.mac = null; HQ.roster = { 9: true }; const line = hqRosterLine({ id: 9, name: "Zed", brain: "mac", running: [], spent: 0, per_day: 0 }, []); HQ.roster = {}; HQ.mac = keep; return line; })()', context).includes('<span class="hq-tag">Mac</span>')) fail("mac: a Mac the node cannot say about is given a state");
     // A member is its model (ADR 0142): the roster line says it, the controls set it, and a turn
     // that waits says what for; the top bar counts the turns waiting for budget.
     {
-      const zed = `{ id: 9, name: "Zed", role: "developer", brain: "claude-haiku-5-5",
+      const zed = `{ id: 9, name: "Zed", brain: "claude-haiku-5-5",
         brains: [{ name: "mac", label: "Mac" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }],
         running: [], spent: 0, held: 0, per_day: 100 }`;
       const line = runInContext(`HQ.roster[9] = true; hqRosterLine(${zed}, [])`, context);
@@ -1436,10 +1436,9 @@ if (failures.length) {
     if (!hq.includes('id="hq-find"') || !hq.includes('data-act="hq:find:task:go"')) fail("hq: the Work tab has no way to find a task");
     if (runInContext("HQ.snap.desk.some((d) => d.task)", context) && !hq.includes('data-act="hq:pick:task:')) fail("hq: a desk card's task number does not open it");
   }
-  // The open office (the pixel canvas, ADR 0119): one pod of desks for each team, side by side
-  // with no walls, laid out from the snapshot alone (a third team makes a third pod); a desk for
-  // every member, empty with an "away" card for one on furlough; Mara in her own office with the
-  // door open; everything that stands on the floor drawn from the snapshot's office, so a thing
+  // The open office (the pixel canvas, ADR 0119): one pod of desks for the one team (ADR 0142),
+  // laid out from the snapshot alone; a desk for every member at work; the office's rooms with
+  // their doors open; everything that stands on the floor drawn from the snapshot's office, so a thing
   // that moves in the data moves on screen; and people who walk round desks and furniture and
   // through doors only, visit another team's pod for its work, and drift about when idle. Drawn
   // through an explicit 2D context that keeps what was written and filled on it. No art is
@@ -1450,32 +1449,28 @@ if (failures.length) {
       return { pods: l.pods.map((p) => ({ label: p.label, x: p.x, y: p.y, width: p.width, rows: p.rows, desks: p.desks.map((d) => [d.x, d.y, d.member]) })),
         seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
     })()`, context);
-    if (layout.pods.map((p) => p.label).join("|") !== "Ops · Ada|Engineering · Kit") fail(`hq: the pods are not the roster's teams: ${layout.pods.map((p) => p.label)}`);
-    // One team (ADR 0142): nobody reports to anybody, so every member but the CEO and the leads
-    // joins the first pod; Zed, retired (on furlough), leaves the floor.
-    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4,7") fail(`hq: the first pod is not Ada, Bo, Cy, Dee and Rae: ${layout.pods[0].desks.map((d) => d[2])}`);
-    if (layout.pods[1].desks.map((d) => d[2]).join() !== "6") fail(`hq: the second pod is not Kit alone, with Zed retired: ${layout.pods[1].desks.map((d) => d[2])}`);
-    if (layout.seats[5].pod !== -1) fail("hq: the CEO sits in a pod");
-    const [podA, podB] = layout.pods;
-    if (!(podA.x + podA.width < podB.x)) fail("hq: the pods are not side by side");
+    // One team (ADR 0142): no titles, nobody reports to anybody, so every member at work sits in
+    // the one pod, Mara among them; Zed, retired (on furlough), leaves the floor.
+    if (layout.pods.length !== 1 || layout.pods[0].label !== "Team") fail(`hq: the floor is not one team's pod: ${layout.pods.map((p) => p.label)}`);
+    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4,5,6,7") fail(`hq: the pod is not every member at work: ${layout.pods[0].desks.map((d) => d[2])}`);
+    if (Object.values(layout.seats).some((s) => s.pod === -1)) fail("hq: a member sits outside the pod, as the CEO once did");
     const every = layout.pods.flatMap((p) => p.desks.map((d) => `${d[0]},${d[1]}`));
     if (new Set(every).size !== every.length) fail("hq: two members share a desk");
     if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
-    // Two to a row, each sitting in the aisle at its own desk's end, facing its computer (the
-    // owner saw a member at work standing beside an empty desk).
-    if (layout.seats[1].work.join() !== "9,9,left" || layout.seats[2].work.join() !== "10,9,right") fail(`hq: the two of a row do not sit facing their own desks: ${layout.seats[1].work} ${layout.seats[2].work}`);
-    // The teams are the snapshot's: a third lead is a third pod, one that will not fit goes below, none leaves the band.
+    // Each sits in the aisle at its own desk's end, facing its computer (the owner saw a member
+    // at work standing beside an empty desk).
+    for (const [x, y, id] of layout.pods[0].desks) {
+      const [cx, cy] = layout.seats[id].work;
+      if (cy !== y + 1 || (cx !== x + 3 && cx !== x - 1)) fail(`hq: member ${id} does not sit at its own desk: ${cx},${cy} by ${x},${y}`);
+    }
+    // Nine at work, three rows of three, still fit the band, every member at a desk of its own.
     const grown = runInContext(`(() => {
-      // The leads and the CEO, so the first pod is one row: Pia, reporting to nobody, joins it.
-      const members = HQ.snap.members.filter((m) => ["lead", "ceo"].includes(m.role)).concat([{ id: 9, name: "Ned", role: "lead" }, { id: 10, name: "Pia", role: "developer" }]);
-      const three = hqLayout(members), four = hqLayout(members.concat([{ id: 11, name: "Oz", role: "lead" }, { id: 12, name: "Uma", role: "lead" }]));
-      const rows = (l) => l.pods.flatMap((p) => p.desks.map((d) => d.x + "," + d.y));
-      return { labels: three.pods.map((p) => p.label), of: [three.seats[9].pod, three.seats[10].pod], right: Math.max(...three.pods.map((p) => p.x + p.width)),
-        four: four.pods.map((p) => [p.x, p.y]), unique: new Set(rows(four)).size === rows(four).length,
-        inside: four.pods.every((p) => p.desks.every((d) => d.y + 2 <= 14)) };
+      const more = HQ.snap.members.concat([9, 10].map((id) => ({ id, name: "N" + id })));
+      const l = hqLayout(more), rows = l.pods.flatMap((p) => p.desks.map((d) => d.x + "," + d.y));
+      return { desks: rows.length, unique: new Set(rows).size === rows.length,
+        inside: l.pods.every((p) => p.desks.every((d) => d.y + 2 <= 14 && d.x + 3 <= 28)) };
     })()`, context);
-    if (grown.labels.join("|") !== "Ops · Ada|Engineering · Kit|Ops · Ned" || grown.of.join() !== "2,0" || grown.right > 28) fail(`hq: a third team does not make a third pod: ${JSON.stringify(grown)}`);
-    if (grown.four.length !== 5 || grown.four[4].join() !== "1,10" || !grown.unique || !grown.inside) fail(`hq: a team that will not fit does not wrap below inside the band: ${JSON.stringify(grown)}`);
+    if (grown.desks !== 9 || !grown.unique || !grown.inside) fail(`hq: a bigger team does not fit the band: ${JSON.stringify(grown)}`);
     const inside = runInContext(`(() => {
       const In = (r, s) => s.cx >= r.x && s.cx < r.x + r.w && s.cy >= r.y && s.cy < r.y + r.h;
       const M = HQ_ROOMS.meeting, O = HQ_ROOMS.ceo;
@@ -1499,7 +1494,7 @@ if (failures.length) {
     const saved = runInContext("JSON.stringify(HQ.snap)", context);
     try {
       runInContext(`HQ.people = {}; HQ.settled = false; HQ_BG = hqPaintRoom(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "OPS · ADA", "ENGINEERING · KIT"]) {
+      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
       if (written.includes("WING")) fail("hq: the walled wing is still drawn");
@@ -1589,11 +1584,12 @@ if (failures.length) {
           { id: 92, kind: "plant", x: 5, y: 9, w: 1, h: 1 }, { id: 93, kind: "plant", x: 5, y: 11, w: 1, h: 1 },
           { id: 94, kind: "coffee_machine", x: 2, y: 12, w: 1, h: 1 }, { id: 95, kind: "plant", x: 2, y: 13, w: 1, h: 1 });
         HQ.world = hqWorld();
-        const p = { x: 9 * HQ_T, y: 9.5 * HQ_T, path: [] };
+        // From the aisle of the one pod (ADR 0142), between its first two columns of desks.
+        const p = { x: 11 * HQ_T, y: 9.5 * HQ_T, path: [] };
         hqWalk(p, hqAt(5, 10));
         const steps = p.path.map((c) => Math.round(c.x / HQ_T) + "," + Math.round(c.y / HQ_T + 0.5));
         const through = steps.slice(0, -1).some((k) => HQ.world.blocked.has(k));
-        const offered = hqWanderSpots().some((s) => s.cx === 2 && s.cy === 13), none = hqPathCells(hqAt(9, 10), hqAt(5, 10)) === null;
+        const offered = hqWanderSpots().some((s) => s.cx === 2 && s.cy === 13), none = hqPathCells(hqAt(11, 10), hqAt(5, 10)) === null;
         // A step at a time, one cell to the next, never a straight line across the floor.
         const cells = steps.map((k) => k.split(",").map(Number));
         const apart = (i) => Math.abs(cells[i][0] - cells[i - 1][0]) + Math.abs(cells[i][1] - cells[i - 1][1]);
@@ -1602,25 +1598,21 @@ if (failures.length) {
         return [none, !through, stepwise, steps[steps.length - 1] === "5,10", !offered];
       })()`, context);
       if (shut.some((ok) => !ok)) fail(`hq: a walk to a shut-in spot cuts through furniture, or a covered spot is offered: ${shut}`);
-      // Working at a desk, or elsewhere when the work is: another team's project, a task a tester
-      // checks, a project the CEO leads (her door); Mara herself stays in her office.
+      // Working at its own desk (ADR 0142, one team: no other pod to visit, no tester's round,
+      // no CEO's office), whatever project the work is in; Mara at her desk like the rest.
       const visits = runInContext(`(() => {
         const run = (id, task) => { HQ.snap.members.find((m) => m.id === id).running = task ? [{ run: 90 + id, task }] : []; };
         const cell = (p) => p.at.cx + "," + p.at.cy, spot = (s) => s.cx + "," + s.cy;
-        HQ.snap.projects.push({ id: 9, goal: 1, title: "Wing work", lead: 6, status: "active" }, { id: 10, goal: 1, title: "Board work", lead: 5, status: "active" });
-        HQ.snap.tasks.push({ id: 31, goal: 1, project: 9, title: "t", status: "doing", owner: 2, thread: [] }, { id: 32, goal: 1, project: 10, title: "t", status: "doing", owner: 2, thread: [] },
-          { id: 33, goal: 1, project: 1, title: "t", status: "doing", owner: 2, thread: [] });
+        HQ.snap.projects.push({ id: 9, goal: 1, title: "Wing work", lead: 6, status: "active" });
+        HQ.snap.tasks.push({ id: 31, goal: 1, project: 9, title: "t", status: "doing", owner: 2, thread: [] });
         const out = [];
-        run(2, 31); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[6].visit), HQ.seats[6].visit.cx !== HQ.seats[2].work.cx);
-        run(2, 32); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ_ROOMS.ceo.out));
-        run(2, 33); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work), HQ.people[2].at.desk === true);
-        run(2, 7); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work));
-        run(2, null); run(4, 9); hqPlacePeople(); out.push(cell(HQ.people[4]) === spot(HQ.seats[7].visit));
-        run(4, null); run(5, 31); hqPlacePeople(); out.push(cell(HQ.people[5]) === spot(HQ_CEO.work));
+        run(2, 31); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work), HQ.people[2].at.desk === true);
+        run(2, null); run(4, 9); hqPlacePeople(); out.push(cell(HQ.people[4]) === spot(HQ.seats[4].work));
+        run(4, null); run(5, 31); hqPlacePeople(); out.push(cell(HQ.people[5]) === spot(HQ.seats[5].work));
         run(5, null); hqPlacePeople();
         return out;
       })()`, context);
-      if (visits.some((ok) => !ok)) fail(`hq: a working member is not at its desk, or at the other team's, the tester's or the CEO's door when the work is: ${visits}`);
+      if (visits.some((ok) => !ok)) fail(`hq: a working member is not at its own desk: ${visits}`);
       // Idle members drift between ping-pong, the kitchen, the couches and the rest at random, so
       // the teams mix; two at the table's ends play; and nobody drifts for someone who asks for calm.
       const drift = runInContext(`(() => {
@@ -1652,22 +1644,15 @@ if (failures.length) {
         return out.concat([HQ.people[8] === undefined]);
       })()`, context);
       if (back.some((ok) => !ok)) fail(`hq: a recalled member does not walk in at the front door to his desk: ${back}`);
-      // The CEO's daily review: the CEO at the head of the meeting table, the lead on a chair.
-      const review = runInContext(`HQ.snap.routines.push({ id: 9, title: "Daily review", assignee: 5 });
-        HQ.snap.tasks.push({ id: 8, goal: 1, title: "Daily review", status: "doing", routine: 9, thread: [] });
-        HQ.snap.members.find((m) => m.id === 5).running = [{ run: 20, task: 8 }];
-        hqPlacePeople(); hqDraw();
-        [HQ.people[5].at === HQ_MEETING.head, HQ.people[1].at === HQ_MEETING.chairs[0], HQ.people[2].at.desk === true]`, context);
-      if (review.some((ok) => !ok)) fail(`hq: the daily review does not take the CEO and the lead to the meeting room: ${review}`);
-      // A question for the CEO: the one who asked goes to the CEO's open door, and back.
+      // A question for Mara: the one who asked walks to her desk, as to anyone's, and back.
       const errands = runInContext(`HQ.snap.members.find((m) => m.id === 5).running = []; hqPlacePeople();
         hqTell({ id: 60, at: 0, kind: "thread.posted", data: { task: 7, author: "Ada", preview: "@Mara <b>which</b>?" } }, true);
         hqTell({ id: 61, at: 0, kind: "wake.queued", data: { member: 5, task: 7, reason: "question_asked" } }, true);
-        const ada = HQ.people[1];
-        const there = ada.at.cx === HQ_ROOMS.ceo.out.cx && ada.at.cy === HQ_ROOMS.ceo.out.cy && ada.path.length > 0;
+        const ada = HQ.people[1], mara = HQ.seats[5].visit;
+        const there = ada.at.cx === mara.cx && ada.at.cy === mara.cy && ada.path.length > 0;
         hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
         [there, !ada.errand, ada.at === ada.seat.work]`, context);
-      if (errands.some((ok) => !ok)) fail(`hq: a question does not send its member to the right door and back: ${errands}`);
+      if (errands.some((ok) => !ok)) fail(`hq: a question does not send its member to the right desk and back: ${errands}`);
       // A question for someone on a team: the one who asked walks to their desk, and goes back.
       const asks = runInContext(`HQ.snap.members.find((m) => m.id === 6).running = [];
         hqPlacePeople();
@@ -2198,7 +2183,7 @@ if (failures.length) {
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
-  console.log("hq: the open office has a pod for each team, empty desks for the furloughed, its floor from the snapshot, and people who walk round the furniture");
+  console.log("hq: the open office has one pod for the one team, the furloughed off the floor, its floor from the snapshot, and people who walk round the furniture");
 }
 
 // Replay: a turn read back in full, and a task's turns stepped through in order. Opened from a
@@ -2208,7 +2193,7 @@ if (failures.length) {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`HQ.error = ""; HQ.selected = { type: "task", id: 7 };
     HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
-      members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [], brains: [] }],
+      members: [{ id: 2, name: "Bo", look: 4, running: [], brains: [] }],
       tasks: [{ id: 7, goal: 1, title: "Look at <b>sonarr</b>", status: "doing", owner: 2, why: [], thread: [] }],
       runs: [], recent_runs: [{ id: 2, member: 2, task: 7, status: "succeeded", label: "advanced" }] };`, context);
   const office = runInContext("viewHQ()", context);
@@ -2239,7 +2224,7 @@ if (failures.length) {
   runInContext(`REPLAY.kind = "task"; REPLAY.id = 7; REPLAY.error = ""; REPLAY.at = 1;
     const turn = (run, by) => ({ run, task: 7, status: "succeeded", live: false, attempts: 1, queued_at: 1, started_at: 1000, ended_at: 66000,
       reason: "assigned", end_reason: "finished", label: "advanced", by_time: by,
-      member: { id: 2, name: "Bo", role: "developer", look: 4, brain: "local", brain_label: "Local" },
+      member: { id: 2, name: "Bo", look: 4, brain: "local", brain_label: "Local" },
       money: { reserved: 400000, used: 120000, charged: 120000, released: 400000, spent: 120000, held: 0 },
       tokens: { input: 1200, output: 300, cache_read: 9000, cache_write: 0 },
       moments: [
@@ -2255,7 +2240,7 @@ if (failures.length) {
         { kind: "ended", at: 66000, by_time: false, status: "succeeded", reason: "finished", label: "advanced" }] });
     REPLAY.runs = [turn(1, true), turn(2, false)];`, context);
   const last = runInContext("viewReplay()", context);
-  for (const said of ["run 2 of 2", 'data-act="replay:step:prev"', "R2 · Bo · developer", "advanced", "$0.12 spent",
+  for (const said of ["run 2 of 2", 'data-act="replay:step:prev"', "R2 · Bo", "advanced", "$0.12 spent",
     "in 10200 (9000 from the cache) · out 300", "1m 05s", "assigned", '<details class="hq-replay-told"><summary>What Bo was told</summary>',
     "&lt;/pre&gt;&lt;img src=b onerror=alert(11)&gt;", "r12 container_logs", "&lt;i&gt;sonarr&lt;/i&gt;", "&lt;script&gt;alert(10)&lt;/script&gt; 500s",
     "Confidential", "refused", '<details class="hq-replay-fold">', "&lt;img src=x onerror=alert(9)&gt; fixed", "cites r12",
@@ -2391,8 +2376,8 @@ if (failures.length) {
   const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
   runInContext(`HQ.error = ""; HQ.feed = null; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.tab = "activity"; HQ.log = []; HQ.logOpen = {}; HQ.whole = {};
     HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
-      members: [{ id: 2, name: "Bo", role: "developer", look: 4, running: [{ run: 4952, task: 955 }], brains: [] },
-                { id: 3, name: "Al", role: "developer", look: 1, running: [], brains: [] }],
+      members: [{ id: 2, name: "Bo", look: 4, running: [{ run: 4952, task: 955 }], brains: [] },
+                { id: 3, name: "Al", look: 1, running: [], brains: [] }],
       tasks: [{ id: 955, goal: 1, title: "Cap <b>sonarr</b>", status: "done", owner: 2, why: [], thread: [], brief: true }],
       runs: [{ id: 4952, member: 2, task: 955, status: "running" }, { id: 4950, member: 3, task: null, status: "queued" }], recent_runs: [] };
     hqTell({ id: 80, at: 0, kind: "run.started", data: { run: 4952, member: 2, task: 955, reason: "assigned", reserved: 0 } }, false);

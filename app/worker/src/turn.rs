@@ -2835,7 +2835,7 @@ mod tests {
     use super::*;
 
     use endora_team::application::{Author, Clock, Engine, NewTask, Settings};
-    use endora_team::domain::{Priority, Role};
+    use endora_team::domain::Priority;
     use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
     struct Noon;
@@ -3036,7 +3036,7 @@ mod tests {
             Noon,
             Settings::default(),
         );
-        let dev = hq.hire("Jane", Role::Developer, 40, 2, 0).unwrap();
+        let dev = hq.hire("Jane", 40, 2, 0).unwrap();
         let goal = hq
             .set_goal("Ship the watch tracker", "asked for", Author::Owner)
             .unwrap();
@@ -3134,10 +3134,9 @@ mod tests {
                 .as_array()
                 .cloned()
                 .unwrap();
-        let role = member.role.name();
         let contracts: Vec<Value> = endora_capabilities::contracts::all()
             .iter()
-            .filter(|c| c.offered_to(role, false) && !is_repo_tool(c.name))
+            .filter(|c| !is_repo_tool(c.name))
             .map(endora_capabilities::contracts::Contract::as_tool)
             .chain(
                 [
@@ -3239,8 +3238,8 @@ mod tests {
                 ..Settings::default()
             },
         );
-        let lead = hq.hire("Jane", Role::Lead, 25, 2, 0).unwrap();
-        let dev = hq.hire("John", Role::Developer, 40, 2, 4).unwrap();
+        let lead = hq.hire("Jane", 25, 2, 0).unwrap();
+        let dev = hq.hire("John", 40, 2, 4).unwrap();
         // A chess move: the developer's, in a game the lead opened.
         hq.store()
             .add_chess_game(lead, dev, Noon.now() - 1)
@@ -3517,14 +3516,14 @@ mod tests {
             Settings::default(),
         );
         let mut seats = Vec::new();
-        for (name, model, role) in [
-            ("Mara", "opus", Role::Ceo),
-            ("Kit", "sonnet", Role::Lead),
-            ("Ada", "haiku", Role::Lead),
-            ("Rae", "mac", Role::Developer),
-            ("Bo", "local", Role::Developer),
+        for (name, model) in [
+            ("Mara", "opus"),
+            ("Kit", "sonnet"),
+            ("Ada", "haiku"),
+            ("Rae", "mac"),
+            ("Bo", "local"),
         ] {
-            let id = hq.hire(name, role, 10, 2, 0).unwrap();
+            let id = hq.hire(name, 10, 2, 0).unwrap();
             hq.set_model(id, model).unwrap();
             seats.push(id);
         }
@@ -4435,13 +4434,13 @@ mod tests {
             Settings::default(),
         );
         let mut seats = Vec::new();
-        for (name, model, role) in [
-            ("Mara", "opus", Role::Ceo),
-            ("Kit", "sonnet", Role::Lead),
-            ("Ada", "haiku", Role::Lead),
-            ("Bo", "local", Role::Developer),
+        for (name, model) in [
+            ("Mara", "opus"),
+            ("Kit", "sonnet"),
+            ("Ada", "haiku"),
+            ("Bo", "local"),
         ] {
-            let id = hq.hire(name, role, 10, 2, 0).unwrap();
+            let id = hq.hire(name, 10, 2, 0).unwrap();
             hq.set_model(id, model).unwrap();
             seats.push(id);
         }
@@ -4473,7 +4472,6 @@ mod tests {
                 .unwrap();
         let contracts: Vec<Value> = endora_capabilities::contracts::all()
             .iter()
-            .filter(|c| c.offered_to(member.role.name(), true))
             .map(endora_capabilities::contracts::Contract::as_tool)
             .collect();
         let on_the_node: Vec<String> = contracts
