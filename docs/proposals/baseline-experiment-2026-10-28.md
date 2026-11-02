@@ -1183,6 +1183,10 @@ was not tested held-out on its own; the logs from step 2 count how many turns st
 rounds at thirty, and if the next blind set shows no loss without it, it goes too. These twelve
 tasks are now seen; no tuning on them.
 
+**Released** the same day as `70376b6c` (full gate: 2,234 tests, none failed; fmt, clippy,
+console, nothing-personal, parity and whitespace clean), NAS and Pi, no turn running or cut.
+The baseline for step 2 is the control arm of step 3's blind set: the same build, its logs.
+
 ### What the worker's gaps cost, measured before building (2 Nov)
 
 The owner, on the list of what Claude Code has and the worker lacks: build nothing unless
