@@ -1129,6 +1129,60 @@ seen or run:
   blind judging, and the same bar on its own 12 attempts. H2 counts as holding up only if it
   clears the bar on both sets; on one alone, it is recorded as fitted to that domain.
 
+### Held-out test of H2: the result (2 Nov)
+
+Run as set above: arm C first (Claude Code on Haiku 5.5, 24 worktrees), then A (`81f49915`,
+tasks 987–998 and 1005–1016), then B (`fa5cfe15` re-released with no turn cut, tasks 1017–1040),
+all with the same words and a $3 cap a project. Twelve judges, one a task, each saw that task's
+six results under random letters (scratch paths, branch names and "Sol", "HQ" or "Claude"
+replaced), applied each patch to a fresh worktree at the base, and re-ran the checks, the tests
+and the judge note's probes themselves. Criterion 4 of set 1 was scored the same for all: no new
+failure in syntax-check, ansible-lint, yamllint or the unit tests against the base's own (14 lint
+findings, 6 yamllint errors), and "nothing pushed" not scored, since where a branch goes is the
+harness's doing. One intervention: A's first more-itertools task never tried its repo tool and
+asked for the repository; answered with the criteria only.
+
+| Verified (of 12) | A, old worker | B, H1 + H2 | C, Claude Code | Bar for B | Held |
+|---|---|---|---|---|---|
+| Set 1, homelab | 7 | 10 | 12 | ≥ 10, ≥ 10 | yes, exactly |
+| Set 2, off-domain | 12 | 10 | 12 | ≥ 15, ≥ 10 | **no** |
+
+| Cost per verified task | A | B |
+|---|---|---|
+| Set 1 | $0.268 / 7 = **$0.038**, 34 turns | $0.221 / 10 = **$0.022**, 21 turns |
+| Set 2 | $0.150 / 12 = **$0.013**, 22 turns | $0.146 / 10 = **$0.015**, 12 turns |
+
+HQ's metered spend, checked against Haiku 5.5's rates and its token counts. C's cost was not
+metered the same way (subagents of a session) and is left out rather than estimated.
+
+**Per task.** Set 1: all six results verified the alert, dump and wireguard tasks. A lost
+memory limits once and credentials in --diff twice, blocked; the read-only drive investigation was
+blocked for A and B alike (Portainer refused the exporter's logs, four of four), where C read
+`docker logs` and named the failing NVMe. Set 2: all verified tasks 1–5; on the diagnosis task
+(literals leaking through jmespath's parse cache) both B results missed that a literal reached
+through `||`, `not_null` or inside a multiselect also leaks, where both A results said it.
+
+**Decision, by the rule set before the run.** H2 does not hold up: it clears the bar on the
+homelab set alone, so it is recorded as fitted to that domain, and the R1–R3 gain as not shown to
+carry over. Harm as defined (B unfinished or blocked where A finished) is none: B finished every
+task A finished; its two set 2 misses were finished reports that missed a fact.
+
+**What the transcripts show caused the difference.** All three of A's lost set 1 tasks (991, 995,
+997) died the same way: every turn, four a task, made its 13th call at round 12 and was cut;
+995 had the fix committed when `repo_submit` was refused for untracked `__pycache__` and the turn
+ran out before it could clean up (D33). B's turns on the same tasks used 19 to 20 rounds and
+submitted. That is H1 (thirty rounds) at work, not H2, and it is a failure seen, not a feature
+copied: the gap table below had called twelve rounds "weak" from stored turns where the next turn
+usually finished; here the next turn started over and was cut again. Nothing in the results points
+to H2 helping anywhere.
+
+So, from the evidence and the owner's rule (build from observed failures, revert what is not
+shown): **H2 is withdrawn; H1 stays**, released together with the logging step below
+(`worker-logging`: `709514fb` and H1 cherry-picked as `70376b6c`, on `81f49915`). H1's own effect
+was not tested held-out on its own; the logs from step 2 count how many turns still end out of
+rounds at thirty, and if the next blind set shows no loss without it, it goes too. These twelve
+tasks are now seen; no tuning on them.
+
 ### What the worker's gaps cost, measured before building (2 Nov)
 
 The owner, on the list of what Claude Code has and the worker lacks: build nothing unless
@@ -1144,7 +1198,7 @@ empty) counted, for each gap, the turns where it caused harm, not where its mark
 | Results cut at 6 KB | 21 of 53 turns since 1 Nov 16:55 | about one round of re-reading a cut; whether a turn acted on what was cut cannot be told | not shown; instrument |
 | API failures, no retry | 0 model API failures on Haiku in 463 runs | — | not shown: no retry built |
 | Edits through the shell | 3 of 105 failed, each caught by the turn's own check | about two rounds | not shown: no edit tool built |
-| Twelve rounds | 21 turns; the next one usually finished | no work lost | weak; 30 stays as built |
+| Twelve rounds | 21 turns; the next one usually finished | no work lost in stored turns; in the held-out test it cost the old worker 3 of 12 homelab tasks | needed: 30 kept (see the result above) |
 | Unrelated tools (chess, quiz) | 0 calls on work tasks | — | not shown |
 
 **Next, in this order, each set before it runs:**
@@ -1588,6 +1642,15 @@ done. Defects are numbered so the next round's changes can name them.
   as they work". *Fixed on `round4` (`round4-live`, merged in 9fc92ceb): the worker tells its
   conversation after every round, Replay refreshes a running turn, the reasoning is kept and
   shown folded, and Activity's lines open what they name.*
+- [ ] **D32. `ask_owner` accepts a question with no content.** Task 1024 (2 Nov, held-out arm B)
+  put "Sol asks: placeholder" on the desk, then finished the task in the same turn; the card
+  waits for an answer nobody needs. Fix proposed: refuse an `ask_owner` text under a few words or
+  that names no decision, the way evidence is refused.
+- [ ] **D33. `repo_submit` refuses a branch for untracked build files the repository never
+  ignores.** Task 995 (2 Nov, held-out arm A) had its fix committed when the submit was refused
+  for `tests/__pycache__/`; the turn ran out of rounds and the task ended blocked, its report
+  still saying the fix was made. Fix proposed: the sandbox sets `PYTHONDONTWRITEBYTECODE=1`, and
+  the refusal names the files and the command that clears them.
 
 ### From the review of round 2's code (31 Oct), not yet fixed
 
