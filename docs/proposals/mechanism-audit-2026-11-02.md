@@ -177,5 +177,34 @@ settled offline from stored turns: no live runs).
   needs it. So every decision above also answers **what active work or policy still depends on
   this mechanism?**
 
+## The engine boundary: ordinary cleanup, not extraction (2 Nov)
+
+The owner's sentence: the engine owns work, workers execute it, the node authorizes it, the UI
+observes and controls it, capabilities do their own jobs. A read-only, source-level check of
+`49677595` (45 minutes; boundaries judged by who decides, not by imports):
+- **The crate graph already has that shape.** The worker needs only the kernel, the protocol
+  and HTTP (`endora-team` is a test dependency); the node does not depend on the team crate;
+  playing sound (console → node → sound hub) and reading the lab (console → node →
+  capabilities) never touch `domains/team` or `app/hq`; `app/hq` is a thin HTTP shell.
+- **Inside `domains/team` the split is by file, not by function:** about 30k lines run work,
+  11k are organisation and simulation, 3.4k are the owner's views. The worst tangles: the tick
+  and the queue interleave lifecycle steps with map, downtime, games, scenarios and the league
+  (`engine.rs` `tick`, `start_queued`); completion picks its reviewer by rank; and **`Role`
+  still decides who may act**: HQ sends the member's role to the node, whose contract offer and
+  bridge table read it, and `recheck_in` refuses by it.
+- **The owner's test already passes:** the cucumber scenario "one member works a loop alone"
+  carries a task from claim to done with no UI and the protocol driven as a fake worker,
+  through the gate and the evidence rule. It leaves out the real node's authorization (receipts
+  are injected) and still has to hire members with roles.
+- **Docs that disagree with the code:** `where-things-go.md` (no roles; roles still
+  authorize), `domain-map.md` (done needs a second member; solo loops close alone),
+  `architecture.md` (last reconciled 20 Oct).
+
+**Verdict: (b), ordinary cleanup inside the existing crates.** By the owner's rule, one small
+ownership correction with the existing tests, then stop and reassess. The candidate is retiring
+`Role`, led by a scenario that finishes a task with no role named: the engine tells the node
+what a turn may do instead of sending a role. It touches the node's authorization, so it waits
+for the owner's word.
+
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
