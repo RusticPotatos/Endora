@@ -232,6 +232,69 @@ logs` and named the failing NVMe.
   succeeds, while a read of Endora's own container and of an unknown name stay refused as now.
   Also check that the handheld's log view still cuts what it shows.
 - Not started, as asked.
+- **Released and closed (2 Nov, `cedbda73`, NAS and Pi, health ok, no turn cut).** Live check:
+  task #1055 for Bo (Haiku), judged from `call_receipts`, not Bo's words: `stats-smartctl` read
+  `ok=1` three times (r3983, r3986, r3989), the newest line stamped 20:36:43 UTC, minutes after
+  the release; `endora-hq` refused "Endora's own: no contract reads or restarts it" (r3984,
+  r3987); `no-such-container` refused "there is no container called" (r3985, r3988). The defect
+  is closed. (Bo then asked the owner how a refused read counts as evidence, so #1055 waits on
+  the desk; that is the evidence rule for refused receipts, not the log read.)
+
+## Set 3: twelve fresh tasks, the worker against Claude Code (2 Nov, judged blind)
+
+Same model (Haiku), same task words and criteria; the worker on HQ (tasks 1042–1053, build
+`914193d4`, *without* the log fix), Claude Code as subagents with each repository on disk. One
+blind judge per task (Sonnet) saw both results under random letters, re-ran the checks and tests,
+and scored each criterion; the key was opened only after all twelve verdicts were written.
+
+| Task | Claude Code | Worker | Why the worker failed |
+|---|---|---|---|
+| homelab 1 (FlareSolverr routing, #1042) | verified | not | added a stack switch defaulting to *on*, so FlareSolverr is routed and deployed when the owner turned it off |
+| homelab 2–6 (#1043–1047) | verified | verified | |
+| offdomain 1 simpleeval cycles (#1048) | verified | verified | (its task ended "blocked" only because the lab check got a bundle 404 twice; the code passes) |
+| offdomain 2 simpleeval comprehensions (#1049) | verified | not | behaviour right; no test that plain `SimpleEval` still refuses a set comprehension |
+| offdomain 3 mistune footnotes (#1050) | verified | verified | |
+| offdomain 4–6 pyparsing (#1051–1053) | verified | not | **never got the repository**: blocked with no change, or a diagnosis from pip's vendored 3.0.9 copy |
+
+**Claude Code 12/12, the worker 7/12.** Three owner interventions on the worker's side (desks
+5120, 5125, 5126), each restating the criteria only. The worker's attempts also met 502s from HQ
+and the node on 1046, 1048, 1049 and 1053 (runs 5291–5306), which cost retries but decided no
+verdict.
+
+### The first consequential divergence: the worker cannot check out a repository over ~7.5 MB
+
+Three of the five losses have one cause, and it comes before any reasoning: on pyparsing the
+worker's first `repo_checkout` failed, and every later one did too.
+- **Trace, worker:** #1051 run 5267: `repo_checkout {}` → "Refused: the contract failed";
+  `{"branch":"develop"}` → refused (wrong branch name); `{}` again → "the contract failed"; it
+  posts that the sandbox has no pyparsing source and ends blocked. #1052 run 5271:
+  `{"branch":"master"}` → "Refused: the node's checkout could not be read as a bundle"; it greps
+  the filesystem and finds only pip's vendored copy. #1053 run 5293: the same refusal, then a
+  diagnosis built on `/opt/venv/.../pip/_vendor/pyparsing/core.py` (3.0.9), which the judge
+  failed on every criterion.
+- **Trace, Claude Code:** offdomain 4's second call is `git status` in its own checkout; its
+  third greps `pyparsing/core.py` for the repetition code. It never meets a transport.
+- **Cause (code read, sizes measured on the node):** the node hands the repository over as one
+  base64 git bundle inside a JSON answer. pyparsing's bundle is 14.3 MB (`master`) to 17.3 MB
+  (all refs), so the answer is about 19–23 MB. Two read caps sit below that: the node reads a
+  contract's answer at most 16 MiB to append the receipt (`app/node/src/api/contracts.rs`,
+  `with_receipt`, `1 << 24` → "the contract failed"), and the worker reads every node answer
+  with ureq's `read_to_string()`, whose default limit is 10 MB, discarding the error
+  (`app/worker/src/turn.rs` ~2650, `.ok()` → `Null` → empty text, which `handed_over` reports as
+  "could not be read as a bundle"). simpleeval, mistune and the ansible-nas fork are small
+  enough, which is why sets 1–2 never showed it.
+- **Not a boundary:** neither cap is a security limit; they are buffer sizes. The 10 MB error is
+  silently swallowed, so the model saw a misleading refusal, not "too large".
+- **The other two losses are model judgement**, not the harness: #1042 copied the stack's
+  existing joiner pattern (default-on switch) where the task asked that routing follow the
+  app's own setting; #1049 skipped one regression test. Neither trace shows a harness cause (the
+  worker had the repository, its tools worked and it chose the design itself).
+
+**Proposed next fix (not started):** let a checkout's bundle through both reads (raise the two
+caps to a stated limit above the largest outside repository, or stream the bundle as its own
+binary answer instead of base64 in JSON), and make a too-large answer say so instead of being
+swallowed. Verify with a unit test at each read and one live checkout of pyparsing; no new
+benchmark is needed to show three blocked tasks would have had their source.
 
 **What success looks like:** a smaller Endora that verifies at least as many tasks at no more
 cost or attention, with no safety regression. Removals are not the goal; better decisions are.
