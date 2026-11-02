@@ -1187,6 +1187,27 @@ tasks are now seen; no tuning on them.
 console, nothing-personal, parity and whitespace clean), NAS and Pi, no turn running or cut.
 The baseline for step 2 is the control arm of step 3's blind set: the same build, its logs.
 
+### Reply cap 4,096 → 8,192: the test, set before any task is seen (2 Nov)
+
+Step 3 above, fixed before the tasks exist:
+- **Tasks.** Twelve fresh ones, picked by two agents told nothing of the change: six on the fork
+  at `ee878f7` (none repeating the earlier titles), six in public Python libraries other than
+  the ones used before. Asked for tasks harder than the last set (five of its six off-domain
+  tasks were verified by every arm, so they told nothing apart), at least two of each six needing
+  changes across several files or a file of 100 lines or more.
+- **Arms**, Sol solo on Haiku 5.5, the same words, $3 a project, two samples each (24 attempts
+  an arm), released one after the other on the same day: **control** `70376b6c` (as live), and
+  **treatment** `49677595` (that build with the cap at 8,192, nothing else).
+- **Judging** as the held-out test: one judge a task, the four results under random letters, every
+  check re-run; the judges get working lint tools up front.
+- **The bar.** The treatment holds if it verifies no fewer tasks than the control on each set,
+  and uses no more than 25% more tokens, and no more than 25% more rounds, per verified task over
+  both. The gain is read from the logs, not the score: turns ended by a reply at the cap should
+  go from what the control shows to none. Fails, and the cap stays at 4,096.
+- **The control is step 2's baseline:** its logs give the count of each turn ending and each
+  reply's stop reason on today's build.
+- These twelve become seen tasks; no tuning on them.
+
 ### What the worker's gaps cost, measured before building (2 Nov)
 
 The owner, on the list of what Claude Code has and the worker lacks: build nothing unless
