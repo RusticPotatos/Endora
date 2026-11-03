@@ -598,7 +598,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             &[
                 "in_review",
                 "a reading this turn",
-                "another member re-checks it",
+                "HQ's checks and the evidence decide it",
                 "close as done yourself",
                 "met_criteria",
                 "superseded",
@@ -613,7 +613,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
                 "only what the owner alone decides",
                 "money beyond the caps",
                 "ends your turn",
-                "a rank up on its own",
+                "HQ asks the owner itself",
             ][..],
         ),
         (
@@ -634,6 +634,15 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
         assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
         for rule in rules {
             assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+        }
+    }
+    // Roles, reviewers' re-checks, climbs and hand-offs to another member are retired (ADR
+    // 0142, amended 2026-11-02; every live loop is worked by one member alone): no tool's
+    // description promises one, or asks for one the engine refuses.
+    for name in ["my_turn", "set_status", "create_task", "ask_owner"] {
+        let text = tool(name).to_string();
+        for retired in ["your role", "re-checks", "rank up", "for another member"] {
+            assert!(!text.contains(retired), "{name} says {retired:?}: {text}");
         }
     }
 }

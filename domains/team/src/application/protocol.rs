@@ -225,7 +225,7 @@ pub fn tools() -> Value {
     let mut all = json!([
         tool(
             "my_turn",
-            "What this turn is for: your role, the task and why it exists, what is new, and its thread. Call it first.",
+            "What this turn is for: who you are, the task and why it exists, what is new, and its thread. Call it first.",
             json!({}),
             &[]
         ),
@@ -243,19 +243,19 @@ pub fn tools() -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); another member re-checks it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
+            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); HQ's checks and the evidence decide it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done" }, "successor": { "type": "integer", "description": "for superseded: the task carrying the work on" } }),
             &["task", "status", "reason"]
         ),
         tool(
             "create_task",
-            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
+            "Create a sub-task of your task, for yourself (work is never handed to another member), with the tasks it waits on and its acceptance criteria: what done means, a short list. Mark live any criterion about the lab as it is now.",
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "your own name, or leave it out" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
             "ask_owner",
-            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: work that keeps failing goes a rank up on its own.",
+            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: HQ asks the owner itself when work keeps failing.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),

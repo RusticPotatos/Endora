@@ -2280,9 +2280,8 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
     assert!(
         system.contains(
             "The home lab tools are Endora's contracts, and this turn they are yours: \
-             homelab_status, container_logs, restart_container. Whatever your role, look with \
-             them yourself before you hand anything on, and never say you cannot read the home \
-             lab."
+             homelab_status, container_logs, restart_container. Look with them yourself \
+             before you move anything on, and never say you cannot read the home lab."
         ),
         "{system}"
     );

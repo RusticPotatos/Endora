@@ -913,8 +913,8 @@ fn lab_rules(on_the_node: &[String]) -> String {
         } else {
             told.push_str(&format!(
                 "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: \
-                 {}. Whatever your role, look with them yourself before you hand anything on, \
-                 and never say you cannot read the home lab.\n",
+                 {}. Look with them yourself before you move anything on, and never say you \
+                 cannot read the home lab.\n",
                 lab.join(", ")
             ));
         }
@@ -937,8 +937,8 @@ fn lab_rules(on_the_node: &[String]) -> String {
              serves none of them is refused, and never reaches the desk.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.\n\
-             - A question about the home lab goes to the team's reviewer first, who checks every \
-             claim and container name against these tools: say only what you saw.\n\
+             - Say about the home lab only what these tools showed you, naming its containers as \
+             they name them.\n\
              - Report something as a problem only when a tool shows it causing harm: an item \
              stuck in a queue, a container down or unhealthy, a failure that repeats. Errors or \
              odd lines in a log are evidence to explain, not problems in themselves. Normal \
@@ -983,9 +983,9 @@ pub(crate) fn instructions(
         "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
          from there.\n\
          3. End the turn with exactly one of these: move the task on with set_status and say \
-         why; create sub-tasks for members below you when the work needs them; or put a \
-         concrete plan or question with ask_owner, which goes to whoever your briefing says \
-         is above you (asking ends your turn, and you are woken when they answer).",
+         why; create sub-tasks of your own when the work needs them; or put a concrete plan or \
+         question to the owner with ask_owner (asking ends your turn, and you are woken when \
+         they answer).",
     );
     told.push_str(&lab_rules(on_the_node));
     if shell {
@@ -1052,8 +1052,9 @@ pub(crate) fn instructions(
          Each result of Endora's tools names its receipt (receipt r12): cite those ids in \
          `evidence`, one list per criterion, when you submit with set_status in_review or close \
          a routine's check as done; anything about the lab now needs a reading taken this turn, \
-         never memory or another member's word. The tester then re-checks it with her own \
-         readings, and the lead accepts it. A post that states a finding cites what it rests \
+         never memory or another member's word. HQ judges it from the record, its checks and \
+         the receipts you cite, never from what you say. A post that states a finding cites \
+         what it rests \
          on. Keep it short, and never say you did what you did not do. When your part is done, \
          stop calling tools and reply in one or two sentences.",
     );
@@ -3953,15 +3954,55 @@ mod tests {
         .to_vec()
     }
 
+    /// Roles, testers, leads and the ranks above and below a member are retired (ADR 0142,
+    /// amended 2026-11-02), and every live loop is worked by one member alone, whose item closes
+    /// on HQ's checks with no review. The instructions told every turn that a tester re-checks
+    /// its work and the lead accepts it, that a lab question goes to the team's reviewer first,
+    /// and to hand sub-tasks to members below: a model told someone will re-check may lean on a
+    /// check that is not there, and one that hands work on is refused (`NotBelow`).
+    #[test]
+    fn the_instructions_name_no_check_or_member_that_is_not_there() {
+        let all = [REPO_CHECKOUT.to_owned(), REPO_SUBMIT.to_owned()]
+            .into_iter()
+            .chain(lab())
+            .collect::<Vec<_>>();
+        for (on_the_node, lessons, shell) in [
+            (all.clone(), false, true),
+            (all, true, true),
+            (lab(), false, false),
+            (Vec::new(), false, false),
+        ] {
+            let told = instructions(true, &on_the_node, lessons, shell);
+            for retired in [
+                "tester",
+                "reviewer",
+                "the lead",
+                "your role",
+                "below you",
+                "above you",
+            ] {
+                assert!(!told.contains(retired), "{retired}: {told}");
+            }
+            assert!(
+                told.contains(
+                    "HQ judges it from the record, its checks and the receipts you cite, never \
+                     from what you say."
+                ),
+                "{told}"
+            );
+            assert!(told.contains("create sub-tasks of your own"), "{told}");
+        }
+    }
+
     #[test]
     fn the_home_labs_tools_are_named_as_the_turns_own() {
         let told = instructions(true, &lab(), false, false);
         assert!(
             told.contains(
                 "The home lab tools are Endora's contracts, and this turn they are yours: \
-                 homelab_status, container_logs, restart_container. Whatever your role, look \
-                 with them yourself before you hand anything on, and never say you cannot read \
-                 the home lab.\n- homelab_status"
+                 homelab_status, container_logs, restart_container. Look with them yourself \
+                 before you move anything on, and never say you cannot read the home lab.\n\
+                 - homelab_status"
             ),
             "{told}"
         );
@@ -4034,7 +4075,13 @@ mod tests {
             ),
             "{told}"
         );
-        assert!(told.contains("goes to the team's reviewer first"), "{told}");
+        assert!(
+            told.contains(
+                "- Say about the home lab only what these tools showed you, naming its \
+                 containers as they name them."
+            ),
+            "{told}"
+        );
         assert!(told.contains("owner's approval"), "{told}");
         // A request for the owner's yes says which of the task's criteria it serves, or it is
         // refused and never reaches the desk (ADR 0124, amended).
