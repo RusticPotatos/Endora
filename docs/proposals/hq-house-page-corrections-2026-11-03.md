@@ -38,6 +38,16 @@ timer."
 > predates the owner's timer-off window (post 5195, 26 Oct) and the retirement of roles (ADR 0142).
 > Its future setting is the owner's decision, not yet made.
 
+### Outcome (3 November 2026)
+
+- **A1 written** through the owner API and read back: `world:house#known-facts` revision 2, by the
+  owner; the other three bullets unchanged. It is the current authoritative statement.
+- **A2 not written, and left unchanged (owner's decision).** It is a legacy section from the retired
+  area system: the live build has no area pages, so the owner API refuses `area/1`. It is no longer
+  in worker briefings (only the house page is), but the record search still finds it until about
+  18 January 2027 (90 days from its last update, 20 Oct). No direct database write, search change,
+  area-page support or migration for it.
+
 ## B. Waits on the owner: priorities and rules
 
 Not prepared for writing. Each is the owner's own wording of priorities or rules.
