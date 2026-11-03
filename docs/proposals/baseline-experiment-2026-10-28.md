@@ -1460,6 +1460,13 @@ repository.
 The one list of what is open, kept up to date as rounds run. Ticked items say where they were
 done. Defects are numbered so the next round's changes can name them.
 
+**Where the rounds stand (daily session, 3 Nov).** No round is in flight and none is due: round 4
+closed on 1 Nov with the development side retired by the pre-set rule, and by that decision there
+is no round 5 (no `round5` branch exists). Work since runs as head-to-head sets and the harness
+ledgers (`docs/proposals/*-2026-11-03.md`), not as rounds. The daily session therefore releases
+nothing and starts nothing; it pushes the record after the privacy scan. A new round needs the
+owner to reopen the series.
+
 ### Defects found in round 2, not yet fixed
 
 - [x] **D1. A model change can leave a member unable to start.** Rae was moved to DeepSeek with
