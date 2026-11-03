@@ -443,12 +443,11 @@ def round_metrics(conn, roots, verified=None):
 
 def unverified(conn, done):
     """How many of the `done` tasks HQ closed as completed, not verified: a solo item with no
-    branch, whose cited evidence nothing checked. None in a store from before closures."""
-    if not done or not has_table(conn, "closures"):
+    branch, whose cited evidence nothing checked. None in a store from before they were kept."""
+    if not done or not has_table(conn, "unverified_closings"):
         return 0
     return conn.execute(
-        "SELECT COUNT(*) FROM closures WHERE why = 'completed_unverified'"
-        f" AND task IN ({placeholders(done)})",
+        f"SELECT COUNT(*) FROM unverified_closings WHERE task IN ({placeholders(done)})",
         done,
     ).fetchone()[0]
 

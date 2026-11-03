@@ -707,9 +707,12 @@ class Metrics(unittest.TestCase):
             " at_ms INTEGER NOT NULL)"
         )
         db.execute("INSERT INTO closures VALUES (3, 'done', 'met_criteria', NULL, NULL, 'endora', 0)")
+        # Kept apart from closures, so a build from before it was named never misreads it.
         db.execute(
-            "INSERT INTO closures VALUES (5, 'done', 'completed_unverified', NULL, NULL, 'endora', 0)"
+            "CREATE TABLE unverified_closings (task INTEGER PRIMARY KEY, by TEXT NOT NULL,"
+            " at_ms INTEGER NOT NULL)"
         )
+        db.execute("INSERT INTO unverified_closings VALUES (5, 'endora', 0)")
         db.commit()
         db.close()
         m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]

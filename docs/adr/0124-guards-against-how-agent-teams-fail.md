@@ -207,8 +207,14 @@ or approval is added. Such an item now closes with its own reason, `completed_un
 
 A solo item with a branch, whose check passed, closes as before, as `met_criteria`. The reason is
 HQ's own: it is not in the set a member or the owner gives (`Closure::names`). Closings already
-recorded are read as they were, `met_criteria` included: nothing is migrated, and the `closures`
-table's `why` is free text, so no schema check forces one.
+recorded are read as they were, `met_criteria` included: nothing is migrated.
+
+The reason is kept in its own table, `unverified_closings`, not in `closures`. A build from before
+it was named (38668a2b) reads every closure through `Closure::read` and fails on a reason it does
+not know, which would break the whole task list after a rollback. Kept apart, such a build finds no
+reason for that item: "done", with nothing claimed, rather than a failure or a false
+`met_criteria`. Rolling forward again reads it back unchanged. Each closing replaces the item's
+earlier one, in whichever table it was kept.
 
 **Amended: can't tell.** A guard that reads a gap in the record as zero says something false. Two
 were found, and now say that they cannot tell:
