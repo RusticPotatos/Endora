@@ -1122,9 +1122,9 @@ if (failures.length) {
   if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("Haiku · on furlough</small>")) fail("hq: the roster does not say who is on furlough");
-  // The Office card (ADR 0119, 0142): the floor and its games; the team no longer changes the
-  // floor, so there is nothing to veto, undo or reset.
-  for (const said of ["<h2>Office</h2>", "7 things on the floor"]) {
+  // The Office card (ADR 0119, 0142): the office's games; the floor became the studio (the owner,
+  // 4 Nov), so there is nothing to veto, undo or reset, and its chess table is in the lounge.
+  for (const said of ["<h2>Office</h2>", "The chess table stands in the studio's lounge"]) {
     if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
   }
   if (/hq:office:(veto|undo|reset)/.test(office)) fail("hq: the Office card still offers a landlord's veto, undo or reset");
@@ -1137,14 +1137,12 @@ if (failures.length) {
       o.proposals = []; o.can_undo = false;
       const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
     if (!none.includes("<h2>Office</h2>")) fail("hq: the Office card is gone with nothing open");
-    const item = runInContext(`HQ.selected = { type: "item", id: 2 }; const looked = hqSelected(); HQ.selected = { type: "task", id: 7 }; looked`, context);
     // And the activity log and Replay say what the team did to the office, escaped like the rest.
     runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);
       hqTell({ id: 71, at: 0, kind: "office.changed", data: { proposal: 3, via: "votes", text: "The office changed: add a fish tank in the commons (Dee's idea; carried 2 to 0)" } }, false);`, context);
     const logged = runInContext("viewHQ()", context);
     if (!logged.includes("Dee proposes: add a fish tank in the commons — &#39;&lt;b&gt;life&lt;/b&gt;&#39;") || !logged.includes("The office changed: add a fish tank in the commons (Dee&#39;s idea; carried 2 to 0)")) fail("hq: the activity log does not say what the team did to the office");
     if (runInContext(`replayEvent({ name: "office.changed", data: { text: "The office changed: add a plant" } })[1]`, context) !== "The office changed: add a plant") fail("hq: Replay does not say that the office changed");
-    if (!item.includes("fish tank") || !item.includes("&lt;b&gt;Dee&lt;/b&gt;") || item.includes("<b>Dee</b>") || !item.includes("the commons")) fail("hq: tapping a thing does not say what it is and who put it there, as text");
   }
   if (office.includes("<u>Kit</u>")) fail("hq: a lead's name became markup on the scorecard's seats");
   // A member's question can be answered on its card: the answer goes in the task's thread.
@@ -1435,407 +1433,152 @@ if (failures.length) {
     if (!hq.includes('id="hq-find"') || !hq.includes('data-act="hq:find:task:go"')) fail("hq: the Work tab has no way to find a task");
     if (runInContext("HQ.snap.desk.some((d) => d.task)", context) && !hq.includes('data-act="hq:pick:task:')) fail("hq: a desk card's task number does not open it");
   }
-  // The open office (the pixel canvas, ADR 0119): one pod of desks for the one team (ADR 0142),
-  // laid out from the snapshot alone; a desk for every member at work; the office's rooms with
-  // their doors open; everything that stands on the floor drawn from the snapshot's office, so a thing
-  // that moves in the data moves on screen; and people who walk round desks and furniture and
-  // through doors only, visit another team's pod for its work, and drift about when idle. Drawn
-  // through an explicit 2D context that keeps what was written and filled on it. No art is
-  // loaded here, so this draws the room's own shapes.
+  // The studio (the owner, 4 Nov; 47f-hq-studio.js): a desk's lamp and screen are lit only while a
+  // turn runs there; a turn waiting to retry keeps its desk, dark; a stuck worker sits at the review
+  // table in the owner's corner; chess players sit at the board; whoever else is free sits in the
+  // lounge. Words only on the board, in a brief bubble for a real post, and in what a tap opens.
   {
-    const layout = runInContext(`(() => {
-      const l = hqLayout(HQ.snap.members);
-      return { pods: l.pods.map((p) => ({ label: p.label, x: p.x, y: p.y, width: p.width, rows: p.rows, desks: p.desks.map((d) => [d.x, d.y, d.member]) })),
-        seats: Object.fromEntries(Object.entries(l.seats).map(([id, s]) => [id, { pod: s.pod, work: [s.work.cx, s.work.cy, s.work.dir] }])) };
-    })()`, context);
-    // One team (ADR 0142): no titles, nobody reports to anybody, so every member at work sits in
-    // the one pod, Mara among them; Zed, retired (on furlough), leaves the floor.
-    if (layout.pods.length !== 1 || layout.pods[0].label !== "Team") fail(`hq: the floor is not one team's pod: ${layout.pods.map((p) => p.label)}`);
-    if (layout.pods[0].desks.map((d) => d[2]).join() !== "1,2,3,4,5,6,7") fail(`hq: the pod is not every member at work: ${layout.pods[0].desks.map((d) => d[2])}`);
-    if (Object.values(layout.seats).some((s) => s.pod === -1)) fail("hq: a member sits outside the pod, as the CEO once did");
-    const every = layout.pods.flatMap((p) => p.desks.map((d) => `${d[0]},${d[1]}`));
-    if (new Set(every).size !== every.length) fail("hq: two members share a desk");
-    if (layout.pods.some((p) => p.desks.some((d) => d[0] < 1 || d[0] + 3 > 28 || d[1] < 8 || d[1] + 2 > 14))) fail("hq: a desk is outside the band the rules of the office keep for desks");
-    // Each sits in the aisle at its own desk's end, facing its computer (the owner saw a member
-    // at work standing beside an empty desk).
-    for (const [x, y, id] of layout.pods[0].desks) {
-      const [cx, cy] = layout.seats[id].work;
-      if (cy !== y + 1 || (cx !== x + 3 && cx !== x - 1)) fail(`hq: member ${id} does not sit at its own desk: ${cx},${cy} by ${x},${y}`);
-    }
-    // Nine at work, three rows of three, still fit the band, every member at a desk of its own.
-    const grown = runInContext(`(() => {
-      const more = HQ.snap.members.concat([9, 10].map((id) => ({ id, name: "N" + id })));
-      const l = hqLayout(more), rows = l.pods.flatMap((p) => p.desks.map((d) => d.x + "," + d.y));
-      return { desks: rows.length, unique: new Set(rows).size === rows.length,
-        inside: l.pods.every((p) => p.desks.every((d) => d.y + 2 <= 14 && d.x + 3 <= 28)) };
-    })()`, context);
-    if (grown.desks !== 9 || !grown.unique || !grown.inside) fail(`hq: a bigger team does not fit the band: ${JSON.stringify(grown)}`);
-    const inside = runInContext(`(() => {
-      const In = (r, s) => s.cx >= r.x && s.cx < r.x + r.w && s.cy >= r.y && s.cy < r.y + r.h;
-      const M = HQ_ROOMS.meeting, O = HQ_ROOMS.shelf;
-      return [In(M, HQ_MEETING.head), HQ_MEETING.chairs.every((c) => In(M, c)), In(M, M.in), !In(M, M.out),
-        In(O, hqShelfSpot(0)), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
-    })()`, context);
-    if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the shelf's room is not where its seats and door are: ${inside}`);
-    const written = [], filled = [], order = [];
-    const ctx = {
-      fillStyle: "", strokeStyle: "", font: "",
-      fillRect(x, y, w, h) { filled.push({ x, y, w, h, style: this.fillStyle }); order.push({ rect: this.fillStyle }); },
-      strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
-      save() {}, restore() {}, translate() {}, scale() {},
-      fillText(text) { written.push(String(text)); order.push({ text: String(text) }); },
-      measureText: (text) => ({ width: String(text).length * 6 }),
-    };
-    const canvas = () => ({ ...element(), width: 0, height: 0, getContext: () => ctx });
-    const { getElementById, createElement } = stubs.document;
-    stubs.document.getElementById = (id) => (id === "hq-office" ? canvas() : getElementById(id));
-    stubs.document.createElement = (tag) => (tag === "canvas" ? canvas() : createElement(tag));
-    const saved = runInContext("JSON.stringify(HQ.snap)", context);
+    const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
+    const written = [], images = [];
+    const ctx = { fillStyle: "", strokeStyle: "", font: "", textAlign: "", shadowColor: "", shadowBlur: 0, imageSmoothingEnabled: false,
+      fillRect() {}, strokeRect() {}, setTransform() {}, save() {}, restore() {}, translate() {}, scale() {}, beginPath() {}, rect() {}, clip() {},
+      createRadialGradient: () => ({ addColorStop() {} }), drawImage(img, ...a) { images.push(a.join(",")); },
+      fillText(text) { written.push(String(text)); }, measureText: (text) => ({ width: String(text).length * 3 }) };
+    const canvas = (mode) => ({ ...element(), width: 0, height: 0, dataset: { mode }, getContext: () => ctx, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 208 }) });
+    const { getElementById } = stubs.document;
+    let mode = "wide";
+    stubs.document.getElementById = (id) => (id === "hq-office" ? canvas(mode) : getElementById(id));
     try {
-      runInContext(`HQ.people = {}; HQ.settled = false; HQ_BG = hqPaintRoom(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["YOUR DESK", "DONE THIS WEEK", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
-        if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
+      runInContext(`HQ_IMG.char0 = HQ_IMG.char1 = HQ_IMG.char2 = HQ_IMG.char3 = HQ_IMG.char4 = HQ_IMG.char5 = { width: 112, height: 96 };
+        HQ.snap.games = { chess: { games: [{ id: 1, white: "Kit", black: "Mara", white_id: 6, black_id: 5, status: "in_progress", rows: ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"], moves: [] }] } };
+        HQ.snap.tasks.push({ id: 60, goal: 1, title: "Stuck one", status: "blocked", owner: 3, brief: false, thread: [], branches: [] });`, context);
+      // Who sits where: Bo's and Rae's turns run at desks, lit; Kit and Mara play at the board; Cy is
+      // stuck, at the review table; Zed, retired, is not there; the rest rest in the lounge.
+      const placed = runInContext(`(() => { const sc = hqStudioScene("wide"), at = (id) => sc.people.find((p) => p.m.id === id);
+        const lit = sc.desks.filter((d) => d.lamp).map((d) => d.who.m.id).sort().join();
+        return [lit, sc.desks.every((d) => d.lamp === d.screen && d.lamp === !!(d.who && d.who.kind === "work")), at(2).seat, at(7).seat, at(6).kind, at(5).kind, at(3).kind, at(3).seat,
+          !at(8), at(1).seat, at(4).seat]; })()`, context);
+      if (placed.join("|") !== "2,7|true|desk|desk|chess|chess|stuck|chair|true|sofa|sofa") fail(`hq: the studio does not seat each member where the record puts them: ${placed}`);
+      // A turn waiting to retry keeps its desk, its lamp and screen dark, never as if it worked.
+      const waiting = runInContext(`(() => { HQ.snap.runs.push({ id: 90, member: 4, task: 9, status: "retry_waiting", why: "interrupted: its container is gone" });
+        const sc = hqStudioScene("wide"), d = sc.desks.find((x) => x.who && x.who.m.id === 4), p = sc.people.find((x) => x.m.id === 4);
+        HQ.selected = { type: "member", id: 4 }; const panel = hqSelected(); HQ.snap.runs.pop(); HQ.selected = null;
+        return [!!d, d && d.lamp, d && d.screen, p.kind, p.seat, panel.includes("waits to retry"), !/retrying/i.test(panel)]; })()`, context);
+      if (waiting.join("|") !== "true|false|false|wait|desk|true|true") fail(`hq: a turn waiting to retry is lit, or has no desk: ${waiting}`);
+      // Nobody sits on anybody, nor on the board, the shelves, your desk, the review table, the chess
+      // board or the rack, on a screen or a phone.
+      for (const m of ["wide", "phone"]) {
+        const clash = runInContext(`(() => { const sc = hqStudioScene(${JSON.stringify(m)}), box = (p) => ({ x: p.x, y: p.y, w: 16, h: 32 }), out = [];
+          sc.people.forEach((p, i) => sc.people.forEach((q, j) => { if (i < j && hqOverlap(box(p), box(q))) out.push(p.m.name + "/" + q.m.name); }));
+          for (const p of sc.people) for (const o of sc.important) if (o.what !== "screen" && hqOverlap(box(p), o)) out.push(p.m.name + " on " + o.what);
+          for (const p of sc.people) if (p.x < 0 || p.y < 0 || p.x + 16 > sc.w || p.y + 32 > sc.h) out.push(p.m.name + " outside");
+          return out; })()`, context);
+        if (clash.length) fail(`hq: in the ${m} studio people overlap each other or important things: ${clash}`);
       }
-      if (written.includes("WING")) fail("hq: the walled wing is still drawn");
-      if (written.includes("CEO") || written.includes("BOARD ROOM") || written.includes("SHIP IT")) fail("hq: the office still names a CEO's office, a board room or a startup's sign");
-      // Zed is retired (on furlough): his desk leaves the floor, so no away card (ADR 0142).
-      if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
-      if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
-      if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
-      // Every name, the people's and the rooms', is written on its own light plate after all
-      // that stands on the floor, so no sofa, plant or checkerboard hides it (the owner read
-      // "RAE" as "RAB", and "BO" was under a sofa).
-      {
-        const lastThing = Math.max(...order.map((o, i) => (o.rect === "#7d6bb0" || o.rect === "#b8a68a" ? i : -1)));
-        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "YOUR DESK", "DONE THIS WEEK", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
-        const plated = (name) => { const i = order.findLastIndex((o) => o.text === name); return i > lastThing && order[i - 1] && /^rgba\(255,253,246/.test(order[i - 1].rect || ""); };
-        const bare = names.filter((n) => !plated(n));
-        if (bare.length) fail(`hq: these names are not on a plate over the furniture: ${bare}`);
+      // Drawn, the only words are the board's (and the sign's): no names, plates or counts on the floor.
+      const board = runInContext("hqBoard()", context);
+      const allowed = ["ENDORA", board.title, board.count, ...board.lines.flatMap((l) => [l.who + " ", l.text])].filter(Boolean);
+      const ok = (t) => allowed.some((a) => a === t || (t.endsWith("…") && a.startsWith(t.slice(0, -1).trimEnd())));
+      for (const m of ["wide", "phone"]) {
+        mode = m; written.length = 0; runInContext("hqDraw()", context);
+        const stray = written.filter((t) => !ok(t));
+        if (stray.length) fail(`hq: the ${m} studio writes words off the board: ${stray}`);
+        if (!written.includes(board.lines[0].who + " ")) fail(`hq: the board does not say who is working: ${written}`);
       }
-      // Everything on the floor is drawn from the snapshot's office: the tank's water where the
-      // data puts the tank, and elsewhere once the data moves it.
-      const at = (style) => filled.filter((f) => f.style === style).map((f) => f.x + "," + f.y);
-      if (at("rgba(127,178,255,.55)").join() !== `${10 * 16 + 1},${3 * 16 + 3}`) fail(`hq: the fish tank is not drawn where the data has it: ${at("rgba(127,178,255,.55)")}`);
-      if (!at("#7d6bb0").includes(`${17 * 16},${18 * 16 + 2}`)) fail("hq: the couch is not drawn where the data has it");
-      if (!at("rgba(185,140,240,.55)").includes(`${11 * 16 + 1},${4 * 16 + 1}`)) fail("hq: the rug is not drawn flat where the data has it");
-      if (!filled.some((f) => f.x === 26 * 16 + 2 && f.y === 5 && f.w === 12 && f.h === 17)) fail("hq: the poster is not drawn on the wall where the data has it");
-      if (!at("#b8a68a").includes(`${14 * 16 + 1},${3 * 16 + 1}`)) fail("hq: a kind of thing with no picture is not drawn as a plain box");
-      // No plant covers the task board or reaches through a room's glass (a palm by the board hid
-      // a sticky note and the CEO's name): the default layout's palm, a plant under the board.
-      const plants = runInContext(`(() => {
-        const T = HQ_T, B = HQ_P.board, O = HQ_ROOMS.shelf, board = { x: B.x * T - 2, y: 3, w: B.w * T + 4, h: 26 };
-        const room = { x: O.x * T, y: O.y * T, w: O.w * T, h: O.h * T };
-        const palm = hqPlantRect({ x: 19, y: 3, w: 1, h: 1 }, 32, 48), low = hqPlantRect({ x: 10, y: 2, w: 1, h: 1 }, 16, 32);
-        const free = hqPlantRect({ x: 4, y: 12, w: 1, h: 1 }, 16, 32);
-        return [!hqOverlaps(palm, board), !hqOverlaps(palm, room), palm.y + palm.h === 4 * T, !hqOverlaps(low, board),
-          free.w === 16 && free.h === 32 && free.x === 4 * T];
-      })()`, context);
-      if (plants.some((ok) => !ok)) fail(`hq: a plant covers the task board or reaches into a room: ${plants}`);
-      // The front door is set in the right wall, framed, beside the lobby (the owner saw it
-      // floating on the floor, away from any wall).
-      const door = runInContext(`(() => { const D = hqDoorRect(), lobby = HQ_P.lobby;
-        return { right: D.x + D.w, top: D.y, bottom: D.y + D.h, x: D.x, wall: [HQ_SIDE.top * HQ_T, HQ_SIDE.bottom * HQ_T], lobby: (lobby.cy + 0.5) * HQ_T, w: HQ_W }; })()`, context);
-      const framed = filled.some((f) => f.style === "#3d3a44" && f.x === door.x && f.y === door.top);
-      if (door.right !== door.w || door.top < door.wall[0] || door.bottom > door.wall[1] || door.lobby < door.top || door.lobby > door.bottom || !framed) fail(`hq: the front door is not framed in the right wall by the lobby: ${JSON.stringify(door)} framed=${framed}`);
-      filled.length = 0;
-      runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 12; hqPlacePeople(); hqDraw();`, context);
-      if (at("rgba(127,178,255,.55)").join() !== `${12 * 16 + 1},${3 * 16 + 3}`) fail("hq: a thing moved in the data is not moved on screen");
-      runInContext(`HQ.snap.office.items.find((i) => i.kind === "fish_tank").x = 10; hqPlacePeople();`, context);
-      // What stands on the floor is in the way, and the desks too; a rug is not.
-      const world = runInContext(`(() => { const b = HQ.world.blocked, [first, , , last] = HQ.pods[0].desks, w = HQ.seats[1].work;
-        return [b.has("8,3"), b.has("17,18"), b.has("18,18"), !b.has("11,4"), b.has(first.x + "," + first.y), b.has(last.x + "," + last.y), b.has("22,3"), !b.has(w.cx + "," + w.cy)]; })()`, context);
-      if (world.some((ok) => !ok)) fail(`hq: the floor's things and desks are not what blocks the way: ${world}`);
-      // A member sits where it rests and works (the owner saw people standing behind the sofas
-      // and beside an empty desk): on a couch it is drawn in front of the couch, seated; at work
-      // its computer is on the desk's end where it sits, its chair beside it.
-      const seated = runInContext(`(() => {
-        HQ_IMG.PC_FRONT_OFF = { width: 16, height: 32 };
-        const furn = hqFurniture(); delete HQ_IMG.PC_FRONT_OFF;
-        const couch = furn.find((f) => f.item && f.item.kind === "couch");
-        const spot = hqWanderSpots().find((s) => s.sit === "couch");
-        const p = { x: spot.x * HQ_T, y: spot.y * HQ_T, path: [], at: spot, working: false };
-        const pcs = furn.filter((f) => f.pcOf !== undefined), desks = HQ.pods[0].desks;
-        const pcOf = (id) => pcs.find((f) => f.pcOf === id), deskOf = (id) => desks.find((d) => d.member === id);
-        const work = (id) => HQ.seats[id].work;
-        return [hqSits(p) === "couch", hqDepth(p) > couch.base, hqFrame(p).frame === 3,
-          // Ada's desk is on the left of the aisle, Bo's on the right: each one's computer at the aisle end.
-          pcOf(1).x >= (deskOf(1).x + 1.5) * HQ_T, pcOf(2).x < (deskOf(2).x + 1.5) * HQ_T,
-          work(1).sit === "desk" && work(1).cx === deskOf(1).x + 3 && work(2).cx === deskOf(2).x - 1,
-          furn.filter((f) => f.draw && !f.item && !f.key).length >= desks.length];
-      })()`, context);
-      if (seated.some((ok) => !ok)) fail(`hq: a member does not sit on the couch, or at its own desk by its computer: ${seated}`);
-      // Nobody walks through glass or furniture: from the ping-pong table to the shelf, in by its
-      // open door; to the head of the meeting table, in by its door.
-      const paths = runInContext(`(() => {
-        const W = HQ.world, from = hqAt(2, 17), toMara = hqPathCells(from, hqShelfSpot(0)), toMeeting = hqPathCells(from, HQ_MEETING.head);
-        const clear = (cells, goal) => cells.every((c) => c.cx + "," + c.cy === goal || !W.blocked.has(c.cx + "," + c.cy));
-        const crosses = (cells) => { let at = from; for (const c of cells) { if (W.edges.has(at.cx + "," + at.cy + ">" + c.cx + "," + c.cy)) return true; at = c; } return false; };
-        return [!!toMara, clear(toMara, "21,5"), !crosses(toMara), toMara.some((c) => c.cy === 7 && c.cx >= 20 && c.cx < 22) && toMara.some((c) => c.cy === 6 && c.cx >= 20 && c.cx < 22),
-          !!toMeeting, clear(toMeeting, "12,16"), !crosses(toMeeting), toMeeting.some((c) => c.cy === 14 && c.cx >= 9 && c.cx < 11) && toMeeting.some((c) => c.cy === 15 && c.cx >= 9 && c.cx < 11),
-          hqPathCells(from, hqAt(3, 3)) === null, hqPathCells(from, from).length === 0];
-      })()`, context);
-      if (paths.some((ok) => !ok)) fail(`hq: a walk goes through glass or furniture, or not by the open door: ${paths}`);
-      // Where the team's things close every way to a spot, nobody walks straight through them:
-      // they go round, as near as they can, and step on only at the end. And a spot before a
-      // thing that something else now stands on is not offered.
-      const shut = runInContext(`(() => {
-        const items = HQ.snap.office.items, keep = items.slice();
-        items.push({ id: 90, kind: "plant", x: 4, y: 10, w: 1, h: 1 }, { id: 91, kind: "plant", x: 6, y: 10, w: 1, h: 1 },
-          { id: 92, kind: "plant", x: 5, y: 9, w: 1, h: 1 }, { id: 93, kind: "plant", x: 5, y: 11, w: 1, h: 1 },
-          { id: 94, kind: "coffee_machine", x: 2, y: 12, w: 1, h: 1 }, { id: 95, kind: "plant", x: 2, y: 13, w: 1, h: 1 });
-        HQ.world = hqWorld();
-        // From the aisle of the one pod (ADR 0142), between its first two columns of desks.
-        const p = { x: 11 * HQ_T, y: 9.5 * HQ_T, path: [] };
-        hqWalk(p, hqAt(5, 10));
-        const steps = p.path.map((c) => Math.round(c.x / HQ_T) + "," + Math.round(c.y / HQ_T + 0.5));
-        const through = steps.slice(0, -1).some((k) => HQ.world.blocked.has(k));
-        const offered = hqWanderSpots().some((s) => s.cx === 2 && s.cy === 13), none = hqPathCells(hqAt(11, 10), hqAt(5, 10)) === null;
-        // A step at a time, one cell to the next, never a straight line across the floor.
-        const cells = steps.map((k) => k.split(",").map(Number));
-        const apart = (i) => Math.abs(cells[i][0] - cells[i - 1][0]) + Math.abs(cells[i][1] - cells[i - 1][1]);
-        const stepwise = cells.length > 2 && cells.every((c, i) => !i || apart(i) === 1 || (i === cells.length - 1 && apart(i) <= 2));
-        items.length = 0; items.push(...keep); HQ.world = hqWorld();
-        return [none, !through, stepwise, steps[steps.length - 1] === "5,10", !offered];
-      })()`, context);
-      if (shut.some((ok) => !ok)) fail(`hq: a walk to a shut-in spot cuts through furniture, or a covered spot is offered: ${shut}`);
-      // Working at its own desk (ADR 0142, one team: no other pod to visit, no tester's round,
-      // no CEO's office), whatever project the work is in; Mara at her desk like the rest.
-      const visits = runInContext(`(() => {
-        const run = (id, task) => { HQ.snap.members.find((m) => m.id === id).running = task ? [{ run: 90 + id, task }] : []; };
-        const cell = (p) => p.at.cx + "," + p.at.cy, spot = (s) => s.cx + "," + s.cy;
-        HQ.snap.projects.push({ id: 9, goal: 1, title: "Wing work", lead: 6, status: "active" });
-        HQ.snap.tasks.push({ id: 31, goal: 1, project: 9, title: "t", status: "doing", owner: 2, thread: [] });
-        const out = [];
-        run(2, 31); hqPlacePeople(); out.push(cell(HQ.people[2]) === spot(HQ.seats[2].work), HQ.people[2].at.desk === true);
-        run(2, null); run(4, 9); hqPlacePeople(); out.push(cell(HQ.people[4]) === spot(HQ.seats[4].work));
-        run(4, null); run(5, 31); hqPlacePeople(); out.push(cell(HQ.people[5]) === spot(HQ.seats[5].work));
-        run(5, null); hqPlacePeople();
-        return out;
-      })()`, context);
-      if (visits.some((ok) => !ok)) fail(`hq: a working member is not at its own desk: ${visits}`);
-      // An idle member is simply idle (the owner, 3 Nov: no fabricated activity): when its turn
-      // ends it goes to one place to rest, its own by a fixed order, and stays there; nobody plays
-      // a game the record does not hold, and two never take the same seat. For someone who asks
-      // for calm, nobody walks off at all.
-      const rest = runInContext(`(() => {
-        for (const m of HQ.snap.members) m.running = [];
-        hqPlacePeople();
-        const bo = HQ.people[2], cy = HQ.people[3], out = [];
-        const game = (s) => !!(s && (s.pong || s.pool || s.chess));
-        out.push(!!bo.wander && !!cy.wander, !game(bo.wander) && !game(cy.wander), bo.wander.cx + "," + bo.wander.cy !== cy.wander.cx + "," + cy.wander.cy);
-        const was = bo.wander;
-        for (let i = 0; i < 50; i++) { HQ.rand = () => (i % 7) / 7; hqIdle(bo, 5); }
-        out.push(bo.wander === was);
-        out.push(typeof hqIdlePlay === "undefined", typeof hqPlayMatch === "undefined", typeof hqPong === "undefined", typeof hqPool === "undefined");
-        out.push(Object.values(HQ.people).every((q) => !game(q.wander)));
-        bo.wander = null; bo.spotKey = "x"; globalThis.matchMedia = () => ({ matches: true }); hqIdle(bo, 0.1);
-        out.push(hqCalm(), bo.wander === null, bo.spotKey === "x"); delete globalThis.matchMedia;
-        bo.errand = null; bo.wander = null; hqPlacePeople();
-        return out;
-      })()`, context);
-      if (rest.some((ok) => !ok)) fail(`hq: an idle member drifts or plays a game the record does not hold, shares a seat, or walks for calm: ${rest}`);
-      // Zed comes back from furlough: he walks in at the front door to his desk.
-      const back = runInContext(`(() => {
-        HQ.snap.members.find((m) => m.id === 8).furloughed = false; hqPlacePeople();
-        const zed = HQ.people[8], out = [!!zed, zed.x === HQ_P.lobby.x * HQ_T, zed.path.length > 0, zed.at === HQ.seats[8].work];
-        HQ.snap.members.find((m) => m.id === 8).furloughed = true; hqPlacePeople();
-        return out.concat([HQ.people[8] === undefined]);
-      })()`, context);
-      if (back.some((ok) => !ok)) fail(`hq: a recalled member does not walk in at the front door to his desk: ${back}`);
-      // A question for Mara: the one who asked walks to her desk, as to anyone's, and back.
-      const errands = runInContext(`HQ.snap.members.find((m) => m.id === 5).running = []; hqPlacePeople();
-        hqTell({ id: 60, at: 0, kind: "thread.posted", data: { task: 7, author: "Ada", preview: "@Mara <b>which</b>?" } }, true);
-        hqTell({ id: 61, at: 0, kind: "wake.queued", data: { member: 5, task: 7, reason: "question_asked" } }, true);
-        const ada = HQ.people[1], mara = HQ.seats[5].visit;
-        const there = ada.at.cx === mara.cx && ada.at.cy === mara.cy && ada.path.length > 0;
-        hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
-        // Back to where she rests between turns (idle is simply idle), else her desk.
-        [there, !ada.errand, ada.at === (ada.wander || ada.seat.work)]`, context);
-      if (errands.some((ok) => !ok)) fail(`hq: a question does not send its member to the right desk and back: ${errands}`);
-      // A question for someone on a team: the one who asked walks to their desk, and goes back.
-      const asks = runInContext(`HQ.snap.members.find((m) => m.id === 6).running = [];
-        hqPlacePeople();
-        hqTell({ id: 64, at: 0, kind: "thread.posted", data: { task: 7, author: "Rae", preview: "@Kit which?" } }, true);
-        hqTell({ id: 65, at: 0, kind: "wake.queued", data: { member: 6, task: 7, reason: "question_asked" } }, true);
-        const rae = HQ.people[7], kit = HQ.seats[6].visit;
-        const gone = rae.at.cx === kit.cx && rae.at.cy === kit.cy && rae.path.length > 0;
-        hqTell({ id: 66, at: 0, kind: "run.ended", data: { run: 22, member: 6, task: 7, result: "succeeded" } }, true);
-        [gone, !rae.errand]`, context);
-      if (asks.some((ok) => !ok)) fail(`hq: a question for someone on a team does not take its asker to their desk and back: ${asks}`);
+      mode = "wide";
+      if (board.lines.some((l) => /<img|EL-\d|hq\/task/.test(l.text))) fail(`hq: the board shows a technical title: ${JSON.stringify(board.lines)}`);
+      // A real post is said briefly, made short and plain, beside its author's head and never over a
+      // screen or the board; the whole of it is a tap away.
+      const said = runInContext(`(() => { hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "Bo: Fix on hq/task-7-tidy (submitted, receipt r40, document d2) at 8bc88a8108 and more words beyond" } }, true);
+        const sc = hqStudioScene("wide"), bo = sc.people.find((p) => p.m.id === 2), b = bo.bubble;
+        return [HQ.said[2].text, !!b, b && !sc.important.some((o) => hqOverlap(o, b)), b && b.h <= 9]; })()`, context);
+      if (/hq\/task|receipt|8bc88a|^Bo:/.test(said[0]) || said[0].length > 31 || !said[1] || !said[2] || !said[3]) fail(`hq: a bubble is not short, plain, one line, or covers something important: ${said}`);
+      written.length = 0; runInContext("hqDraw(); HQ.said = {};", context);
+      if (!written.some((t) => t.startsWith("Fix on the branch"))) fail(`hq: the bubble is not drawn: ${written}`);
+      // A tap: a person, the lever, the board, the shelves, the bookcase, the chess table, your corner.
+      const taps = runInContext(`(() => { const sc = hqStudioScene("wide"), L = sc.L, bo = sc.people.find((p) => p.m.id === 2), at = (x, y) => { const h = hqStudioAt(sc, x, y); return h ? (h.act || h.sel.type + ":" + h.sel.id) : "none"; };
+        return [at(bo.x + 8, bo.y + 10), at(L.lever.x + 2, L.lever.y + 4), at(L.board.x + 10, 10), at(L.shelf.x + 4, L.shelf.y + 4), at(L.bookcase.x + 4, L.bookcase.y + 4), at(L.chess.x + 4, L.chess.y + 4), at(L.ownerDesk.x + 30, L.ownerDesk.y + 26)]; })()`, context);
+      if (taps.join("|") !== "member:2|hq:stop|goal:0|shelf:0|knowing:0|chess:0|corner:0") fail(`hq: a tap in the studio does not open what it falls on: ${taps}`);
+      // What a tap opens: the board's whole titles, escaped; your corner; the week's shelf.
+      runInContext(`HQ.selected = { type: "goal", id: 0 };`, context);
+      const goal = runInContext("hqSelected()", context);
+      if (!goal.includes("&lt;img src=x") || goal.includes("<img src=x") || !goal.includes("Bo: EL-7")) fail("hq: the board's tap does not list the whole titles, escaped");
+      runInContext(`HQ.selected = { type: "corner", id: 0 };`, context);
+      const corner = runInContext("hqSelected()", context);
+      if (!corner.includes("Your corner") || !corner.includes("Waiting for review") || !corner.includes('data-act="hq:pick:task:9"')) fail("hq: your corner's tap does not say what waits for you and for review");
+      // For calm: nobody types and no screen flickers; the same picture however much time passes.
+      const still = runInContext(`(() => { globalThis.matchMedia = (q) => ({ matches: /reduce/.test(q) });
+        const draw = (t) => { HQ.t = t; const n = ${JSON.stringify("x")}; hqDraw(); };
+        return true; })()`, context);
+      images.length = 0; runInContext("globalThis.matchMedia = (q) => ({ matches: /reduce/.test(q) }); HQ.t = 0.1; hqDraw();", context);
+      const a = images.slice(); images.length = 0; runInContext("HQ.t = 0.45; hqDraw(); HQ.t = 0; delete globalThis.matchMedia;", context);
+      if (!still || a.join("|") !== images.join("|")) fail("hq: the studio moves for someone who asked for calm");
+      images.length = 0; runInContext("HQ.t = 0.1; hqDraw();", context); const m1 = images.slice(); images.length = 0; runInContext("HQ.t = 0.3; hqDraw(); HQ.t = 0;", context);
+      if (m1.join("|") === images.join("|")) fail("hq: nobody types at a lit desk");
+      const floor = (runInContext("viewHQ()", context).match(/<canvas id="hq-office"[^>]*>/) || [""])[0];
+      if (!floor.includes("studio") || /CEO|ping-pong|meeting room/i.test(floor)) fail(`hq: the canvas does not describe the studio: ${floor}`);
+      const gone = runInContext(`["hqLayout", "hqPlacePeople", "hqWalk", "hqBubble", "hqSay", "hqDrawShelf", "hqTablePanel", "hqCards", "hqAreaOf", "hqPaintRoom"].filter((f) => { try { return typeof eval(f) !== "undefined"; } catch (_) { return false; } })`, context);
+      if (gone.length) fail(`hq: the office's machinery is still here: ${gone}`);
     } finally {
       stubs.document.getElementById = getElementById;
-      stubs.document.createElement = createElement;
-      runInContext(`HQ_BG = null; HQ_FURN = []; HQ.people = {}; HQ.snap = JSON.parse(${JSON.stringify(saved)});`, context);
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.fresh = {}; HQ.weekNow = 0; HQ.landing = {}; HQ.recovered = {}; HQ.said = {}; HQ.scene = null; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
     }
+    console.log("hq: the studio lights a desk only for a running turn, keeps a waiting desk dark, seats everyone without overlap, and writes only on the board");
   }
-  // A speech bubble never stops in the middle of a word (the owner's phone showed "the position
-  // is from a que"): it wraps whole words to two lines, and what does not fit ends in "...".
+  // The week's shelf in the library alcove: a spine for each item closed this week as met its
+  // criteria, a pale one for each closed as completed and not verified, nothing for any other closing;
+  // tapped, the week's list. An item closed live shines there.
   {
-    const said = runInContext(`(() => {
-      const w = (s) => s.length * 6;
-      return { short: hqShort("The position is from a queue I read earlier today, before the backup ran"),
-        two: hqWrap("the position is from a queue i read earlier", w, 140),
-        cut: hqWrap("the position is from a queue i read earlier today before the backup ran", w, 124),
-        one: hqWrap("ok", w, 124), long: hqWrap("supercalifragilisticexpialidocious-and-more", w, 60) };
-    })()`, context);
-    const words = "the position is from a queue i read earlier today before the backup ran".split(" ");
-    const whole = (line) => line.replace(/\.\.\.$/, "").split(" ").every((x) => words.includes(x));
-    if (!said.short.endsWith("...") || !whole(said.short) || said.short.length > 47) fail(`hq: a long line is not cut at a whole word: ${said.short}`);
-    if (said.two.length !== 2 || said.two.some((l) => l.length * 6 > 140) || said.two.join(" ") !== "the position is from a queue i read earlier") fail(`hq: a bubble does not wrap to two lines: ${JSON.stringify(said.two)}`);
-    if (said.cut.length !== 2 || !said.cut[1].endsWith("...") || !said.cut.every(whole) || said.cut.some((l) => l.length * 6 > 124)) fail(`hq: a bubble too long for two lines is not cut at a word: ${JSON.stringify(said.cut)}`);
-    if (said.one.join() !== "ok") fail(`hq: a short bubble is not one line: ${said.one}`);
-    if (said.long.length !== 1 || said.long[0].length * 6 > 60 || !said.long[0].endsWith("...")) fail(`hq: one word too long for a bubble is not cut to fit: ${said.long}`);
+    const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
+    try {
+      const rows = runInContext(`(() => { const day = 86400000, now = 30 * day; HQ.weekNow = now;
+        HQ.snap.projects.push({ id: 21, goal: 1, title: "Set 4 solo (Sol): lark", status: "active" });
+        const closed = (id, why, ago) => ({ id, goal: 1, project: 21, title: "Done <b>" + id + "</b>", status: "done", owner: 3, brief: true, closure: { why, by: "endora", at: now - ago } });
+        HQ.snap.tasks.push(closed(40, "met_criteria", day), closed(41, "completed_unverified", day), closed(42, "superseded", day), closed(43, "met_criteria", 8 * day));
+        return hqShelfRows(now).map((r) => r.name + ":" + r.items.map((t) => t.id).join("+")); })()`, context);
+      if (rows.join() !== "lark:40+41") fail(`hq: the week's shelf does not hold the week's checked and unverified closings by subject: ${rows}`);
+      runInContext(`HQ.selected = { type: "shelf", id: 0 };`, context);
+      const list = runInContext("hqSelected()", context);
+      for (const want of ["Done this week", 'data-act="hq:pick:task:40"', "Met its criteria", "Completed · Not verified", "Done &lt;b&gt;40&lt;/b&gt;"]) if (!list.includes(want)) fail(`hq: the week's list lacks ${want}`);
+      const row41 = (list.match(/<li[^>]*>(?:(?!<\/li>).)*pick:task:41(?:(?!<\/li>).)*<\/li>/s) || [""])[0];
+      if (!row41 || /Met its criteria/.test(row41) || list.includes("pick:task:42") || list.includes("pick:task:43")) fail(`hq: the week's list reads an unverified closing as checked, or holds work it should not: ${row41}`);
+      const live = runInContext(`(() => { const close = (id, why, unverified) => { HQ.snap.tasks.push({ id, goal: 1, project: 21, title: "t", status: "done", owner: 3, brief: true, closure: { why, by: "endora", at: HQ.weekNow } });
+          hqTell({ id: 900 + id, at: HQ.weekNow, kind: "task.changed", data: { task: id, goal: 1, owner: 3, status: "done", ...(unverified ? { unverified: true } : {}) } }, true); hqLandings(); };
+        close(50, "met_criteria"); close(51, "completed_unverified", true); close(52, "superseded"); return [!!HQ.fresh[50], !!HQ.fresh[51], !HQ.fresh[52]]; })()`, context);
+      if (live.some((x) => !x)) fail(`hq: an item closed live does not shine on the shelf, or something not built does: ${live}`);
+    } finally {
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.fresh = {}; HQ.weekNow = 0; HQ.landing = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
+    }
+    console.log("hq: the alcove's shelf holds the week's done work by subject, checked or not, and an item closed live shines there");
   }
-  // Games in the office (ADR 0121): a pool table and a chess table on the floor, kept in the
-  // places the rules of the office keep for them; leaderboards, the last five results and the
-  // chess games in the Office card; a board in the panel when the chess table is tapped; and the
-  // two players of a match walking to their table. Every name is the team's own words: text.
+  // The office's chess table stands in the lounge (ADR 0121; the owner kept it, 27 Oct): its games in
+  // the Office card, the board in the panel when it is tapped. Every name is the team's own words.
   {
     const saved = JSON.stringify(runInContext("HQ.snap", context));
     try {
-      const fixtures = runInContext(`(() => {
-        const inside = (c, r) => c.cx >= r[0] && c.cx < r[2] && c.cy >= r[1] && c.cy < r[3];
-        const pool = [29, 15, 32, 18], chess = [23, 16, 24, 19];
-        const spots = (key) => HQ_WANDER.filter((s) => s[key]);
-        const tiles = (t, w, h) => { const out = []; for (let j = t.y; j < t.y + h; j++) for (let i = t.x; i < t.x + w; i++) out.push({ cx: i, cy: j }); return out; };
-        hqPlacePeople();
-        const W = HQ.world;
-        return [
-          HQ_P.pool.x === 29 && HQ_P.pool.y === 15 && HQ_P.pool.w === 3 && HQ_P.pool.h === 2 && HQ_P.chess.x === 23 && HQ_P.chess.y === 17,
-          tiles(HQ_P.pool, 3, 2).every((c) => inside(c, pool) && W.blocked.has(c.cx + "," + c.cy)),
-          inside(HQ_P.chess.x === 23 ? { cx: 23, cy: 17 } : {}, chess) && W.blocked.has("23,17"),
-          // Nobody stands at a games table to play a match the record does not hold.
-          spots("pool").length === 0 && spots("pong").length === 0 && spots("chess").length === 0,
-        ];
-      })()`, context);
-      if (fixtures.some((ok) => !ok)) fail(`hq: the pool and chess tables are not where the office's rules keep them, or cannot be walked to: ${fixtures}`);
       runInContext(`HQ.snap.games = {
-        ping_pong: { label: "ping-pong", last: { winner: "Bo", loser: "<i>Dee</i>", score: [11, 8], note: "" },
-          leaderboard: [{ member: 2, name: "Bo", wins: 3, losses: 1, streak: 2 }, { member: 4, name: "<i>Dee</i>", wins: 1, losses: 3, streak: -2 }] },
-        pool: { label: "pool", last: { winner: "Cy", loser: "Bo", score: [4, 7], note: "Bo scratched on the 8" },
-          leaderboard: [{ member: 3, name: "Cy", wins: 1, losses: 0, streak: 1 }] },
         chess: { label: "chess", leaderboard: [{ member: 1, name: "Ada", wins: 1, losses: 0, draws: 2 }],
           games: [{ id: 1, white: "Ada", black: "<b>Bo</b>", status: "in_progress", reason: "", moves: ["e4", "e5"], move_text: "1. e4 e5 2. Nf3 <script>x</script>",
             rows: ["rnbqkbnr", "pppp.ppp", "........", "....p...", "....P...", "........", "PPPP.PPP", "RNBQKBNR"], fen: "x", check: false, to_move: "Ada", result: "" }] },
         recent: [1, 2, 3, 4, 5].map((n) => ({ id: n, game: "pool", text: "Result " + n + " <u>x</u>", at: 100 - n })) };
         HQ.selected = null;`, context);
       const card = runInContext("hqOffice(HQ.snap)", context);
-      // The latest three results show, the rest a tap away (the owner, 2026-10-25).
-
-      // Ping-pong and pool are the animation alone (ADR 0142): chess is the one kept.
-      if (card.includes("<summary>Ping-pong") || card.includes("<summary>Pool") || card.includes("Result 1")) fail("hq: the Games section still keeps ping-pong or pool");
-      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) {
-        if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
-      }
-      if (["<i>Dee</i>", "<b>Bo</b>", "<u>x</u>"].some((raw) => card.includes(raw))) fail("hq: a name or result in the Games section is not escaped");
+      if (card.includes("ping-pong") || card.includes("<summary>Pool") || card.includes("Result 1")) fail("hq: the Games section still keeps ping-pong or pool");
+      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
       runInContext(`HQ.selected = { type: "chess", id: 0 };`, context);
       const panel = runInContext("hqSelected()", context);
       if ((panel.match(/<span/g) || []).length !== 64) fail(`hq: the chess panel's board is not 64 squares: ${(panel.match(/<span/g) || []).length}`);
-      for (const want of ["Ada (white) against &lt;b&gt;Bo&lt;/b&gt; (black)", "Ada to move", "1. e4 e5 2. Nf3 &lt;script&gt;x&lt;/script&gt;", "♚", "♟"]) {
-        if (!panel.includes(want)) fail(`hq: the chess panel lacks ${want}`);
-      }
-      if (panel.includes("<script>")) fail("hq: the chess panel does not escape a move list");
-      runInContext(`HQ.selected = { type: "pool", id: 0 };`, context);
-      const table = runInContext("hqSelected()", context);
-      if (!table.includes("Pool") || !table.includes("Cy") || !table.includes("Bo scratched on the 8")) fail("hq: tapping the pool table does not show its board");
-      runInContext(`HQ.selected = { type: "ping_pong", id: 0 };`, context);
-      if (!runInContext("hqSelected()", context).includes("BO 11-8 &lt;I&gt;")) fail("hq: tapping the ping-pong table does not show its latest match");
+      if (panel.includes("<script>") || !panel.includes("Ada to move")) fail("hq: the chess panel does not read the game, escaped");
     } finally {
-      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {};`, context);
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null;`, context);
     }
-    console.log("hq: the pool and chess tables stand where the rules keep them, nobody plays at them unrecorded, and the Games section and the chess board read the snapshot");
+    console.log("hq: the chess table in the lounge opens its board, and the Games section reads the snapshot");
   }
-  // The shelf of the week's done work, where the CEO's office stood (the frontend slice of 3 Nov):
-  // a cup for each item HQ closed as met its criteria, a plain crate marked "?" for each it
-  // closed as completed and not verified, nothing for any other closing. Tapped, a cup opens its
-  // item and the shelf the week's list. An item closed live sends its owner to the shelf, where
-  // the new one appears; the record decides all of it, never the browser.
-  {
-    const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
-    try {
-      const shelf = runInContext(`(() => {
-        const day = 86400000, now = 30 * day, closed = (id, why, ago, owner) => ({ id, goal: 1, title: "Done <b>" + id + "</b>", status: why === "obsolete" ? "dropped" : "done", owner, brief: true,
-          closure: { why, said: why, by: "endora", at: now - ago } });
-        HQ.snap.tasks.push(closed(40, "met_criteria", 2 * day, 3), closed(41, "completed_unverified", day, 2), closed(42, "superseded", day, 3),
-          closed(43, "obsolete", day, 3), closed(44, "met_criteria", 8 * day, 3), closed(45, "met_criteria", 3600000, 4));
-        const tokens = hqShelf(now);
-        return { tokens: tokens.map((s) => s.task.id + ":" + s.checked), slots: tokens.map((s) => s.slot) };
-      })()`, context);
-      if (shelf.tokens.join() !== "40:true,41:false,45:true") fail(`hq: the shelf does not hold the week's checked and unchecked closings, oldest first: ${shelf.tokens}`);
-      const room = runInContext("HQ_ROOMS.shelf", context);
-      if (!room || shelf.slots.some((r) => r.x < room.x * 16 || r.x + r.w > (room.x + room.w) * 16 || r.y < room.y * 16 || r.y + r.h > (room.y + room.h) * 16)) fail(`hq: a shelf's place is outside its room: ${JSON.stringify(shelf.slots)}`);
-      // Many in a week: the newest that fit, so the shelf never runs out of its room.
-      const most = runInContext(`(() => { const now = 30 * 86400000;
-        for (let i = 0; i < 60; i++) HQ.snap.tasks.push({ id: 200 + i, goal: 1, title: "t", status: "done", owner: 3, brief: true, closure: { why: "met_criteria", by: "endora", at: now - 1000 + i } });
-        const all = hqShelf(now); HQ.shelfNow = now; HQ.selected = { type: "shelf", id: 0 }; const panel = hqSelected();
-        return [all.length, all[all.length - 1].task.id, new Set(all.map((s) => s.slot.x + "," + s.slot.y)).size, panel.includes("Show all 63"), panel.includes("The shelf holds the newest 48")]; })()`, context);
-      if (most[0] !== runInContext("HQ_SHELF_MOST", context) || most[1] !== 259 || most[2] !== most[0] || !most[3] || !most[4]) fail(`hq: a full week overflows the shelf, drops the newest, or stacks two in one place: ${most}`);
-      runInContext("HQ.snap.tasks = HQ.snap.tasks.filter((t) => t.id < 200);", context);
-      // A tap on a cup is its item; on the shelf's empty part, the week's list.
-      const tapped = runInContext(`(() => { const now = 30 * 86400000, all = hqShelf(now), s = all[1].slot;
-        return [hqShelfAt(s.x + 1, s.y + 1, now) && hqShelfAt(s.x + 1, s.y + 1, now).task.id, hqShelfAt(HQ_ROOMS.shelf.x * 16 + 2, (HQ_ROOMS.shelf.y + 4) * 16, now)]; })()`, context);
-      if (tapped[0] !== 41 || tapped[1] !== null) fail(`hq: a tap on the shelf does not find its item: ${tapped}`);
-      runInContext(`HQ.shelfNow = 30 * 86400000; HQ.selected = { type: "shelf", id: 0 };`, context);
-      const list = runInContext("hqSelected()", context);
-      for (const want of ["Done this week", 'data-act="hq:pick:task:40"', 'data-act="hq:pick:task:41"', "Met its criteria", "Completed · Not verified", "Done &lt;b&gt;40&lt;/b&gt;"]) {
-        if (!list.includes(want)) fail(`hq: the shelf's list lacks ${want}`);
-      }
-      if (list.includes("Done <b>") || list.includes("pick:task:42") || list.includes("pick:task:44")) fail("hq: the shelf's list shows an unescaped title, or work it does not hold");
-      const row41 = (list.match(/<li[^>]*>(?:(?!<\/li>).)*pick:task:41(?:(?!<\/li>).)*<\/li>/s) || [""])[0];
-      if (!row41 || /Met its criteria|checked/i.test(row41.replace("Not verified", ""))) fail(`hq: an unverified closing reads as checked on the shelf: ${row41}`);
-      // Nothing of the CEO is left on the floor: not in the room's name, the furniture or the words.
-      // (The floor's own words: what HQ's record says, such as a desk card's text, is its own.)
-      const floor = (runInContext("viewHQ()", context).match(/<canvas id="hq-office"[^>]*>/) || [""])[0];
-      if (!floor.includes("shelf") || /CEO/.test(floor) || runInContext("hqAreaOf({ x: 22, y: 3, w: 1, h: 1 })", context) !== "by the shelf") fail(`hq: the office still describes a CEO's office: ${floor}`);
-      // An item closed live: its owner, between turns, walks to the shelf and says what landed there;
-      // an unverified one says so; any other closing sends nobody; a member at work stays at work.
-      const live = runInContext(`(() => {
-        const now = 30 * 86400000, out = [];
-        for (const m of HQ.snap.members) m.running = [];
-        HQ.shelfNow = now; hqPlacePeople();
-        const close = (id, why, owner, unverified) => {
-          HQ.snap.tasks.push({ id, goal: 1, title: "t", status: "done", owner, brief: true, closure: { why, by: "endora", at: now } });
-          hqTell({ id: 900 + id, at: now, kind: "task.changed", data: { task: id, goal: 1, owner, status: "done", ...(unverified ? { unverified: true } : {}) } }, true);
-          hqPlacePeople();
-        };
-        close(50, "met_criteria", 3);
-        const cy = HQ.people[3], R = HQ_ROOMS.shelf;
-        out.push(!!cy.errand && cy.errand.kind === "shelf" && cy.errand.spot.cx >= R.x && cy.errand.spot.cx < R.x + R.w && cy.errand.spot.cy >= R.y && cy.errand.spot.cy < R.y + R.h, cy.path.length > 0);
-        cy.path = []; cy.x = cy.errand.spot.x * 16; cy.y = cy.errand.spot.y * 16; hqErrand(cy, 0.1);
-        out.push(cy.bubble === "done: el-50", !!HQ.shelfNew[50]);
-        cy.errand = null;
-        close(51, "completed_unverified", 3, true);
-        cy.path = []; cy.x = cy.errand.spot.x * 16; cy.y = cy.errand.spot.y * 16; hqErrand(cy, 0.1);
-        out.push(cy.bubble === "done, not verified: el-51");
-        cy.errand = null;
-        close(52, "superseded", 3);
-        out.push(!cy.errand && !HQ.shelfNew[52]);
-        HQ.snap.members.find((m) => m.id === 2).running = [{ run: 70, task: 7 }]; hqPlacePeople();
-        close(53, "met_criteria", 2);
-        out.push(!HQ.people[2].errand && !!HQ.shelfNew[53]);
-        // On the way to the shelf, woken for a turn: back to work, not to the shelf.
-        HQ.snap.members.find((m) => m.id === 2).running = []; hqPlacePeople();
-        close(54, "met_criteria", 2); const bo = HQ.people[2], going = !!bo.errand;
-        HQ.snap.members.find((m) => m.id === 2).running = [{ run: 71, task: 7 }]; hqPlacePeople();
-        out.push(going && !bo.errand && bo.at.cx === HQ.seats[2].work.cx);
-        HQ.snap.members.find((m) => m.id === 2).running = [];
-        return out;
-      })()`, context);
-      if (live.some((ok) => !ok)) fail(`hq: an item closed live does not take its owner to the shelf, or says it wrongly: ${live}`);
-      // The room is walked into through its door, and nobody walks through the shelf itself.
-      const walk = runInContext(`(() => { hqPlacePeople(); const R = HQ_ROOMS.shelf, W = HQ.world;
-        return [!!hqPathCells(hqAt(15, 10), R.in), HQ_SHELF_CELLS.every(([x, y]) => W.blocked.has(x + "," + y)), typeof HQ_CEO === "undefined" && !HQ_ROOMS.ceo]; })()`, context);
-      if (walk.some((ok) => !ok)) fail(`hq: the shelf's room cannot be walked into, its shelf can be walked through, or the CEO's office remains: ${walk}`);
-    } finally {
-      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {}; HQ.shelfNew = {}; HQ.shelfNow = 0; HQ.landing = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
-    }
-    console.log("hq: the shelf holds the week's done work, a cup when checked and a crate when not, and an item closed live is carried there by its owner");
-  }
-  // Problems and recoveries, in one language over a worker's head (the owner, 3 Nov): a red "!"
+  // Problems and recoveries, in one language beside a worker's head (the owner, 3 Nov): a red "!"
   // while the record says its work is blocked, a red cross while its latest check failed, and a
   // green tick for a while after a check passes where the last one failed, or an item that had a
   // problem closes as met its criteria. Never from a retry, a turn that merely ended, a closing
-  // nothing verified, or an item that was only unblocked. The shelf says how many it holds.
+  // nothing verified, or an item that was only unblocked.
   {
     const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
     try {
@@ -1847,63 +1590,44 @@ if (failures.length) {
           { id: 61, goal: 1, title: "Failing one", status: "doing", owner: 4, brief: false, thread: [], branches: [branch(1, true, 1), branch(2, false, 2)] },
           { id: 62, goal: 1, title: "Passing one", status: "doing", owner: 1, brief: false, thread: [], branches: [branch(3, false, 1), branch(4, true, 2)] },
           { id: 63, goal: 1, title: "Unchecked", status: "doing", owner: 6, brief: false, thread: [], branches: [branch(5, null, 1)] });
-        hqPlacePeople();
         out.push(kind(3) === "blocked", kind(4) === "check", kind(1) === null, kind(6) === null);
-        // Working on something else, the badge is its current work's: Cy works item 62, fine.
-        HQ.snap.members.find((m) => m.id === 3).running = [{ run: 80, task: 62 }]; hqPlacePeople();
+        HQ.snap.members.find((m) => m.id === 3).running = [{ run: 80, task: 62 }];
         out.push(kind(3) === null);
-        HQ.snap.members.find((m) => m.id === 3).running = []; hqPlacePeople();
-        // A retry, a turn ending well, or a check that passes with none failed before: no tick.
+        HQ.snap.members.find((m) => m.id === 3).running = [];
         hqTell({ id: 950, at: 0, kind: "run.ended", data: { run: 81, member: 4, task: 61, result: "retry_waiting" } }, true);
         hqTell({ id: 951, at: 0, kind: "run.ended", data: { run: 82, member: 4, task: 61, result: "succeeded" } }, true);
         hqTell({ id: 952, at: 0, kind: "check.done", data: { task: 63, check: 9, branch: "hq/task-x", ok: true, summary: "met", member: 6 } }, true);
         out.push(kind(4) === "check", kind(6) === null);
-        // The check passes where the last one failed: a tick, and the snapshot after it agrees.
         hqTell({ id: 953, at: 0, kind: "check.done", data: { task: 61, check: 10, branch: "hq/task-x", ok: true, summary: "met", member: 4 } }, true);
-        HQ.snap.tasks.find((t) => t.id === 61).branches.push(branch(6, true, 3)); hqPlacePeople();
-        out.push(kind(4) === "recovered", HQ.people[4].bubble === "check passed: el-61");
-        // A check that fails says so and badges it.
+        HQ.snap.tasks.find((t) => t.id === 61).branches.push(branch(6, true, 3));
+        out.push(kind(4) === "recovered");
         hqTell({ id: 954, at: 0, kind: "check.done", data: { task: 62, check: 11, branch: "hq/task-x", ok: false, summary: "1 new finding", member: 1 } }, true);
-        HQ.snap.tasks.find((t) => t.id === 62).branches.push(branch(7, false, 3)); hqPlacePeople();
-        out.push(kind(1) === "check", HQ.people[1].bubble === "check failed: el-62");
-        // Unblocked is not recovered: the "!" goes, nothing more.
+        HQ.snap.tasks.find((t) => t.id === 62).branches.push(branch(7, false, 3));
+        out.push(kind(1) === "check");
         hqTell({ id: 955, at: 0, kind: "task.changed", data: { task: 60, owner: 3, status: "doing" } }, true);
-        HQ.snap.tasks.find((t) => t.id === 60).status = "doing"; hqPlacePeople();
+        HQ.snap.tasks.find((t) => t.id === 60).status = "doing"; hqLandings();
         out.push(kind(3) === null);
-        // The item with the problem closes as met its criteria: a tick; closed with nothing verifying it: none.
         const close = (id, why, unverified) => { const t = HQ.snap.tasks.find((x) => x.id === id);
           hqTell({ id: 960 + id, at: 0, kind: "task.changed", data: { task: id, owner: t.owner, status: "done", ...(unverified ? { unverified: true } : {}) } }, true);
-          Object.assign(t, { status: "done", closure: { why, by: "endora", at: Date.now() } }); hqPlacePeople(); };
+          Object.assign(t, { status: "done", closure: { why, by: "endora", at: Date.now() } }); hqLandings(); };
         HQ.recovered = {};
         close(62, "completed_unverified", true); out.push(kind(1) === null);
-        HQ.snap.tasks.push({ id: 64, goal: 1, title: "Blocked again", status: "blocked", owner: 7, brief: false, thread: [], branches: [] }); hqPlacePeople();
+        HQ.snap.tasks.push({ id: 64, goal: 1, title: "Blocked again", status: "blocked", owner: 7, brief: false, thread: [], branches: [] });
         out.push(kind(7) === "blocked");
         close(64, "met_criteria"); out.push(kind(7) === "recovered");
-        // Tapped, the worker says what its badge means, from the record.
-        HQ.snap.tasks.push({ id: 65, goal: 1, title: "Stuck <b>", status: "blocked", owner: 3, brief: false, thread: [], branches: [] }); hqPlacePeople();
+        HQ.snap.tasks.push({ id: 65, goal: 1, title: "Stuck <b>", status: "blocked", owner: 3, brief: false, thread: [], branches: [] });
         HQ.selected = { type: "member", id: 3 }; const panel = hqSelected();
         out.push(panel.includes("EL-65 is blocked"), panel.includes("Stuck &lt;b&gt;"));
         HQ.selected = { type: "member", id: 7 }; out.push(hqSelected().includes("EL-64 closed as met its criteria after a problem"));
         HQ.recovered[4] = { task: 61, why: "check", t: 5 }; HQ.selected = { type: "member", id: 4 }; out.push(hqSelected().includes("Check passed on EL-61 after a failed one"));
         return out;
       })()`, context);
-      if (marks.some((ok) => !ok)) fail(`hq: a worker's badge does not follow the record of its problems and recoveries: ${marks}`);
-      // The shelf's count, on a plate on the cabinet: none, a few, or more than it holds.
-      const counted = runInContext(`(() => { const said = []; const g = { fillRect() {}, strokeRect() {}, measureText: (t) => ({ width: t.length * 4 }), fillText: (t) => said.push(t), set fillStyle(v) {}, set strokeStyle(v) {}, set font(v) {}, set lineWidth(v) {} };
-        const now = 30 * 86400000; HQ.shelfNow = now; HQ.snap.tasks = HQ.snap.tasks.filter((t) => !t.closure);
-        hqDrawShelf(g); const none = said.slice();
-        for (let i = 0; i < 70; i++) HQ.snap.tasks.push({ id: 300 + i, goal: 1, title: "t", status: "done", owner: 3, brief: true, closure: { why: "met_criteria", by: "endora", at: now - 1000 + i } });
-        said.length = 0; hqDrawShelf(g); return [none, said.slice()]; })()`, context);
-      if (!counted[0].includes("0") || !counted[1].includes("70")) fail(`hq: the shelf does not say how many it holds: ${JSON.stringify(counted)}`);
+      if (marks.some((ok) => !ok)) fail(`hq: a worker's sign does not follow the record of its problems and recoveries: ${marks}`);
     } finally {
-      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {}; HQ.shelfNew = {}; HQ.shelfNow = 0; HQ.landing = {}; HQ.recovered = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.fresh = {}; HQ.weekNow = 0; HQ.landing = {}; HQ.recovered = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
     }
-    console.log("hq: a worker's badge says blocked, a failed check, or a recovery the record shows, and nothing else");
+    console.log("hq: a worker's sign says blocked, a failed check, or a recovery the record shows, and nothing else");
   }
-  const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
-    for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
-    hqCards().map((c) => c.t.id)`, context);
-  if (cards.length !== 2 || cards[0] !== 7 || cards[1] !== 9) fail(`hq: a dropped goal's tasks are still on the board: ${cards}`);
   // The screen's tabs (the owner: "it's all been expanded over time, hard to find stuff").
   {
     runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.more = {};", context);
@@ -2314,7 +2038,7 @@ if (failures.length) {
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
-  console.log("hq: the open office has one pod for the one team, the furloughed off the floor, its floor from the snapshot, and people who walk round the furniture");
+  console.log("hq: the studio is drawn from the snapshot, the furloughed out of it");
 }
 
 // Replay: a turn read back in full, and a task's turns stepped through in order. Opened from a

@@ -76,23 +76,27 @@ Settings.
   foot of the Projects card); after those, the team board (a line a member: name, model, what it
   is doing, today's money; the rest on a tap) and hiring, accepted work waiting to merge with its
   two switches (ADR 0115, amended 2026-10-31), what the team may do on the home lab, what the
-  team knows — the world's pages and the house — and the office with its games), **Health** (how
+  team knows — the world's pages and the house — and the office's games), **Health** (how
   the team and the lab are doing: the scorecard and outcomes, the
   turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
   a "Running now" strip of the turns in progress, each with a Watch link to its live replay; the
   latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
   Older; never an endless scroll. What a line names opens where it already lives, with a way
   back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
-  board; no new screen). The office animation
-  plays above every tab. What the team finished shows on the office floor, in the shelf's room
-  where the CEO's office stood: a cup for each item closed in the last seven days as met its
-  criteria, a crate marked "?" for each closed as completed and not verified; tapped, an item
-  opens under Looking at and the room opens the week's list there. Nothing else is shown as
-  progress on the floor unless the record says it happened. A worker's one badge says the same of
-  problems: a red "!" while its work is blocked, a red cross while that work's latest check
-  failed, a green tick for a while after a check passes where one failed or troubled work closes
-  as met its criteria; tapped, the worker says which item and why. Idle workers rest in one place;
-  nothing plays a game the record does not hold. Each tab shows one line per thing at rest and the rest on a tap: the
+  board; no new screen). The studio plays above every tab (the owner, 4 Nov; it replaced the office
+  floor; `47f-hq-studio.js`): a small research studio whose areas are told apart by their floors, glass
+  stubs and steps, not walls. Desks stand on oak planks under the board, and a desk's lamp and screen
+  are lit only while a turn runs there; a turn waiting to retry keeps its desk, dark, with an
+  hourglass. The owner's corner is one step up on blue tile: the decisions waiting on your desk as
+  papers, the kill-switch lever, the rack with today's spend, and the review table with a folder for
+  each item in review, where a stuck worker sits. The library alcove holds the week's done work as
+  spines by subject, pale when not verified; the lounge, one step down, has the sofas against a low
+  bookcase (a spine for each of the team's notes and map lines), the chess table where the live game's
+  players sit, and a kitchenette with stools for whoever else is free. Words appear only on the
+  board (the goal, open and stuck, who is on which subject), in a brief one-line bubble when a real
+  post arrives, and in what a tap opens under Looking at; a sign beside a head says stuck, a failed
+  check, waiting to retry, or recovered. Nothing is shown as progress or activity unless the record
+  says it happened, and a phone gets its own plan, the same areas stacked. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
   behind a fold. The console check measures each tab at rest and holds it to a budget; fold
@@ -102,8 +106,8 @@ Settings.
   31 Oct: none of the three could hold a live board, a bracket and every game without breaking
   its budget): the league's games in play with their boards, this round's bracket and
   standings, and every finished game a page at a time with its PGN. The Work card says so in a
-  line with a way there and shows none of the league itself. The office's chess board stays in
-  the office, on Manage; it is a different game (ADR 0121). Information conversations also
+  line with a way there and shows none of the league itself. The office's chess board stays: its
+  table stands in the studio's lounge, its games on Manage's Office card; it is a different game (ADR 0121). Information conversations also
   live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
   requests, their results and project charges, source grants/revocation, and cancellation stay
   inside that conversation's Work view; they add no top-level screen. Something that needs your
@@ -122,7 +126,7 @@ Settings.
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
-| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
+| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), its studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
