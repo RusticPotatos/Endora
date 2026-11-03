@@ -349,6 +349,13 @@ pub enum Refusal {
     NotACheck,
     /// Longer than it may be, in characters.
     TooLong(usize),
+    /// More of something than there may be: criteria, or references cited.
+    TooMany {
+        /// The most there may be.
+        most: usize,
+        /// Of what, in the plural.
+        of: &'static str,
+    },
     /// Not a model Endora has (ADR 0109, 0142).
     NotABrain {
         /// What was asked for.
@@ -545,6 +552,10 @@ impl fmt::Display for Refusal {
                  claim it first",
             ),
             Self::TooLong(most) => write!(f, "that is longer than {most} characters"),
+            Self::TooMany { most, of } => write!(
+                f,
+                "that is more than the {most} {of} there may be: give fewer, or split the work"
+            ),
             Self::NotABrain { asked } => {
                 let may: Vec<&str> = super::brain::Brain::all()
                     .into_iter()

@@ -253,6 +253,12 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
     };
     let said = submit(json!([[format!("r{edit}")], [format!("r{curl}")]])).unwrap_err();
     assert!(said.contains("is about the lab now"), "{said}");
+    // Too many references is said as a count, never as "longer than 30 characters".
+    let many: Vec<String> = (0..=crate::domain::evidence::MOST_REFS)
+        .map(|_| format!("r{edit}"))
+        .collect();
+    let said = submit(json!([many, [format!("r{curl}")]])).unwrap_err();
+    assert!(said.contains("more than the 30 references"), "{said}");
     let fresh = reading(&hq, &linus, "homelab_status", "", false);
     submit(json!([
         [format!("r{edit}")],
@@ -307,9 +313,10 @@ fn the_owner_hands_out_work_only_with_what_done_means() {
     let many = vec![Criterion::new("x", false); crate::domain::evidence::MOST_CRITERIA + 1];
     assert_eq!(
         owners_ask(&hq, &t, t.lead, &many),
-        Err(EngineError::Refused(Refusal::TooLong(
-            crate::domain::evidence::MOST_CRITERIA
-        )))
+        Err(EngineError::Refused(Refusal::TooMany {
+            most: crate::domain::evidence::MOST_CRITERIA,
+            of: "criteria"
+        }))
     );
 
     let ask = [

@@ -2709,6 +2709,32 @@ mod tests {
             made,
             "nothing is made"
         );
+        // One criterion more than the most is refused, saying the most, and nothing is made:
+        // never a task whose last requirement was left out.
+        let many: Vec<String> = (1..=endora_team::domain::evidence::MOST_CRITERIA + 1)
+            .map(|n| format!("requirement {n}"))
+            .collect();
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Too many", "criteria": many }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"].as_str().unwrap().contains(&format!(
+                "more than the {} criteria",
+                endora_team::domain::evidence::MOST_CRITERIA
+            )),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
+        );
     }
 
     /// The runner's four routes, each with a body it might send.

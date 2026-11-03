@@ -223,7 +223,8 @@ impl Criterion {
     /// The owner's criteria from the screen, a line each: `live:` before one marks it live.
     ///
     /// # Errors
-    /// A criterion past [`CRITERION_MOST`], naming it ([`Self::written`]).
+    /// A criterion past [`CRITERION_MOST`], naming it ([`Self::written`]). Every line given is
+    /// read, none left out: a list past [`MOST_CRITERIA`] is the hand-out's to refuse.
     pub fn from_lines(lines: &[String]) -> Result<Vec<Self>, String> {
         lines
             .iter()
@@ -235,7 +236,6 @@ impl Criterion {
                 };
                 (!text.is_empty()).then_some((text, live))
             })
-            .take(MOST_CRITERIA)
             .enumerate()
             .map(|(i, (text, live))| Self::written(i + 1, text, live))
             .collect()
@@ -276,11 +276,14 @@ pub fn criteria_hash(criteria: &[Criterion]) -> String {
 /// [`owner_may_hand_out`].)
 ///
 /// # Errors
-/// [`Refusal::NoCriteria`] when work handed on has none, [`Refusal::TooLong`] past
+/// [`Refusal::NoCriteria`] when work handed on has none, [`Refusal::TooMany`] past
 /// [`MOST_CRITERIA`].
 pub fn may_hand_on(criteria: &[Criterion], to_another: bool) -> Result<(), Refusal> {
     if criteria.len() > MOST_CRITERIA {
-        return Err(Refusal::TooLong(MOST_CRITERIA));
+        return Err(Refusal::TooMany {
+            most: MOST_CRITERIA,
+            of: "criteria",
+        });
     }
     if to_another && criteria.is_empty() {
         return Err(Refusal::NoCriteria);
@@ -294,11 +297,14 @@ pub fn may_hand_on(criteria: &[Criterion], to_another: bool) -> Result<(), Refus
 /// has nothing to check a part against.
 ///
 /// # Errors
-/// [`Refusal::OwnerNeedsCriteria`] when there are none, [`Refusal::TooLong`] past
+/// [`Refusal::OwnerNeedsCriteria`] when there are none, [`Refusal::TooMany`] past
 /// [`MOST_CRITERIA`].
 pub fn owner_may_hand_out(criteria: &[Criterion]) -> Result<(), Refusal> {
     if criteria.len() > MOST_CRITERIA {
-        return Err(Refusal::TooLong(MOST_CRITERIA));
+        return Err(Refusal::TooMany {
+            most: MOST_CRITERIA,
+            of: "criteria",
+        });
     }
     if criteria.is_empty() {
         return Err(Refusal::OwnerNeedsCriteria);
@@ -985,7 +991,10 @@ mod tests {
         let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
         assert_eq!(
             may_hand_on(&many, true),
-            Err(Refusal::TooLong(MOST_CRITERIA))
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
     }
 
@@ -1000,7 +1009,10 @@ mod tests {
         let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
         assert_eq!(
             owner_may_hand_out(&many),
-            Err(Refusal::TooLong(MOST_CRITERIA))
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
         let words = Refusal::OwnerNeedsCriteria.to_string();
         assert!(words.contains("what done means"), "{words}");
@@ -1025,6 +1037,30 @@ mod tests {
         assert!(
             why.contains("criterion 2") && why.contains(&format!("{CRITERION_MOST} characters")),
             "{why}"
+        );
+    }
+
+    /// The owner's screen gives criteria a line each, and every line given is read: one past
+    /// [`MOST_CRITERIA`] is not left out here, so the owner's route refuses the list whole
+    /// rather than making the task with its last requirement missing.
+    #[test]
+    fn every_line_of_the_owners_criteria_is_read_and_none_is_left_out() {
+        let lines: Vec<String> = (1..=MOST_CRITERIA + 1)
+            .map(|n| format!("requirement {n}"))
+            .collect();
+        let read = Criterion::from_lines(&lines).unwrap();
+        assert_eq!(read.len(), MOST_CRITERIA + 1);
+        assert_eq!(read[MOST_CRITERIA].text, lines[MOST_CRITERIA]);
+        // A count is said as a count, not as characters (it read "longer than 8 characters").
+        let words = owner_may_hand_out(&read).unwrap_err().to_string();
+        assert!(words.contains("more than the 8 criteria"), "{words}");
+        assert!(!words.contains("characters"), "{words}");
+        assert_eq!(
+            owner_may_hand_out(&read),
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
     }
 

@@ -163,7 +163,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let waits = task.map(|t| t.waits_on.clone()).unwrap_or_default();
         if cited.iter().map(Vec::len).sum::<usize>() > evidence::MOST_REFS {
-            return Err(EngineError::Refused(Refusal::TooLong(evidence::MOST_REFS)));
+            return Err(EngineError::Refused(Refusal::TooMany {
+                most: evidence::MOST_REFS,
+                of: "references",
+            }));
         }
         let mut all = Vec::new();
         for group in cited {
@@ -293,7 +296,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reads "needs re-check" and does not count.
     ///
     /// # Errors
-    /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
+    /// [`Refusal::TooMany`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
     pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
         let _held = self.held();
         self.set_criteria_held_lock(task, criteria)
@@ -361,7 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// done means. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`] and what [`Engine::add_task`] refuses.
+    /// [`Refusal::NoCriteria`], [`Refusal::TooMany`] and what [`Engine::add_task`] refuses.
     pub fn create_task_in(
         &self,
         run: RunId,
@@ -397,7 +400,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// as it is.
     ///
     /// # Errors
-    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooLong`] past
+    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooMany`] past
     /// [`evidence::MOST_CRITERIA`]; and as [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
         let _held = self.held();
