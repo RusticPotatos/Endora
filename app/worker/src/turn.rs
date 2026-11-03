@@ -2380,12 +2380,22 @@ fn what_a_call_is(tool: &str, args: &Value) -> (String, String) {
     }
 }
 
+/// What ends words cut to make room, as HQ marks its own cuts.
+const CUT: &str = "…[cut]";
+
 /// `text`, then a blank line and `line`, within `most` characters: the text is cut to make
-/// room, never the line.
+/// room, never the line, and a cut text says so.
 pub(crate) fn beside(text: &str, line: &str, most: usize) -> String {
     let room = most.saturating_sub(line.chars().count() + 2);
-    let kept: String = text.trim().chars().take(room).collect();
-    format!("{}\n\n{line}", kept.trim_end())
+    let text = text.trim();
+    if text.chars().count() <= room {
+        return format!("{text}\n\n{line}");
+    }
+    let kept: String = text
+        .chars()
+        .take(room.saturating_sub(CUT.chars().count()))
+        .collect();
+    format!("{}{CUT}\n\n{line}", kept.trim_end())
 }
 
 /// The words said, a paragraph each, in at most `most` characters: the newest kept when they
@@ -3992,6 +4002,22 @@ mod tests {
             );
             assert!(told.contains("create sub-tasks of your own"), "{told}");
         }
+    }
+
+    /// The model's last word and its question to the owner go out with the line saying what the
+    /// turn did, within HQ's most: the words were cut from their end with no sign of it, so the
+    /// thread or the owner read a conclusion or a question that simply stopped.
+    #[test]
+    fn words_cut_to_make_room_for_the_line_say_they_were_cut() {
+        let line = "This turn read homelab_status.";
+        let fits = beside("sonarr is healthy.", line, 100);
+        assert_eq!(fits, format!("sonarr is healthy.\n\n{line}"));
+        let long = format!("{} so the fix is to restart it.", "x".repeat(200));
+        let cut = beside(&long, line, 100);
+        assert!(cut.chars().count() <= 100, "{cut}");
+        assert!(cut.ends_with(line), "{cut}");
+        assert!(cut.contains("…[cut]"), "the cut is said: {cut}");
+        assert!(cut.starts_with("xxx"), "{cut}");
     }
 
     #[test]
