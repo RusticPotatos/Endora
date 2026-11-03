@@ -84,7 +84,11 @@ Settings.
   Older; never an endless scroll. What a line names opens where it already lives, with a way
   back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
   board; no new screen). The office animation
-  plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
+  plays above every tab. What the team finished shows on the office floor, in the shelf's room
+  where the CEO's office stood: a cup for each item closed in the last seven days as met its
+  criteria, a crate marked "?" for each closed as completed and not verified; tapped, an item
+  opens under Looking at and the room opens the week's list there. Nothing else is shown as
+  progress on the floor unless the record says it happened. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
   behind a fold. The console check measures each tab at rest and holds it to a budget; fold

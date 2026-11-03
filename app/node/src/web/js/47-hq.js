@@ -38,6 +38,9 @@ const HQ = {
   mac: null,           // the owner's Mac as the node knows it (ADR 0130): state, switch, settings
   macToken: "",        // a helper token the owner just made, shown once and then forgotten
   macTick: 0,          // polls since the Mac was last read
+  landing: {},         // task id → { owner, unverified }: closed live, waiting for the snapshot to say how
+  shelfNew: {},        // task id → seconds its place on the shelf still shines, after it closed live
+  shelfNow: 0,         // the time the shelf counts its week back from; 0 is now (a check fixes it)
 };
 
 const HQ_T = 16, HQ_COLS = 32, HQ_ROWS = 20, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
@@ -71,22 +74,24 @@ const HQ_POD = { top: 8, left: 1, right: 28, bottom: 14, desk: { w: 3, h: 2 }, a
 // The two rooms people walk into, each with its door open: a member goes through the gap in
 // the wall (cells `from` to `to` on that side), `out` the step outside it and `in` inside.
 const HQ_ROOMS = {
-  ceo: { x: 20, y: 2, w: 7, h: 5, door: { side: "bottom", from: 20, to: 22 }, out: hqAt(21, 7, { dir: "up" }), in: hqAt(21, 6, { room: "ceo", dir: "down" }) },
+  shelf: { x: 20, y: 2, w: 7, h: 5, door: { side: "bottom", from: 20, to: 22 }, out: hqAt(21, 7, { dir: "up" }), in: hqAt(21, 6, { room: "shelf", dir: "up" }) },
   meeting: { x: 9, y: 15, w: 7, h: 5, door: { side: "top", from: 9, to: 11 }, out: hqAt(10, 14, { dir: "down" }), in: hqAt(10, 15, { room: "meeting", dir: "down" }) },
 };
-// Where people sit in the meeting room: the CEO at the head, behind the table; the others on
-// the chairs before it, their backs to us.
+// Where people sit in the meeting room: one at the head, behind the table; the others on the
+// chairs before it, their backs to us.
 const HQ_MEETING = {
   table: { x: 12, y: 16 },
   head: hqAt(12, 16, { room: "meeting", dir: "down" }),
   chairs: [hqAt(12, 18, { room: "meeting", dir: "up", sit: "chair" }), hqAt(13, 18, { room: "meeting", dir: "up", sit: "chair" })],
 };
-// The CEO's desk in its own office, where it works, and the sofa where it rests.
-const HQ_CEO = {
-  desk: { x: 21, y: 3 },
-  work: hqAt(22, 3, { room: "ceo", dir: "down", desk: true }),
-  rest: hqAt(25, 5, { room: "ceo", dir: "down", sit: "couch" }),
-};
+// The shelf of done work (the frontend slice of 3 Nov), where the CEO's office stood: a cabinet
+// along the room's back, three tiles deep, of four shelves with twelve places each. Each place
+// holds one item HQ closed in the last seven days: a cup when it met its criteria, a plain crate
+// marked "?" when it was completed and nothing checked it. Nobody walks through the cabinet.
+const HQ_SHELF = { x: 20 * 16 + 2, y: 2 * 16 + 1, w: 108, h: 46, shelves: 4, per: 12, days: 7 };
+const HQ_SHELF_MOST = HQ_SHELF.shelves * HQ_SHELF.per;
+const HQ_SHELF_CELLS = [];
+for (let y = 2; y < 5; y++) for (let x = 20; x < 27; x++) HQ_SHELF_CELLS.push([x, y]);
 // Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
 // ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
 // from what stands on the floor now (`hqWanderSpots`).
@@ -554,10 +559,11 @@ function hqTell(e, live) {
     if (author) HQ.lastWord[d.task] = author.id;
   }
   if (e.kind === "task.claimed" && p) hqSay(p, "checkout " + key);
+  if (e.kind === "task.changed" && d.status === "done" && d.task) HQ.landing[d.task] = { owner: d.owner, unverified: d.unverified === true };
   if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
   if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
   // A member's question woke the one it went to: the one who asked, if between turns, goes to
-  // them (the CEO's open door, or the desk of someone on a team) and waits there until their
+  // them (the desk of the one it went to) and waits there until their
   // turn on it is over.
   if (e.kind === "wake.queued" && d.reason === "question_asked") {
     const task = hqTask(d.task), who = HQ.lastWord[d.task] || (task && task.owner);
@@ -715,8 +721,8 @@ function hqPlacePeople() {
     p.visit = p.working ? hqVisit(m, task) : null;
     if (p.working) p.wander = null;
     if (was && !p.working) p.idleT = 3 + HQ.rand() * 5;
-    // One who went to ask the CEO and has since been woken goes back to work.
-    if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
+    // One who went to ask someone, or to the shelf, and has since been woken goes back to work.
+    if (p.working && p.errand && (p.errand.kind === "ask" || p.errand.kind === "shelf")) p.errand = null;
     // On the page's first drawing everyone is simply where the record says they are: at work at
     // their desk, or idle somewhere they might rest. Nobody walks out from one spot as the page
     // opens, which looked as if they had been gathered, waiting to be watched.
@@ -725,6 +731,7 @@ function hqPlacePeople() {
   }
   for (const id of Object.keys(HQ.people)) if (!members.some((m) => String(m.id) === id)) delete HQ.people[id];
   HQ.settled = true;
+  hqLandings();
 }
 
 // Where a member should be now, as a spot: its cell, the room it is in, and which way they face.
@@ -813,8 +820,8 @@ function hqWorld() {
       if (r.door.side === "bottom") wall([i, r.y + r.h - 1], [i, r.y + r.h]); else wall([i, r.y - 1], [i, r.y]);
     }
   }
-  const c = HQ_CEO.desk, m = HQ_MEETING.table;
-  block(c.x, c.y, 3, 2); block(24, 2, 2, 1); block(24, 5, 2, 1); block(26, 4); block(22, 5);
+  const m = HQ_MEETING.table;
+  for (const [x, y] of HQ_SHELF_CELLS) block(x, y);
   block(m.x, m.y, 2, 2); block(12, 18); block(13, 18); block(14, 17, 2, 1);
   block(26, 16, 2, 2); block(26, 18); block(27, 18); block(28, 16);
   block(HQ_P.pong.x, HQ_P.pong.y, 4, 1); block(16, 15, 4, 2);
@@ -900,7 +907,7 @@ function hqPaintRoom() {
   g.fillStyle = "#d6b07a"; g.fillRect(0, 0, W, H);
   floor("plank", "#e2b57a", 0, 2, HQ_COLS, HQ_ROWS);
   floor("grid", "#d9e1ea", 0, 2, 7, 7);
-  floor("plain", "#d9b9a0", 20, 2, 27, 7);
+  floor("plain", "#e6d6bd", 20, 2, 27, 7);
   floor("plain", "#c3c8d0", 27, 2, HQ_COLS, 7);
   // The ping-pong corner, the meeting room, the lounge and the kitchen along the bottom.
   floor("grid", "#8fa6c7", 0, 15, 9, HQ_ROWS);
@@ -919,9 +926,7 @@ function hqPaintRoom() {
   g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
   // The hanging plant between the sign and the board, clear of both.
   if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, P.board.x * T - 22, 1);
-  // The CEO's painting, on the wall of its office.
-  if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 22.2 * T, 0);
-  // Glass rooms: the board room, the CEO's office and the server closet along the wall, the
+  // Glass rooms: the board room, the shelf's room and the server closet along the wall, the
   // meeting room by the lounge. Each has a gap in its glass for a door; the two people walk
   // into have the door itself swung open.
   const glass = (r, tint) => { g.fillStyle = tint || C.glass; g.fillRect(r.x * T, r.y * T, r.w * T, r.h * T); };
@@ -931,9 +936,9 @@ function hqPaintRoom() {
     g.fillStyle = "rgba(150,205,235,.5)"; g.fillRect(x, y0, 3, 18); g.fillStyle = C.glassEdge; g.fillRect(x + 2, y0, 1, 18);
     g.fillStyle = C.trim; g.fillRect(x, y0 + (dir < 0 ? 3 : 13), 2, 2);
   };
-  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine;
+  const B = P.boardRoom, O = HQ_ROOMS.shelf, M = HQ_ROOMS.meeting, E = P.engine;
   glass(B); edge((B.x + B.w) * T - 2, B.y * T, 2, B.h * T); edge(0, (B.y + B.h) * T - 2, (B.x + B.w) * T - 22, 2);
-  // Mara's office: its door stands open, a two-tile gap in the glass with the leaf swung in.
+  // The shelf's room: its door stands open, a two-tile gap in the glass with the leaf swung in.
   glass(O); edge(O.x * T, O.y * T, 2, O.h * T);
   edge((O.x + 2) * T, (O.y + O.h) * T - 2, (O.w - 2) * T, 2);
   swung((O.x + 2) * T - 3, (O.y + O.h) * T - 2, -1);
@@ -994,9 +999,9 @@ function hqOverlaps(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b
 // The rooms' names, drawn over what stands in them so nothing covers a name.
 // Returns where they are, for the people's names to keep clear of.
 function hqRoomLabels(g) {
-  const T = HQ_T, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = HQ_P.engine;
+  const T = HQ_T, O = HQ_ROOMS.shelf, M = HQ_ROOMS.meeting, E = HQ_P.engine;
   g.font = HQ_PIXEL;
-  return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "CEO", O.x * T + 5, O.y * T + 9),
+  return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "DONE THIS WEEK", (O.x + 2.4) * T, (O.y + O.h) * T - 4),
     hqTag(g, "SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4), hqTag(g, "MEETING", M.x * T + 5, (M.y + M.h) * T - 4),
     hqTag(g, "PING-PONG", 4, 15 * T + 9, "#ffffff", "rgba(31,29,41,.45)"),
     hqTag(g, "KITCHEN", 28.3 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
@@ -1031,7 +1036,7 @@ function hqPlantRect(it, w, h) {
     const fit = Math.max(16, bottom - boardLow);
     w = Math.round((w * fit) / h); h = fit; x = it.x * T + 8 - Math.round(w / 2);
   }
-  for (const r of [HQ_P.boardRoom, HQ_ROOMS.ceo, HQ_P.engine, HQ_ROOMS.meeting]) {
+  for (const r of [HQ_P.boardRoom, HQ_ROOMS.shelf, HQ_P.engine, HQ_ROOMS.meeting]) {
     const inside = it.x >= r.x && it.x < r.x + r.w && it.y >= r.y && it.y < r.y + r.h;
     if (inside || bottom - h >= (r.y + r.h) * T || bottom <= r.y * T) continue;
     if (it.x < r.x) x = Math.min(x, r.x * T - w);
@@ -1129,7 +1134,7 @@ function hqDrawItem(g, it) {
 }
 
 function hqFurniture() {
-  const T = HQ_T, out = [], c = HQ_CEO.desk, m = HQ_MEETING.table, members = (HQ.snap && HQ.snap.members) || [];
+  const T = HQ_T, out = [], m = HQ_MEETING.table, members = (HQ.snap && HQ.snap.members) || [];
   const f = (key, x, y, extra = {}) => { const i = HQ_IMG[key]; if (i) out.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
   // Every pod's desks, a PC on each, lit while its member works; a furloughed member's stands
   // empty with a small card that says it is away (ADR 0119).
@@ -1150,11 +1155,8 @@ function hqFurniture() {
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 0.1) * T, (HQ_P.owner.y + 1.9) * T);
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 1.1) * T, (HQ_P.owner.y + 1.9) * T);
   f("PLANT_2", 0.2 * T, 4.8 * T);
-  // Mara's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
-  f("DESK_FRONT", c.x * T, c.y * T);
-  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pcOf: -1 });
-  f("CUSHIONED_CHAIR_BACK", 22 * T, 5 * T);
-  f("BOOKSHELF", 24 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5 * T); f("PLANT", 26 * T, 4 * T);
+  // The shelf of the week's done work, filled from the record each frame.
+  out.push({ base: HQ_SHELF.y + HQ_SHELF.h + 2, draw: (g) => hqDrawShelf(g) });
   // The meeting room: the table, two chairs before it, a large plant in the corner.
   f("SMALL_TABLE_FRONT", m.x * T, m.y * T);
   f("CUSHIONED_CHAIR_BACK", 12 * T, 18 * T);
@@ -1201,6 +1203,103 @@ function hqCards() {
   const tasks = ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.status !== "dropped" && !dropped.has(t.goal));
   const shown = tasks.filter((t, i) => t.status !== "done" || i >= tasks.length - 34).slice(-34);
   return shown.map((t, i) => ({ t, x: HQ_P.board.x * HQ_T + 4 + (i % 17) * 11, y: 7 + Math.floor(i / 17) * 10, w: 8, h: 8 }));
+}
+
+// ---- the shelf of done work (the frontend slice of 3 Nov) ------------------------------------
+// What the team finished, as things on a shelf rather than words on a list: one place for each
+// item HQ closed in the last seven days, oldest first, the newest that fit. A cup is an item
+// closed as met its criteria; a crate marked "?" one closed as completed with nothing checking
+// its evidence, which is never drawn or said as checked. Any other closing (superseded, not
+// needed, dropped) is not on the shelf. Everything comes from the tasks' closures in the snapshot.
+const HQ_SHELF_KINDS = { met_criteria: true, completed_unverified: false };
+function hqShelfNow() { return HQ.shelfNow || Date.now(); }
+// Every item closed onto the shelf in the week, oldest first: more than the shelf holds, at times.
+function hqShelfWeek(now = hqShelfNow()) {
+  const since = now - HQ_SHELF.days * 86400000;
+  return ((HQ.snap && HQ.snap.tasks) || [])
+    .filter((t) => t.closure && t.closure.why in HQ_SHELF_KINDS && t.closure.at >= since && t.closure.at <= now)
+    .sort((a, b) => a.closure.at - b.closure.at || a.id - b.id);
+}
+// -> [{ task, checked, at, slot: { x, y, w, h } }] in the office's pixels: the newest that fit.
+function hqShelf(now = hqShelfNow()) {
+  const closed = hqShelfWeek(now).slice(-HQ_SHELF_MOST);
+  const S = HQ_SHELF, pitch = Math.floor(S.h / S.shelves);
+  return closed.map((t, i) => {
+    const row = Math.floor(i / S.per), col = i % S.per;
+    return { task: t, checked: HQ_SHELF_KINDS[t.closure.why], at: t.closure.at,
+      slot: { x: S.x + 6 + col * 8, y: S.y + (row + 1) * pitch - 9, w: 6, h: 8 } };
+  });
+}
+// The place on the shelf at a pixel, or null.
+function hqShelfAt(x, y, now) {
+  return hqShelf(now).find((s) => x >= s.slot.x - 1 && x <= s.slot.x + s.slot.w + 1 && y >= s.slot.y - 1 && y <= s.slot.y + s.slot.h + 1) || null;
+}
+// Where a member stands to put an item on the shelf: on the floor beside its place, so their head
+// and what they say do not cover it.
+function hqShelfSpot(id) {
+  const s = hqShelf().find((x) => x.task.id === id), R = HQ_ROOMS.shelf;
+  const under = s ? Math.floor((s.slot.x + 3) / HQ_T) : R.in.cx + 1;
+  const cx = under - 1 >= R.x ? under - 1 : under + 1;
+  return hqAt(cx, 5, { room: "shelf", dir: "up" });
+}
+// The cabinet, its shelves and what stands on them.
+function hqDrawShelf(g) {
+  const S = HQ_SHELF, pitch = Math.floor(S.h / S.shelves);
+  g.fillStyle = HQ_C.shadow; g.fillRect(S.x + 2, S.y + S.h, S.w - 2, 3);
+  g.fillStyle = "#6b4423"; g.fillRect(S.x, S.y, S.w, S.h + 1);
+  g.fillStyle = "#4a2e17"; g.fillRect(S.x + 2, S.y + 2, S.w - 4, S.h - 3);
+  for (let r = 1; r <= S.shelves; r++) { g.fillStyle = "#8a5a34"; g.fillRect(S.x + 2, S.y + r * pitch - 1, S.w - 4, 2); g.fillStyle = "#a8743f"; g.fillRect(S.x + 2, S.y + r * pitch - 1, S.w - 4, 1); }
+  const sel = HQ.selected;
+  for (const s of hqShelf()) {
+    const { x, y } = s.slot;
+    if (s.checked) {
+      // A cup: rim, bowl with a glint, stem and foot, on a green plate.
+      g.fillStyle = "#f3cf6a"; g.fillRect(x, y, 6, 1);
+      g.fillStyle = "#e8b64a"; g.fillRect(x, y + 1, 6, 2); g.fillRect(x + 1, y + 3, 4, 1);
+      g.fillStyle = "#fff2a8"; g.fillRect(x + 1, y + 1, 1, 1);
+      g.fillStyle = "#a8742a"; g.fillRect(x + 2, y + 4, 2, 2); g.fillRect(x + 1, y + 6, 4, 1);
+      g.fillStyle = HQ_C.green; g.fillRect(x + 1, y + 7, 4, 1);
+    } else {
+      // A plain crate with a "?" on it: done, and nothing checked it.
+      g.fillStyle = "#8f7a58"; g.fillRect(x, y, 6, 8);
+      g.fillStyle = "#d8c7a4"; g.fillRect(x + 1, y + 1, 4, 6);
+      g.fillStyle = "#4b4557"; g.fillRect(x + 1, y + 1, 2, 1); g.fillRect(x + 3, y + 2, 1, 1); g.fillRect(x + 2, y + 3, 1, 1); g.fillRect(x + 2, y + 5, 1, 1);
+    }
+    const shine = HQ.shelfNew[s.task.id] || 0;
+    if (shine > 0 && Math.floor(HQ.t * 6) % 2 === 0) {
+      g.fillStyle = HQ_C.neon; g.fillRect(x + 2, y - 3, 2, 1); g.fillRect(x - 2, y + 3, 1, 2); g.fillRect(x + 7, y + 3, 1, 2);
+    }
+    if (sel && sel.type === "task" && sel.id === s.task.id) { g.strokeStyle = HQ_C.neon; g.lineWidth = 1; g.strokeRect(x - 1.5, y - 1.5, 9, 11); }
+  }
+}
+// The week's done work, tapped on the shelf: newest first, each opening its item.
+function hqShelfPanel() {
+  const all = hqShelfWeek().reverse().map((t) => ({ task: t, checked: HQ_SHELF_KINDS[t.closure.why], at: t.closure.at }));
+  const checked = all.filter((s) => s.checked).length;
+  const rows = all.map((s) => hqLine(`hq:pick:task:${Number(s.task.id)}`, `${hqKey(s.task.id)} ${esc(s.task.title)}`,
+    `${s.checked ? "Met its criteria" : "Completed · Not verified"}${s.task.owner ? ` · ${esc(hqName(s.task.owner))}` : ""} · ${esc(new Date(s.at).toLocaleDateString([], { weekday: "short" }))} ${esc(hqClock(s.at))}`));
+  const list = hqMore("shelf", rows, 8);
+  return `<div class="hq-sel">Done this week</div>
+    <p class="hq-who">${all.length ? `${checked} met ${checked === 1 ? "its" : "their"} criteria · ${all.length - checked} completed, not verified` : "Nothing finished in the last 7 days."}</p>
+    ${rows.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : ""}
+    ${all.length > HQ_SHELF_MOST ? `<p class="hq-note">The shelf holds the newest ${HQ_SHELF_MOST}.</p>` : ""}
+    <p class="hq-note">A cup is an item HQ closed because its evidence met what done means. A crate marked ? is one closed as completed with nothing checking its evidence.</p>`;
+}
+// Items closed live, once the snapshot says how: one closed onto the shelf shines there, and its
+// owner, if between turns and free, walks over and says what it was. Nobody walks for someone who
+// asked for calm; any other closing sends nobody.
+function hqLandings() {
+  for (const [id, l] of Object.entries(HQ.landing)) {
+    delete HQ.landing[id];
+    const t = hqTask(Number(id));
+    if (!t || !t.closure || !(t.closure.why in HQ_SHELF_KINDS)) continue;
+    const checked = HQ_SHELF_KINDS[t.closure.why] && !l.unverified;
+    HQ.shelfNew[t.id] = 8;
+    const p = HQ.people[l.owner];
+    if (!p || p.working || p.errand || p.paused || hqCalm()) continue;
+    p.errand = { kind: "shelf", task: t.id, hold: 4, spot: hqShelfSpot(t.id), say: `${checked ? "done" : "done, not verified"}: ${hqKey(t.id)}` };
+    p.wander = null; hqGo(p);
+  }
 }
 
 // Whoever is at the two ends of the ping-pong table, both of them idle and standing there,
@@ -1446,7 +1545,8 @@ function hqLoop() {
   const step = () => {
     if (NAV.v !== "hq") { HQ.looping = false; return; }
     const now = Date.now(), dt = Math.min(0.1, (now - last) / 1000); last = now; HQ.t += dt;
-    HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2); HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
+    HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2);
+    for (const id of Object.keys(HQ.shelfNew)) if ((HQ.shelfNew[id] -= dt) <= 0) delete HQ.shelfNew[id]; HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
     for (const p of Object.values(HQ.people)) {
       if (p.bubbleT > 0) p.bubbleT -= dt;
       if (!p.path.length) { hqErrand(p, dt); hqIdle(p, dt); continue; }
@@ -1472,6 +1572,10 @@ function hqTap(ev) {
   for (const p of Object.values(HQ.people)) {
     if (x >= p.x && x <= p.x + 16 && y >= p.y - 16 && y <= p.y + 16) { hqSelect({ type: "member", id: p.id }); return; }
   }
+  const placed = hqShelfAt(x, y);
+  if (placed) { hqSelect({ type: "task", id: placed.task.id }); return; }
+  const R = HQ_ROOMS.shelf;
+  if (x >= R.x * HQ_T && x < (R.x + R.w) * HQ_T && y >= R.y * HQ_T && y < (R.y + R.h) * HQ_T) { hqSelect({ type: "shelf", id: 0 }); return; }
   for (const r of hqCards()) {
     if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { hqSelect({ type: "task", id: r.t.id }); return; }
   }
@@ -1864,7 +1968,7 @@ function viewHQ() {
       ${hqTabs(s)}
       <div class="hq-stage">
         <div class="hq-canvas-wrap"><canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
+          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the shelf of the week's done work (tap it for the list), the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
         <div class="hq-stats">${stats}</div>
         <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
       </div>
@@ -1940,7 +2044,7 @@ function hqAreaOf(it) {
   if (within(9, 15, 16, 20)) return "the meeting room side";
   if (within(7, 2, 20, 7)) return "the commons";
   if (within(0, 2, 7, 8)) return "the board room side";
-  if (within(20, 2, 32, 8)) return "the CEO's side";
+  if (within(20, 2, 32, 8)) return "by the shelf";
   return "the open floor";
 }
 
@@ -2496,6 +2600,7 @@ function hqSelected() {
   if (!sel) return `<p class="hq-empty">Tap a worker or a card on the board.</p>`;
   if (sel.type === "chess") return hqChessPanel();
   if (sel.type === "pool" || sel.type === "ping_pong") return hqTablePanel(sel.type);
+  if (sel.type === "shelf") return hqShelfPanel();
   const why = (t) => `<ul class="hq-why">${(t.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
   if (sel.type === "member") {
     const m = hqMember(sel.id); if (!m) return "";

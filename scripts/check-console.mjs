@@ -1473,11 +1473,11 @@ if (failures.length) {
     if (grown.desks !== 9 || !grown.unique || !grown.inside) fail(`hq: a bigger team does not fit the band: ${JSON.stringify(grown)}`);
     const inside = runInContext(`(() => {
       const In = (r, s) => s.cx >= r.x && s.cx < r.x + r.w && s.cy >= r.y && s.cy < r.y + r.h;
-      const M = HQ_ROOMS.meeting, O = HQ_ROOMS.ceo;
+      const M = HQ_ROOMS.meeting, O = HQ_ROOMS.shelf;
       return [In(M, HQ_MEETING.head), HQ_MEETING.chairs.every((c) => In(M, c)), In(M, M.in), !In(M, M.out),
-        In(O, HQ_CEO.work), In(O, HQ_CEO.rest), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
+        In(O, hqShelfSpot(0)), In(O, O.in), !In(O, O.out), O.door.to - O.door.from === 2];
     })()`, context);
-    if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the CEO's office is not where its seats and door are: ${inside}`);
+    if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the shelf's room is not where its seats and door are: ${inside}`);
     const written = [], filled = [], order = [];
     const ctx = {
       fillStyle: "", strokeStyle: "", font: "",
@@ -1494,10 +1494,11 @@ if (failures.length) {
     const saved = runInContext("JSON.stringify(HQ.snap)", context);
     try {
       runInContext(`HQ.people = {}; HQ.settled = false; HQ_BG = hqPaintRoom(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
+      for (const label of ["BOARD ROOM", "DONE THIS WEEK", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
       if (written.includes("WING")) fail("hq: the walled wing is still drawn");
+      if (written.includes("CEO")) fail("hq: the office still names a CEO's office");
       // Zed is retired (on furlough): his desk leaves the floor, so no away card (ADR 0142).
       if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
@@ -1507,7 +1508,7 @@ if (failures.length) {
       // "RAE" as "RAB", and "BO" was under a sofa).
       {
         const lastThing = Math.max(...order.map((o, i) => (o.rect === "#7d6bb0" || o.rect === "#b8a68a" ? i : -1)));
-        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "BOARD ROOM", "CEO", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
+        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "BOARD ROOM", "DONE THIS WEEK", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
         const plated = (name) => { const i = order.findLastIndex((o) => o.text === name); return i > lastThing && order[i - 1] && /^rgba\(255,253,246/.test(order[i - 1].rect || ""); };
         const bare = names.filter((n) => !plated(n));
         if (bare.length) fail(`hq: these names are not on a plate over the furniture: ${bare}`);
@@ -1523,7 +1524,7 @@ if (failures.length) {
       // No plant covers the task board or reaches through a room's glass (a palm by the board hid
       // a sticky note and the CEO's name): the default layout's palm, a plant under the board.
       const plants = runInContext(`(() => {
-        const T = HQ_T, B = HQ_P.board, O = HQ_ROOMS.ceo, board = { x: B.x * T - 2, y: 3, w: B.w * T + 4, h: 26 };
+        const T = HQ_T, B = HQ_P.board, O = HQ_ROOMS.shelf, board = { x: B.x * T - 2, y: 3, w: B.w * T + 4, h: 26 };
         const room = { x: O.x * T, y: O.y * T, w: O.w * T, h: O.h * T };
         const palm = hqPlantRect({ x: 19, y: 3, w: 1, h: 1 }, 32, 48), low = hqPlantRect({ x: 10, y: 2, w: 1, h: 1 }, 16, 32);
         const free = hqPlantRect({ x: 4, y: 12, w: 1, h: 1 }, 16, 32);
@@ -1564,13 +1565,13 @@ if (failures.length) {
           furn.filter((f) => f.draw && !f.item && !f.key).length >= desks.length];
       })()`, context);
       if (seated.some((ok) => !ok)) fail(`hq: a member does not sit on the couch, or at its own desk by its computer: ${seated}`);
-      // Nobody walks through glass or furniture: from the ping-pong table to Mara's desk, in by
-      // her open door; to the head of the meeting table, in by its door.
+      // Nobody walks through glass or furniture: from the ping-pong table to the shelf, in by its
+      // open door; to the head of the meeting table, in by its door.
       const paths = runInContext(`(() => {
-        const W = HQ.world, from = hqAt(2, 17), toMara = hqPathCells(from, HQ_CEO.work), toMeeting = hqPathCells(from, HQ_MEETING.head);
+        const W = HQ.world, from = hqAt(2, 17), toMara = hqPathCells(from, hqShelfSpot(0)), toMeeting = hqPathCells(from, HQ_MEETING.head);
         const clear = (cells, goal) => cells.every((c) => c.cx + "," + c.cy === goal || !W.blocked.has(c.cx + "," + c.cy));
         const crosses = (cells) => { let at = from; for (const c of cells) { if (W.edges.has(at.cx + "," + at.cy + ">" + c.cx + "," + c.cy)) return true; at = c; } return false; };
-        return [!!toMara, clear(toMara, "22,3"), !crosses(toMara), toMara.some((c) => c.cy === 7 && c.cx >= 20 && c.cx < 22) && toMara.some((c) => c.cy === 6 && c.cx >= 20 && c.cx < 22),
+        return [!!toMara, clear(toMara, "21,5"), !crosses(toMara), toMara.some((c) => c.cy === 7 && c.cx >= 20 && c.cx < 22) && toMara.some((c) => c.cy === 6 && c.cx >= 20 && c.cx < 22),
           !!toMeeting, clear(toMeeting, "12,16"), !crosses(toMeeting), toMeeting.some((c) => c.cy === 14 && c.cx >= 9 && c.cx < 11) && toMeeting.some((c) => c.cy === 15 && c.cx >= 9 && c.cx < 11),
           hqPathCells(from, hqAt(3, 3)) === null, hqPathCells(from, from).length === 0];
       })()`, context);
@@ -1768,6 +1769,92 @@ if (failures.length) {
       runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {};`, context);
     }
     console.log("hq: the pool and chess tables stand where the rules keep them, the Games section and the chess board read the snapshot, and a match takes its players to the table");
+  }
+  // The shelf of the week's done work, where the CEO's office stood (the frontend slice of 3 Nov):
+  // a cup for each item HQ closed as met its criteria, a plain crate marked "?" for each it
+  // closed as completed and not verified, nothing for any other closing. Tapped, a cup opens its
+  // item and the shelf the week's list. An item closed live sends its owner to the shelf, where
+  // the new one appears; the record decides all of it, never the browser.
+  {
+    const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
+    try {
+      const shelf = runInContext(`(() => {
+        const day = 86400000, now = 30 * day, closed = (id, why, ago, owner) => ({ id, goal: 1, title: "Done <b>" + id + "</b>", status: why === "obsolete" ? "dropped" : "done", owner, brief: true,
+          closure: { why, said: why, by: "endora", at: now - ago } });
+        HQ.snap.tasks.push(closed(40, "met_criteria", 2 * day, 3), closed(41, "completed_unverified", day, 2), closed(42, "superseded", day, 3),
+          closed(43, "obsolete", day, 3), closed(44, "met_criteria", 8 * day, 3), closed(45, "met_criteria", 3600000, 4));
+        const tokens = hqShelf(now);
+        return { tokens: tokens.map((s) => s.task.id + ":" + s.checked), slots: tokens.map((s) => s.slot) };
+      })()`, context);
+      if (shelf.tokens.join() !== "40:true,41:false,45:true") fail(`hq: the shelf does not hold the week's checked and unchecked closings, oldest first: ${shelf.tokens}`);
+      const room = runInContext("HQ_ROOMS.shelf", context);
+      if (!room || shelf.slots.some((r) => r.x < room.x * 16 || r.x + r.w > (room.x + room.w) * 16 || r.y < room.y * 16 || r.y + r.h > (room.y + room.h) * 16)) fail(`hq: a shelf's place is outside its room: ${JSON.stringify(shelf.slots)}`);
+      // Many in a week: the newest that fit, so the shelf never runs out of its room.
+      const most = runInContext(`(() => { const now = 30 * 86400000;
+        for (let i = 0; i < 60; i++) HQ.snap.tasks.push({ id: 200 + i, goal: 1, title: "t", status: "done", owner: 3, brief: true, closure: { why: "met_criteria", by: "endora", at: now - 1000 + i } });
+        const all = hqShelf(now); HQ.shelfNow = now; HQ.selected = { type: "shelf", id: 0 }; const panel = hqSelected();
+        return [all.length, all[all.length - 1].task.id, new Set(all.map((s) => s.slot.x + "," + s.slot.y)).size, panel.includes("Show all 63"), panel.includes("The shelf holds the newest 48")]; })()`, context);
+      if (most[0] !== runInContext("HQ_SHELF_MOST", context) || most[1] !== 259 || most[2] !== most[0] || !most[3] || !most[4]) fail(`hq: a full week overflows the shelf, drops the newest, or stacks two in one place: ${most}`);
+      runInContext("HQ.snap.tasks = HQ.snap.tasks.filter((t) => t.id < 200);", context);
+      // A tap on a cup is its item; on the shelf's empty part, the week's list.
+      const tapped = runInContext(`(() => { const now = 30 * 86400000, all = hqShelf(now), s = all[1].slot;
+        return [hqShelfAt(s.x + 1, s.y + 1, now) && hqShelfAt(s.x + 1, s.y + 1, now).task.id, hqShelfAt(HQ_ROOMS.shelf.x * 16 + 2, (HQ_ROOMS.shelf.y + 4) * 16, now)]; })()`, context);
+      if (tapped[0] !== 41 || tapped[1] !== null) fail(`hq: a tap on the shelf does not find its item: ${tapped}`);
+      runInContext(`HQ.shelfNow = 30 * 86400000; HQ.selected = { type: "shelf", id: 0 };`, context);
+      const list = runInContext("hqSelected()", context);
+      for (const want of ["Done this week", 'data-act="hq:pick:task:40"', 'data-act="hq:pick:task:41"', "Met its criteria", "Completed · Not verified", "Done &lt;b&gt;40&lt;/b&gt;"]) {
+        if (!list.includes(want)) fail(`hq: the shelf's list lacks ${want}`);
+      }
+      if (list.includes("Done <b>") || list.includes("pick:task:42") || list.includes("pick:task:44")) fail("hq: the shelf's list shows an unescaped title, or work it does not hold");
+      const row41 = (list.match(/<li[^>]*>(?:(?!<\/li>).)*pick:task:41(?:(?!<\/li>).)*<\/li>/s) || [""])[0];
+      if (!row41 || /Met its criteria|checked/i.test(row41.replace("Not verified", ""))) fail(`hq: an unverified closing reads as checked on the shelf: ${row41}`);
+      // Nothing of the CEO is left on the floor: not in the room's name, the furniture or the words.
+      // (The floor's own words: what HQ's record says, such as a desk card's text, is its own.)
+      const floor = (runInContext("viewHQ()", context).match(/<canvas id="hq-office"[^>]*>/) || [""])[0];
+      if (!floor.includes("shelf") || /CEO/.test(floor) || runInContext("hqAreaOf({ x: 22, y: 3, w: 1, h: 1 })", context) !== "by the shelf") fail(`hq: the office still describes a CEO's office: ${floor}`);
+      // An item closed live: its owner, between turns, walks to the shelf and says what landed there;
+      // an unverified one says so; any other closing sends nobody; a member at work stays at work.
+      const live = runInContext(`(() => {
+        const now = 30 * 86400000, out = [];
+        for (const m of HQ.snap.members) m.running = [];
+        HQ.shelfNow = now; hqPlacePeople();
+        const close = (id, why, owner, unverified) => {
+          HQ.snap.tasks.push({ id, goal: 1, title: "t", status: "done", owner, brief: true, closure: { why, by: "endora", at: now } });
+          hqTell({ id: 900 + id, at: now, kind: "task.changed", data: { task: id, goal: 1, owner, status: "done", ...(unverified ? { unverified: true } : {}) } }, true);
+          hqPlacePeople();
+        };
+        close(50, "met_criteria", 3);
+        const cy = HQ.people[3], R = HQ_ROOMS.shelf;
+        out.push(!!cy.errand && cy.errand.kind === "shelf" && cy.errand.spot.cx >= R.x && cy.errand.spot.cx < R.x + R.w && cy.errand.spot.cy >= R.y && cy.errand.spot.cy < R.y + R.h, cy.path.length > 0);
+        cy.path = []; cy.x = cy.errand.spot.x * 16; cy.y = cy.errand.spot.y * 16; hqErrand(cy, 0.1);
+        out.push(cy.bubble === "done: el-50", !!HQ.shelfNew[50]);
+        cy.errand = null;
+        close(51, "completed_unverified", 3, true);
+        cy.path = []; cy.x = cy.errand.spot.x * 16; cy.y = cy.errand.spot.y * 16; hqErrand(cy, 0.1);
+        out.push(cy.bubble === "done, not verified: el-51");
+        cy.errand = null;
+        close(52, "superseded", 3);
+        out.push(!cy.errand && !HQ.shelfNew[52]);
+        HQ.snap.members.find((m) => m.id === 2).running = [{ run: 70, task: 7 }]; hqPlacePeople();
+        close(53, "met_criteria", 2);
+        out.push(!HQ.people[2].errand && !!HQ.shelfNew[53]);
+        // On the way to the shelf, woken for a turn: back to work, not to the shelf.
+        HQ.snap.members.find((m) => m.id === 2).running = []; hqPlacePeople();
+        close(54, "met_criteria", 2); const bo = HQ.people[2], going = !!bo.errand;
+        HQ.snap.members.find((m) => m.id === 2).running = [{ run: 71, task: 7 }]; hqPlacePeople();
+        out.push(going && !bo.errand && bo.at.cx === HQ.seats[2].work.cx);
+        HQ.snap.members.find((m) => m.id === 2).running = [];
+        return out;
+      })()`, context);
+      if (live.some((ok) => !ok)) fail(`hq: an item closed live does not take its owner to the shelf, or says it wrongly: ${live}`);
+      // The room is walked into through its door, and nobody walks through the shelf itself.
+      const walk = runInContext(`(() => { hqPlacePeople(); const R = HQ_ROOMS.shelf, W = HQ.world;
+        return [!!hqPathCells(hqAt(15, 10), R.in), HQ_SHELF_CELLS.every(([x, y]) => W.blocked.has(x + "," + y)), typeof HQ_CEO === "undefined" && !HQ_ROOMS.ceo]; })()`, context);
+      if (walk.some((ok) => !ok)) fail(`hq: the shelf's room cannot be walked into, its shelf can be walked through, or the CEO's office remains: ${walk}`);
+    } finally {
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {}; HQ.shelfNew = {}; HQ.shelfNow = 0; HQ.landing = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
+    }
+    console.log("hq: the shelf holds the week's done work, a cup when checked and a crate when not, and an item closed live is carried there by its owner");
   }
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
