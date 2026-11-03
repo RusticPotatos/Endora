@@ -350,8 +350,14 @@ fn run(state: &AppState, id: &str, args: &serde_json::Value) -> Result<String, R
         .map_err(|why| (StatusCode::BAD_GATEWAY, why))
 }
 
+/// `text` within [`MOST_OF_A_RESULT`] characters, a cut one saying it was and by how much.
 fn held(text: &str) -> String {
-    text.chars().take(MOST_OF_A_RESULT).collect()
+    let all = text.chars().count();
+    if all <= MOST_OF_A_RESULT {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(MOST_OF_A_RESULT).collect();
+    format!("{kept}…[cut: {} more characters]", all - MOST_OF_A_RESULT)
 }
 
 /// A stranger's words keep their mark (ADR 0064).
@@ -534,6 +540,24 @@ pub(super) fn decide(
 
 #[cfg(test)]
 mod tests {
+    /// A bridged tool's answer past the most was cut with no sign, and the worker's own cut,
+    /// which says what it left out, counted only what reached it: the model read a part as the
+    /// whole. What is held now says it was cut, and by how much.
+    #[test]
+    fn a_bridged_answer_past_the_most_says_it_was_cut() {
+        let fits = "a".repeat(super::MOST_OF_A_RESULT);
+        assert_eq!(super::held(&fits), fits);
+        let long = "b".repeat(super::MOST_OF_A_RESULT + 500);
+        let kept = super::held(&long);
+        assert!(kept.starts_with("bbb"), "{kept}");
+        assert!(
+            kept.ends_with("…[cut: 500 more characters]"),
+            "{}",
+            &kept[kept.len() - 60..]
+        );
+        assert!(kept.chars().count() <= super::MOST_OF_A_RESULT + 40);
+    }
+
     use super::super::relay::tests::{Seen, fake, node};
     use super::*;
     use http_body_util::BodyExt as _;
