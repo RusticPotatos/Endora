@@ -24,6 +24,11 @@ corrections were committed by 03:17 UTC; the gate and this report followed.
 
 **What was changed.** Seven corrections, committed locally on `claude/integrity-audit-ceb3c2`
 (on top of `efceca76`), each test-first. Nothing was pushed, merged, released or touched live.
+The full gate passes on the branch's head (`354409a9`):
+- fmt and clippy (`-D warnings`);
+- 2,218 unit and integration tests;
+- 223 scenarios with 2,181 steps: team 179/1,948, and two other suites 24/160 and 20/73;
+- the console, nothing-personal, parity and diff checks.
 
 ## Findings
 
