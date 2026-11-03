@@ -76,10 +76,28 @@ A test that runs the real node handler and the real worker transport together ne
 The brief ruled out both: "existing infrastructure", and no custom test orchestration. Done
 without them, the result would be one more hand copy, which adds nothing.
 
-**Recommendation, if this boundary changes again:** option (a). Give `endora-worker` a `[lib]`
-exposing its node call and unbundling. Then one test in `app/node` feeds the real router's
-response to the real worker code. It is the smallest change that makes the join testable, about
-an hour of work.
+**Decision (owner, 3 November 2026): accepted risk.** Neither (a) nor (b) is built.
+
+- **The risk:** the node's checkout answer format, `{"text": "<json> (receipt rN)"}` with a
+  base64 bundle, can drift from what the worker parses without any test failing.
+- **What bounds it:**
+  - The format has not changed since Milestone 1.
+  - A drift would show on the first live checkout, as an explicit "could not be read" said to the
+    model, not as a silent loss.
+  - The size limit, the cause of the real incident, is pinned on both sides.
+- **Unchanged:** the focused tests, the boundary tests and the release gate.
+
+**A possible later step, documented and not built:** one shared, real serialized fixture.
+- A small file of test data, under `shared/protocol` or a test-data folder: one checkout answer
+  with a tiny bundle and a receipt, exactly as the node writes it.
+- Each side checks it against its own real code:
+  - The node's contract test asserts that the real router's answer for a small repository has
+    the fixture's shape. The bundle and receipt id are compared structurally, since they vary.
+  - The worker's `node_handing` test serves the fixture's bytes and checks that they unpack to
+    the expected head.
+- No production code changes and no new orchestration: two existing test files read one file.
+  It catches format drift, not size limits; the size limit is already covered.
+- If the format is ever touched, do this first, in the same change.
 
 ## 4. What testing costs
 
