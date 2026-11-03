@@ -319,3 +319,20 @@ fn my_turn_shows_it_cleaned(w: &mut Office, reader: String) {
         panic!("{why}\n{read}");
     }
 }
+
+#[when(expr = "the owner posts {int} lines on {string}")]
+fn owner_posts_lines(w: &mut Office, count: usize, title: String) {
+    let task = w.task(&title);
+    for n in 1..=count {
+        w.hq.post(Author::Owner, task, &format!("Owner line {n}"))
+            .unwrap();
+    }
+}
+
+#[then(expr = "what {word} reads of the thread with my_turn says {string}")]
+fn my_turn_says(w: &mut Office, reader: String, words: String) {
+    let read = w
+        .use_tool(&reader, "my_turn", &json!({}))
+        .expect("my_turn answers");
+    assert!(read.contains(&words), "{read}");
+}

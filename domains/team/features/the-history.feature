@@ -103,3 +103,13 @@ Feature: The team's history
     And Ada's turn starts
     Then Ada's briefing shows Zed's post on one line, under his name, cleaned
     And what Ada reads of the thread with my_turn shows the same
+
+  # my_turn shows a thread's newest twelve posts. Older ones were dropped with no sign under
+  # "The thread, newest last:", so an owner's early word could fall out of what a member read
+  # while the thread read as whole. Seed: without the line saying so, the Then fails.
+  Scenario: A thread longer than a turn reads says what it left out, and where it is
+    Given Zed has the task "Cap sonarr's memory"
+    When the owner posts 13 lines on "Cap sonarr's memory"
+    And Zed's turn starts
+    Then what Zed reads of the thread with my_turn says "the thread's 1 older post (ask_record with task"
+    And what Zed reads of the thread with my_turn says "Owner line 13"

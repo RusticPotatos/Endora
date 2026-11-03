@@ -475,7 +475,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let thread = self.all_authored_posts(task)?;
         let seen = self.thread_seen(task, &thread)?;
         let told = self.handover_kept_for(member, task)?;
-        let left_out = handover::left_out_said(&seen);
+        let mut left_out = handover::left_out_said(&seen);
         let mut shown: Vec<crate::application::history_ports::PostInput> = thread
             .into_iter()
             .zip(seen)
@@ -483,7 +483,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|(p, _)| p)
             .filter(|p| told.as_deref() != Some(p.post.text.as_str()))
             .collect();
-        let shown = shown.split_off(shown.len().saturating_sub(most));
+        // Past the newest `most`, a post is said to be left out, never dropped with no sign.
+        let older = shown.len().saturating_sub(most);
+        let shown = shown.split_off(older);
+        if older > 0 {
+            let (posts, them, their) = if older == 1 {
+                ("post", "it", "its")
+            } else {
+                ("posts", "them", "their")
+            };
+            left_out.get_or_insert_with(String::new).push_str(&format!(
+                "Left out here, kept in the record: the thread's {older} older {posts} \
+                 (ask_record with task {} finds {them} by {their} words).\n",
+                task.0
+            ));
+        }
         for input in &shown {
             self.inherit_authored_input(run.id, input.origin)?;
         }

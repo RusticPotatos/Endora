@@ -103,6 +103,16 @@ fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
         .unwrap();
         let (_, thread) = reply.split_once("The thread, newest last:\n").unwrap();
         assert!(!thread.contains("Fixture post 000"));
+        // The post left out is said to be, and where it is: an owner's early word that falls
+        // out of the newest twelve was gone with no sign.
+        assert!(
+            thread.contains(&format!(
+                "Left out here, kept in the record: the thread's 1 older post (ask_record with \
+                 task {} finds it by its words).",
+                setup.task.0
+            )),
+            "{thread}"
+        );
         let positions: Vec<_> = (1..13)
             .map(|n| thread.find(&format!("Fixture post {n:03}")).unwrap())
             .collect();
