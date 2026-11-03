@@ -3610,3 +3610,30 @@ fn a_node_answer_too_big_to_read_is_said_to_be_so() {
     assert!(!told.contains("as a bundle"), "{told}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A node that cannot list its contracts (a 502 around a release) left the turn with HQ's tools
+/// alone, said only on the worker's stderr: the model met a task with no `repo_checkout` and no
+/// lab tools and was never told why, the shape of the loss #1051's turns took for "the sandbox
+/// has no source". The turn goes on, and its briefing now says what is missing and why.
+#[test]
+fn a_node_that_cannot_list_its_tools_is_said_to_the_model() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(json!([]), Some(502));
+    let (model_url, to_model) = model(vec![(200, says("Nothing to do without the node."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the turn goes on: {}",
+        said(&out)
+    );
+    let first = to_model.lock().unwrap()[0].body["messages"][1]["content"].clone();
+    let briefing = first.as_str().unwrap();
+    assert!(
+        briefing
+            .contains("The node's tools could not be listed for this turn (the node answered 502")
+            && briefing.contains("not gone from Endora"),
+        "{briefing}"
+    );
+    assert!(!briefing.contains(TOKEN), "{briefing}");
+}

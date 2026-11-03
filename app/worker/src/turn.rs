@@ -199,8 +199,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     // A contract named like a team tool is left out: the name goes to HQ, as it always did.
     // The wing's git (ADR 0115) is offered only in the workbench, where there is a git and a
     // /work to unpack the fork into: the bundles are the worker's to carry, never the model's.
-    let contracts: Vec<Value> = node
-        .list()?
+    let (listed_on_the_node, unlisted) = node.listing()?;
+    let contracts: Vec<Value> = listed_on_the_node
         .into_iter()
         .filter(|c| !offered.iter().any(|t| t["name"] == c["name"]))
         .filter(|c| setup.workbench.is_some() || !is_repo_tool(c["name"].as_str().unwrap_or("")))
@@ -255,6 +255,16 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         briefing = format!(
             "{}\n\nBefore your turn began, your task was claimed for you: {said}",
             briefing.trim_end()
+        );
+    }
+    // A node that could not list its tools is said, never left for the model to guess at.
+    if let Some(why) = unlisted {
+        briefing = format!(
+            "{}\n\nThe node's tools could not be listed for this turn ({}), so none of them is \
+             offered: repo_checkout, repo_submit and the home lab's tools are missing from this \
+             turn, not gone from Endora. Say so in the task's thread rather than work around it.",
+            briefing.trim_end(),
+            at_most(&why, 200)
         );
     }
     let model = Model::new(setup);
@@ -2607,17 +2617,27 @@ impl<'a> Node<'a> {
     /// The contracts offered. A node that offers none, or cannot say, leaves the turn to the
     /// team's tools: only a 401 or a 402 ends it.
     pub(crate) fn list(&self) -> Result<Vec<Value>, Stopped> {
+        self.listing().map(|(tools, _)| tools)
+    }
+
+    /// The contracts offered, and, when the node could not say, why: for the turn to tell its
+    /// model, which otherwise meets a task with none of the node's tools and no word of it.
+    pub(crate) fn listing(&self) -> Result<(Vec<Value>, Option<String>), Stopped> {
         let sent = self
             .agent
             .get(self.url)
             .header("authorization", &format!("Bearer {}", self.token))
             .call();
         match read("the node", sent) {
-            Ok(listed) => Ok(listed["tools"].as_array().cloned().unwrap_or_default()),
+            Ok(listed) => Ok((
+                listed["tools"].as_array().cloned().unwrap_or_default(),
+                None,
+            )),
             Err(Stopped::Over(why)) => Err(Stopped::Over(why)),
             Err(Stopped::Failed(why)) => {
+                let why = quiet(&why, self.token);
                 eprintln!("worker: no contracts this turn: {why}");
-                Ok(Vec::new())
+                Ok((Vec::new(), Some(why)))
             }
         }
     }
