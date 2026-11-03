@@ -768,6 +768,21 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
             .done_because_in(run.id, task, closure, successor)
             .map_err(|e| said(&e))?;
     }
+    // HQ may move it on as it is set (a loop worked alone closes an item set ready): the answer
+    // says what it is now, never only what was asked (run 5316).
+    let now = engine
+        .store()
+        .task(task)
+        .map_err(|e| e.to_string())?
+        .map_or(to, |t| t.status);
+    if now != to {
+        return Ok(format!(
+            "Task {} is {}, not {}: HQ moved it on as you set it (its thread says why).",
+            task.0,
+            now.name(),
+            to.name()
+        ));
+    }
     Ok(format!("Task {} is {}.", task.0, to.name()))
 }
 

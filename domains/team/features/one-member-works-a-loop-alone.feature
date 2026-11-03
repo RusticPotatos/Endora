@@ -25,6 +25,8 @@ Feature: One member works a loop alone
     And the owner sets the loop "solo arm" to be worked by Sol alone
 
   Scenario: The item goes to the named member, and is done when HQ's checks pass and she sets it ready
+    The answer to setting it ready says what the item is now: in run 5316 it said "in_review" of
+    an item HQ had already closed.
     Given the loop "solo arm" has the item "Document the media role": "Write roles/media/README.md from the role's defaults."
     When a tick passes
     Then "Document the media role" is Sol's
@@ -37,6 +39,7 @@ Feature: One member works a loop alone
     And Sol asks for review of "Document the media role", citing her reading
     Then the task "Document the media role" is done
     And the thread of "Document the media role" says "HQ's checks passed and Sol set it ready: done, with no review"
+    And the answer says "is done, not in_review"
     And no member is asked to review "Document the media role"
 
   Scenario: Her briefing says she works alone, and that setting it ready closes it

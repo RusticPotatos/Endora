@@ -483,13 +483,15 @@ impl Office {
         reason: &str,
         evidence: &serde_json::Value,
     ) {
-        self.use_tool(
-            name,
-            "set_status",
-            &json!({ "task": task.0, "status": "in_review", "reason": reason,
-                     "evidence": evidence }),
-        )
-        .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        let said = self
+            .use_tool(
+                name,
+                "set_status",
+                &json!({ "task": task.0, "status": "in_review", "reason": reason,
+                         "evidence": evidence }),
+            )
+            .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        self.answer = Some(said);
         self.ends_turn(name);
     }
 
