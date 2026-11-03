@@ -1468,13 +1468,25 @@ fn container_logs(
     let (lines, bytes) = contracts::log_size(!turn.cloud, asked);
     let log = contracts::newest_within(&scrubbed, lines, bytes);
     let shown = log.lines().count();
-    let left_out = scrubbed.lines().count() > shown;
+    let read = scrubbed.lines().count();
+    // The console reads at most the newest LOG_LINES: a read that long may have left older
+    // lines out, as a cut here does, and a turn is told either way (run 5316).
+    let left_out = read > shown || read >= contracts::LOG_LINES;
     let text = if log.trim().is_empty() {
         format!("{name}'s log is empty.")
-    } else if left_out && asked.is_none() && !turn.cloud {
+    } else if left_out {
+        let more = if shown < contracts::LOG_LINES {
+            format!(
+                "; ask with `lines`, up to {}, for more",
+                contracts::LOG_LINES
+            )
+        } else {
+            String::new()
+        };
         format!(
             "The newest {shown} lines of {name}'s log, with secrets replaced by [redacted] (older \
-             lines left out: ask with `lines`, up to {}, for more):\n{log}",
+             lines left out: this tool reads at most a log's newest {} lines, so it cannot show \
+             what came before the first line here{more}):\n{log}",
             contracts::LOG_LINES
         )
     } else {
@@ -2192,6 +2204,11 @@ mod tests {
     /// The node with HQ knowing one turn (token `good`), as HQ says it (`turn`'s fields beside
     /// its run and member), and a lab whose sonarr log is 150 lines long.
     fn with_a_long_log(turn: serde_json::Value) -> AppState {
+        with_a_log(turn, 150)
+    }
+
+    /// [`with_a_long_log`], with a sonarr log `lines` long.
+    fn with_a_log(turn: serde_json::Value, lines: usize) -> AppState {
         use super::super::relay::tests::fake;
         let (hq_url, _) = fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => {
@@ -2205,7 +2222,7 @@ mod tests {
             _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
         }));
         let mut state = node(&hq_url, "http://127.0.0.1:9");
-        let long: Vec<String> = (0..150).map(|i| format!("10:00 line {i:03}")).collect();
+        let long: Vec<String> = (0..lines).map(|i| format!("10:00 line {i:03}")).collect();
         state.console = Arc::new(Lab {
             containers: lab().containers.clone(),
             log: long.join("\n"),
@@ -2259,6 +2276,50 @@ mod tests {
         );
         let (status, said) = read(narrowed, json!({ "container": "sonarr", "lines": 100 })).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+    }
+
+    /// The lab's console reads at most a log's newest [`contracts::LOG_LINES`] lines, so a read
+    /// that comes back that long may have left older lines out, however the turn asked: a
+    /// Claude turn that asked for 100 of gluetun's lines read its last hour as "since its last
+    /// start" and was never told (run 5316, 3 Nov). A shorter log is whole, and says nothing.
+    #[tokio::test]
+    async fn a_log_read_to_the_consoles_most_says_older_lines_may_be_left_out() {
+        let read = |state: AppState, args: serde_json::Value| async move {
+            let (status, said) = use_contract(&state, "container_logs", args).await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+            said["text"].as_str().unwrap_or("").to_owned()
+        };
+        let claude = || json!({ "cloud": true, "brain": "claude-haiku-5-5" });
+        let house = || json!({ "cloud": false, "brain": "local" });
+        let asked = json!({ "container": "sonarr", "lines": 100 });
+        let unasked = json!({ "container": "sonarr" });
+        for (turn, args) in [
+            (claude(), asked.clone()),
+            (claude(), unasked.clone()),
+            (house(), asked.clone()),
+        ] {
+            let text = read(with_a_log(turn.clone(), contracts::LOG_LINES), args.clone()).await;
+            assert!(text.contains("line 000"), "{turn} {args}: {text}");
+            assert!(
+                text.contains("older lines left out") && text.contains("at most"),
+                "{turn} {args}: {text}"
+            );
+            assert!(!text.contains("`lines`"), "nothing more to ask for: {text}");
+        }
+        let five = read(
+            with_a_log(claude(), contracts::LOG_LINES),
+            json!({ "container": "sonarr", "lines": 5 }),
+        )
+        .await;
+        assert!(
+            five.contains("older lines left out") && five.contains("`lines`"),
+            "{five}"
+        );
+        for (turn, args) in [(claude(), asked), (house(), unasked)] {
+            let whole = read(with_a_log(turn.clone(), 30), args.clone()).await;
+            assert!(whole.contains("line 029"), "{whole}");
+            assert!(!whole.contains("left out"), "{turn} {args}: {whole}");
+        }
     }
 
     #[tokio::test]

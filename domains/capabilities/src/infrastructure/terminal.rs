@@ -1002,7 +1002,9 @@ impl HomeConsole for Adapter {
                     return Err("invalid_target");
                 }
                 let endpoint = self.endpoint()?;
-                self.call("portainer","GET",&format!("/api/endpoints/{endpoint}/docker/containers/{query}/logs?stdout=true&stderr=true&tail=100&timestamps=true"),None)
+                // At most the newest LOG_LINES: a read that long says older lines may be left out.
+                let tail = crate::contracts::LOG_LINES;
+                self.call("portainer","GET",&format!("/api/endpoints/{endpoint}/docker/containers/{query}/logs?stdout=true&stderr=true&tail={tail}&timestamps=true"),None)
             }
             "metrics" => self.metrics(),
             "dashboard" => {
