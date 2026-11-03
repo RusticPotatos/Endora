@@ -103,10 +103,11 @@ pub fn commands(repo: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// yamllint over everything, its exit code kept, and its error lines counted in a last line of
-/// its own: the shell keeps only the head and tail of a long output, and a count taken from
-/// what is left would be the same on a branch and its base.
-const YAMLLINT: &str = r#"set -o pipefail; yamllint . | awk '/  error  /{n++} 1; END{printf "yamllint: %d error(s)\n", n}'"#;
+/// yamllint over everything, its exit code kept, and its findings (errors and warnings both: a
+/// warning a branch adds is new, though it fails nothing) counted in a last line of its own:
+/// the shell keeps only the head and tail of a long output, and a count taken from what is left
+/// would be the same on a branch and its base.
+const YAMLLINT: &str = r#"set -o pipefail; yamllint . | awk '/  (error|warning)  /{n++} 1; END{printf "yamllint: %d finding(s)\n", n}'"#;
 
 /// `command` with the lab venv first on `PATH`, set after the login shell has had its say, so
 /// the tools and the ones they run themselves (ansible-lint runs ansible-playbook and yamllint)
@@ -185,8 +186,8 @@ fn passed(o: &Outcome) -> bool {
     !o.timed_out && o.code == Some(0)
 }
 
-/// How much a failed check found, if it said: ansible-lint's findings, yamllint's errors (from
-/// the count the command ends with, else the error lines themselves). A check that passed
+/// How much a failed check found, if it said: ansible-lint's findings, yamllint's errors and
+/// warnings (from the count the command ends with, else the lines themselves). A check that passed
 /// found nothing. `None` when a count cannot be read, and the exit code stands alone.
 fn measure(o: &Outcome) -> Option<u32> {
     if passed(o) {
@@ -197,7 +198,7 @@ fn measure(o: &Outcome) -> Option<u32> {
         "yamllint" => {
             let counted = o.output.lines().rev().find_map(|line| {
                 line.strip_prefix("yamllint: ")?
-                    .strip_suffix(" error(s)")?
+                    .strip_suffix(" finding(s)")?
                     .parse()
                     .ok()
             });
@@ -207,7 +208,7 @@ fn measure(o: &Outcome) -> Option<u32> {
                     .filter(|l| {
                         let mut words = l.split_whitespace();
                         words.next().is_some_and(|w| w.contains(':'))
-                            && words.next() == Some("error")
+                            && matches!(words.next(), Some("error" | "warning"))
                     })
                     .count()
             };
@@ -217,7 +218,7 @@ fn measure(o: &Outcome) -> Option<u32> {
     }
 }
 
-/// What one failed check says, with its count: "ansible-lint 3 findings", "yamllint 1 error".
+/// What one failed check says, with its count: "ansible-lint 3 findings", "yamllint 1 finding".
 fn said(o: &Outcome) -> String {
     if o.timed_out {
         return "timed out".to_owned();
@@ -226,8 +227,7 @@ fn said(o: &Outcome) -> String {
         return "could not run".to_owned();
     }
     let unit = match o.name {
-        "ansible-lint" => "finding",
-        "yamllint" => "error",
+        "ansible-lint" | "yamllint" => "finding",
         _ => return "failed".to_owned(),
     };
     measure(o).map_or_else(
@@ -685,7 +685,7 @@ mod tests {
             "yamllint",
             1,
             &format!(
-                "./a.yml\n  1:1       warning  missing document start \"---\"  (document-start)\n  3:5       error    wrong indentation  (indentation)\nyamllint: {n} error(s)\n"
+                "./a.yml\n  1:1       warning  missing document start \"---\"  (document-start)\n  3:5       error    wrong indentation  (indentation)\nyamllint: {n} finding(s)\n"
             ),
         )
     }
@@ -700,7 +700,7 @@ mod tests {
         assert!(ok, "{said}");
         assert_eq!(
             said,
-            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 errors (develop 14): no new findings against develop: met"
+            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 findings (develop 14): no new findings against develop: met"
         );
         // Fewer is better, and a base that was worse on syntax is tolerated.
         let (ok, said) = judge(&ran(1, 24, 0), Ok(&ran(1, 25, 14)));
@@ -726,7 +726,7 @@ mod tests {
             said.ends_with(": new findings against develop on syntax, yamllint: not met"),
             "{said}"
         );
-        assert!(said.contains("yamllint 15 errors (develop 14)"), "{said}");
+        assert!(said.contains("yamllint 15 findings (develop 14)"), "{said}");
         // A clean base makes any failure worse, even one whose count cannot be read.
         let mut bare = ran(0, 0, 0);
         bare[1] = out("ansible-lint", 1, "boom");
@@ -877,12 +877,54 @@ mod tests {
         );
     }
 
+    /// Set 4, #1062: the branch dropped a file's leading `---`. On develop yamllint said six
+    /// errors; on the branch the same six and a new warning, and the check still said "no new
+    /// findings against develop: met", which the member then reported as its own.
     #[test]
-    fn yamllints_errors_are_counted_from_its_own_line_or_its_output() {
+    fn a_new_yamllint_warning_is_a_new_finding_against_develop() {
+        let root = std::env::temp_dir().join(format!("endora-check-warn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let errors = "./inventories/group_vars/all.yml\n  61:1      error    no new line character at the end of file  (new-line-at-end-of-file)\n".repeat(6);
+        let warning = "./roles/librechat/tasks/main.yml\n  1:1       warning  missing document start \"---\"  (document-start)\n";
+        let shell = Shell::new(root.clone(), "a-jobs-token");
+        let lint = |said: &str| {
+            std::fs::write(root.join("said.txt"), said).unwrap();
+            std::fs::write(
+                root.join("yamllint"),
+                format!(
+                    "#!/bin/sh\ncat '{}'\nexit 1\n",
+                    root.join("said.txt").display()
+                ),
+            )
+            .unwrap();
+            let ran = Command::new("chmod")
+                .arg("+x")
+                .arg(root.join("yamllint"))
+                .status()
+                .unwrap();
+            assert!(ran.success());
+            let command = format!("export PATH={}:\"$PATH\"; {YAMLLINT}", root.display());
+            let ran = shell.run(&command, EACH_WITHIN).unwrap();
+            out("yamllint", ran.code.unwrap(), &ran.output)
+        };
+        let base = lint(&errors);
+        let branch = lint(&format!("{errors}{warning}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let (ok, said) = judge(&[branch], Ok(&[base]));
+        assert!(!ok, "{said}");
+        assert_eq!(
+            said,
+            "yamllint 7 findings (develop 6): new findings against develop on yamllint: not met"
+        );
+    }
+
+    #[test]
+    fn yamllints_errors_and_warnings_are_counted_from_its_own_line_or_its_output() {
         let counted = out(
             "yamllint",
             1,
-            "  3:5  error  x  (y)\nyamllint: 7 error(s)\n",
+            "  3:5  error  x  (y)\nyamllint: 7 finding(s)\n",
         );
         assert_eq!(measure(&counted), Some(7));
         let plain = out(
@@ -890,7 +932,7 @@ mod tests {
             1,
             "./a.yml\n  1:1       warning  w  (a)\n  3:5       error    e  (b)\n  4:5       error    e  (b)\n",
         );
-        assert_eq!(measure(&plain), Some(2));
+        assert_eq!(measure(&plain), Some(3));
         assert_eq!(measure(&out("yamllint", 1, "")), None);
         assert_eq!(measure(&out("syntax", 1, "")), None);
     }
@@ -1027,14 +1069,14 @@ mod tests {
             "ansible-playbook --syntax-check nas.yml -i tests/inventories/integration_testing"
         );
         assert_eq!(with[1].1, "ansible-lint --offline nas.yml");
-        // yamllint's own exit code stays the check's, and its errors are counted at the end,
+        // yamllint's own exit code stays the check's, and its findings are counted at the end,
         // where the shell's head-and-tail trimming of a long output cannot lose them.
         assert!(
             with[2].1.starts_with("set -o pipefail; yamllint . | "),
             "{}",
             with[2].1
         );
-        assert!(with[2].1.contains("error(s)"), "{}", with[2].1);
+        assert!(with[2].1.contains("finding(s)"), "{}", with[2].1);
         let without = commands(&root.join("elsewhere"));
         assert_eq!(without[0].1, "ansible-playbook --syntax-check nas.yml");
         let _ = std::fs::remove_dir_all(&root);
