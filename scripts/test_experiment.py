@@ -694,6 +694,32 @@ class Metrics(unittest.TestCase):
         self.assertEqual(m["working_h"], round(50 / 60, 1))
         self.assertEqual(m["waiting_h"], round((175 + 10) / 60, 1))
 
+    def test_done_with_nothing_checked_is_counted_apart(self):
+        # ADR 0124, amended 2026-11-03: a solo item with no branch closes completed, not
+        # verified; its done never counts as a verified outcome. A store from before the closures
+        # table, or a closing met on evidence, counts none.
+        m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]
+        self.assertEqual(m["reported_done_unverified"], 0)
+        db = self.store.db()
+        db.execute(
+            "CREATE TABLE closures (task INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+            " why TEXT NOT NULL, duplicate_of INTEGER, successor INTEGER, by TEXT NOT NULL,"
+            " at_ms INTEGER NOT NULL)"
+        )
+        db.execute("INSERT INTO closures VALUES (3, 'done', 'met_criteria', NULL, NULL, 'endora', 0)")
+        db.execute(
+            "INSERT INTO closures VALUES (5, 'done', 'completed_unverified', NULL, NULL, 'endora', 0)"
+        )
+        db.commit()
+        db.close()
+        m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]
+        self.assertEqual((m["reported_done"], m["reported_done_unverified"]), (2, 1))
+        rows = {
+            line.split(" | ")[0][2:]: line.split(" | ")[1:]
+            for line in self.metrics("--tasks", "3,5", "--label", "R1").splitlines()[2:]
+        }
+        self.assertEqual(rows["Reported (HQ done)"], ["2 (1 not verified) |"])
+
     def test_transcript_bytes_by_what_they_were_spent_on(self):
         m = json.loads(self.metrics("--tasks", "3", "--json"))["Tasks 3"]
         self.assertEqual(m["transcripts_kept"], 1)

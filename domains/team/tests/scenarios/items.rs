@@ -302,6 +302,51 @@ fn thread_says(w: &mut Office, title: String, text: String) {
     );
 }
 
+#[then(regex = r#"^the thread of "(.+)" does not say "(.+)"$"#)]
+fn thread_does_not_say(w: &mut Office, title: String, text: String) {
+    let task = w.task(&title);
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    assert!(
+        !thread.iter().any(|p| p.text.contains(&text)),
+        "{text:?} is in the thread: {thread:#?}"
+    );
+}
+
+/// How HQ kept a task's closing (ADR 0124): its reason's name, and the reason as the owner reads
+/// it.
+#[then(regex = r#"^"(.+)" closed as "(\w+)": "(.+)"$"#)]
+fn closed_as(w: &mut Office, title: String, why: String, said: String) {
+    use endora_team::application::guard_ports::GuardStore;
+    let task = w.task(&title);
+    let closed =
+        w.hq.store()
+            .closure(task)
+            .expect("the store answers")
+            .expect("it closed with a reason");
+    assert_eq!(closed.closure.name(), why, "{closed:?}");
+    assert_eq!(closed.closure.plainly(), said, "{closed:?}");
+}
+
+/// The feed's word that the task is done, and whether it says nothing checked it.
+#[then(regex = r#"^the feed says "(.+)" is done, (verified|not verified)$"#)]
+fn feed_says_done(w: &mut Office, title: String, how: String) {
+    let task = w.task(&title);
+    let done =
+        w.hq.events_after(0)
+            .expect("the feed answers")
+            .into_iter()
+            .rfind(|e| {
+                e.kind == "task.changed" && e.data["task"] == task.0 && e.data["status"] == "done"
+            })
+            .expect("the feed says it is done");
+    assert_eq!(
+        done.data["unverified"] == true,
+        how == "not verified",
+        "{:?}",
+        done.data
+    );
+}
+
 // --- Briefings -----------------------------------------------------------------------------------
 
 /// The owner writes a section of the house page (ADR 0122).

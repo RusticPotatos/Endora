@@ -40,7 +40,27 @@ Feature: One member works a loop alone
     Then the task "Document the media role" is done
     And the thread of "Document the media role" says "HQ's checks passed and Sol set it ready: done, with no review"
     And the answer says "is done, not in_review"
+    And "Document the media role" closed as "met_criteria": "it met its criteria"
+    And the feed says "Document the media role" is done, verified
     And no member is asked to review "Document the media role"
+
+  Scenario: An item with no branch is completed, not verified: it cites evidence, and nothing checked it
+    The goal-understanding run (task 1057, run 5316) cited a reading for every criterion and
+    answered "not yet known"; with no branch to check and no reviewer, HQ closed it as having met
+    its criteria. Closing it stays automatic, but it is kept and said as completed, not verified.
+    Given the loop "solo arm" has the item "Settle the VPN restart": "Is the 2-hourly restart still needed?"
+    And a tick passes
+    When Sol takes "Settle the VPN restart" and reads gluetun's logs: "gluetun: healthy"
+    And Sol asks for review of "Settle the VPN restart", citing her reading
+    Then the task "Settle the VPN restart" is done
+    And "Settle the VPN restart" closed as "completed_unverified": "it was completed, not verified: its evidence was cited, and nothing checked that it settles the item"
+    And the thread of "Settle the VPN restart" says "completed, not verified"
+    And the feed says "Settle the VPN restart" is done, not verified
+    And the thread of "Settle the VPN restart" does not say "HQ's checks passed"
+    And the answer says "is done, not in_review"
+    And the answer says "completed, not verified"
+    And no member is asked to review "Settle the VPN restart"
+    And the owner's desk holds nothing about "Settle the VPN restart"
 
   Scenario: Her briefing says she works alone, and that setting it ready closes it
     Given the loop "solo arm" has the item "Pin the images": "Pin roles/media off the latest tag."

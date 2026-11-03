@@ -2203,7 +2203,7 @@ function hqScorecard(s) {
   const pct = (v) => (v == null ? "" : ` (${v}%)`);
   const turns = (w) => `${n(w.turns.total)} · ${n(w.turns.nothing)} showed nothing${pct(w.turns.nothing_share)}${w.turns.unlabelled ? ` · ${w.turns.unlabelled} unlabelled` : ""}`;
   const review = (w) => `${n(w.review.sent_back)} of ${n(w.review.submissions)} submitted${pct(w.review.sent_back_share)}`;
-  const done = (w) => (w.finished.per_done == null ? "none done" : `${hqDollars(w.finished.per_done)} each · ${w.finished.done} done`);
+  const done = (w) => (w.finished.per_done == null ? "none done" : `${hqDollars(w.finished.per_done)} each · ${w.finished.done} done${w.finished.unverified ? `, ${w.finished.unverified} not verified` : ""}`);
   const dropped = (w) => (w.finished.dropped ? `${hqDollars(w.finished.dropped_spent)} on ${w.finished.dropped} dropped` : "none dropped");
   const alarms = (w) => `${n(w.alarms.count)} · ${n(w.alarms.tasks)} tasks${w.alarms.closed_median_ms == null ? "" : ` · closed in ${hqSpan(w.alarms.closed_median_ms)}`}${w.alarms.open ? ` · ${w.alarms.open} open` : ""}`;
   const desk = (w) => {
@@ -2518,7 +2518,7 @@ function hqSelected() {
   const runner =((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
   const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}${p.unsupported ? ` <span class="hq-unsupported">unsupported</span>` : ""}: ${esc(p.text)}</li>`).join("");
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
-    <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
+    <dt>Status</dt><dd>${t.closure && t.closure.why === "completed_unverified" ? "Completed · Not verified" : esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
     <dt>Project</dt><dd>${hqTaskProject(t)}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>

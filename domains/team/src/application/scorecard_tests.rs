@@ -248,6 +248,28 @@ fn a_finished_task_costs_its_whole_life_and_a_dropped_one_is_waste() {
     assert_eq!(empty.per_done(), None, "no finished task, no cost per one");
 }
 
+/// A task done with nothing checked (a loop worked alone, no branch) is counted done and, apart,
+/// as not verified, so the card never folds it into verified outcomes; a done said before the
+/// mark existed, or verified, is not (ADR 0124, amended 2026-11-03).
+#[test]
+fn a_task_completed_with_nothing_checked_is_counted_apart_as_not_verified() {
+    let unverified = event(
+        1,
+        NOON,
+        "task.changed",
+        json!({ "task": 1, "status": "done", "unverified": true }),
+    );
+    let events = [
+        unverified,
+        changed(2, NOON, 2, TaskStatus::Done),
+        changed(3, NOON, 3, TaskStatus::Done),
+    ];
+    let finished = score(&record(&[], &[], &[], &events), &today()).finished;
+    assert_eq!((finished.done, finished.unverified), (3, 1));
+    let shown = score(&record(&[], &[], &[], &events), &today()).json();
+    assert_eq!(shown["finished"]["unverified"], json!(1));
+}
+
 #[test]
 fn each_members_finished_tasks_and_their_cost_compare_two_developers() {
     // The Claude Code pilot (ADR 0117): Rae (2) and Zed (3), each with a task finished today.

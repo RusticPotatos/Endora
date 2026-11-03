@@ -1645,21 +1645,45 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// An item of a loop `alone` works by itself passed HQ's checks as it was set ready: it is
     /// done with no review, and goes on as accepted work does (ADR 0142, amended 2026-11-01).
+    /// With no branch there was nothing to check but that its criteria cite evidence: it is
+    /// completed, not verified, and kept so (ADR 0124, amended 2026-11-03).
     fn done_alone(&self, task: &Task, alone: MemberId) -> Done<()> {
+        use crate::domain::closure::{Closure, DoneWhy};
         let name = self.member(alone)?.name;
+        if self.gated(task)? {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!(
+                    "HQ's checks passed and {name} set it ready: done, with no review ({name} \
+                     works this loop alone)."
+                ),
+            )?;
+            return self.accept(task);
+        }
         self.post_held_lock(
             Author::Endora,
             task.id,
             &format!(
-                "HQ's checks passed and {name} set it ready: done, with no review ({name} works \
-                 this loop alone)."
+                "{name} set it ready with its criteria cited: completed, not verified. Nothing \
+                 checked that the evidence settles it: there is no branch to check, and nobody \
+                 reviews ({name} works this loop alone)."
             ),
         )?;
-        if self.gated(task)? {
-            return self.accept(task);
-        }
         self.store.set_task_status(task.id, TaskStatus::Done)?;
-        self.emit_status(task, TaskStatus::Done)?;
+        self.closed(
+            task.id,
+            Closure::Done(DoneWhy::CompletedUnverified),
+            None,
+            "endora",
+        )?;
+        // The feed says it too, so what counts outcomes keeps it apart from verified ones.
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                    "status": TaskStatus::Done.name(), "priority": task.priority.name(),
+                    "unverified": true }),
+        )?;
         self.after_finishing(task)
     }
 

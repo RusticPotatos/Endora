@@ -32,6 +32,10 @@ when the record does not let it (*Amended: can't tell*). Scenarios:
 Amended again 2026-10-19 (durability): the ticks no longer count toward the events the feed keeps
 (*Amended: can't tell*, the CEO's rescues), so the feed reaches back past the week the guards read.
 
+Amended 2026-11-03, the owner's choice after task 1057 (*Amended: completed, not verified*): a
+solo item with no branch still closes on its own, as its own reason, never "met its criteria".
+Scenario: `domains/team/features/one-member-works-a-loop-alone.feature`.
+
 ## Context
 
 A team of models does not fail by going rogue. It fails the way a busy office does, one locally
@@ -183,6 +187,28 @@ happen: `wait_dropped` told its holder only when the dropping came after). It no
 (`GuardRefusal::WaitsOnFinished`, which says to leave it out or wait on the task that carries the
 work on), and a task that is not there; a wait on open work is as ever. Closings already
 recorded are read as they were: nothing is migrated.
+
+**Amended: completed, not verified (2026-11-03).** In a loop worked alone
+([0142](0142-one-team-of-loops.md), amended 2026-11-01), an item with no branch closed as done
+the moment its member set it ready, with the default reason `met_criteria`. But nothing had
+checked it. The evidence rule checks that each criterion cites a receipt, not that the receipts
+settle it, and the tester who would have re-read them is left out of that arm on purpose. Task
+1057 (run 5316) cited a reading for every criterion and answered "not yet known"; HQ recorded
+that it met its criteria.
+
+Closing stays automatic. Nothing about who may do what, or what runs, changes, and no reviewer
+or approval is added. Such an item now closes with its own reason, `completed_unverified`
+(`DoneWhy::CompletedUnverified`), said as "it was completed, not verified".
+- The thread says so, in place of "HQ's checks passed".
+- The feed's `task.changed` carries `"unverified": true`, so the scorecard (`Finished::unverified`)
+  and `scripts/experiment.py` (`reported_done_unverified`) count it apart from verified outcomes.
+- The console shows the task as *Completed · Not verified*.
+- `set_status` tells the member how it closed.
+
+A solo item with a branch, whose check passed, closes as before, as `met_criteria`. The reason is
+HQ's own: it is not in the set a member or the owner gives (`Closure::names`). Closings already
+recorded are read as they were, `met_criteria` included: nothing is migrated, and the `closures`
+table's `why` is free text, so no schema check forces one.
 
 **Amended: can't tell.** A guard that reads a gap in the record as zero says something false. Two
 were found, and now say that they cannot tell:

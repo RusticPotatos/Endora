@@ -40,6 +40,10 @@ pub enum DoneWhy {
     Superseded,
     /// It turned out not to be needed.
     NotNeeded,
+    /// HQ closed it as its member set it ready, its criteria cited, with nothing to check and
+    /// nobody to review (a loop worked alone, no branch): completed, not verified (ADR 0124,
+    /// amended 2026-11-03). Never "met its criteria", which says the evidence was checked.
+    CompletedUnverified,
 }
 
 /// Why work is dropped.
@@ -81,6 +85,7 @@ impl Closure {
             Self::Done(DoneWhy::MetCriteria) => "met_criteria",
             Self::Done(DoneWhy::Superseded) => "superseded",
             Self::Done(DoneWhy::NotNeeded) => "not_needed",
+            Self::Done(DoneWhy::CompletedUnverified) => "completed_unverified",
             Self::Dropped(DropWhy::Obsolete) => "obsolete",
             Self::Dropped(DropWhy::Duplicate(_)) => "duplicate",
             Self::Dropped(DropWhy::WontDo) => "wont_do",
@@ -104,6 +109,9 @@ impl Closure {
             Self::Done(DoneWhy::MetCriteria) => "it met its criteria".to_owned(),
             Self::Done(DoneWhy::Superseded) => "other work superseded it".to_owned(),
             Self::Done(DoneWhy::NotNeeded) => "it was not needed".to_owned(),
+            Self::Done(DoneWhy::CompletedUnverified) => "it was completed, not verified: its \
+                evidence was cited, and nothing checked that it settles the item"
+                .to_owned(),
             Self::Dropped(DropWhy::Obsolete) => "what it was for is gone".to_owned(),
             Self::Dropped(DropWhy::Duplicate(of)) => format!("it duplicates #{of}"),
             Self::Dropped(DropWhy::WontDo) => "it will not be done".to_owned(),
@@ -126,6 +134,8 @@ impl Closure {
             (TaskStatus::Done, "met_criteria") => Self::Done(DoneWhy::MetCriteria),
             (TaskStatus::Done, "superseded") => Self::Done(DoneWhy::Superseded),
             (TaskStatus::Done, "not_needed") => Self::Done(DoneWhy::NotNeeded),
+            // HQ's own, for work it closes with nothing checked; read back from what it kept.
+            (TaskStatus::Done, "completed_unverified") => Self::Done(DoneWhy::CompletedUnverified),
             (TaskStatus::Dropped, "obsolete") => Self::Dropped(DropWhy::Obsolete),
             (TaskStatus::Dropped, "duplicate") => match duplicate_of {
                 Some(of) => Self::Dropped(DropWhy::Duplicate(of)),
@@ -217,6 +227,34 @@ mod tests {
             not_a_closure(TaskStatus::Dropped)
                 .to_string()
                 .contains("obsolete, duplicate")
+        );
+    }
+
+    /// A completion nothing checked is kept and read back as its own reason, never as met
+    /// criteria; a closing kept before it was named still reads as it was (ADR 0124, amended
+    /// 2026-11-03).
+    #[test]
+    fn a_completion_nothing_checked_is_its_own_reason_and_old_closings_read_as_they_were() {
+        let unverified = Closure::Done(DoneWhy::CompletedUnverified);
+        assert_eq!(unverified.name(), "completed_unverified");
+        assert_eq!(
+            Closure::read(TaskStatus::Done, "completed_unverified", None),
+            Ok(unverified)
+        );
+        assert!(
+            unverified
+                .plainly()
+                .starts_with("it was completed, not verified")
+        );
+        assert!(!unverified.plainly().contains("met its criteria"));
+        assert_eq!(
+            Closure::read(TaskStatus::Done, "met_criteria", None),
+            Ok(Closure::Done(DoneWhy::MetCriteria))
+        );
+        assert_eq!(
+            Closure::read(TaskStatus::Dropped, "completed_unverified", None),
+            Err(not_a_closure(TaskStatus::Dropped)),
+            "a drop is never completed"
         );
     }
 

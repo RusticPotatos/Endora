@@ -414,6 +414,8 @@ def round_metrics(conn, roots, verified=None):
         "with_subtasks": tasks,
         "reported_done": len(done),
         "reported_done_tasks": done,
+        # Of those, the ones HQ closed with nothing checked (ADR 0124, amended 2026-11-03).
+        "reported_done_unverified": unverified(conn, done),
         "verified": None if verified is None else len([t for t in roots if t in verified]),
         "interventions": len(interventions(conn, tasks)),
         "spend_usd": round(charged / 1_000_000, 6),
@@ -437,6 +439,18 @@ def round_metrics(conn, roots, verified=None):
         "transcript_calls": calls,
         "per_task": per_task,
     }
+
+
+def unverified(conn, done):
+    """How many of the `done` tasks HQ closed as completed, not verified: a solo item with no
+    branch, whose cited evidence nothing checked. None in a store from before closures."""
+    if not done or not has_table(conn, "closures"):
+        return 0
+    return conn.execute(
+        "SELECT COUNT(*) FROM closures WHERE why = 'completed_unverified'"
+        f" AND task IN ({placeholders(done)})",
+        done,
+    ).fetchone()[0]
 
 
 def has_table(conn, name):
@@ -474,7 +488,11 @@ def minutes(value):
 
 METRIC_ROWS = [
     ("Tasks", lambda m: str(len(m["tasks"]))),
-    ("Reported (HQ done)", lambda m: str(m["reported_done"])),
+    (
+        "Reported (HQ done)",
+        lambda m: str(m["reported_done"])
+        + (f" ({m['reported_done_unverified']} not verified)" if m["reported_done_unverified"] else ""),
+    ),
     ("Verified (judge)", lambda m: "—" if m["verified"] is None else str(m["verified"])),
     ("Interventions", lambda m: str(m["interventions"])),
     ("Spend (HQ's runs)", lambda m: f"${m['spend_usd']:.2f}"),
