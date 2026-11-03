@@ -1173,12 +1173,11 @@ if (failures.length) {
   if (!/aria-pressed="true"[^>]*data-act="hq:brain:1:claude-sonnet-5-5"/.test(office)) fail("hq: the brain a member has is not marked");
   if (!/aria-pressed="false"[^>]*data-act="hq:brain:1:local"/.test(office)) fail("hq: a brain a member does not have is marked");
   if (!office.includes("Brain:")) fail("hq: the brain choice is not labelled");
-  // The CEO (ADR 0111): in the Team card, offered only what its role allows: Opus, Sonnet, Local.
+  // Mara (ADR 0111): in the Team card, offered only what her model's rank allows: Opus, Sonnet, Local.
   for (const act of ["hq:brain:5:local", "hq:brain:5:claude-opus-5-5", "hq:brain:5:claude-sonnet-5-5", "hq:rename:5", "hq:rename:1"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the team card does not offer ${act}`);
   }
   if (office.includes("hq:brain:5:claude-haiku-5-5") || office.includes("hq:brain:1:claude-opus-5-5")) fail("hq: a brain was offered that the role may not use");
-  if (!office.includes("CEO · ")) fail("hq: the CEO's role is not shown as CEO");
   if (!office.includes("the house's model: costs nothing")) fail("hq: a local member reads as if it cost money");
   // The old house log: read-only, and its text stays text.
   if (office.includes('id="hq-house"') || office.includes("hq:house:save") || !office.includes("The old house log (read-only)")) fail("hq: the old house log is not read-only");
@@ -1223,7 +1222,7 @@ if (failures.length) {
     if (office.includes(`data-act="${wrong}"`)) fail(`hq: something offers ${wrong}, which its item does not take`);
   }
   for (const said of ["<h2>Projects</h2>", 'class="hq-gauge spent"', 'class="hq-gauge warned"', "$0.46 of $0.50 this month", "$0.00 this month · no cap",
-    "paused: it spent its cap", "proposed by Ada, waits for the CEO", "asks $5.00 a month", "Evidence: task 7, event 40", 'id="hq-answer-19"', 'id="hq-answer-20"',
+    "paused: it spent its cap", "proposed by Ada, waits for a decision", "asks $5.00 a month", "Evidence: task 7, event 40", 'id="hq-answer-19"', 'id="hq-answer-20"',
     'id="hq-project-title"', 'id="hq-project-cap"', 'id="hq-project-lead"', "in Upkeep",
     "Project Upkeep spent its $0.50 cap", "project Upkeep"]) {
     if (!office.includes(said)) fail(`hq: the projects card does not show ${said}`);
@@ -1494,11 +1493,11 @@ if (failures.length) {
     const saved = runInContext("JSON.stringify(HQ.snap)", context);
     try {
       runInContext(`HQ.people = {}; HQ.settled = false; HQ_BG = hqPaintRoom(); hqPlacePeople(); hqDraw();`, context);
-      for (const label of ["BOARD ROOM", "DONE THIS WEEK", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
+      for (const label of ["YOUR DESK", "DONE THIS WEEK", "MEETING", "SERVERS", "KITCHEN", "LOUNGE", "PING-PONG", "TEAM"]) {
         if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
       }
       if (written.includes("WING")) fail("hq: the walled wing is still drawn");
-      if (written.includes("CEO")) fail("hq: the office still names a CEO's office");
+      if (written.includes("CEO") || written.includes("BOARD ROOM") || written.includes("SHIP IT")) fail("hq: the office still names a CEO's office, a board room or a startup's sign");
       // Zed is retired (on furlough): his desk leaves the floor, so no away card (ADR 0142).
       if (written.includes("AWAY")) fail("hq: a retired member's desk is still drawn");
       if (runInContext("HQ.people[8]", context) !== undefined) fail("hq: a member on furlough is walking about the office");
@@ -1508,7 +1507,7 @@ if (failures.length) {
       // "RAE" as "RAB", and "BO" was under a sofa).
       {
         const lastThing = Math.max(...order.map((o, i) => (o.rect === "#7d6bb0" || o.rect === "#b8a68a" ? i : -1)));
-        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "BOARD ROOM", "DONE THIS WEEK", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
+        const names = ["ADA", "BO", "CY", "<I>DEE</I>", "MARA", "KIT", "RAE", "YOUR DESK", "DONE THIS WEEK", "SERVERS", "MEETING", "KITCHEN", "LOUNGE"];
         const plated = (name) => { const i = order.findLastIndex((o) => o.text === name); return i > lastThing && order[i - 1] && /^rgba\(255,253,246/.test(order[i - 1].rect || ""); };
         const bare = names.filter((n) => !plated(n));
         if (bare.length) fail(`hq: these names are not on a plate over the furniture: ${bare}`);
@@ -1614,29 +1613,27 @@ if (failures.length) {
         return out;
       })()`, context);
       if (visits.some((ok) => !ok)) fail(`hq: a working member is not at its own desk: ${visits}`);
-      // Idle members drift between ping-pong, the kitchen, the couches and the rest at random, so
-      // the teams mix; two at the table's ends play; and nobody drifts for someone who asks for calm.
-      const drift = runInContext(`(() => {
+      // An idle member is simply idle (the owner, 3 Nov: no fabricated activity): when its turn
+      // ends it goes to one place to rest, its own by a fixed order, and stays there; nobody plays
+      // a game the record does not hold, and two never take the same seat. For someone who asks
+      // for calm, nobody walks off at all.
+      const rest = runInContext(`(() => {
         for (const m of HQ.snap.members) m.running = [];
         hqPlacePeople();
-        const bo = HQ.people[2], cy = HQ.people[3], keep = HQ.rand, out = [];
-        // The page opens with idle members already resting (hqArrive): free their spots, so the
-        // drift below is judged on an empty floor.
-        for (const q of Object.values(HQ.people)) if (q !== bo && q !== cy) { q.wander = null; q.spotKey = ""; }
-        HQ.rand = () => 0; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.pong === "L", bo.path.length > 0);
-        HQ.rand = () => 0; cy.idleT = 0; hqIdle(cy, 0.1); out.push(cy.wander.pong === "R");
-        HQ.rand = () => 0.999; bo.idleT = 0; hqIdle(bo, 0.1); out.push(bo.wander.cx === 22 && bo.wander.cy === 16);
-        HQ.rand = keep;
-        bo.idleT = 0; bo.wander = null; globalThis.matchMedia = () => ({ matches: true }); const before = bo.spotKey; hqIdle(bo, 0.1);
-        out.push(hqCalm(), bo.wander === null, bo.spotKey === before); delete globalThis.matchMedia;
-        out.push(!hqCalm());
-        bo.at = HQ_WANDER[0]; cy.at = HQ_WANDER[1]; bo.path = []; cy.path = [];
-        out.push(!!hqPong() && hqPong().length === 2);
-        cy.at = HQ_WANDER[2]; out.push(!hqPong());
+        const bo = HQ.people[2], cy = HQ.people[3], out = [];
+        const game = (s) => !!(s && (s.pong || s.pool || s.chess));
+        out.push(!!bo.wander && !!cy.wander, !game(bo.wander) && !game(cy.wander), bo.wander.cx + "," + bo.wander.cy !== cy.wander.cx + "," + cy.wander.cy);
+        const was = bo.wander;
+        for (let i = 0; i < 50; i++) { HQ.rand = () => (i % 7) / 7; hqIdle(bo, 5); }
+        out.push(bo.wander === was);
+        out.push(typeof hqIdlePlay === "undefined", typeof hqPlayMatch === "undefined", typeof hqPong === "undefined", typeof hqPool === "undefined");
+        out.push(Object.values(HQ.people).every((q) => !game(q.wander)));
+        bo.wander = null; bo.spotKey = "x"; globalThis.matchMedia = () => ({ matches: true }); hqIdle(bo, 0.1);
+        out.push(hqCalm(), bo.wander === null, bo.spotKey === "x"); delete globalThis.matchMedia;
         bo.errand = null; bo.wander = null; hqPlacePeople();
         return out;
       })()`, context);
-      if (drift.some((ok) => !ok)) fail(`hq: idle members do not drift about at random, play ping-pong as two, or stay put for calm: ${drift}`);
+      if (rest.some((ok) => !ok)) fail(`hq: an idle member drifts or plays a game the record does not hold, shares a seat, or walks for calm: ${rest}`);
       // Zed comes back from furlough: he walks in at the front door to his desk.
       const back = runInContext(`(() => {
         HQ.snap.members.find((m) => m.id === 8).furloughed = false; hqPlacePeople();
@@ -1652,7 +1649,8 @@ if (failures.length) {
         const ada = HQ.people[1], mara = HQ.seats[5].visit;
         const there = ada.at.cx === mara.cx && ada.at.cy === mara.cy && ada.path.length > 0;
         hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
-        [there, !ada.errand, ada.at === ada.seat.work]`, context);
+        // Back to where she rests between turns (idle is simply idle), else her desk.
+        [there, !ada.errand, ada.at === (ada.wander || ada.seat.work)]`, context);
       if (errands.some((ok) => !ok)) fail(`hq: a question does not send its member to the right desk and back: ${errands}`);
       // A question for someone on a team: the one who asked walks to their desk, and goes back.
       const asks = runInContext(`HQ.snap.members.find((m) => m.id === 6).running = [];
@@ -1706,9 +1704,8 @@ if (failures.length) {
           HQ_P.pool.x === 29 && HQ_P.pool.y === 15 && HQ_P.pool.w === 3 && HQ_P.pool.h === 2 && HQ_P.chess.x === 23 && HQ_P.chess.y === 17,
           tiles(HQ_P.pool, 3, 2).every((c) => inside(c, pool) && W.blocked.has(c.cx + "," + c.cy)),
           inside(HQ_P.chess.x === 23 ? { cx: 23, cy: 17 } : {}, chess) && W.blocked.has("23,17"),
-          spots("pool").length === 2 && spots("pool").every((s) => inside(s, pool) && !W.blocked.has(s.cx + "," + s.cy)),
-          spots("chess").length === 2 && spots("chess").every((s) => inside(s, chess) && !W.blocked.has(s.cx + "," + s.cy)),
-          !!hqPathCells(hqAt(2, 17), spots("pool")[0]) && !!hqPathCells(hqAt(2, 17), spots("chess")[1]),
+          // Nobody stands at a games table to play a match the record does not hold.
+          spots("pool").length === 0 && spots("pong").length === 0 && spots("chess").length === 0,
         ];
       })()`, context);
       if (fixtures.some((ok) => !ok)) fail(`hq: the pool and chess tables are not where the office's rules keep them, or cannot be walked to: ${fixtures}`);
@@ -1743,32 +1740,10 @@ if (failures.length) {
       if (!table.includes("Pool") || !table.includes("Cy") || !table.includes("Bo scratched on the 8")) fail("hq: tapping the pool table does not show its board");
       runInContext(`HQ.selected = { type: "ping_pong", id: 0 };`, context);
       if (!runInContext("hqSelected()", context).includes("BO 11-8 &lt;I&gt;")) fail("hq: tapping the ping-pong table does not show its latest match");
-      // A match played: the winner and the other walk to the table's two sides, each saying so.
-      const played = runInContext(`(() => {
-        for (const m of HQ.snap.members) m.running = [];
-        hqPlacePeople();
-        const bo = HQ.people[2], cy = HQ.people[3], out = [];
-        hqTell({ id: 90, at: 0, kind: "game.played", data: { game: "pool", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [8, 5], text: "Cy beat Bo 8–5 at pool" } }, true);
-        out.push(cy.wander.pool === "L", bo.wander.pool === "R", cy.path.length > 0, cy.bubble.includes("8"), bo.bubble === "good game", HQ.log[0].text === "Cy beat Bo 8–5 at pool");
-        cy.path = []; bo.path = []; cy.at = cy.wander; bo.at = bo.wander;
-        out.push(!!hqPool() && hqPool().length === 2);
-        // For someone who asked for calm, nobody walks.
-        cy.wander = null; bo.wander = null; globalThis.matchMedia = () => ({ matches: true });
-        hqTell({ id: 91, at: 0, kind: "game.played", data: { game: "ping_pong", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [11, 9], text: "x" } }, true);
-        out.push(cy.wander === null && bo.wander === null); delete globalThis.matchMedia;
-        // A member at work stays at work.
-        HQ.snap.members.find((m) => m.id === 3).running = [{ run: 5, task: 7 }]; hqPlacePeople();
-        hqTell({ id: 92, at: 0, kind: "game.played", data: { game: "ping_pong", winner: "Cy", winner_id: 3, loser: "Bo", loser_id: 2, score: [11, 9], text: "x" } }, true);
-        out.push(HQ.people[3].wander === null || HQ.people[3].working);
-        HQ.snap.members.find((m) => m.id === 3).running = [];
-        for (const p of Object.values(HQ.people)) { p.wander = null; p.path = []; }
-        return out;
-      })()`, context);
-      if (played.some((ok) => !ok)) fail(`hq: a match played does not take its two players to the table: ${played}`);
     } finally {
       runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {};`, context);
     }
-    console.log("hq: the pool and chess tables stand where the rules keep them, the Games section and the chess board read the snapshot, and a match takes its players to the table");
+    console.log("hq: the pool and chess tables stand where the rules keep them, nobody plays at them unrecorded, and the Games section and the chess board read the snapshot");
   }
   // The shelf of the week's done work, where the CEO's office stood (the frontend slice of 3 Nov):
   // a cup for each item HQ closed as met its criteria, a plain crate marked "?" for each it
@@ -1855,6 +1830,75 @@ if (failures.length) {
       runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {}; HQ.shelfNew = {}; HQ.shelfNow = 0; HQ.landing = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
     }
     console.log("hq: the shelf holds the week's done work, a cup when checked and a crate when not, and an item closed live is carried there by its owner");
+  }
+  // Problems and recoveries, in one language over a worker's head (the owner, 3 Nov): a red "!"
+  // while the record says its work is blocked, a red cross while its latest check failed, and a
+  // green tick for a while after a check passes where the last one failed, or an item that had a
+  // problem closes as met its criteria. Never from a retry, a turn that merely ended, a closing
+  // nothing verified, or an item that was only unblocked. The shelf says how many it holds.
+  {
+    const saved = JSON.stringify(runInContext("HQ.snap", context)), savedLog = runInContext("JSON.stringify(HQ.log)", context);
+    try {
+      const marks = runInContext(`(() => {
+        const out = [], kind = (id) => (hqTrouble(id) || {}).kind || null;
+        const branch = (id, ok, at) => ({ id, name: "hq/task-x", at, status: "submitted", check: ok === null ? null : { id: id + 100, ok, status: "done", summary: ok ? "met" : "2 new findings" } });
+        for (const m of HQ.snap.members) m.running = [];
+        HQ.snap.tasks.push({ id: 60, goal: 1, title: "Blocked one", status: "blocked", owner: 3, brief: false, thread: [], branches: [] },
+          { id: 61, goal: 1, title: "Failing one", status: "doing", owner: 4, brief: false, thread: [], branches: [branch(1, true, 1), branch(2, false, 2)] },
+          { id: 62, goal: 1, title: "Passing one", status: "doing", owner: 1, brief: false, thread: [], branches: [branch(3, false, 1), branch(4, true, 2)] },
+          { id: 63, goal: 1, title: "Unchecked", status: "doing", owner: 6, brief: false, thread: [], branches: [branch(5, null, 1)] });
+        hqPlacePeople();
+        out.push(kind(3) === "blocked", kind(4) === "check", kind(1) === null, kind(6) === null);
+        // Working on something else, the badge is its current work's: Cy works item 62, fine.
+        HQ.snap.members.find((m) => m.id === 3).running = [{ run: 80, task: 62 }]; hqPlacePeople();
+        out.push(kind(3) === null);
+        HQ.snap.members.find((m) => m.id === 3).running = []; hqPlacePeople();
+        // A retry, a turn ending well, or a check that passes with none failed before: no tick.
+        hqTell({ id: 950, at: 0, kind: "run.ended", data: { run: 81, member: 4, task: 61, result: "retry_waiting" } }, true);
+        hqTell({ id: 951, at: 0, kind: "run.ended", data: { run: 82, member: 4, task: 61, result: "succeeded" } }, true);
+        hqTell({ id: 952, at: 0, kind: "check.done", data: { task: 63, check: 9, branch: "hq/task-x", ok: true, summary: "met", member: 6 } }, true);
+        out.push(kind(4) === "check", kind(6) === null);
+        // The check passes where the last one failed: a tick, and the snapshot after it agrees.
+        hqTell({ id: 953, at: 0, kind: "check.done", data: { task: 61, check: 10, branch: "hq/task-x", ok: true, summary: "met", member: 4 } }, true);
+        HQ.snap.tasks.find((t) => t.id === 61).branches.push(branch(6, true, 3)); hqPlacePeople();
+        out.push(kind(4) === "recovered", HQ.people[4].bubble === "check passed: el-61");
+        // A check that fails says so and badges it.
+        hqTell({ id: 954, at: 0, kind: "check.done", data: { task: 62, check: 11, branch: "hq/task-x", ok: false, summary: "1 new finding", member: 1 } }, true);
+        HQ.snap.tasks.find((t) => t.id === 62).branches.push(branch(7, false, 3)); hqPlacePeople();
+        out.push(kind(1) === "check", HQ.people[1].bubble === "check failed: el-62");
+        // Unblocked is not recovered: the "!" goes, nothing more.
+        hqTell({ id: 955, at: 0, kind: "task.changed", data: { task: 60, owner: 3, status: "doing" } }, true);
+        HQ.snap.tasks.find((t) => t.id === 60).status = "doing"; hqPlacePeople();
+        out.push(kind(3) === null);
+        // The item with the problem closes as met its criteria: a tick; closed with nothing verifying it: none.
+        const close = (id, why, unverified) => { const t = HQ.snap.tasks.find((x) => x.id === id);
+          hqTell({ id: 960 + id, at: 0, kind: "task.changed", data: { task: id, owner: t.owner, status: "done", ...(unverified ? { unverified: true } : {}) } }, true);
+          Object.assign(t, { status: "done", closure: { why, by: "endora", at: Date.now() } }); hqPlacePeople(); };
+        HQ.recovered = {};
+        close(62, "completed_unverified", true); out.push(kind(1) === null);
+        HQ.snap.tasks.push({ id: 64, goal: 1, title: "Blocked again", status: "blocked", owner: 7, brief: false, thread: [], branches: [] }); hqPlacePeople();
+        out.push(kind(7) === "blocked");
+        close(64, "met_criteria"); out.push(kind(7) === "recovered");
+        // Tapped, the worker says what its badge means, from the record.
+        HQ.snap.tasks.push({ id: 65, goal: 1, title: "Stuck <b>", status: "blocked", owner: 3, brief: false, thread: [], branches: [] }); hqPlacePeople();
+        HQ.selected = { type: "member", id: 3 }; const panel = hqSelected();
+        out.push(panel.includes("EL-65 is blocked"), panel.includes("Stuck &lt;b&gt;"));
+        HQ.selected = { type: "member", id: 7 }; out.push(hqSelected().includes("EL-64 closed as met its criteria after a problem"));
+        HQ.recovered[4] = { task: 61, why: "check", t: 5 }; HQ.selected = { type: "member", id: 4 }; out.push(hqSelected().includes("Check passed on EL-61 after a failed one"));
+        return out;
+      })()`, context);
+      if (marks.some((ok) => !ok)) fail(`hq: a worker's badge does not follow the record of its problems and recoveries: ${marks}`);
+      // The shelf's count, on a plate on the cabinet: none, a few, or more than it holds.
+      const counted = runInContext(`(() => { const said = []; const g = { fillRect() {}, strokeRect() {}, measureText: (t) => ({ width: t.length * 4 }), fillText: (t) => said.push(t), set fillStyle(v) {}, set strokeStyle(v) {}, set font(v) {}, set lineWidth(v) {} };
+        const now = 30 * 86400000; HQ.shelfNow = now; HQ.snap.tasks = HQ.snap.tasks.filter((t) => !t.closure);
+        hqDrawShelf(g); const none = said.slice();
+        for (let i = 0; i < 70; i++) HQ.snap.tasks.push({ id: 300 + i, goal: 1, title: "t", status: "done", owner: 3, brief: true, closure: { why: "met_criteria", by: "endora", at: now - 1000 + i } });
+        said.length = 0; hqDrawShelf(g); return [none, said.slice()]; })()`, context);
+      if (!counted[0].includes("0") || !counted[1].includes("70")) fail(`hq: the shelf does not say how many it holds: ${JSON.stringify(counted)}`);
+    } finally {
+      runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null; HQ.people = {}; HQ.shelfNew = {}; HQ.shelfNow = 0; HQ.landing = {}; HQ.recovered = {}; HQ.log = JSON.parse(${JSON.stringify(savedLog)});`, context);
+    }
+    console.log("hq: a worker's badge says blocked, a failed check, or a recovery the record shows, and nothing else");
   }
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });

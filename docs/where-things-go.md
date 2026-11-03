@@ -88,7 +88,11 @@ Settings.
   where the CEO's office stood: a cup for each item closed in the last seven days as met its
   criteria, a crate marked "?" for each closed as completed and not verified; tapped, an item
   opens under Looking at and the room opens the week's list there. Nothing else is shown as
-  progress on the floor unless the record says it happened. Each tab shows one line per thing at rest and the rest on a tap: the
+  progress on the floor unless the record says it happened. A worker's one badge says the same of
+  problems: a red "!" while its work is blocked, a red cross while that work's latest check
+  failed, a green tick for a while after a check passes where one failed or troubled work closes
+  as met its criteria; tapped, the worker says which item and why. Idle workers rest in one place;
+  nothing plays a game the record does not hold. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
   behind a fold. The console check measures each tab at rest and holds it to a budget; fold

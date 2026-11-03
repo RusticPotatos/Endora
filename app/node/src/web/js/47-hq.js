@@ -41,6 +41,7 @@ const HQ = {
   landing: {},         // task id → { owner, unverified }: closed live, waiting for the snapshot to say how
   shelfNew: {},        // task id → seconds its place on the shelf still shines, after it closed live
   shelfNow: 0,         // the time the shelf counts its week back from; 0 is now (a check fixes it)
+  recovered: {},       // member id → { task, why, t }: a recovery the record just showed, ticked for t seconds
 };
 
 const HQ_T = 16, HQ_COLS = 32, HQ_ROWS = 20, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
@@ -51,7 +52,7 @@ const HQ_C = {
 };
 const HQ_STATUS_COL = { todo: HQ_C.sticky, doing: HQ_C.lamp, in_review: HQ_C.blue, done: HQ_C.green, blocked: HQ_C.red, dropped: "#cfcac0" };
 // The open office (ADR 0119), in tiles; a person stands on a tile (a cell), and `hqAt` says
-// where their sprite goes. Along the back wall: the board room (the owner's), the task board,
+// where their sprite goes. Along the back wall: your desk (the owner's room), the task board,
 // Mara's office with its door open, and the server closet. The open floor under them holds
 // one pod of desks for each team, side by side with no walls (row 8 down, laid out from the
 // snapshot); under that, ping-pong, the meeting room, and the kitchen and lounge that
@@ -84,7 +85,7 @@ const HQ_MEETING = {
   head: hqAt(12, 16, { room: "meeting", dir: "down" }),
   chairs: [hqAt(12, 18, { room: "meeting", dir: "up", sit: "chair" }), hqAt(13, 18, { room: "meeting", dir: "up", sit: "chair" })],
 };
-// The shelf of done work (the frontend slice of 3 Nov), where the CEO's office stood: a cabinet
+// The shelf of done work (the frontend slice of 3 Nov), in the glass room by the servers: a cabinet
 // along the room's back, three tiles deep, of four shelves with twelve places each. Each place
 // holds one item HQ closed in the last seven days: a cup when it met its criteria, a plain crate
 // marked "?" when it was completed and nothing checked it. Nobody walks through the cabinet.
@@ -92,15 +93,11 @@ const HQ_SHELF = { x: 20 * 16 + 2, y: 2 * 16 + 1, w: 108, h: 46, shelves: 4, per
 const HQ_SHELF_MOST = HQ_SHELF.shelves * HQ_SHELF.per;
 const HQ_SHELF_CELLS = [];
 for (let y = 2; y < 5; y++) for (let x = 20; x < 27; x++) HQ_SHELF_CELLS.push([x, y]);
-// Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
-// ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
-// from what stands on the floor now (`hqWanderSpots`).
+// Where an idle member rests (the owner, 3 Nov: idle workers can simply be idle): the kitchen
+// table's chairs and the tap. The couches, the coffee machine and the rest come from what stands
+// on the floor now (`hqWanderSpots`). Nobody stands at a games table: no match is recorded.
 const HQ_WANDER = [
-  hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
   hqAt(26, 18, { dir: "up", sit: "chair" }), hqAt(27, 18, { dir: "up", sit: "chair" }), hqAt(17, 17, { dir: "up" }),
-  // The pool table's two sides and the chess table's two seats: two idle members at a pair play.
-  hqAt(29, 17, { dir: "up", pool: "L" }), hqAt(31, 17, { dir: "up", pool: "R" }),
-  hqAt(23, 16, { dir: "down", chess: "W" }), hqAt(23, 18, { dir: "up", chess: "B" }),
 ];
 const HQ_ART = {
   floors: { plank: "floors/floor_5.png", grid: "floors/floor_3.png", plain: "floors/floor_1.png", check: "floors/floor_7.png" },
@@ -480,7 +477,7 @@ function hqLogEntry(e) {
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
     "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : d.slot === "work" ? "works" : "thinks"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
-    // The CEO and the chain of command (ADR 0111).
+    // Members joining and renamed, and the house's notes (ADR 0111).
     "member.hired": ["you", `${d.name} joined the team`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
     "house.noted": ["you", d.entry ? `${d.by} noted ${d.page ? "on the house page" : "in the house log"}: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
@@ -559,7 +556,14 @@ function hqTell(e, live) {
     if (author) HQ.lastWord[d.task] = author.id;
   }
   if (e.kind === "task.claimed" && p) hqSay(p, "checkout " + key);
-  if (e.kind === "task.changed" && d.status === "done" && d.task) HQ.landing[d.task] = { owner: d.owner, unverified: d.unverified === true };
+  if (e.kind === "task.changed" && d.status === "done" && d.task) HQ.landing[d.task] = { owner: d.owner, unverified: d.unverified === true, troubled: hqTroubled(hqTask(d.task)) };
+  // A check's verdict (ADR 0115): said over its member's head; one that passes where the item's
+  // last check failed is a recovery, read against the snapshot from before this event.
+  if (e.kind === "check.done" && d.task) {
+    const t = hqTask(d.task), was = t && hqLastCheck(t);
+    if (p) hqSay(p, `check ${d.ok ? "passed" : "failed"}: ${key}`);
+    if (d.ok === true && was && was.ok === false) HQ.recovered[d.member] = { task: d.task, why: "check", t: HQ_RECOVERED_SECONDS };
+  }
   if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
   if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
   // A member's question woke the one it went to: the one who asked, if between turns, goes to
@@ -579,7 +583,7 @@ function hqTell(e, live) {
   // Someone proposed a change to the office: they say so over their head.
   if (e.kind === "office.proposed" && p) hqSay(p, "an idea for the office");
   // A match of ping-pong or pool was played: the two walk to the table and say how it went.
-  if (e.kind === "game.played") hqPlayMatch(d);
+
 }
 
 
@@ -708,7 +712,7 @@ function hqPlacePeople() {
     if (!p) {
       const from = HQ.settled ? HQ_P.lobby : seat.work;
       p = HQ.people[m.id] = { id: m.id, x: from.x * HQ_T, y: from.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
-        working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 8 + HQ.rand() * 12 };
+        working: false, errand: null, spotKey: "", at: from, wander: null };
     }
     p.look = m.look || 0; p.name = m.name; p.paused = m.paused; p.seat = seat;
     const run = (m.running || [])[0];
@@ -720,13 +724,13 @@ function hqPlacePeople() {
     p.working = !!run;
     p.visit = p.working ? hqVisit(m, task) : null;
     if (p.working) p.wander = null;
-    if (was && !p.working) p.idleT = 3 + HQ.rand() * 5;
     // One who went to ask someone, or to the shelf, and has since been woken goes back to work.
     if (p.working && p.errand && (p.errand.kind === "ask" || p.errand.kind === "shelf")) p.errand = null;
     // On the page's first drawing everyone is simply where the record says they are: at work at
     // their desk, or idle somewhere they might rest. Nobody walks out from one spot as the page
     // opens, which looked as if they had been gathered, waiting to be watched.
-    if (fresh && !HQ.settled) hqArrive(p, Object.keys(HQ.people).length);
+    if (fresh && !HQ.settled) hqArrive(p);
+    hqIdle(p);
     hqGo(p);
   }
   for (const id of Object.keys(HQ.people)) if (!members.some((m) => String(m.id) === id)) delete HQ.people[id];
@@ -744,15 +748,10 @@ function hqSpot(p) {
   return p.wander || s.rest || s.work;
 }
 
-// Puts a member straight where they should be, without walking: an idle one at a resting spot
-// (the `nth` one free, so two never share), a working one at their desk or visit.
-function hqArrive(p, nth) {
-  if (!p.working && !p.paused && !p.meeting && !p.errand && !hqCalm()) {
-    const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
-    // Never at the ping-pong table: the page does not open on a game.
-    const spots = hqWanderSpots().filter((s) => !s.pong && !taken.has(s.cx + "," + s.cy));
-    if (spots.length) p.wander = spots[nth % spots.length];
-  }
+// Puts a member straight where they should be, without walking: an idle one at its resting
+// spot, a working one at their desk or visit.
+function hqArrive(p) {
+  if (!p.working && !p.paused && !p.meeting && !p.errand && !hqCalm()) p.wander = hqRestSpot(p);
   const spot = hqSpot(p);
   p.x = spot.x * HQ_T; p.y = spot.y * HQ_T; p.path = [];
   p.at = spot; p.spotKey = spot.cx + "," + spot.cy;
@@ -788,17 +787,31 @@ function hqWanderSpots() {
   return spots;
 }
 
-// An idle member at rest picks somewhere else to be, now and then, at random: so the teams mix.
-function hqIdle(p, dt) {
-  if (p.working || p.errand || p.meeting || p.paused || !p.seat || hqCalm()) return;
-  p.idleT -= dt;
-  if (p.idleT > 0) return;
-  // Not where somebody else is going already: two do not take the same couch seat.
-  const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
-  const spots = hqWanderSpots().filter((s) => !taken.has(s.cx + "," + s.cy));
-  p.idleT = 8 + HQ.rand() * 12;
-  if (!spots.length) return;
-  p.wander = spots[Math.floor(HQ.rand() * spots.length)];
+// An idle member's own place to rest: the spots taken in a fixed order, starting from its place
+// among the team, the first that nobody else is at or going to. Null when none is free.
+function hqRestSpot(p) {
+  const ids = Object.keys(HQ.people).map(Number).sort((a, b) => a - b), spots = hqWanderSpots();
+  const taken = new Set(Object.values(HQ.people).filter((q) => q !== p)
+    .flatMap((q) => [q.spotKey, q.wander ? q.wander.cx + "," + q.wander.cy : ""]));
+  const start = Math.max(0, ids.indexOf(Number(p.id)));
+  // First a spot with nobody beside it either, so two names never sit on each other; else any free.
+  const near = (s) => [-1, 0, 1].some((dx) => [-1, 0, 1].some((dy) => taken.has((s.cx + dx) + "," + (s.cy + dy))));
+  for (const apart of [true, false]) {
+    for (let i = 0; i < spots.length; i++) {
+      const s = spots[(start + i) % spots.length];
+      if (!taken.has(s.cx + "," + s.cy) && (!apart || !near(s))) return s;
+    }
+  }
+  return null;
+}
+
+// An idle member goes to its resting spot once, when its turn ends, and stays there: idle is
+// simply idle, nothing made up to watch. Nobody walks off for someone who asks for calm.
+function hqIdle(p) {
+  if (p.working || p.errand || p.meeting || p.paused || !p.seat || p.wander || hqCalm()) return;
+  const spot = hqRestSpot(p);
+  if (!spot) return;
+  p.wander = spot;
   hqGo(p);
 }
 
@@ -926,7 +939,7 @@ function hqPaintRoom() {
   g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
   // The hanging plant between the sign and the board, clear of both.
   if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, P.board.x * T - 22, 1);
-  // Glass rooms: the board room, the shelf's room and the server closet along the wall, the
+  // Glass rooms: your desk, the shelf's room and the server closet along the wall, the
   // meeting room by the lounge. Each has a gap in its glass for a door; the two people walk
   // into have the door itself swung open.
   const glass = (r, tint) => { g.fillStyle = tint || C.glass; g.fillRect(r.x * T, r.y * T, r.w * T, r.h * T); };
@@ -1001,7 +1014,7 @@ function hqOverlaps(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b
 function hqRoomLabels(g) {
   const T = HQ_T, O = HQ_ROOMS.shelf, M = HQ_ROOMS.meeting, E = HQ_P.engine;
   g.font = HQ_PIXEL;
-  return [hqTag(g, "BOARD ROOM", 4, 2 * T + 9), hqTag(g, "DONE THIS WEEK", (O.x + 2.4) * T, (O.y + O.h) * T - 4),
+  return [hqTag(g, "YOUR DESK", 4, 2 * T + 9), hqTag(g, "DONE THIS WEEK", (O.x + 2.4) * T, (O.y + O.h) * T - 4),
     hqTag(g, "SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4), hqTag(g, "MEETING", M.x * T + 5, (M.y + M.h) * T - 4),
     hqTag(g, "PING-PONG", 4, 15 * T + 9, "#ffffff", "rgba(31,29,41,.45)"),
     hqTag(g, "KITCHEN", 28.3 * T, HQ_ROWS * T - 4), hqTag(g, "LOUNGE", 16.3 * T, HQ_ROWS * T - 4)];
@@ -1028,7 +1041,7 @@ function hqPot(g, it, leaf) {
 // Where a plant's picture goes: its pot on its tile, its leaves above. Leaves never cover the
 // task board on the back wall (a palm by it hid a sticky note), so a plant under the board is
 // drawn smaller, to fit below it; and none reaches through the glass of a room it is not in (the
-// same palm hid the CEO's name). -> { x, y, w, h } in pixels.
+// same palm hid a room's name). -> { x, y, w, h } in pixels.
 function hqPlantRect(it, w, h) {
   const T = HQ_T, B = HQ_P.board, bottom = (it.y + 1) * T, boardLow = 29;
   let x = it.x * T + 8 - w / 2;
@@ -1149,7 +1162,7 @@ function hqFurniture() {
       if (away) out.push({ base: d.y * T + 33, draw: (g) => hqAwayCard(g, d) });
     }
   }
-  // The board room: the owner's table, with the decisions on it.
+  // Your desk: the owner's table, with the decisions on it.
   f("SMALL_TABLE_FRONT", HQ_P.owner.x * T, HQ_P.owner.y * T);
   f("COFFEE", (HQ_P.owner.x + 1.3) * T, HQ_P.owner.y * T + 4, { lift: 40 });
   f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 0.1) * T, (HQ_P.owner.y + 1.9) * T);
@@ -1248,6 +1261,9 @@ function hqDrawShelf(g) {
   g.fillStyle = HQ_C.shadow; g.fillRect(S.x + 2, S.y + S.h, S.w - 2, 3);
   g.fillStyle = "#6b4423"; g.fillRect(S.x, S.y, S.w, S.h + 1);
   g.fillStyle = "#4a2e17"; g.fillRect(S.x + 2, S.y + 2, S.w - 4, S.h - 3);
+  // How many the week holds, on a plate at the cabinet's corner: 0, a few, or more than fit.
+  g.font = HQ_PIXEL;
+  hqTag(g, String(hqShelfWeek().length), S.x + S.w - 2 - Math.ceil(g.measureText(String(hqShelfWeek().length)).width), S.y + S.h + 9, "#ffffff", "rgba(74,46,23,.92)");
   for (let r = 1; r <= S.shelves; r++) { g.fillStyle = "#8a5a34"; g.fillRect(S.x + 2, S.y + r * pitch - 1, S.w - 4, 2); g.fillStyle = "#a8743f"; g.fillRect(S.x + 2, S.y + r * pitch - 1, S.w - 4, 1); }
   const sel = HQ.selected;
   for (const s of hqShelf()) {
@@ -1266,7 +1282,8 @@ function hqDrawShelf(g) {
       g.fillStyle = "#4b4557"; g.fillRect(x + 1, y + 1, 2, 1); g.fillRect(x + 3, y + 2, 1, 1); g.fillRect(x + 2, y + 3, 1, 1); g.fillRect(x + 2, y + 5, 1, 1);
     }
     const shine = HQ.shelfNew[s.task.id] || 0;
-    if (shine > 0 && Math.floor(HQ.t * 6) % 2 === 0) {
+    // Steady for someone who asks for calm; otherwise it blinks.
+    if (shine > 0 && (hqCalm() || Math.floor(HQ.t * 6) % 2 === 0)) {
       g.fillStyle = HQ_C.neon; g.fillRect(x + 2, y - 3, 2, 1); g.fillRect(x - 2, y + 3, 1, 2); g.fillRect(x + 7, y + 3, 1, 2);
     }
     if (sel && sel.type === "task" && sel.id === s.task.id) { g.strokeStyle = HQ_C.neon; g.lineWidth = 1; g.strokeRect(x - 1.5, y - 1.5, 9, 11); }
@@ -1295,6 +1312,7 @@ function hqLandings() {
     if (!t || !t.closure || !(t.closure.why in HQ_SHELF_KINDS)) continue;
     const checked = HQ_SHELF_KINDS[t.closure.why] && !l.unverified;
     HQ.shelfNew[t.id] = 8;
+    if (checked && l.troubled && l.owner) HQ.recovered[l.owner] = { task: t.id, why: "closed", t: HQ_RECOVERED_SECONDS };
     const p = HQ.people[l.owner];
     if (!p || p.working || p.errand || p.paused || hqCalm()) continue;
     p.errand = { kind: "shelf", task: t.id, hold: 4, spot: hqShelfSpot(t.id), say: `${checked ? "done" : "done, not verified"}: ${hqKey(t.id)}` };
@@ -1302,43 +1320,65 @@ function hqLandings() {
   }
 }
 
-// Whoever is at the two ends of the ping-pong table, both of them idle and standing there,
-// play. Any two: the teams mix at the table as anywhere else.
-function hqPair(key, ends) {
-  const at = (end) => Object.values(HQ.people).find((p) => p.at && p.at[key] === end && !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting);
-  const first = at(ends[0]), second = at(ends[1]);
-  return first && second ? [first, second] : null;
+// ---- problems and recoveries (the owner, 3 Nov) ---------------------------------------------
+// One badge over a worker's head, and only what the record says: a red "!" while its work is
+// blocked, a dark tile with a red cross while that work's latest check failed, and a green tick
+// for a while after a recovery: a check that passed where the item's last one failed, or an item
+// that was blocked or failing closing as met its criteria. A retry, a turn that ended, an item
+// only unblocked, or a closing nothing verified is never a recovery. Working, the badge is its
+// current item's; between turns, its open items'.
+const HQ_RECOVERED_SECONDS = 12;
+const HQ_OPEN = ["todo", "doing", "in_review", "blocked"];
+// An item's latest check, or null: the newest branch that has one.
+function hqLastCheck(t) {
+  const checked = (t && t.branches || []).filter((b) => b.check).sort((a, b) => (a.at || 0) - (b.at || 0) || a.id - b.id);
+  return checked.length ? checked[checked.length - 1].check : null;
 }
-function hqPong() { return hqPair("pong", ["L", "R"]); }
-// The same at the pool table's two sides and at the chess table's two seats (ADR 0121).
-function hqPool() { return hqPair("pool", ["L", "R"]); }
-function hqChessPair() { return hqPair("chess", ["W", "B"]); }
-
-// Now and then two idle members play ping-pong or pool, for fun (ADR 0142): the browser makes
-// up the score, and nothing is recorded.
-function hqIdlePlay(dt) {
-  HQ.idlePlayT = (HQ.idlePlayT || 0) + dt;
-  if (HQ.idlePlayT < 120) return;
-  HQ.idlePlayT = 0;
-  const idle = Object.values(HQ.people).filter((p) => !p.working && !p.errand && !p.path.length);
-  if (idle.length < 2) return;
-  const [a, b] = idle.sort(() => Math.random() - 0.5);
-  const pool = Math.random() < 0.5;
-  const won = pool ? 8 : 11, lost = Math.floor(Math.random() * (won - 1));
-  hqPlayMatch({ game: pool ? "pool" : "ping_pong", winner_id: a.id, loser_id: b.id, score: [won, lost] });
+function hqTroubled(t) { return !!t && (t.status === "blocked" || (hqLastCheck(t) || {}).ok === false); }
+// -> { kind: "recovered" | "blocked" | "check", task } or null.
+function hqTrouble(id) {
+  const r = HQ.recovered[id];
+  if (r && r.t > 0) return { kind: "recovered", task: r.task, why: r.why };
+  const m = hqMember(id);
+  if (!m) return null;
+  const run = (m.running || [])[0];
+  const items = run && run.task ? [hqTask(run.task)].filter(Boolean)
+    : ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.owner === id && HQ_OPEN.includes(t.status));
+  const blocked = items.find((t) => t.status === "blocked");
+  if (blocked) return { kind: "blocked", task: blocked.id };
+  const failing = items.find((t) => HQ_OPEN.includes(t.status) && (hqLastCheck(t) || {}).ok === false);
+  return failing ? { kind: "check", task: failing.id } : null;
 }
-
-// A match was played in the engine (ADR 0121): the two walk to that game's table, the winner
-// says the score and the other says good game. Nobody walks for someone who asks for calm, or
-// who is at work.
-function hqPlayMatch(d) {
-  const key = d.game === "pool" ? "pool" : "pong";
-  const ends = HQ_WANDER.filter((s) => s[key]);
-  const winner = HQ.people[d.winner_id], loser = HQ.people[d.loser_id];
-  if (hqCalm() || ends.length < 2 || !winner || !loser || winner.working || loser.working || winner.errand || loser.errand) return;
-  [[winner, ends[0], (d.score || []).join("–") + "!"], [loser, ends[1], "good game"]].forEach(([p, spot, say]) => {
-    p.wander = spot; p.idleT = 30; hqGo(p); hqSay(p, say); p.bubbleT = 14;
-  });
+// What the badge means, in words, for the worker's panel. "" without one.
+function hqTroubleSaid(id) {
+  const b = hqTrouble(id);
+  if (!b) return "";
+  const t = hqTask(b.task), title = t ? ` ${esc(t.title)}` : "";
+  if (b.kind === "recovered") return b.why === "check" ? `Check passed on ${hqKey(b.task)} after a failed one${title ? ":" + title : ""}` : `${hqKey(b.task)} closed as met its criteria after a problem${title ? ":" + title : ""}`;
+  if (b.kind === "blocked") return `${hqKey(b.task)} is blocked${title ? ":" + title : ""}`;
+  const c = hqLastCheck(t) || {};
+  return `The latest check on ${hqKey(b.task)} failed${c.summary ? ": " + esc(c.summary) : ""}`;
+}
+// The badge itself: seven pixels square beside the head, under where a bubble ends, drawn over
+// the furniture and the names so a plant never hides it.
+function hqDrawBadge(ctx, p) {
+  const b = hqTrouble(p.id);
+  if (!b) return;
+  const x = Math.round(p.x), y = Math.round(p.y) + hqSitDy(p), bx = Math.min(HQ_W - 8, x + 14), by = y - 14, C = HQ_C;
+  ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(bx + 1, by + 1, 7, 7);
+  if (b.kind === "blocked") {
+    ctx.fillStyle = C.red; ctx.fillRect(bx, by, 7, 7);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(bx + 3, by + 1, 1, 3); ctx.fillRect(bx + 3, by + 5, 1, 1);
+    return;
+  }
+  if (b.kind === "check") {
+    ctx.fillStyle = "#2b2f3a"; ctx.fillRect(bx, by, 7, 7);
+    ctx.fillStyle = C.red;
+    for (let i = 0; i < 5; i++) { ctx.fillRect(bx + 1 + i, by + 1 + i, 1, 1); ctx.fillRect(bx + 5 - i, by + 1 + i, 1, 1); }
+    return;
+  }
+  ctx.fillStyle = C.green; ctx.fillRect(bx, by, 7, 7);
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(bx + 1, by + 3, 1, 1); ctx.fillRect(bx + 2, by + 4, 1, 1); ctx.fillRect(bx + 3, by + 3, 1, 1); ctx.fillRect(bx + 4, by + 2, 1, 1); ctx.fillRect(bx + 5, by + 1, 1, 1);
 }
 
 function hqFrame(p) {
@@ -1350,12 +1390,6 @@ function hqFrame(p) {
   const at = p.at || {}, dir = at.dir || "down";
   const reads = !at.desk;
   if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
-  const pong = hqPong();
-  if (pong && pong.includes(p)) return { dir: at.pong === "L" ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
-  // Pool: they lean over the table by turns; chess: they sit and think, reading.
-  const pool = hqPool(), chess = hqChessPair();
-  if (pool && pool.includes(p)) return { dir, frame: Math.floor(HQ.t / 2 + (at.pool === "L" ? 0 : 1)) % 2 ? 3 : 0 };
-  if (chess && chess.includes(p)) return { dir, frame: 5 + (Math.floor(HQ.t * 1.5) % 2) };
   return { dir, frame: hqSits(p) ? 3 : p.paused ? 1 : 0 };
 }
 
@@ -1387,9 +1421,9 @@ function hqDraw() {
     if (HQ.selected && HQ.selected.type === "task" && HQ.selected.id === r.t.id) { ctx.strokeStyle = C.neon; ctx.strokeRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3); }
   }
   // The neon sign, with a flicker.
-  const flick = Math.floor(HQ.t * 3) % 23 === 0;
+  const flick = !hqCalm() && Math.floor(HQ.t * 3) % 23 === 0;
   ctx.font = HQ_PIXEL; ctx.fillStyle = flick ? "rgba(255,79,163,.35)" : C.neon;
-  ctx.shadowColor = C.neon; ctx.shadowBlur = flick ? 0 : 6; ctx.fillText("SHIP IT", 66, 19); ctx.shadowBlur = 0;
+  ctx.shadowColor = C.neon; ctx.shadowBlur = flick ? 0 : 6; ctx.fillText("ENDORA", 68, 19); ctx.shadowBlur = 0;
   // The server rack: its lights spark on each tick, red when stopped.
   const rx = P.rack.x * T, ry = P.rack.y * T;
   ctx.fillStyle = C.shadow; ctx.fillRect(rx + 2, ry + 38, 18, 4);
@@ -1415,13 +1449,11 @@ function hqDraw() {
   ctx.fillStyle = "#ffffff"; ctx.fillRect(jx, jy, 8, hgt); ctx.strokeStyle = C.trim; ctx.strokeRect(jx - 0.5, jy - 0.5, 9, hgt + 1);
   ctx.fillStyle = fill > .85 ? C.red : fill > .6 ? C.lamp : C.green; ctx.fillRect(jx + 1, jy + hgt - Math.round(hgt * fill), 6, Math.round(hgt * fill));
   ctx.font = HQ_PIXEL; hqTag(ctx, "BURN", jx + 12, jy + hgt);
-  // The kill switch on the board room's glass.
+  // The kill switch on your desk's glass.
   const lx = P.lever.x * T, ly = P.lever.y * T, up = !snap.stopped;
   ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
   ctx.fillStyle = "#9aa"; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
   if ((HQ.doorFlash || 0) > 0) { const D = hqDoorRect(); ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(D.x - 6, D.y - 4, D.w + 6, D.h + 8); }
-  // A ping-pong ball between the two at the table.
-  if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
   hqDrawGames(ctx, snap);
   // People and furniture, in depth order.
   const people = Object.values(HQ.people);
@@ -1451,7 +1483,7 @@ function hqDraw() {
     p.nameOver = !clear(under) && clear(over);
     placed.push(hqTag(ctx, name, x, p.nameOver ? over : under));
   }
-  // Decisions waiting on the board room table.
+  // Decisions waiting on your desk's table.
   (snap.desk || []).slice(0, 5).forEach((n, i) => {
     ctx.fillStyle = n.kind === "goal" ? C.violet : n.kind === "stuck" ? C.red : C.lamp;
     ctx.fillRect(P.owner.x * T + 3 + i * 6, P.owner.y * T + 6 + (i % 2) * 3, 5, 6);
@@ -1464,12 +1496,13 @@ function hqDraw() {
     ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(x), Math.round(y), 7, 5); ctx.fillStyle = C.neon; ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, 5, 1);
   }
   if (snap.stopped) { ctx.fillStyle = "rgba(239,90,95,.12)"; ctx.fillRect(0, 0, W, H); ctx.font = HQ_PIXEL; ctx.fillStyle = C.red; ctx.fillText("KILL SWITCH PULLED", W / 2 - 44, 2 * T + 22); }
+  for (const p of people) hqDrawBadge(ctx, p);
   for (const p of people) hqBubble(ctx, p);
 }
 
-// The games on the floor (ADR 0121): the scoreboards the engine keeps by the ping-pong and the
-// pool table, the cue ball while two play pool, and the live game of chess on its board. The
-// names are the team's own, so they are drawn as canvas text and never as markup.
+// The games on the floor (ADR 0121): the live game of chess on its board, from the snapshot.
+// The ping-pong and pool scoreboards are gone with the matches nobody records (the owner,
+// 3 Nov); their last results still open from the tables. `hqScoreLine` writes one.
 function hqScoreLine(last) {
   if (!last) return "";
   const short = (name) => String(name || "").toUpperCase().slice(0, 5);
@@ -1477,16 +1510,6 @@ function hqScoreLine(last) {
 }
 function hqDrawGames(ctx, snap) {
   const T = HQ_T, P = HQ_P, games = snap.games || {};
-  ctx.font = HQ_PIXEL;
-  const ping = hqScoreLine((games.ping_pong || {}).last);
-  if (ping) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillText(ping, 4, 15 * T + 21); }
-  const pool = hqScoreLine((games.pool || {}).last);
-  if (pool) { ctx.fillStyle = "rgba(31,29,41,.75)"; ctx.fillText(pool, HQ_W - Math.ceil(ctx.measureText(pool).width) - 3, P.pool.y * T - 3); }
-  // Two at the pool table: the cue ball rolls to and fro along the cloth.
-  if (hqPool()) {
-    const k = (Math.sin(HQ.t * 1.6) + 1) / 2;
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(P.pool.x * T + 8 + k * 14), Math.round(P.pool.y * T + 12), 2, 2);
-  }
   // The live game of chess, as pieces on the little board: white ones light, black ones dark,
   // pawns a single dot.
   const live = ((games.chess || {}).games || []).find((g) => g.status === "in_progress");
@@ -1502,10 +1525,9 @@ function hqDrawGames(ctx, snap) {
 
 // A speech bubble: what was just said, else what they are doing, else their idle word.
 function hqBubble(ctx, p) {
-  const playing = [hqPong(), hqPool(), hqChessPair()].some((pair) => pair && pair.includes(p));
   const said = p.bubbleT > 0 ? p.bubble : "";
   const doing = p.working && !p.path.length ? hqShort(p.doing) : "";
-  const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : "") : "";
+  const idle = !p.working && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : "") : "";
   const text = said || doing || idle;
   if (!text) return;
   const quiet = !said && !doing;
@@ -1546,16 +1568,16 @@ function hqLoop() {
     if (NAV.v !== "hq") { HQ.looping = false; return; }
     const now = Date.now(), dt = Math.min(0.1, (now - last) / 1000); last = now; HQ.t += dt;
     HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2);
-    for (const id of Object.keys(HQ.shelfNew)) if ((HQ.shelfNew[id] -= dt) <= 0) delete HQ.shelfNew[id]; HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
+    for (const id of Object.keys(HQ.shelfNew)) if ((HQ.shelfNew[id] -= dt) <= 0) delete HQ.shelfNew[id];
+    for (const id of Object.keys(HQ.recovered)) if ((HQ.recovered[id].t -= dt) <= 0) delete HQ.recovered[id]; HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
     for (const p of Object.values(HQ.people)) {
       if (p.bubbleT > 0) p.bubbleT -= dt;
-      if (!p.path.length) { hqErrand(p, dt); hqIdle(p, dt); continue; }
+      if (!p.path.length) { hqErrand(p, dt); hqIdle(p); continue; }
       const n = p.path[0], dx = n.x - p.x, dy = n.y - p.y, d = Math.hypot(dx, dy), v = 46 * dt;
       if (d <= v) { p.x = n.x; p.y = n.y; p.path.shift(); } else { p.x += (dx / d) * v; p.y += (dy / d) * v; }
       p.frame += dt * 8;
     }
     HQ.envelopes.forEach((e) => (e.t += dt)); HQ.envelopes = HQ.envelopes.filter((e) => e.t < 0.9);
-    hqIdlePlay(dt);
     hqDraw();
     requestAnimationFrame(step);
   };
@@ -1657,7 +1679,7 @@ const HQ_DESK_HELP = {
   question: "A member is asking you. Type an answer if you like, then Answer & wake sends it and wakes them; Dismiss closes it unanswered.",
   notice: "Only to know of. Seen or Dismiss clears it.",
   approval: "A member wants to run exactly what is shown, once. Approve runs it; Decline runs nothing.",
-  project_cap: "The CEO asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
+  project_cap: "The team asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
   project_budget: "This project spent its monthly cap, so its paid work waits. Raise the cap (type the new amount) to go on now; Wait for next month lets it resume when the month turns.",
   rounds: "This work was sent back three times. Accept as done closes it; Send it back gives it one more round.",
   hire: "A lead asks to add a member. Hire adds them; Decline does not.",
@@ -1682,7 +1704,7 @@ const HQ_DESK_CHOICES = {
   // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
   // what the card shows, once; declining runs nothing.
   approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
-  // A cap the CEO asks for a project (ADR 0113): granted as asked, or at what the owner
+  // A cap the team asks for a project (ADR 0113): granted as asked, or at what the owner
   // writes; or not at all, and the project runs on the pool's limits alone.
   project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
   // A project that spent its cap: its Claude turns wait until the owner raises the cap, or
@@ -2043,7 +2065,7 @@ function hqAreaOf(it) {
   if (within(0, 15, 9, 20)) return "the ping-pong corner";
   if (within(9, 15, 16, 20)) return "the meeting room side";
   if (within(7, 2, 20, 7)) return "the commons";
-  if (within(0, 2, 7, 8)) return "the board room side";
+  if (within(0, 2, 7, 8)) return "by your desk";
   if (within(20, 2, 32, 8)) return "by the shelf";
   return "the open floor";
 }
@@ -2188,7 +2210,7 @@ function hqProjects(s) {
   const projects = s.projects || [];
   const goals = (s.goals || []).filter((g) => g.status === "active" || projects.some((p) => p.goal === g.id));
   const status = (p) => p.pause === "budget" ? "paused: it spent its cap" : p.pause === "owner" ? "paused by you"
-    : p.status === "proposed" ? `proposed by ${p.created_by}, waits for the CEO` : p.status;
+    : p.status === "proposed" ? `proposed by ${p.created_by}, waits for a decision` : p.status;
   const money = (p) => {
     if (!p.cap) return `<span>${hqDollars(p.spent)} this month · no cap</span>`;
     const share = Math.min(100, Math.round((p.spent / p.cap) * 100));
@@ -2338,7 +2360,7 @@ function hqScorecard(s) {
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
-// The old house log (ADR 0111), the CEO's: read-only, as the house page is where the house is
+// The old house log (ADR 0111): read-only, as the house page is where the house is
 // kept now (ADR 0122, 0142).
 function hqHouse(s) {
   const log = s.house_log || "";
@@ -2607,6 +2629,7 @@ function hqSelected() {
     const run = (m.running || [])[0], t = run && run.task ? hqTask(run.task) : null;
     return `<div class="hq-sel">${esc(m.name)}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
+      ${hqTroubleSaid(m.id) ? `<dt>${(hqTrouble(m.id) || {}).kind === "recovered" ? "Recovered" : "Problem"}</dt><dd>${hqTroubleSaid(m.id)}</dd>` : ""}
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
       <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id, "member-" + m.id)}`;
