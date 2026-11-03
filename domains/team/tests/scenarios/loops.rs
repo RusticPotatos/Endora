@@ -311,6 +311,59 @@ fn sets_ready(w: &mut Office, name: String, title: String) {
     );
 }
 
+/// The receipt and the document HQ's thread names for the newest check of `task`, as its line
+/// says them: `(receipt r12, document d34)`.
+fn check_line_ids(w: &Office, task: endora_team::domain::TaskId) -> (String, String) {
+    let line =
+        w.hq.store()
+            .thread(task)
+            .expect("the store answers")
+            .into_iter()
+            .rev()
+            .find(|p| p.text.starts_with("Check c"))
+            .expect("the check's line is in the thread")
+            .text;
+    let between = |from: &str| {
+        let start = line.find(from).expect("the line names it") + from.len();
+        line[start..]
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    (
+        format!("r{}", between("receipt r")),
+        format!("d{}", between("document d")),
+    )
+}
+
+/// The member sets its item ready citing the document the check wrote, as set 4's turns did;
+/// a refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing the check's document$"#)]
+fn sets_ready_citing_document(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (_, document) = check_line_ids(w, task);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "Done, as the check shows.",
+                 "evidence": [document] }),
+    );
+}
+
+#[then(regex = r#"^the refusal names the receipt of the check of "(.+)" to cite$"#)]
+fn refusal_names_check_receipt(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let (receipt, document) = check_line_ids(w, task);
+    let said = w.refused.as_deref().expect("it was refused");
+    assert!(
+        said.contains(&format!(
+            "{document} is a document, not a receipt: cite {receipt}"
+        )),
+        "{said}"
+    );
+}
+
 /// The member claims its item and sets it ready citing the item for each criterion, in its
 /// turn; a refusal is noted, not a failure of the step.
 #[when(regex = r#"^(\w+) sets "(.+)" ready, citing the item for each criterion$"#)]

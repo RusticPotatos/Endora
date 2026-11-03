@@ -67,7 +67,7 @@ fn ids(what: &str) -> Value {
 /// One piece of evidence as the model gave it: an id, a finding with ids in it, or an object
 /// whose values are ids (`{"receipt": "r301", "task": 695}`, its keys naming the kind of a bare
 /// number). A finding or an object holding no id is refused, as words are.
-fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
+fn refs_of(v: &Value, wrote: &Wrote) -> Result<Vec<Ref>, String> {
     let read: Vec<Ref> = match v {
         Value::Object(fields) => fields
             .iter()
@@ -86,16 +86,45 @@ fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
         }),
     };
     if read.is_empty() {
+        let quoted = crate::domain::evidence::short(&v.to_string(), 40);
+        if let Some(document) = document_in(&v.to_string()) {
+            let cite = wrote(document).map_or_else(
+                || {
+                    "cite the receipt of the call that wrote it (r12, named in the same result)"
+                        .to_owned()
+                },
+                |receipt| format!("cite r{receipt}, the receipt that wrote it"),
+            );
+            return Err(format!(
+                "`{quoted}` is not evidence: d{document} is a document, not a receipt: {cite}"
+            ));
+        }
         return Err(format!(
-            "`{}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340",
-            crate::domain::evidence::short(&v.to_string(), 40)
+            "`{quoted}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340"
         ));
     }
     Ok(read)
 }
 
+/// The receipt that wrote a document, by the document's number ([`Engine::receipt_of_document`]).
+type Wrote<'a> = dyn Fn(i64) -> Option<i64> + 'a;
+
+/// The first document a piece of evidence names as the tools do (`d241`), if any.
+fn document_in(said: &str) -> Option<i64> {
+    said.split(|c: char| !c.is_ascii_alphanumeric())
+        .find_map(|w| w.strip_prefix('d').and_then(|n| n.parse().ok()))
+        .filter(|n: &i64| *n > 0)
+}
+
+/// What names the receipt behind a document cited as evidence, for `engine`'s refusal.
+fn wrote_by<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+) -> impl Fn(i64) -> Option<i64> + '_ {
+    |document| engine.receipt_of_document(document).ok().flatten()
+}
+
 /// The `evidence` argument, one list per criterion: each item an id or a list of ids.
-fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
+fn evidence_lists(args: &Value, wrote: &Wrote) -> Result<Vec<Vec<Ref>>, String> {
     let Some(items) = args["evidence"].as_array() else {
         return Ok(Vec::new());
     };
@@ -104,17 +133,17 @@ fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
         .map(|item| match item {
             Value::Array(list) => Ok(list
                 .iter()
-                .map(refs_of)
+                .map(|one| refs_of(one, wrote))
                 .collect::<Result<Vec<_>, _>>()?
                 .concat()),
-            other => refs_of(other),
+            other => refs_of(other, wrote),
         })
         .collect()
 }
 
 /// The `evidence` argument as one list.
-fn evidence_flat(args: &Value) -> Result<Vec<Ref>, String> {
-    Ok(evidence_lists(args)?.concat())
+fn evidence_flat(args: &Value, wrote: &Wrote) -> Result<Vec<Ref>, String> {
+    Ok(evidence_lists(args, wrote)?.concat())
 }
 
 /// The `criteria` argument: each `{ text, live }`, or a line of text.
@@ -705,7 +734,7 @@ fn tool_post<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         return Ok("Posted.".to_owned());
     }
-    let cited = evidence_flat(args)?;
+    let cited = evidence_flat(args, &wrote_by(engine))?;
     // A handover note with the post (ADR 0134) is a wrap-up for a restart: the note is
     // read, and refused, before anything is posted; the turn ends and keeps its task.
     let wrap = super::protocol_world::handover_arg(args)?;
@@ -738,7 +767,7 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .to_owned()
         })?;
     let reason = text_arg(args, "reason")?;
-    let cited = evidence_lists(args)?;
+    let cited = evidence_lists(args, &wrote_by(engine))?;
     // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
     // reason not in the set, a superseded that names no successor (or itself, or a task
     // that is not there) changes nothing.
@@ -891,7 +920,7 @@ fn tool_ask_owner<S: TeamStore, W: WorkerAdapter, C: Clock>(
     args: &Value,
 ) -> Result<String, String> {
     let text = text_arg(args, "text")?;
-    let cited = evidence_flat(args)?;
+    let cited = evidence_flat(args, &wrote_by(engine))?;
     match engine
         .ask_owner_citing(run.id, text, &cited)
         .map_err(|e| said(&e))?
@@ -916,7 +945,7 @@ fn tool_review<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return Err(format!("notes are at most {LONGEST_POST} characters"));
     }
     let reason = reason_arg(args, !approve)?;
-    let cited = evidence_lists(args)?;
+    let cited = evidence_lists(args, &wrote_by(engine))?;
     match engine.test_in(run.id, task, approve, notes, &cited, reason) {
         Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
         Ok(()) => Ok(format!(

@@ -552,6 +552,93 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
     }
 }
 
+// Set 4 and HQ's record before it (161 refusals in 116 turns): a member cites the document a
+// submit or a check wrote (`d241`), which is not evidence, and was told only "cite a receipt as
+// r12, a task as task 12", so it tried again, some turns several times, and some fell back to
+// citing the task itself. The refusal names the receipt that wrote the document: the submit's,
+// whose result names the document, or the check's. The rule of what counts is unchanged.
+#[test]
+fn a_document_cited_as_evidence_is_refused_naming_the_receipt_that_wrote_it() {
+    use crate::application::receipt_ports::ReceiptStore;
+    use crate::application::wing_ports::WingStore;
+    use crate::domain::{CallReceipt, Document};
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
+    let document = |title: &str| {
+        hq.store()
+            .add_document(&Document {
+                id: 0,
+                task: s.task,
+                run: Some(run.id),
+                title: title.to_owned(),
+                text: "the diff".to_owned(),
+                at: 1,
+            })
+            .unwrap()
+    };
+    let receipt = |tool: &str, args: &str, excerpt: &str| {
+        hq.store()
+            .add_call_receipt(&CallReceipt {
+                id: 0,
+                run: run.id,
+                member: me.id,
+                task: Some(s.task),
+                tool: tool.to_owned(),
+                args: args.to_owned(),
+                excerpt: excerpt.to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+                sandbox: false,
+                at: 1,
+            })
+            .unwrap()
+    };
+    let diff = document("branch hq/task-1-watches (1 file, +1 −1)");
+    // A document whose number begins another's is not that one's: d1 is not d12.
+    receipt(
+        "repo_checkout",
+        "branch: null",
+        &format!("checked out develop (document d{diff}0 is another task's)"),
+    );
+    let submit = receipt(
+        "repo_submit",
+        "branch: hq/task-1-watches",
+        &format!(
+            "Submitted hq/task-1-watches at a1b2c3d (1 file, +1 −1): document d{diff} on task"
+        ),
+    );
+    let check = receipt("check", "c7 hq/task-1-watches@a1b2c3d", "syntax ok");
+    let report = document("check c7: syntax ok");
+    let cite = |evidence: serde_json::Value| {
+        call(
+            &hq,
+            &run,
+            &me,
+            "post",
+            &json!({ "task": s.task.0, "text": "Done.", "evidence": evidence }),
+        )
+        .unwrap_err()
+    };
+
+    let why = cite(json!([format!("d{diff}")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    let why = cite(json!([[format!("r{submit}"), format!("d{report}")]]));
+    assert!(why.contains(&format!("cite r{check}")), "{why}");
+    let why = cite(json!([format!("the diff (document d{diff}) shows it")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    // A document no receipt names, or none at all, is still said to be a document.
+    let loose = document("notes");
+    for unnamed in [format!("d{loose}"), "d999".to_owned()] {
+        let why = cite(json!([unnamed]));
+        assert!(why.contains("is a document, not a receipt"), "{why}");
+    }
+    // Words with no id are refused as before.
+    assert!(cite(json!(["the list is there"])).contains("is not evidence"));
+}
+
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn measure_tool_descriptions() {

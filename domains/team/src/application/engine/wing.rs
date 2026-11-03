@@ -1011,6 +1011,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    /// The receipt that wrote document `id`, for a member who cited the document: the submit
+    /// whose result names it (`document d241`), or the check it reports (`check c7: …`), both
+    /// kept by the turn the document came from. None for a document no receipt names.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn receipt_of_document(&self, id: i64) -> Done<Option<i64>> {
+        let Some(document) = self.store.document(id)? else {
+            return Ok(None);
+        };
+        let Some(run) = document.run else {
+            return Ok(None);
+        };
+        let named = format!("document d{id}");
+        let names = |text: &str| {
+            text.match_indices(&named)
+                .any(|(at, _)| !text[at + named.len()..].starts_with(|c: char| c.is_ascii_digit()))
+        };
+        let check = document
+            .title
+            .strip_prefix("check ")
+            .and_then(|t| t.split(':').next())
+            .map(|c| format!("{c} "));
+        Ok(self
+            .store
+            .call_receipts_of(run)?
+            .into_iter()
+            .filter(|r| r.task == Some(document.task))
+            .find(|r| {
+                names(&r.excerpt)
+                    || check
+                        .as_deref()
+                        .is_some_and(|c| r.tool == "check" && r.args.starts_with(c))
+            })
+            .map(|r| r.id))
+    }
+
     pub(super) fn documents_said(&self, task: TaskId) -> Done<String> {
         let documents = self.store.documents_of(task)?;
         let branches: Vec<Branch> = self
