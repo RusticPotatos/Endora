@@ -276,8 +276,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(format!(
             "You work this loop alone: nobody reviews your item and nobody takes it over. Check \
              its criteria yourself. Once HQ's check of your newest submission has passed, setting \
-             it ready (set_status in_review) closes it, with no review. After {FAILURES_ALONE} \
-             failures it is blocked; if it cannot be done, block it yourself with the reason.\n"
+             it ready (set_status in_review) closes it, with no review. Three failures do not \
+             take it a rank up: after {FAILURES_ALONE} it is blocked; if it cannot be done, block \
+             it yourself with the reason.\n"
         ))
     }
 

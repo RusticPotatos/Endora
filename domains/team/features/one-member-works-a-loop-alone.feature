@@ -76,11 +76,15 @@ Feature: One member works a loop alone
     And the owner's desk holds nothing about "Settle the VPN restart"
 
   Scenario: Her briefing says she works alone, and that setting it ready closes it
+    Every turn opens with the protocol's line "three failures take the work a rank up", the
+    same bytes each turn so the prompt stays cached; on her loop nothing climbs (set 4's
+    briefings said both), so what she is told of her loop says the line is not hers.
     Given the loop "solo arm" has the item "Pin the images": "Pin roles/media off the latest tag."
     And a tick passes
     When Sol's turn starts
     Then Sol's briefing says "You work this loop alone"
     And Sol's briefing says "closes it, with no review"
+    And Sol's briefing says "Three failures do not take it a rank up: after 9 it is blocked"
 
   Scenario: A CI criterion no push can meet is hers to block, with the reason
     Given the loop "solo arm" has the item "Run the lint rules' tests in CI", with the criteria
