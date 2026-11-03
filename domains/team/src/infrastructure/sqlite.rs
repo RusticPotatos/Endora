@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS wakes (
     task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
     refused TEXT, run INTEGER, at_ms INTEGER NOT NULL, by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+-- A task's held wakes, asked of every open task on every tick, without visiting the rest.
+CREATE INDEX IF NOT EXISTS wakes_held ON wakes(task,id) WHERE receipt = 'held';
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
     task INTEGER REFERENCES tasks(id), wake INTEGER NOT NULL REFERENCES wakes(id),
@@ -573,6 +575,10 @@ fn receipt_from(name: &str, refused: Option<&str>) -> Stored<Receipt> {
         _ => return Err(corrupt("a wake's receipt")),
     })
 }
+
+/// A task's held wakes, oldest first, read by the `wakes_held` index.
+const HELD_WAKES_OF_TASK: &str = "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes \
+     WHERE task=?1 AND receipt='held' ORDER BY id";
 
 const WAKE_BY_ID: &str =
     "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes WHERE id=?1";
@@ -1228,11 +1234,19 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>> {
-        Ok(self
-            .wakes()?
-            .into_iter()
-            .filter(|w| w.task == Some(task) && w.receipt == Receipt::Held)
-            .collect())
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(HELD_WAKES_OF_TASK).map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], wake_from)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|(mut wake, receipt, refused)| {
+                wake.receipt = receipt_from(&receipt, refused.as_deref())?;
+                Ok(wake)
+            })
+            .collect()
     }
 
     fn wakes(&self) -> Stored<Vec<Wake>> {
