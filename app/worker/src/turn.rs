@@ -1200,12 +1200,14 @@ pub(crate) fn instructions_for(
     } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT)
         && !on_the_node.iter().any(|n| n == REPO_SUBMIT)
     {
-        // A checkout without a submission is the tester's: a branch is read, not worked on.
+        // A checkout without a submission is for reading: a team branch, or the fork itself.
         told.push_str(
             "\n\nThe wing's git, for your reading: repo_checkout with a branch's name \
              (hq/task-N-<slug>, as the task's thread gives it) puts the team's submitted branch \
              in /work/repo, on top of its base, and you read it in the shell: git log, git diff \
-             against the base, the files themselves. Cite that checkout's receipt (receipt r12) \
+             against the base, the files themselves. Without a branch it puts the fork's default \
+             branch there, whole history behind it, so git log shows what the lab has had \
+             committed and when. Cite that checkout's receipt (receipt r12) \
              as a reading of your own, with the check's, when you pass the work or send it back. \
              You read; you submit and push nothing. In the lab's fork, never cite or copy from \
              group_vars/*.yml, host_vars or any inventory: they hold the owner's own values.",
@@ -3455,6 +3457,12 @@ mod tests {
                 && tester.contains("that checkout's receipt")
                 && tester.contains("as a reading of your own")
                 && tester.contains("git diff"),
+            "{tester}"
+        );
+        // The tool reads the fork's default branch too (no branch named), and its history
+        // with it: the paragraph says so, not only the submitted branch (#796, run 5316).
+        assert!(
+            tester.contains("Without a branch") && tester.contains("the fork's default branch"),
             "{tester}"
         );
         assert!(
