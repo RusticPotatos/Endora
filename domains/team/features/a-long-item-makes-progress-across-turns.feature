@@ -42,7 +42,7 @@ Feature: A long item makes progress across turns
   # queued no check, so both of the reviewer's passes were refused, with no route to reopen it.
   Scenario: Work kept at the head its check passed leaves the gate as it was
     When Kit submits the branch "hq/task-1-secret-defaults"
-    And the check passes: "syntax ok, ansible-lint 14 findings (develop 14), yamllint 6 errors (develop 6): no new findings against develop: met"
+    And the check passes: "syntax ok, ansible-lint 14 findings (develop 14), yamllint 6 errors (develop 6): no more findings than develop: met"
     And Kit's turn on "A lint rule for secret defaults" runs out of room, keeping the head it submitted on "secret-defaults"
     And Kit takes "A lint rule for secret defaults" and reads gluetun's logs: "healthy"
     And Kit asks for review of "A lint rule for secret defaults", citing his reading

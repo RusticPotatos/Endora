@@ -93,7 +93,7 @@ pub struct Check {
     pub ok: Option<bool>,
     /// The result in a line, once done: "syntax ok, ansible-lint 2 findings, yamllint ok", or,
     /// when the branch failed something its base failed too, both counts and the verdict:
-    /// "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no new findings against develop: met".
+    /// "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no more findings than develop: met".
     pub summary: String,
     /// When it was queued.
     pub queued_at: Millis,

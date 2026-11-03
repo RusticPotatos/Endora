@@ -771,8 +771,10 @@ rule changed here, with a scenario of what happened.
   Code's arm and round 2's 931 were accepted; HQ's check measured "no worse than develop", yet
   the reviewer sent it back on "passes" read literally, the next member asked the owner, and it
   ended blocked, its work left only in the node's mirror. Now:
-  - the check states its measure: "…: no new findings against develop: met", or "…: new
-    findings against develop on ansible-lint: not met" (ADR 0115's wording, amended);
+  - the check states its measure: "…: no more findings than develop: met", or "…: new
+    findings against develop on ansible-lint: not met" (ADR 0115's wording, amended; until
+    2026-11-03 the first read "no new findings against develop", more than a comparison of
+    each linter's count proves);
   - HQ's mechanical checks give, for each criterion about lint (a word naming it: `lint`,
     `ansible-lint`, `yamllint`, `lints`, `linting`), the newest check of the head as its
     measure, and tell the reviewer to take the check's verdict for it, as for CI; a finding

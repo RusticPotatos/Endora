@@ -255,7 +255,7 @@ fn unchecked(plain: &str, why: &str) -> String {
 }
 
 /// Pass or fail against the branch's base, and the line HQ keeps, which states the measure
-/// (D22): "no new findings against develop: met", or where it is not met.
+/// (D22): "no more findings than develop: met", or where it is not met.
 /// A branch with no failure passes as it is, in [`summarise`]'s words, without the base being
 /// asked for. Otherwise each check is held to what the base did: its count no higher, or,
 /// where no count can be read, a failure only where the base passed. A check that could not run
@@ -306,10 +306,7 @@ pub fn judge(branch: &[Outcome], base: Result<&[Outcome], String>) -> (bool, Str
         .collect();
     let line = parts.join(", ");
     if worse.is_empty() {
-        return (
-            true,
-            format!("{line}: no new findings against develop: met"),
-        );
+        return (true, format!("{line}: no more findings than develop: met"));
     }
     (
         false,
@@ -700,14 +697,14 @@ mod tests {
         assert!(ok, "{said}");
         assert_eq!(
             said,
-            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 findings (develop 14): no new findings against develop: met"
+            "syntax ok, ansible-lint 25 findings (develop 25), yamllint 14 findings (develop 14): no more findings than develop: met"
         );
         // Fewer is better, and a base that was worse on syntax is tolerated.
         let (ok, said) = judge(&ran(1, 24, 0), Ok(&ran(1, 25, 14)));
         assert!(ok, "{said}");
         assert!(said.contains("syntax failed (develop failed)"), "{said}");
         assert!(
-            said.ends_with(": no new findings against develop: met"),
+            said.ends_with(": no more findings than develop: met"),
             "{said}"
         );
     }

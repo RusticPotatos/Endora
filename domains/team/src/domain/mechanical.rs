@@ -18,7 +18,7 @@
 //!   criterion about CI that asks for no run's result (amended 2026-11-01, D25) is measured by
 //!   the check of the head ([`HeadCheck`]), which runs the lint steps CI runs.
 //! - **Lint** ([`asks_for_lint`], amended 2026-11-01, D22): a criterion about lint is measured
-//!   by the check of the head against develop ("no new findings against develop: met"), and the
+//!   by the check of the head against develop ("no more findings than develop: met"), and the
 //!   report gives that verdict for it, for the reviewer to take as it takes the CI line.
 
 use super::cut::CUT;
@@ -1136,8 +1136,9 @@ impl Report {
             .collect();
         format!(
             "- Lint: {} is measured by the check of the head against develop: {}. Its verdict \
-             (no new findings against develop: met, or not met) is the criterion's: a \
-             finding develop has too fails nothing. Reviewer: take the check's verdict for a \
+             (no more findings than develop: met, or not met) is the criterion's: it \
+             compares each linter's count of findings with develop's, so a finding develop \
+             has too fails nothing. Reviewer: take the check's verdict for a \
              criterion about lint, as for CI.\n",
             quoted.join(", "),
             HeadCheck::said_of(self.check.as_ref())
@@ -1649,7 +1650,7 @@ mod tests {
                 id: 61,
                 branch: HQ_BRANCH.to_owned(),
                 ok: Some(true),
-                summary: "yamllint 6 errors (develop 6): no new findings against develop: met"
+                summary: "yamllint 6 errors (develop 6): no more findings than develop: met"
                     .to_owned(),
             }),
             ..Report::default()
@@ -1700,7 +1701,7 @@ mod tests {
                 id: 55,
                 branch: HQ_BRANCH.to_owned(),
                 ok: Some(true),
-                summary: "ansible-lint 14 findings (develop 14): no new findings against \
+                summary: "ansible-lint 14 findings (develop 14): no more findings than \
                           develop: met"
                     .to_owned(),
             }),
@@ -1712,7 +1713,8 @@ mod tests {
             said.contains(
                 "- Lint: \"ansible-lint and yamllint pass\" is measured by the check of the \
                  head against develop: check c55 of hq/task-932-ci-lint-rules passed"
-            ) && said.contains("take the check's verdict for a criterion about lint"),
+            ) && said.contains("take the check's verdict for a criterion about lint")
+                && said.contains("it compares each linter's count of findings with develop's"),
             "{said}"
         );
         // No check yet: it says so, and fails nothing.

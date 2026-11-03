@@ -203,7 +203,8 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    and passes when no check is worse there: ansible-lint findings and yamllint errors no more
    than on the base, syntax failing only where the base's did, a timeout always a fail. The line
    then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop"; since
-   2026-11-01 "…: no new findings against develop: met", ADR 0142's D22) and the
+   2026-11-01 "…: no new findings against develop: met", ADR 0142's D22; since 2026-11-03
+   "…: no more findings than develop: met", which is what a comparison of counts proves) and the
    report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
    be found leaves the plain pass or fail, said in the line. *Amended 2026-10-19:* a check that
    **could not run** (its tool not found or not executable, exit 127 or 126; killed; out of

@@ -18,7 +18,7 @@ Feature: A CI criterion that asks for no run
   Scenario: A criterion about what CI does with the work is measured on the head, not refused
     When the loop hands out its items
     And Bo submits the branch "hq/task-1-secret-defaults", whose workflow "ci.yml" runs on a push to "main, develop"
-    And the check passes: "syntax ok, ansible-lint 14 findings (develop 14), yamllint ok: no new findings against develop: met"
+    And the check passes: "syntax ok, ansible-lint 14 findings (develop 14), yamllint ok: no more findings than develop: met"
     And Bo asks for review of "Report the secret defaults"
     Then HQ's checks on "Report the secret defaults" say "asks what CI's steps make of the work, not for a run's result"
     And HQ's checks on "Report the secret defaults" say "check c1 of hq/task-1-secret-defaults passed: syntax ok, ansible-lint 14 findings (develop 14)"
