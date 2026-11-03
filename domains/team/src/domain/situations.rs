@@ -228,7 +228,7 @@ fn omitted_line(dropped: &[String]) -> String {
     }
     format!(
         "Not included this turn, to keep to your briefing's budget: {}. Read any of them with \
-         read_world (your notes with read_notebook).\n",
+         read_world.\n",
         dropped.join(", ")
     )
 }
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(
             cut.omitted,
             "Not included this turn, to keep to your briefing's budget: rec, small, big. Read \
-             any of them with read_world (your notes with read_notebook).\n"
+             any of them with read_world.\n"
         );
         // The core alone is over: it all goes out, and that is said.
         let over = compose(

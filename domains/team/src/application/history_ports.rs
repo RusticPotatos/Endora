@@ -177,7 +177,7 @@ pub trait HistoryStore {
     fn forget_transcripts(&self, runs: &[RunId]) -> Stored<usize>;
 
     /// The passages of HQ's record that hold any of a query's words, newest first from each
-    /// kind of record (posts, handover notes, pages and timelines, stories, notebooks, turns'
+    /// kind of record (posts, handover notes, pages and timelines, turns'
     /// conversations). Nothing is chosen, ranked or hidden here: that is the domain's.
     ///
     /// # Errors

@@ -919,3 +919,25 @@ fn a_disposition_that_cannot_be_recorded_leaves_the_item_where_it_was() {
     assert!(noted < moved, "recorded before the status changed");
     let _ = std::fs::remove_file(&path);
 }
+
+/// `ask_record` says what it searches, and only that: stories and notebooks were retired with
+/// their tables (ADR 0142, 27 Oct), and the store no longer searches them.
+#[test]
+fn ask_record_names_only_the_records_it_searches() {
+    let all = tools();
+    let ask = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_record")
+        .unwrap();
+    let said = ask["description"].as_str().unwrap();
+    assert!(
+        said.contains("handover notes") && said.contains("conversations of turns"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("stories") && !said.contains("notebooks"),
+        "{said}"
+    );
+}

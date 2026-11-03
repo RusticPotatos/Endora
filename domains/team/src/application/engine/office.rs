@@ -230,7 +230,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ) -> Done<String> {
         let mut told = String::from(
             "It is downtime: this turn is about no task, no task is due in it, and it makes no \
-             work (create_task and hand_to are refused).\n",
+             work (create_task is refused).\n",
         );
         if let Some(move_due) = self.chess_move_said(member)? {
             told.push_str(&move_due);

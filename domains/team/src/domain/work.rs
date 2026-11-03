@@ -495,7 +495,7 @@ pub enum Refusal {
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
     /// plan's phase 5): the world's own words.
     Scenario(String),
-    /// A downtime turn makes no work: it is for the office and the notebook.
+    /// A downtime turn makes no work: it is for a chess move.
     InDowntime,
     /// Stuck work was to be tried again, but nobody can be woken for it now: nothing was
     /// changed, and the item still waits.
@@ -699,8 +699,8 @@ impl fmt::Display for Refusal {
             Self::Chess(refused) => refused.fmt(f),
             Self::Scenario(why) => f.write_str(why),
             Self::InDowntime => f.write_str(
-                "this is a downtime turn: it makes no work. React to a proposal, propose a small \
-                 change to the office, or note an idea in your notebook",
+                "this is a downtime turn: it makes no work. Make the chess move it is for, if one \
+                 is due, and stop",
             ),
             Self::NotWoken(why) => write!(
                 f,
@@ -831,6 +831,18 @@ pub fn mentions<'a>(text: &str, members: &'a [Member]) -> Vec<&'a Member> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_downtime_refusal_points_only_at_what_a_downtime_turn_has() {
+        // Proposals, votes and notebooks were retired (ADR 0142); a downtime turn is offered
+        // my_turn and chess alone.
+        let said = Refusal::InDowntime.to_string();
+        assert!(said.contains("makes no work"), "{said}");
+        assert!(
+            !said.contains("notebook") && !said.contains("propos"),
+            "{said}"
+        );
+    }
 
     fn member(id: i64, name: &str) -> Member {
         Member {
