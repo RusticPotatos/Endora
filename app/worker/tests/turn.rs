@@ -980,6 +980,10 @@ fn an_action_put_on_the_owners_desk_for_approval_ends_the_turn_as_a_question_doe
     );
 }
 
+/// Live, run 5266 (#1050, Haiku) spent its 30th round on a tool call, ended "out of rounds", and
+/// the thread never said so: with no words said beside its calls there was no last word, and
+/// the line saying the rounds ran out went with it (4 of the 7 kept worker transcripts that end
+/// out of rounds have no such post). The line goes alone, as a turn out of room's does.
 #[test]
 fn the_rounds_run_out() {
     let (hq_url, to_hq) = hq(None);
@@ -995,9 +999,13 @@ fn the_rounds_run_out() {
         1,
         "the same claim asked again is answered from what the turn has"
     );
-    assert!(
-        !called.contains(&"tools/call post".to_owned()),
-        "no last word to post"
+    assert_eq!(called.last().unwrap(), "tools/call post");
+    let posted = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(
+        posted,
+        json!({ "task": 7, "last_word": true, "text": "The turn's 3 rounds ran out before it \
+            finished, with nothing said on the way. This turn made no tool calls." }),
+        "the rounds ran out, said with what it did, though it said nothing"
     );
 }
 
@@ -2206,7 +2214,15 @@ fn a_cloud_turn_runs_out_of_rounds_as_a_local_one_does() {
     let out = worker(&env);
     assert_eq!(out.status.code(), Some(0), "{}", said(&out));
     assert_eq!(to_relay.lock().unwrap().len(), 2);
-    assert!(!methods(&to_hq).contains(&"tools/call post".to_owned()));
+    assert_eq!(methods(&to_hq).last().unwrap(), "tools/call post");
+    let posted = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"]["text"].clone();
+    assert!(
+        posted
+            .as_str()
+            .unwrap()
+            .starts_with("The turn's 2 rounds ran out before it finished, with nothing said"),
+        "{posted}"
+    );
 }
 
 /// The node's team listener as a cloud turn reaches it: the Anthropic relay and the contracts

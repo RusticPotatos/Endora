@@ -433,7 +433,19 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             did.line()
         );
         let room = POST_AT_MOST.saturating_sub(line.chars().count() + 2);
-        last_word(&mut hq, task, &newest(&on_the_way, room), &line)?;
+        let words = newest(&on_the_way, room);
+        if words.is_empty() {
+            // Nothing said beside its calls: the line goes alone, so the thread still says the
+            // rounds ran out and what the turn did (run 5266 ended so, and the thread never said).
+            let alone = format!(
+                "The turn's {} rounds ran out before it finished, with nothing said on the way. {}",
+                setup.most_rounds,
+                did.line()
+            );
+            said_last(&mut hq, task, &alone, false)?;
+        } else {
+            last_word(&mut hq, task, &words, &line)?;
+        }
         Ok(Taken::OutOfRounds)
     })();
     // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended, and
@@ -2129,12 +2141,25 @@ pub(crate) fn last_word(
     if answer.is_empty() {
         return Ok(());
     }
-    let text = beside(answer, line, POST_AT_MOST);
-    // Marked as the worker's last word: HQ posts it, but does not count it as progress.
-    let (said, refused) = hq.call(
-        "post",
-        &json!({ "task": task, "text": text, "last_word": true }),
-    )?;
+    said_last(hq, Some(task), &beside(answer, line, POST_AT_MOST), false)
+}
+
+/// Posts `text` as the worker's last word, which HQ posts but does not count as progress;
+/// `continues` marks a turn out of room, which HQ goes on with in a fresh turn.
+fn said_last(
+    hq: &mut Hq<'_>,
+    task: Option<i64>,
+    text: &str,
+    continues: bool,
+) -> Result<(), Stopped> {
+    let Some(task) = task else {
+        return Ok(());
+    };
+    let mut args = json!({ "task": task, "text": text, "last_word": true });
+    if continues {
+        args["continues"] = json!(true);
+    }
+    let (said, refused) = hq.call("post", &args)?;
     if refused {
         return Err(Stopped::Failed(format!(
             "HQ refused the last word for task {task}: {said}"
@@ -2152,24 +2177,12 @@ fn out_of_room(
     answer: &str,
     line: &str,
 ) -> Result<(), Stopped> {
-    let Some(task) = task else {
-        return Ok(());
-    };
     let text = if answer.is_empty() {
         line.to_owned()
     } else {
         beside(answer, line, POST_AT_MOST)
     };
-    let (said, refused) = hq.call(
-        "post",
-        &json!({ "task": task, "text": text, "last_word": true, "continues": true }),
-    )?;
-    if refused {
-        return Err(Stopped::Failed(format!(
-            "HQ refused the last word for task {task}: {said}"
-        )));
-    }
-    Ok(())
+    said_last(hq, task, &text, true)
 }
 
 /// A post's arguments without the worker's own marks (`last_word`, `continues`).
