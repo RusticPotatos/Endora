@@ -187,6 +187,13 @@ pub fn checkout(
     git(&repo, &["config", "user.email", AUTHOR_EMAIL])?;
     git(&repo, &["config", "commit.gpgsign", "false"])?;
     git(&repo, &["config", "core.hooksPath", ".git/hooks"])?;
+    // Python's byproducts are ignored here, in the clone alone, so the model's own `git add -A`
+    // never commits them (set 4's #1059); a file the project tracks is unaffected.
+    std::fs::write(
+        repo.join(".git").join("info").join("exclude"),
+        "__pycache__/\n*.pyc\n",
+    )
+    .map_err(|e| format!("the clone's ignore list could not be written: {e}"))?;
     noted(work, branch, base, member, task)?;
     let head = git(&repo, &["rev-parse", "HEAD"])?;
     let files = git(&repo, &["ls-files"])?.lines().count();
@@ -897,6 +904,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(why.contains("hq/task-12-tidy"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Set 4's #1059 committed `tests/lint_rules/__pycache__/*.pyc`: the model's own
+    /// `git add -A`, as its instructions say, took what running the tests left, in a fork with no
+    /// ignore entry for it. A checkout ignores Python's byproducts locally, so it never can.
+    #[test]
+    fn the_models_own_add_all_leaves_pythons_byproducts_out() {
+        let (root, fork) = a_bundle("byproducts");
+        let work = root.join("work");
+        let out = checkout(&work, &fork, "main", "main", false, "Rae", Some(12)).unwrap();
+        let cache = out.path.join("tests").join("__pycache__");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("test_rules.cpython-311.pyc"), b"\x00\x01").unwrap();
+        std::fs::write(out.path.join("loose.pyc"), b"\x00\x02").unwrap();
+        std::fs::write(
+            out.path.join("tests").join("test_rules.py"),
+            "import unittest\n",
+        )
+        .unwrap();
+        run(&out.path, &["add", "-A"]);
+        let staged = run(&out.path, &["diff", "--cached", "--name-only"]);
+        assert_eq!(staged.trim(), "tests/test_rules.py", "{staged}");
+        assert_eq!(
+            run(&out.path, &["status", "--porcelain"]).trim(),
+            "A  tests/test_rules.py"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
