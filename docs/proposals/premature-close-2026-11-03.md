@@ -184,3 +184,47 @@ The baseline's scenario count is unchanged (179 in `endora-team`); one step was 
 *AI-assisted (Claude). Live HQ was read only. A copy of its database was read in a scratch folder
 and then deleted. Nothing was pushed, merged, released or reconfigured, and no live run was
 started.*
+
+## 6. Addendum: option B, built (the owner's choice, 3 Nov)
+
+**Built.** Commit `9b0e7ce2` on `premature-close`, local. A solo item with no branch still closes
+on its own, with its own reason: `completed_unverified` (`DoneWhy::CompletedUnverified`, ADR
+0124 amended), said as "it was completed, not verified". Where the difference now shows:
+
+| Where | Before | Now |
+|---|---|---|
+| Closure record | `met_criteria`, "it met its criteria" | `completed_unverified` |
+| Thread | "HQ's checks passed … done, with no review" | "… completed, not verified. Nothing checked that the evidence settles it …" |
+| `set_status` answer | "is done, not in_review" | adds ": it was completed, not verified …" |
+| Feed `task.changed` | status only | `"unverified": true` |
+| Scorecard (`finished`) | counted in `done` | in `done`, and again in `unverified`; the card says "N done, k not verified" |
+| `experiment.py metrics` | "Reported (HQ done)" | adds `reported_done_unverified`; the row reads "2 (1 not verified)" |
+| Console task panel | "done" | "Completed · Not verified" |
+
+**What is unchanged:**
+- authorization and execution;
+- the solo item's automatic close, with no owner review;
+- the gated solo path, which still closes as `met_criteria` and is tested so;
+- the team's tester path;
+- the worker's prompt.
+
+The new reason is HQ's own: it is not in `Closure::names`, the set a member or the owner gives.
+Past closings, `met_criteria` included, read back as they were. No rows were migrated, and none
+had to be: the `closures` table's `why` is free text, with no check constraint.
+
+**Tests:**
+- Scenario: *An item with no branch is completed, not verified*, in
+  `one-member-works-a-loop-alone.feature`. The item cites a reading for each criterion and is
+  closed with nothing checked.
+- The gated scenario now asserts `met_criteria`, and a feed that says it was verified.
+- Units: `closure` (the name, round trip, old rows); scorecard
+  `a_task_completed_with_nothing_checked_is_counted_apart_as_not_verified`;
+  `test_experiment.py` `test_done_with_nothing_checked_is_counted_apart`, which covers stores
+  with and without the closures table.
+
+**Gate** on `9b0e7ce2`, all green:
+- fmt and clippy;
+- 2,221 unit tests, 224 scenarios, 2,201 steps, 0 failed;
+- console, nothing-personal, parity and diff checks.
+
+`scripts/test_experiment.py` (27 tests) passes too. The gate does not run it.
