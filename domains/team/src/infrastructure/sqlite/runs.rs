@@ -101,6 +101,35 @@ impl RunStore for SqliteTeamStore {
             .map_err(backend)
     }
 
+    fn note_served_model(&self, run: RunId, model: Option<&str>) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "INSERT INTO run_served_models (run, model, calls) VALUES (?1, ?2, 1)
+                 ON CONFLICT (run, model) DO UPDATE SET calls = calls + 1",
+                params![run.0, model.unwrap_or("")],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn served_models(&self, run: RunId) -> Stored<Vec<(Option<String>, u32)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT model, calls FROM run_served_models WHERE run = ?1 ORDER BY rowid")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![run.0], |row| {
+                let model: String = row.get(0)?;
+                let calls: i64 = row.get(1)?;
+                Ok((
+                    (!model.is_empty()).then_some(model),
+                    u32::try_from(calls).unwrap_or(0),
+                ))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<_, _>>().map_err(backend)
+    }
+
     fn add_tokens(
         &self,
         run: RunId,

@@ -54,6 +54,18 @@ its cadence, and an idle HQ passes no more often than before. Only the owner's s
 asks: a member's own work, and work refused, do not. Scenarios:
 `domains/team/features/the-owners-new-work-starts-at-once.feature`.
 
+Amended 2026-11-04 (the agentic-harness climb, round 7): **a turn's record keeps which model
+answered, as the provider named it.** HQ kept only the alias a turn asked for (its brain), so a
+comparison could not show which model actually answered. The node's relay now reads the model a
+reply names (a whole reply's `model`, a stream's `message_start`) and sends it with that call's
+charge, as `served_model` on `/v1/team/usage`, or null when the reply named none; the field is
+optional, so an older node is still understood, as naming none. HQ counts each call under the
+name it was told, beside the turn (`run_served_models`, `Engine::note_served_model`), every name
+kept and none overwritten; a call whose answer named no model is counted as not known, and the
+alias never stands in for it. Charges, budgets, routing and what is sent are unchanged. The
+house's free relay (`/v1/team/tokens`) keeps no name yet. Scenarios:
+`domains/team/features/a-turns-model-is-kept-as-the-provider-named-it.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

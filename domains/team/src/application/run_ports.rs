@@ -37,6 +37,14 @@ pub trait RunStore {
         output: i64,
     ) -> Stored<()>;
 
+    /// Counts one call of a turn as answered by `model`, as the provider named it; `None` for
+    /// a call whose answer named no model (the agentic-harness climb, round 7).
+    fn note_served_model(&self, run: RunId, model: Option<&str>) -> Stored<()>;
+
+    /// The models that answered a turn's calls and how many calls each, by name; `None` for
+    /// the calls whose model is not known. In the order the names were first told.
+    fn served_models(&self, run: RunId) -> Stored<Vec<(Option<String>, u32)>>;
+
     /// Issues a fresh token for a turn, replacing any it had: what its worker presents to the
     /// team protocol, good for this run only (spec section 3, invariant 3).
     fn issue_token(&self, run: RunId) -> Stored<String>;

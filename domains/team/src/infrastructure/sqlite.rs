@@ -88,6 +88,13 @@ CREATE INDEX IF NOT EXISTS runs_live ON runs(id)
 CREATE TABLE IF NOT EXISTS run_tokens (
     run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
 ) STRICT;
+-- The models that answered a turn's calls, as the provider named them, and how many calls each
+-- (the agentic-harness climb, round 7). '' is a call whose answer named none: not known, never
+-- the alias the turn asked for.
+CREATE TABLE IF NOT EXISTS run_served_models (
+    run INTEGER NOT NULL REFERENCES runs(id), model TEXT NOT NULL, calls INTEGER NOT NULL,
+    PRIMARY KEY (run, model)
+) STRICT;
 -- Append-only: a reservation before a turn starts, use while it runs, the charge and the
 -- release when it ends. Rows are never changed or removed. `owner` marks a turn the owner
 -- asked for: the pool's alone, never its member's share (ADR 0113, amended).

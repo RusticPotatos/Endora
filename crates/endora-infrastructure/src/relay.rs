@@ -243,6 +243,18 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
     None
 }
 
+/// The model a reply says answered it (its `model`), as the provider named it: kept as said, so
+/// a turn's record shows what actually answered, not only the alias it asked for (the
+/// agentic-harness climb, round 7). `None` when the reply does not say.
+#[must_use]
+pub fn served_model(reply: &Value) -> Option<String> {
+    reply["model"]
+        .as_str()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+}
+
 /// What a call used, in tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Used {
@@ -327,6 +339,8 @@ pub struct StreamedUsage {
     pending: String,
     used: Used,
     finished: bool,
+    /// The model the stream's first event said answered, as the provider named it.
+    served: Option<String>,
 }
 
 impl StreamedUsage {
@@ -348,7 +362,12 @@ impl StreamedUsage {
                     continue;
                 };
                 match v["type"].as_str() {
-                    Some("message_start") => self.raise(&v["message"]["usage"]),
+                    Some("message_start") => {
+                        self.raise(&v["message"]["usage"]);
+                        if self.served.is_none() {
+                            self.served = served_model(&v["message"]);
+                        }
+                    }
                     Some("message_delta") => {
                         self.raise(&v["usage"]);
                         self.finished = true;
@@ -375,6 +394,12 @@ impl StreamedUsage {
     #[must_use]
     pub const fn used(&self) -> Used {
         self.used
+    }
+
+    /// The model the provider said answered, when the stream said: never the alias asked for.
+    #[must_use]
+    pub fn served(&self) -> Option<String> {
+        self.served.clone()
     }
 
     /// Whether the stream reached its last usage (or Anthropic's own error). Until then the
@@ -1130,6 +1155,26 @@ mod tests {
             },
             "the delta's counts are the whole call's"
         );
+    }
+
+    #[test]
+    fn a_reply_says_which_model_answered_or_nothing() {
+        // The provider's own name for the model that answered, which may differ from the
+        // alias asked for (the agentic-harness climb, round 7): kept as said, never guessed.
+        let whole = json!({ "type": "message", "model": "claude-haiku-5-5-20261001",
+                            "usage": { "input_tokens": 1, "output_tokens": 1 } });
+        assert_eq!(
+            served_model(&whole).as_deref(),
+            Some("claude-haiku-5-5-20261001")
+        );
+        assert_eq!(served_model(&json!({ "usage": {} })), None);
+        assert_eq!(served_model(&json!({ "model": "  " })), None);
+        let mut usage = StreamedUsage::default();
+        usage.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-haiku-5-5-20261001\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n");
+        assert_eq!(usage.served().as_deref(), Some("claude-haiku-5-5-20261001"));
+        let mut silent = StreamedUsage::default();
+        silent.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n");
+        assert_eq!(silent.served(), None);
     }
 
     #[test]

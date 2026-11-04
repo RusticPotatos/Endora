@@ -1790,6 +1790,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- money -----------------------------------------------------------------------------
 
+    /// The node's word on which model answered one of a turn's calls, as the provider named
+    /// it, or that the answer named none (the agentic-harness climb, round 7). Kept beside the
+    /// turn, every name with its calls; it changes no charge and no budget.
+    ///
+    /// # Errors
+    /// The store's, and [`EngineError::Unknown`] for a run HQ does not have.
+    pub fn note_served_model(&self, run: RunId, model: Option<&str>) -> Done<()> {
+        let _held = self.held();
+        self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        self.store.note_served_model(run, model)?;
+        Ok(())
+    }
+
+    /// The models that answered a turn's calls, and how many calls each; `None` for calls whose
+    /// model is not known.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn served_models(&self, run: RunId) -> Done<Vec<(Option<String>, u32)>> {
+        Ok(self.store.served_models(run)?)
+    }
+
     /// What one model call of a turn used, in tokens, as the relay reported them: input
     /// (fresh, read from the prompt cache and written to it) and output. The turn's record
     /// keeps the sums, and its end says them, and how much of its input the cache gave (see

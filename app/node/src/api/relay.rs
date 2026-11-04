@@ -20,7 +20,7 @@ use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
     Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
     betas_passed, cost, counted, for_claude_code, may_use, most_a_turn, price_of, prompt_cost,
-    send, send_local, send_metered, unmetered,
+    send, send_local, send_metered, served_model, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -314,6 +314,7 @@ fn charge(
     run: i64,
     model: &str,
     used: Used,
+    served: Option<&str>,
 ) {
     let Some(price) = price_of(model, used.prompt()) else {
         return;
@@ -321,9 +322,11 @@ fn charge(
     let micros = cost(price, used);
     // What is left with the provider (the owner, 2026-10-30): counted, and told when low.
     super::credits::after_charge(state, run, model, micros);
+    // The model the provider said answered (the agentic-harness climb, round 7): as it said,
+    // or null when it did not, never the alias asked for. HQ keeps it beside the turn.
     let reported = json!({ "run": run, "micros": micros, "input": used.input,
                            "cache_read": used.cache_read, "cache_write": used.cache_write,
-                           "output": used.output });
+                           "output": used.output, "served_model": served });
     if let Err(e) = hq.post("/v1/team/usage", &reported) {
         eprintln!("relay: could not charge run {run} {micros} micros: {e}");
     }
@@ -530,19 +533,20 @@ pub(super) async fn messages(
     call["max_tokens"] = json!(cap);
     let state2 = state.clone();
     let sent = call.clone();
-    let settle: Settle = Box::new(move |used| {
+    let settle: Settle = Box::new(move |used, served| {
         // Held until this call is charged, so the turn's next call sees what this one cost.
         let _one_at_a_time = one_at_a_time;
         let Some(used) = used else { return };
-        charge(&hq, &state2, turn.run, &model, used);
+        charge(&hq, &state2, turn.run, &model, used, served.as_deref());
         state2.relay_calls.remember(&token, &call, used);
     });
     pass_on(upstream, key, version, beta, sent, settle).await
 }
 
 /// What is done once a call passed on has been answered: told what it used, or `None` when it
-/// never reached Anthropic or Anthropic refused it (and so cost nothing). Called exactly once.
-pub(super) type Settle = Box<dyn FnOnce(Option<Used>) + Send>;
+/// never reached Anthropic or Anthropic refused it (and so cost nothing), and the model the
+/// reply said answered, when it said. Called exactly once.
+pub(super) type Settle = Box<dyn FnOnce(Option<Used>, Option<String>) + Send>;
 
 /// Sends `call` (its `max_tokens` already capped) to Anthropic with the owner's `key`, whole
 /// or streamed as it asks, passes the reply back, and [`Settle`]s it once its usage is known: a
@@ -579,15 +583,17 @@ pub(super) async fn pass_on(
                 .map_err(|e| e.to_string())?;
                 Ok((reply.status, bytes))
             });
-            let used = match &answered {
+            let (used, served) = match &answered {
                 Ok((status, bytes)) if *status < 300 => {
                     serde_json::from_slice::<serde_json::Value>(bytes)
                         .ok()
-                        .map(|v| Used::from_usage(&v["usage"]))
+                        .map_or((None, None), |v| {
+                            (Some(Used::from_usage(&v["usage"])), served_model(&v))
+                        })
                 }
-                _ => None,
+                _ => (None, None),
             };
-            settle(used);
+            settle(used, served);
             answered
         })
         .await;
@@ -616,7 +622,7 @@ pub(super) async fn pass_on(
         ) {
             Ok(reply) => reply,
             Err(why) => {
-                settle(None);
+                settle(None, None);
                 let _ = head_tx.send(Err(why));
                 return;
             }
@@ -644,14 +650,14 @@ pub(super) async fn pass_on(
         }
         // Charged for what was used, even if the caller stopped listening part way.
         if reply.status >= 300 {
-            settle(None);
+            settle(None, None);
             return;
         }
         let mut used = usage.used();
         if !usage.finished() {
             used.output = used.output.max(cap);
         }
-        settle(Some(used));
+        settle(Some(used), usage.served());
     });
     let status = match head_rx.await {
         Ok(Ok(status)) => status,
@@ -926,7 +932,15 @@ pub(super) async fn chat_completions(
         if status < 300 {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                 if on_deepseek {
-                    charge(&hq, &state, run, &local.model, Used::from_openai(&v["usage"]));
+                    let served = served_model(&v);
+                    charge(
+                        &hq,
+                        &state,
+                        run,
+                        &local.model,
+                        Used::from_openai(&v["usage"]),
+                        served.as_deref(),
+                    );
                     return Ok((status, bytes));
                 }
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
@@ -1286,6 +1300,90 @@ pub(super) mod tests {
             vec![3_000],
             "1k in at $2 and 100 out at $10 a million"
         );
+    }
+
+    /// What the node told HQ each call's model was, as the provider named it (`served_model`).
+    async fn served_told(seen: &Seen, n: usize) -> Vec<serde_json::Value> {
+        charges(seen, n).await;
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/usage")
+            .filter_map(|(_, _, b)| {
+                Some(serde_json::from_str::<serde_json::Value>(b).ok()?["served_model"].clone())
+            })
+            .collect()
+    }
+
+    /// Anthropic, answering as a model whose name is not the alias asked for.
+    fn anthropic_serving(served: &'static str) -> (String, Seen) {
+        fake(Arc::new(move |path, body| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": 1_000 }).to_string(),
+                );
+            }
+            if body.contains("\"stream\":true") {
+                let start = json!({ "type": "message_start", "message": { "model": served,
+                    "usage": { "input_tokens": 1200, "output_tokens": 1 } } });
+                let sse = format!(
+                    "event: message_start\ndata: {start}\n\nevent: message_delta\ndata: \
+                     {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":57}}}}\n\n\
+                     event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+                );
+                return (200, "text/event-stream", sse);
+            }
+            (
+                200,
+                "application/json",
+                json!({ "type": "message", "model": served, "content": [],
+                        "usage": { "input_tokens": 1000, "output_tokens": 100 } })
+                .to_string(),
+            )
+        }))
+    }
+
+    /// The agentic-harness climb, round 7: HQ kept only the alias a turn asked for, so a
+    /// comparison could not show which model actually answered. The node now tells HQ the
+    /// provider's own name for it with each call's charge, whole or streamed, and nothing when
+    /// the provider does not say: never the alias in its place.
+    #[tokio::test]
+    async fn each_charge_says_which_model_the_provider_said_answered() {
+        for stream in [false, true] {
+            let (hq_url, to_hq) = hq(400_000);
+            let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+            let app = super::super::team_relay(node(&hq_url, &upstream));
+            let res = app
+                .oneshot(ask(
+                    "good",
+                    json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000,
+                                             "stream": stream, "messages": [] }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let _ = res.into_body().collect().await.unwrap();
+            assert_eq!(
+                served_told(&to_hq, 1).await,
+                vec![json!("claude-sonnet-5-5-20261001")],
+                "streamed: {stream}"
+            );
+        }
+        // A provider that does not say: nothing is said for it.
+        let (hq_url, to_hq) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let app = super::super::team_relay(node(&hq_url, &upstream));
+        let res = app
+            .oneshot(ask(
+                "good",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000, "messages": [] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(served_told(&to_hq, 1).await, vec![serde_json::Value::Null]);
     }
 
     #[tokio::test]

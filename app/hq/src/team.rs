@@ -230,6 +230,10 @@ pub(crate) struct UsageReported {
     /// The call's output tokens. A relay that says none is taken at none.
     #[serde(default)]
     output: i64,
+    /// The model the provider said answered the call, as it named it; none when the answer
+    /// named none, or from a node that does not say (the agentic-harness climb, round 7).
+    #[serde(default)]
+    served_model: Option<String>,
 }
 
 /// For the node's model relay: what one model call of a turn cost. Crossing the turn's
@@ -241,8 +245,10 @@ pub(crate) async fn usage(
     let hq = state.hq.clone();
     let reported = tokio::task::spawn_blocking(move || {
         let run = endora_team::domain::RunId(req.run);
-        // The tokens first: a charge that stops the turn ends its record too.
+        // The tokens first: a charge that stops the turn ends its record too. And which model
+        // answered, as the provider named it, or that it is not known.
         hq.note_tokens(run, req.input, req.cache_read, req.cache_write, req.output)?;
+        hq.note_served_model(run, req.served_model.as_deref())?;
         hq.report_usage(run, req.micros.max(0))
     })
     .await;

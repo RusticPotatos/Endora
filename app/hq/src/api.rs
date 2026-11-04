@@ -2315,6 +2315,28 @@ mod tests {
         );
         let ok = json_of(app.clone().oneshot(cached).await.unwrap()).await;
         assert_eq!(ok["may_go_on"], true);
+        // The model the provider said answered each call is kept beside the turn, as it was
+        // named; a call the node names none for (as the two above) is kept as not known
+        // (the agentic-harness climb, round 7).
+        let named = call(
+            "POST",
+            "/v1/team/usage",
+            Some(TOKEN),
+            &json!({ "run": turn.run.0, "micros": 0,
+                     "served_model": "claude-sonnet-5-5-20261001" })
+            .to_string(),
+        );
+        assert_eq!(
+            app.clone().oneshot(named).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            st.hq.served_models(turn.run).unwrap(),
+            vec![
+                (None, 2),
+                (Some("claude-sonnet-5-5-20261001".to_owned()), 1)
+            ]
+        );
         let kept = st.hq.store().run(turn.run).unwrap().unwrap();
         assert_eq!(
             (

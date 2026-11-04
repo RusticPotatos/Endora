@@ -1421,6 +1421,62 @@ fn a_tick_passes(w: &mut Office) {
     w.tick();
 }
 
+// --- A turn's model is kept as the provider named it -------------------------------------------
+
+#[when(regex = r#"^the node says a call of (\w+)'s turn was answered by "(.+)"$"#)]
+fn node_says_served(w: &mut Office, name: String, served: String) {
+    let run = w.turn_of(&name).run;
+    w.hq.note_served_model(run, Some(&served))
+        .expect("HQ keeps what the node says");
+}
+
+#[when(regex = r"^the node says a call of (\w+)'s turn was answered without naming its model$")]
+fn node_says_unnamed(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    w.hq.note_served_model(run, None)
+        .expect("HQ keeps what the node says");
+}
+
+#[then(regex = r#"^(\w+)'s turn asked for "(.+)"$"#)]
+fn turn_asked_for(w: &mut Office, name: String, model: String) {
+    let run = w.turn_of(&name).run;
+    let asked =
+        w.hq.store()
+            .run(run)
+            .expect("the store answers")
+            .expect("the run")
+            .brain;
+    assert_eq!(asked.map(|b| b.name().to_owned()), Some(model));
+}
+
+#[then(regex = r#"^(\w+)'s turn was answered by "(.+)" in (\d+) calls?$"#)]
+fn turn_answered_by(w: &mut Office, name: String, served: String, calls: u32) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.contains(&(Some(served), calls)), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn has (\d+) calls? whose model is not known$")]
+fn turn_unknown_calls(w: &mut Office, name: String, calls: u32) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.contains(&(None, calls)), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn has no call whose model is not known$")]
+fn turn_no_unknown(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.iter().all(|(m, _)| m.is_some()), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn was answered by no named model$")]
+fn turn_no_named(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.iter().all(|(m, _)| m.is_none()), "{models:?}");
+}
+
 // --- The owner's new work is taken up at once ------------------------------------------------
 
 #[then(regex = r"^HQ has been asked for (\d+) pass(?:es)?$")]
