@@ -20,7 +20,7 @@ const HQ_FONT_6 = '6px "Pixelify Sans", monospace', HQ_FONT_6B = '600 6px "Pixel
 const HQ_SIGN_FONT = "8px Silkscreen, monospace";
 const HQ_STUDIO = {
   wide: {
-    W: 400, H: 208, wallH: 32, board: { x: 118, w: 162 },
+    W: 400, H: 208, wallH: 32, board: { x: 84, w: 196 },
     zones: {
       work: { x: 96, y: 32, w: 204, h: 80, floor: "plank" },
       hall: { x: 0, y: 112, w: 80, h: 96, floor: "plank" },
@@ -138,6 +138,10 @@ function hqStudioScene(mode = hqStudioMode()) {
     const m = member(r.member);
     if (m && !m.furloughed && !atDesk.some((a) => a.m.id === m.id)) atDesk.push({ m, t: task(r.task), kind: "wait" });
   }
+  // In the board's order, so its first line is the left desk: work on the goal first, then other
+  // work, then waits.
+  const g = hqGoalNow(snap), mine = (a) => (a.kind === "work" && a.t && g && a.t.goal === g.id ? 0 : a.kind === "work" ? 1 : 2);
+  atDesk.sort((a, b) => mine(a) - mine(b));
   const desks = L.desks.slice();
   if (atDesk.length > desks.length && mode === "wide") desks.push({ x: 236, y: 92 });
   desks.forEach((d, i) => {
@@ -327,7 +331,10 @@ function hqDrawPlaces(g, scene) {
   hqR(g, rk.x + 2, rk.y + 2, 10, 6, "#e8e4da"); hqR(g, rk.x + 3, rk.y + 3, Math.max(1, Math.round(8 * fill)), 4, fill > .85 ? HQ_C.red : fill > .6 ? HQ_C.lamp : HQ_C.green);
   const V = L.review, review = ((snap.tasks) || []).filter((t) => t.status === "in_review");
   hqImg(g, "SMALL_TABLE_FRONT", V.x, V.y);
-  review.slice(0, 5).forEach((t, i) => { hqR(g, V.x + 6 + i * 5, V.y + 8 - i, 8, 6, HQ_C.blue); hqR(g, V.x + 6 + i * 5, V.y + 8 - i, 8, 1, "rgba(255,255,255,.5)"); });
+  // A red folder for each item the board counts stuck, then a blue one for each in review: the
+  // board's red count has red things in the room to match.
+  const goal = hqGoalNow(snap), stuck = ((snap.tasks) || []).filter((t) => goal && t.goal === goal.id && t.status === "blocked");
+  stuck.map(() => HQ_C.red).concat(review.map(() => HQ_C.blue)).slice(0, 6).forEach((c, i) => { hqR(g, V.x + 4 + i * 4, V.y + 8 - (i % 3), 7, 6, c); hqR(g, V.x + 4 + i * 4, V.y + 8 - (i % 3), 7, 1, "rgba(255,255,255,.5)"); });
   for (const c of L.chairs) hqChair(g, c.x, c.y);
   // The lounge: the low bookcase (a spine for each of the team's notes and map lines) behind the sofas,
   // the chess table with the live game; the kitchenette's counter and stools; two plants.
@@ -348,14 +355,14 @@ function hqDrawPlaces(g, scene) {
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.
   for (const d of scene.desks) {
     if (d.lamp) {
-      const glow = g.createRadialGradient(d.x + 24, d.y + 18, 2, d.x + 24, d.y + 18, 34);
-      glow.addColorStop(0, "rgba(255,214,140,.40)"); glow.addColorStop(1, "rgba(255,214,140,0)");
-      g.fillStyle = glow; g.fillRect(d.x - 14, d.y - 14, 76, 68);
+      const glow = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 40);
+      glow.addColorStop(0, "rgba(255,214,140,.60)"); glow.addColorStop(1, "rgba(255,214,140,0)");
+      g.fillStyle = glow; g.fillRect(d.x - 18, d.y - 18, 84, 80);
     }
     hqImg(g, "DESK_FRONT", d.x, d.y);
     hqImg(g, d.screen ? "PC_FRONT_ON_" + (calm ? 1 : 1 + (Math.floor(HQ.t * 4) % 3)) : "PC_FRONT_OFF", d.x + 16, d.y - 6);
     hqR(g, d.x + 4, d.y + 2, 3, 6, "#6d5434"); hqR(g, d.x + 2, d.y, 7, 3, d.lamp ? "#ffd27a" : "#8a7a60");
-    if (d.who && d.who.kind === "wait") hqHourglass(g, d.x + 21, d.y - 3, 1);
+    if (d.who && d.who.kind === "wait") hqR(g, d.x + 19, d.y - 3, 10, 7, "rgba(255,179,71,.45)");
     if (!d.who) hqImg(g, "CUSHIONED_CHAIR_BACK", d.x + 16, d.y + 24);
   }
   const sel = HQ.selected;
@@ -386,7 +393,7 @@ function hqDrawPeople(g, scene) {
   // Signs beside the head, only where something needs attention.
   for (const p of people) {
     const sign = p.kind === "wait" ? "wait" : (() => { const b = hqTrouble(p.m.id); return b ? b.kind : ""; })();
-    if (sign) hqSign(g, sign, p.x + 13, p.y + 1);
+    if (sign) hqSign(g, sign, p.x + (sign === "wait" ? 15 : 13), p.y + (sign === "wait" ? -3 : 1));
   }
   for (const p of people) if (p.bubble) {
     const b = p.bubble;

@@ -1486,6 +1486,12 @@ if (failures.length) {
       const amber = runInContext(`(() => { HQ.snap.runs.push({ id: 92, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
         const b = hqBoard(); HQ.snap.runs.pop(); return b.lines.filter((l) => l.amber).length; })()`, context);
       if (amber !== 1) fail(`hq: the board does not mark who waits to retry: ${amber}`);
+      // The board's lines and the desks run in one order: its first line is the left desk.
+      for (const m of ["wide", "phone"]) {
+        const same = runInContext(`(() => { const b = hqBoard().lines.filter((l) => l.who).map((l) => l.who), sc = hqStudioScene(${JSON.stringify(m)});
+          const d = sc.desks.filter((x) => x.who).sort((p, q) => p.x - q.x).map((x) => x.who.m.name); return [b.slice(0, d.length).join(), d.join()]; })()`, context);
+        if (same[0] !== same[1]) fail(`hq: the ${m} board's names and the desks run in different orders: ${same}`);
+      }
       // Nobody sits on anybody, nor on the board, the shelves, your desk, the review table, the chess
       // board or the rack, on a screen or a phone.
       for (const m of ["wide", "phone"]) {
@@ -1700,7 +1706,7 @@ if (failures.length) {
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
       if (d.sections > MOST_SECTIONS_ON_ONE_SCREEN) fail(`hq: the ${id} tab stacks ${d.sections} sections (budget ${MOST_SECTIONS_ON_ONE_SCREEN})`);
     }
-    const where = { work: ["Your desk", "hq:decide:11:approve", "<h2>While you were away", "<h2>In flight", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
+    const where = { work: ["Your desk", "hq:decide:11:approve", "<h2>While you were away", "<h2>Open tasks", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
       manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team",
         "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
         // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
@@ -1724,7 +1730,12 @@ if (failures.length) {
       }
     }
     const work = panelOf(tabs, "work");
-    if (work.indexOf("Your desk") > work.indexOf("<h2>In flight")) fail("hq: Work does not put the desk before the work in flight");
+    if (work.indexOf("Your desk") > work.indexOf("<h2>Open tasks")) fail("hq: Work does not put the desk before the open tasks");
+    // Open tasks lead with what needs eyes: blocked, then doing, then in review, then untouched todos
+    // (council round 2: "In flight 18" read as active work while its rows said "todo").
+    const order = runInContext(`(() => { const html = hqInFlight(HQ.snap), at = (s) => { const i = html.indexOf(">" + s.replace(/_/g, " ")); return i < 0 ? Infinity : i; };
+      return ["blocked", "doing", "in_review", "todo"].map(at); })()`, context).filter((i) => i !== Infinity);
+    if (order.some((v, i) => i && v < order[i - 1])) fail(`hq: open tasks are not blocked, doing, in review, then todo: ${order}`);
     if (work.includes("<h2>Looking at</h2>")) fail("hq: Looking at shows with nothing looked at");
     // Rare actions and big cards wait behind a fold until asked for.
     for (const [id, folded] of [["manage", "<details"], ["manage", "hq:hire:new:add"], ["manage", "hq:project:new:add"], ["manage", "hq:routine:new:add"],

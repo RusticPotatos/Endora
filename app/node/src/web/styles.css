@@ -512,8 +512,15 @@
     .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend,
     .hq:not([data-tab="health"]) .hq-stage .hq-note { display: none; }
     .hq-side { grid-template-columns: minmax(0, 1fr); }
-    .hq-bar .hq-row { width: 100%; }
-    .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
+    /* A shorter top on a phone (council round 2): the title and both buttons on one line, the chips
+       on one row that scrolls, so the whole studio is above the fold. */
+    .hq h1 { font-size: 17px; }
+    .hq-bar { flex-wrap: nowrap; gap: 8px; }
+    .hq-bar .hq-row { flex-wrap: nowrap; gap: 6px; }
+    .hq .hq-btn.tall { padding: 8px 8px; font-size: 10px; min-width: 0; }
+    .hq-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .hq-chips::-webkit-scrollbar { display: none; }
+    .hq-chips > * { flex: 0 0 auto; white-space: nowrap; }
   }
   /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
   @media (pointer: coarse) {

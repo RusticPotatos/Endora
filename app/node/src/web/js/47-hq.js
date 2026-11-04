@@ -187,12 +187,14 @@ function hqFormFold(key, label, body) {
 function hqInFlight(s) {
   const goals = s.goals || [];
   const dropped = new Set(goals.filter((g) => g.status === "dropped").map((g) => g.id));
-  const open = (s.tasks || []).filter((t) => ["todo", "doing", "in_review", "blocked"].includes(t.status) && !dropped.has(t.goal)).reverse();
+  const rank = { blocked: 0, doing: 1, in_review: 2, todo: 3 };
+  const open = (s.tasks || []).filter((t) => t.status in rank && !dropped.has(t.goal)).reverse()
+    .sort((a, b) => rank[a.status] - rank[b.status]);
   const rows = open.map((t) => hqLine(`hq:pick:task:${Number(t.id)}`, `${hqKey(t.id)} ${esc(t.title)}`,
     `${esc(String(t.status).replace(/_/g, " "))}${t.owner ? ` · ${esc(hqName(t.owner))}` : ""}`));
   const list = hqMore("inflight", rows, 5);
-  return `<section class="hq-card"><h2>In flight <span class="hq-count">${open.length}</span></h2>
-    ${rows.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing in flight.</p>`}
+  return `<section class="hq-card"><h2>Open tasks <span class="hq-count">${open.length}</span></h2>
+    ${rows.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing open.</p>`}
     <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
     <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>`;
 }
