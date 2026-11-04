@@ -118,7 +118,8 @@ function hqBoard(snap = HQ.snap || {}) {
     lines.push({ who: "", text: "Nobody is working now." });
     if (week.length) lines.push({ who: "", text: `${week.length} tasks closed this week${unverified ? `, ${unverified} not verified` : ""}.` });
   }
-  return { title: g ? g.title : "No goal yet", count: g ? `${open.length} open${stuck ? `, ${stuck} stuck` : ""}` : "", stuck: stuck > 0, lines, stopped: !!snap.stopped };
+  const parts = g ? [`${open.length} open`, ...(stuck ? [`, ${stuck} stuck`] : [])] : [];
+  return { title: g ? g.title : "No goal yet", count: parts.join(""), parts, stuck: stuck > 0, lines, stopped: !!snap.stopped };
 }
 
 // Whether a member has work that is stuck: an item blocked, or open with its latest check failed.
@@ -263,7 +264,11 @@ function hqDrawRoom(g, scene) {
   // Larger type on the whole wall (council round 1: the board's words were too small to read).
   hqR(g, B.x - 2, 1, B.w + 4, 30, "#b9a888"); hqR(g, B.x, 2, B.w, 27, "#fbfbf8");
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
-  g.font = HQ_FONT_7; g.textAlign = "right"; g.fillStyle = board.stuck ? "#c0392b" : "#6b6577"; g.fillText(board.count, x0 + bw, 10); g.textAlign = "left";
+  // The open count in plain ink; only its stuck part is red, to match the red folders.
+  g.font = HQ_FONT_7; g.textAlign = "right";
+  if (board.stuck) { g.fillStyle = "#c0392b"; g.fillText(board.parts[1], x0 + bw, 10); g.fillStyle = "#6b6577"; g.fillText(board.parts[0], x0 + bw - g.measureText(board.parts[1]).width, 10); }
+  else { g.fillStyle = "#6b6577"; g.fillText(board.count, x0 + bw, 10); }
+  g.textAlign = "left";
   const lines = board.stopped ? [{ who: "", text: "The kill switch is pulled: nobody starts work.", red: true }] : board.lines.slice(0, 2);
   lines.forEach((l, i) => {
     const y = 19 + i * 8;
@@ -321,7 +326,12 @@ function hqDrawPlaces(g, scene) {
   // The owner's corner: the desk with a paper for each decision waiting and the lever on it, the rack
   // with the day's spend, the review table with a folder for each item waiting for review.
   const od = L.ownerDesk; hqImg(g, "DESK_FRONT", od.x, od.y);
-  (snap.desk || []).slice(0, 5).forEach((d, i) => { hqR(g, od.x + 6 + i * 6, od.y + 6 - (i % 2) * 2, 5, 7, d.kind === "goal" ? HQ_C.violet : d.kind === "stuck" ? HQ_C.red : HQ_C.lamp); hqR(g, od.x + 7 + i * 6, od.y + 8 - (i % 2) * 2, 3, 1, "rgba(0,0,0,.2)"); });
+  // Each decision a sheet of paper, its top edge in the decision's colour (a solid block read as a cup).
+  (snap.desk || []).slice(0, 5).forEach((d, i) => {
+    const x = od.x + 5 + i * 7, y = od.y + 4 - (i % 2) * 2;
+    hqR(g, x + 1, y + 1, 6, 8, "rgba(0,0,0,.25)"); hqR(g, x, y, 6, 8, "#fffdf5"); hqR(g, x, y, 6, 2, d.kind === "goal" ? HQ_C.violet : d.kind === "stuck" ? HQ_C.red : HQ_C.lamp);
+    hqR(g, x + 1, y + 4, 4, 1, "#c9c2b4"); hqR(g, x + 1, y + 6, 3, 1, "#c9c2b4");
+  });
   const lv = L.lever, up = !snap.stopped;
   hqR(g, lv.x, lv.y + 12, 8, 3, "#3a3a46"); hqR(g, lv.x + 3, up ? lv.y + 3 : lv.y + 8, 2, up ? 9 : 5, "#99aaaa"); hqR(g, lv.x + 2, up ? lv.y + 1 : lv.y + 12, 4, 3, HQ_C.red);
   const rk = L.rack, pool = snap.pool || { per_day: 1, committed: 0 }, fill = Math.min(1, (pool.committed || 0) / Math.max(1, pool.per_day || 1));
@@ -413,7 +423,7 @@ function hqSign(g, kind, x, y) {
   if (kind === "blocked") { hqR(g, x, y, 7, 7, HQ_C.red); hqR(g, x + 3, y + 1, 1, 3, "#fff"); hqR(g, x + 3, y + 5, 1, 1, "#fff"); return; }
   if (kind === "check") { hqR(g, x, y, 7, 7, "#2b2f3a"); for (let i = 0; i < 5; i++) { hqR(g, x + 1 + i, y + 1 + i, 1, 1, HQ_C.red); hqR(g, x + 5 - i, y + 1 + i, 1, 1, HQ_C.red); } return; }
   // Waiting to retry is the one state with no lamp to tell it, so its sign is twice the size.
-  if (kind === "wait") { hqR(g, x + 1, y - 3, 11, 13, "rgba(0,0,0,.25)"); hqR(g, x, y - 4, 11, 13, HQ_C.lamp); hqHourglass(g, x + 2, y - 2, 1); return; }
+  if (kind === "wait") { hqR(g, x + 1, y - 3, 12, 14, "rgba(0,0,0,.25)"); hqR(g, x - 1, y - 5, 13, 15, "#5a3408"); hqR(g, x, y - 4, 11, 13, HQ_C.lamp); hqHourglass(g, x + 2, y - 2, 1); return; }
   hqR(g, x, y, 7, 7, HQ_C.green);
   for (const [dx, dy] of [[1, 3], [2, 4], [3, 3], [4, 2], [5, 1]]) hqR(g, x + dx, y + dy, 1, 1, "#fff");
 }

@@ -1481,6 +1481,9 @@ if (failures.length) {
       if (!/not verified/.test(week)) fail(`hq: the board's week counts unverified closings as done: ${week}`);
       // The board's week counts tasks closed, and the chip counts changes pushed: two words for two
       // things (council round 1: "40 landed" beside "118 closed" read as a contradiction).
+      // Only the stuck part of the board's count is red: the open backlog is not an alarm.
+      const parts = runInContext(`(() => { const b = hqBoard(); return b.stuck ? [b.parts.length, b.parts.join("") === b.count] : [2, true]; })()`, context);
+      if (parts.join() !== "2,true") fail(`hq: the board's count is not split into open and stuck: ${parts}`);
       if (!/\d+ tasks closed this week/.test(week)) fail(`hq: the board's week does not say it counts tasks closed: ${week}`);
       // Who waits to retry is told in amber on the board, apart from who works.
       const amber = runInContext(`(() => { HQ.snap.runs.push({ id: 92, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
@@ -1504,7 +1507,7 @@ if (failures.length) {
       }
       // Drawn, the only words are the board's (and the sign's): no names, plates or counts on the floor.
       const board = runInContext("hqBoard()", context);
-      const allowed = ["ENDORA", board.title, board.count, ...board.lines.flatMap((l) => [l.who + " ", l.text])].filter(Boolean);
+      const allowed = ["ENDORA", board.title, board.count, ...(board.parts || []), ...board.lines.flatMap((l) => [l.who + " ", l.text])].filter(Boolean);
       const ok = (t) => allowed.some((a) => a === t || (t.endsWith("…") && a.startsWith(t.slice(0, -1).trimEnd())));
       for (const m of ["wide", "phone"]) {
         mode = m; written.length = 0; runInContext("hqDraw()", context);
@@ -1730,6 +1733,9 @@ if (failures.length) {
       }
     }
     const work = panelOf(tabs, "work");
+    // What waits on the owner is the first chip, so a phone's scrolling row always shows it.
+    if (!/<div class="hq-chips"><button class="hq-chip hq-chip-go/.test(tabs)) fail("hq: what waits on you is not the first chip");
+    if (!work.includes('class="hq-lines hq-open"')) fail("hq: open tasks are not laid out as title and status lines");
     if (work.indexOf("Your desk") > work.indexOf("<h2>Open tasks")) fail("hq: Work does not put the desk before the open tasks");
     // Open tasks lead with what needs eyes: blocked, then doing, then in review, then untouched todos
     // (council round 2: "In flight 18" read as active work while its rows said "todo").

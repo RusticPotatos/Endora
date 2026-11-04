@@ -194,7 +194,7 @@ function hqInFlight(s) {
     `${esc(String(t.status).replace(/_/g, " "))}${t.owner ? ` · ${esc(hqName(t.owner))}` : ""}`));
   const list = hqMore("inflight", rows, 5);
   return `<section class="hq-card"><h2>Open tasks <span class="hq-count">${open.length}</span></h2>
-    ${rows.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing open.</p>`}
+    ${rows.length ? `<ul class="hq-lines hq-open">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing open.</p>`}
     <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
     <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>`;
 }
@@ -712,7 +712,8 @@ function hqWorkForm(s) {
 // The small status chips under the title: today's pool and what waits on the owner.
 function hqChips(s) {
   const pool = s.pool || {}, waiting = (s.desk || []).length;
-  const chips = [];
+  // What waits on the owner first: a phone's chips scroll, and this one must always show.
+  const chips = [`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`];
   if (pool.per_day != null) {
     const left = Math.max(0, pool.per_day - (pool.committed || 0));
     chips.push(`<span class="hq-chip" title="Today's money for the whole team">Pool ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left</span>`);
@@ -725,7 +726,6 @@ function hqChips(s) {
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
   if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed this week</span>`);
-  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
