@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS relay_requests (
     usage_complete  INTEGER NOT NULL,
     hq_told         INTEGER
 ) STRICT;
+CREATE INDEX IF NOT EXISTS relay_requests_by_run ON relay_requests(run);
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
@@ -879,6 +880,20 @@ impl endora_application::RelayCensus for SqliteStore {
 }
 
 impl SqliteStore {
+    /// Lets go of the census rows that began before `before_ms` (Unix milliseconds): the
+    /// node keeps its count of model requests for a while, not for ever. How many went.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be written.
+    pub fn prune_relay_requests(&self, before_ms: i64) -> Result<usize, RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM relay_requests WHERE started_ms < ?1",
+            params![before_ms],
+        )
+        .map_err(|e| RepositoryError::Backend(e.to_string()))
+    }
+
     /// The relay's own count of `run`'s model requests, oldest first.
     ///
     /// # Errors
@@ -1275,6 +1290,27 @@ mod tests {
     /// The platform event log over the store's shared connection (ADR 0050).
     fn event_store(store: &SqliteStore) -> endora_platform::EventStore {
         endora_platform::EventStore::new(store.db())
+    }
+
+    /// The census is kept for a while, not for ever (round 10's review): rows that began
+    /// before the cut-off go, the rest stay as they were.
+    #[test]
+    fn old_census_rows_are_let_go_and_recent_ones_kept() {
+        use endora_application::RelayCensus;
+        let store = store();
+        let old = store.began(7, "claude-haiku-5-5").unwrap();
+        let recent = store.began(8, "claude-haiku-5-5").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE relay_requests SET started_ms = 1000 WHERE id = ?1",
+                rusqlite::params![old],
+            )
+            .unwrap();
+        assert_eq!(store.prune_relay_requests(5_000).unwrap(), 1);
+        assert!(store.relay_requests(7).unwrap().is_empty());
+        assert_eq!(store.relay_requests(8).unwrap()[0].id, recent);
     }
 
     /// A request begun and never ended (the node stopped, the call hung) is counted as

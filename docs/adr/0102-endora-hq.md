@@ -80,7 +80,8 @@ budget, no key) is not counted, and `count_tokens` is not a model request; the h
 DeepSeek's chat path is counted the same way, as answered or failed (an unreadable 2xx body as
 interrupted). Kept: ids, times, model names, outcome, status, flags. Not kept: any prompt, reply,
 body, key, tool argument or token count of the turn. Charges, budgets, routing and what is sent
-are unchanged. Scenarios: `app/node/features/the-relay-keeps-its-own-count-of-model-requests.feature`.
+are unchanged. The count is kept 90 days (let go of at each start of the node) and indexed by
+run. Scenarios: `app/node/features/the-relay-keeps-its-own-count-of-model-requests.feature`.
 
 ## Context
 

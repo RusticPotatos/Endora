@@ -245,11 +245,15 @@ pub(crate) async fn usage(
     let hq = state.hq.clone();
     let reported = tokio::task::spawn_blocking(move || {
         let run = endora_team::domain::RunId(req.run);
-        // The tokens first: a charge that stops the turn ends its record too. And which model
-        // answered, as the provider named it, or that it is not known.
+        // The tokens first: a charge that stops the turn ends its record too.
         hq.note_tokens(run, req.input, req.cache_read, req.cache_write, req.output)?;
-        hq.note_served_model(run, req.served_model.as_deref())?;
-        hq.report_usage(run, req.micros.max(0))
+        let may_go_on = hq.report_usage(run, req.micros.max(0));
+        // Then which model answered, as the provider named it, or that it is not known: best
+        // effort, after the charge, so it can never keep a call from being charged.
+        if let Err(e) = hq.note_served_model(run, req.served_model.as_deref()) {
+            eprintln!("hq: could not note which model answered run {}: {e}", run.0);
+        }
+        may_go_on
     })
     .await;
     match reported {

@@ -1926,8 +1926,8 @@ pub(crate) fn for_the_model(
             let half = crate::shell::OUTPUT_AT_MOST / 2;
             format!(
                 "[{left_out} of the {printed} bytes the command printed are left out of this \
-                 result: the shell kept its first and last {half} bytes and cut {}, and {ours} \
-                 more were left out to keep the turn within its budget. {ask}]",
+                 result: the shell kept at most its first and last {half} bytes and cut {}, and \
+                 {ours} more were left out to keep the turn within its budget. {ask}]",
                 earlier.cut
             )
         }

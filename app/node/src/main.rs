@@ -28,6 +28,9 @@ use api::AppState;
 use axum::serve::ListenerExt as _;
 use endora_infrastructure::{RandomIdSource, SystemClock};
 
+/// How long the relay's count of model requests is kept: 90 days, in milliseconds.
+const CENSUS_KEPT_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().skip(1).collect::<Vec<_>>() == ["homelab-setup"] {
@@ -54,6 +57,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // made beside the database on the first start; a database whose key is missing stops
     // the node here rather than starting with a new key that opens none of it.
     let store = Arc::new(secrets::open_store(&db_path)?);
+    // The relay's count of model requests (ADR 0102, amended 2026-11-04) is kept for 90 days,
+    // let go of at each start: best effort, never a reason not to start.
+    let ninety_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        - CENSUS_KEPT_MS;
+    if let Err(e) = store.prune_relay_requests(ninety_days_ago) {
+        eprintln!("endora: could not let go of the old relay census: {e}");
+    }
     // A zone name that is not one stops the node rather than quietly becoming UTC.
     let time_zone = match endora_infrastructure::TimeZone::named_or_fixed(
         &std::env::var("ENDORA_TIME_ZONE").unwrap_or_default(),
