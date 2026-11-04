@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v4)
+# Harness probes: the comparison protocol (v5)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -49,7 +49,7 @@ convention is diagnostic only: an attempt passes on what it did, not on how it p
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading (v4; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families)
+## Grading (v5; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families, v5 after round 19's development seed 4)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
 folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
@@ -88,7 +88,7 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - **v3 pass** = artifact correct, completion verified, and verification observed. The report
   lines are kept as diagnostics; `large_output`'s value must still appear in the final words.
   `--protocol v2` reproduces the v2 verdicts.
-- **v4 (the default since round 14): every requirement traces to the task's words.** Round 13
+- **v4 (the default from round 14 to round 19): every requirement traces to the task's words.** Round 13
   failed correct work on rules the task never stated, so v4 keeps v3's structure and changes
   only these, each the same for both arms and each held by a negative control:
   - **Unknown is a verdict.** A case the grader cannot resolve (a command after the
@@ -112,6 +112,36 @@ hidden tests. It checks forbidden edits by content against the regenerated start
     HQ's own note (`verified` for "HQ's checks passed", `not_verified` for "completed, not
     verified") or null; it never decides a pass.
   `--protocol v3` and `--protocol v2` reproduce the older verdicts.
+- **v5 (the default since round 20): the words, the edit rules and the evidence say what they
+  mean.** A batch on development seed 4 showed three requirements the grader held that the task
+  never stated or the rules never allowed for. v5 keeps v4 and changes only these, each the same
+  for both arms and each held by a negative control; `--protocol v4` (and v3, v2) reproduce the
+  older verdicts bit for bit.
+  - **Task contracts.** A task's words carry a contract version: `generate --contract N` (default
+    the latest, 2) writes it to `task.json`, and `grade --contract N` defaults to the one recorded
+    beside the repo (a `task.json` that predates contracts is contract 1; no `task.json` means the
+    latest). Contract 1 is the original words, byte for byte. Contract 2 adds one sentence to the
+    needle's words that states the intended output (for the percent family: "Percentages are
+    shown with one decimal place at most, rounded (so 0.0415 shows as 4.2%)"); every other
+    family reads the same under both. Under contract 1 the needle symptom check counts only the
+    values the words name; the checks whose expected text depends on what the words leave
+    unstated are listed as `info.unsupported_checks` (values and expected text) and never fail
+    an attempt. Under contract 2 every value is checked.
+  - **Needle edit rules.** Decoy helpers unchanged, existing tests preserved, relevant regression
+    additions permitted. Allowed: the implementation file; new files under `tests/`; additions to
+    an existing file under `tests/` that keep every original line in order and, read as Python,
+    every original class, method and statement unchanged (new methods, classes and imports are
+    additions; a new definition that would shadow an old one is not). Anything else, a decoy or
+    any other non-test file included, and any deleted, modified or weakened existing test, fails
+    `no_forbidden_edits`. The criterion still runs on the sanitized tree, so an added test never
+    helps or hurts the verdict by itself.
+  - **Unknown when the test count is not shown.** A test-run command whose output shows success
+    (`OK`, no failure) but not how many tests ran (a `| tail -1` that leaves only `OK` lines, one
+    run per test file each ending in `OK`) makes `verification_observed` unknown: `pass` is null
+    and the CLI exits 2, with the reason "the output does not show how many tests ran". A run in
+    a shell loop body (`for ...; do python3 -m unittest f; done`) counts as a test run. Still
+    false: output showing FAILED or an error, a summary the command itself could have echoed, and
+    a shown count below the suite's. A run that shows a sufficient count still passes.
 
 ## Metering (`accounting.py`)
 
