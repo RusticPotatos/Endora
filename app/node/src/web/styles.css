@@ -449,6 +449,8 @@
   .hq-foldset > .hq-card > h2 { padding-right: 52px; }
   .hq .hq-spark { margin-left: 6px; border-bottom: 1px solid var(--hq-line); }
   .hq pre.hq-doc { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* A long read-only log is a bounded box that scrolls, not a wall down the page (round 8). */
+  .hq .hq-card pre.hq-doc { max-height: 16em; overflow-y: auto; }
   .hq details > summary { cursor: pointer; }
   .hq details > summary::after { content: " ›"; opacity: .6; }
   /* A drill-down summary reads like the label rows above it: sentence case, its chevron after it. */

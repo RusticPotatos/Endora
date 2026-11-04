@@ -100,7 +100,7 @@ function hqChessAll() {
   const c = HQ.chessGames;
   const d = c && c.data;
   // A failed load says so in the card, with a way to try again, rather than "Loading…" for ever.
-  if (!d && c && c.error) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty">Couldn't load the league's games (${esc(c.error)}).</p><div class="hq-row"><button class="hq-btn" data-act="hq:holo:page:1">Try again</button></div></section>`;
+  if (!d && c && c.error) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty" title="${esc(c.error)}">Couldn't load the league's games.</p><div class="hq-row"><button class="hq-btn" data-act="hq:holo:page:1">Try again</button></div></section>`;
   if (!d) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty">Loading…</p></section>`;
   const games = d.games || [];
   if (!games.length) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty">No league game has finished yet.</p></section>`;
