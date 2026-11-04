@@ -412,6 +412,7 @@ def run(args):
                 [str(args.worker_bin)], cwd=probe / "repo", env=env,
                 timeout=max(1.0, deadline - time.time()),
                 interrupt_file=(probe / "repo" / interrupt) if interrupt and not interrupted else None,
+                interrupt_when=probe_task.get("interrupt_milestone"),
             )
             ended = time.time()
             why = stderr.strip()[-600:]

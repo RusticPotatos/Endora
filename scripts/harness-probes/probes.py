@@ -635,6 +635,8 @@ def _build_interrupted(rng, family, seed):
              f"the option is absent).")
     return Spec(family, seed, files, words, allowed={mpath, spath, cpath},
                 extra={"interrupt_after": mpath,
+                       # the interruption comes at the first complete, valid step 1, never mid-write
+                       "interrupt_milestone": {"class": cls, "field": fld, "type": typ, "default": repr(default)},
                        "resume_words": "You were interrupted. Please carry on and finish the change.\n\n" + CONVENTION},
                 hidden={"hidden_steps.py": hidden}, solution=solution,
                 variants={"step_one_reverted": {mpath: model_src(0)},

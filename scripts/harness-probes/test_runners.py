@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -93,6 +94,9 @@ class CcInterruptedTests(CcLocalTests):
         ])
         run = json.loads((out / "run.json").read_text())
         self.assertEqual([i["ended"] for i in run["invocations"]], ["interrupted", "exited"])
+        # the tree as the stop left it, before the resume (round 16)
+        self.assertIn(first, run["invocations"][0]["tree_at_stop"]["status"])
+        self.assertNotIn("tree_at_stop", run["invocations"][1])
         attempt = json.loads((out / "attempt.json").read_text())
         self.assertEqual(attempt["terminal"], "done")
         verdict = json.loads((out / "grade.json").read_text())
@@ -111,11 +115,55 @@ class InterruptionTests(unittest.TestCase):
             self.assertEqual(how, "interrupted")
             self.assertIn("b = 2", watched.read_text())
 
+    def test_the_milestone_is_the_first_complete_valid_step_one(self):
+        import probes
+        spec = probes.build("interrupted", 0)
+        m = spec.extra["interrupt_milestone"]
+        start = spec.files[spec.extra["interrupt_after"]]
+        done = spec.solution[spec.extra["interrupt_after"]]
+        self.assertFalse(rig.milestone_reached(m, start))
+        self.assertTrue(rig.milestone_reached(m, done))
+        self.assertFalse(rig.milestone_reached(m, done[: len(done) - 6]))          # a partial write
+        self.assertFalse(rig.milestone_reached(m, spec.variants["step_one_duplicated"][spec.extra["interrupt_after"]]))
+        self.assertFalse(rig.milestone_reached(m, done.replace(m["default"], "None")))  # wrong default
+        self.assertFalse(rig.milestone_reached(m, None))
+
+    def test_only_the_milestone_stops_the_attempt_not_an_earlier_change(self):
+        import probes
+        spec = probes.build("interrupted", 0)
+        m, rel = spec.extra["interrupt_milestone"], spec.extra["interrupt_after"]
+        with tempfile.TemporaryDirectory() as d:
+            watched = Path(d) / "model.py"
+            watched.write_text(spec.files[rel])
+            script = (f"import time; p={str(watched)!r}; time.sleep(0.3); open(p, 'a').write('# note\\n');"
+                      f" time.sleep(0.6); open(p, 'w').write({spec.solution[rel]!r}); time.sleep(30)")
+            t0 = time.time()
+            _, how, _ = rig.run_watched([sys.executable, "-c", script], cwd=d, env=dict(os.environ),
+                                        timeout=20, interrupt_file=watched, interrupt_when=m)
+            self.assertEqual(how, "interrupted")
+            self.assertGreater(time.time() - t0, 0.8)
+            self.assertTrue(rig.milestone_reached(m, watched.read_text()))
+
     def test_an_attempt_past_its_time_is_stopped_as_a_timeout(self):
         with tempfile.TemporaryDirectory() as d:
             _, how, _ = rig.run_watched([sys.executable, "-c", "import time; time.sleep(30)"],
                                         cwd=d, env=dict(os.environ), timeout=0.5)
             self.assertEqual(how, "timeout")
+
+
+class LiveInterruptTargetTests(unittest.TestCase):
+    """Round 16: the live adapter stops only the attempt's own turn, never its keeper or another item's."""
+
+    def test_the_turn_of_this_item_and_its_keeper_are_told_apart(self):
+        import interrupt_live
+        lines = ["k1\tendora.item=42,com.centurylinklabs.watchtower.enable=false",
+                 "t9\tendora.item=7,endora.run=900,endora.lease=1",
+                 "t1\tendora.item=42,endora.run=901,endora.lease=3",
+                 "c5\tendora.item=42,endora.check=5",
+                 "x\tsomething=else", "junk"]
+        self.assertEqual(interrupt_live.pick(lines, 42), (("t1", "901"), "k1"))
+        self.assertEqual(interrupt_live.pick(lines, 7), (("t9", "900"), None))
+        self.assertEqual(interrupt_live.pick(lines, 4), (None, None))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -101,11 +102,16 @@ def run(args):
             code, how, err = rig.run_watched(
                 command, cwd=repo, env=env, timeout=max(1.0, deadline - time.time()),
                 interrupt_file=(repo / interrupt) if interrupt and n == 1 else None,
+                interrupt_when=task.get("interrupt_milestone"),
                 stdout=sink,
             )
         session = session_of(stream) or session
         summary["invocations"].append({"n": n, "exit": code, "ended": how, "session": session,
                                        "stderr_tail": err[-1000:], "at": time.time()})
+        if how == "interrupted":
+            summary["invocations"][-1]["tree_at_stop"] = {
+                "status": subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout,
+                "diff": subprocess.run(["git", "diff"], cwd=repo, capture_output=True, text=True).stdout}
         if how == "interrupted" and session:
             steps.append((task["resume_words"], session))
     summary["ended_at"] = time.time()

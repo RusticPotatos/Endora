@@ -32,16 +32,49 @@ def digest(path):
     return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
 
 
-def run_watched(command, *, cwd, env, timeout, interrupt_file=None, stdout=None, poll=0.1):
+def milestone_reached(milestone, text):
+    """The interrupted family's milestone (round 16): `text` is a whole, parseable module whose
+    class declares the field exactly once, with its type and default. A partial write, a
+    duplicate or a wrong default is not it."""
+    import ast
+    if text is None:
+        return False
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in tree.body:
+        if not (isinstance(node, ast.ClassDef) and node.name == milestone["class"]):
+            continue
+        fields = [n for n in node.body if isinstance(n, ast.AnnAssign)
+                  and getattr(n.target, "id", None) == milestone["field"]]
+        if len(fields) != 1 or fields[0].value is None:
+            return False
+        f = fields[0]
+        return (ast.unparse(f.annotation) == milestone["type"]
+                and ast.unparse(f.value) == ast.unparse(ast.parse(milestone["default"], mode="eval").body))
+    return False
+
+
+def _text(path):
+    try:
+        return Path(path).read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def run_watched(command, *, cwd, env, timeout, interrupt_file=None, interrupt_when=None, stdout=None, poll=0.1):
     """Runs `command` to its end, or until `timeout`, or until `interrupt_file` first changes
-    (then it is killed: the family's interruption). Returns (exit code or None, how it ended:
+    (then it is killed: the family's interruption); with `interrupt_when` (a milestone), until
+    the file first changes into a state that reaches it. Returns (exit code or None, how it ended:
     "exited" | "interrupted" | "timeout", stderr text)."""
     before = digest(interrupt_file) if interrupt_file else None
     proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout or subprocess.DEVNULL,
                             stderr=subprocess.PIPE, text=True)
     deadline = time.time() + timeout
     while proc.poll() is None:
-        if interrupt_file and digest(interrupt_file) != before:
+        if interrupt_file and digest(interrupt_file) != before and (
+                interrupt_when is None or milestone_reached(interrupt_when, _text(interrupt_file))):
             proc.kill()
             _, err = proc.communicate()
             return proc.returncode, "interrupted", err
