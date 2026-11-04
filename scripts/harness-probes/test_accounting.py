@@ -502,7 +502,7 @@ class RealTraceRegressionTests(unittest.TestCase):
     """Shapes seen in the first run of the real worker against a disposable HQ (endora_local)."""
 
     def build(self, task_status="in_review", injected_wait=None, attempts=1, runner=None,
-              events=None):
+              events=None, served=None):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         db = Path(d.name) / "hq.db"
@@ -546,6 +546,9 @@ Task 1 is in_review.
 --- ended ---
 moved on
 """,))
+        if served is not None:
+            con.execute("CREATE TABLE run_served_models (run INTEGER, model TEXT, calls INTEGER)")
+            con.executemany("INSERT INTO run_served_models VALUES (1, ?, ?)", served)
         if events is not None:
             con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, at_ms INTEGER, kind TEXT, data TEXT)")
             con.executemany("INSERT INTO events (at_ms, kind, data) VALUES (?,?,?)",
@@ -651,6 +654,20 @@ exit 0
         self.assertAlmostEqual(high - low, writes * (4.00 - 2.50) / 1e6, places=12)
         self.assertEqual(cash["ttl_unknown_write_tokens"], writes)
 
+    def test_the_models_the_provider_named_are_kept_apart_from_the_alias(self):
+        a = self.build(served=[("claude-sonnet-5-5-20261001", 2)])
+        ident = metrics_of(a)["model_identity"]
+        self.assertEqual(ident["requested"], ["claude-sonnet-5-5"])
+        self.assertEqual(ident["served"], {"claude-sonnet-5-5-20261001": 2})
+        self.assertEqual((ident["unknown_calls"], ident["complete"]), (0, True))
+
+    def test_calls_whose_model_is_not_known_leave_the_identity_incomplete(self):
+        ident = metrics_of(self.build(served=[("", 1), ("claude-sonnet-5-5-20261001", 1)]))["model_identity"]
+        self.assertEqual((ident["unknown_calls"], ident["complete"]), (1, False))
+        # A store from before identities were kept says nothing: unknown, never the alias.
+        ident = metrics_of(self.build())["model_identity"]
+        self.assertEqual((ident["served"], ident["complete"]), ({}, False))
+
     def test_hqs_event_log_dates_dispatch_terminal_and_its_own_waiting(self):
         # Live, round 3: the task was created at +3.1 s, queued at +11.8, its run started at
         # +12.2, the task was done at +36.9, and the worker's process ended at +41.4.
@@ -706,6 +723,40 @@ exit 0
             a = acc.parse_cc([p], family="f", seed=0)
         bash = [e for e in a["events"] if e.get("tool") == "Bash"]
         self.assertEqual(bash[0]["exit"], 0)
+
+
+class ModelIdentityTests(unittest.TestCase):
+    """Whether two arms are shown to have run on the same model (the climb, round 7)."""
+
+    @staticmethod
+    def ident(served, unknown=0, requested=("claude-haiku-5-5",)):
+        return {"requested": list(requested), "served": served, "unknown_calls": unknown,
+                "complete": bool(served) and unknown == 0}
+
+    def test_the_same_named_models_in_both_arms_match(self):
+        a = self.ident({"claude-haiku-5-5-20261001": 8})
+        b = self.ident({"claude-haiku-5-5-20261001": 5})
+        self.assertEqual(acc.identity_equivalence(a, b)["verdict"], "match")
+
+    def test_different_named_models_are_a_mismatch(self):
+        a = self.ident({"claude-haiku-5-5-20261001": 8})
+        b = self.ident({"claude-haiku-5-5-20261115": 5})
+        self.assertEqual(acc.identity_equivalence(a, b)["verdict"], "mismatch")
+
+    def test_a_requested_alias_alone_never_shows_equivalence(self):
+        a = self.ident({})
+        b = self.ident({"claude-haiku-5-5-20261001": 5})
+        self.assertEqual(acc.identity_equivalence(a, b)["verdict"], "incomplete")
+        partly = self.ident({"claude-haiku-5-5-20261001": 7}, unknown=1)
+        self.assertEqual(acc.identity_equivalence(partly, b)["verdict"], "incomplete")
+
+    def test_claude_code_names_its_models_from_its_messages_and_helpers(self):
+        a = acc.parse_cc([TRACES / "cc_main.jsonl"], family="f", seed=0)
+        a["meta"]["requested_model"] = "claude-sonnet-5-5"
+        ident = metrics_of(a)["model_identity"]
+        self.assertTrue(ident["served"])
+        self.assertEqual(ident["requested"], ["claude-sonnet-5-5"])
+        self.assertTrue(ident["complete"], ident)
 
 
 class TotalsAndCliTests(unittest.TestCase):

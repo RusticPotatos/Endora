@@ -292,12 +292,17 @@ class ScriptedRelay:
                 content.append({"type": "tool_use", "id": f"toolu_rig_{index}_{n}",
                                 "name": tool["name"], "input": tool.get("input", {})})
             usage = dict(entry.get("usage") or {})
+            # The model the answer names: the entry's `served_model`, or the alias when the entry
+            # says nothing; `"served_model": null` answers naming no model (round 7).
+            served = entry.get("served_model", MODEL)
             answer = {
-                "id": f"msg_rig_{index}", "type": "message", "role": "assistant", "model": MODEL,
+                "id": f"msg_rig_{index}", "type": "message", "role": "assistant",
                 "content": content,
                 "stop_reason": "tool_use" if entry.get("tools") else "end_turn",
                 "stop_sequence": None, "usage": usage,
             }
+            if served is not None:
+                answer["model"] = served
             known = bool(usage)
             if known:
                 used = {
@@ -307,7 +312,9 @@ class ScriptedRelay:
                     "output": int(usage.get("output_tokens", 0)),
                 }
                 micros = math.ceil(sum(used[k] * PRICE[k] for k in used))
-                call(self.hq.url, "/v1/team/usage", {"run": run, "micros": micros, **used})
+                # As the node's relay does: the model the answer named, or null (round 7).
+                call(self.hq.url, "/v1/team/usage",
+                     {"run": run, "micros": micros, **used, "served_model": answer.get("model")})
             self._note(index, run, t_start, entry, usage if known else None, body, answer, 200)
             return 200, answer
 

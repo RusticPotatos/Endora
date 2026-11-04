@@ -694,6 +694,54 @@ def with_runner_attempts(events, runs, runner_log, who):
     return kept
 
 
+def served_models_of(db, run_ids):
+    """The models that answered the runs' calls, as the provider named them, with their calls;
+    `None` (written "") for calls whose model is not known. Empty for a store from before HQ
+    kept them (the climb, round 7): nothing known, never the alias in its place."""
+    con = sqlite3.connect(db)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='run_served_models'").fetchone():
+            return []
+        marks = ",".join("?" * len(run_ids)) or "NULL"
+        rows = con.execute(f"SELECT model, sum(calls) FROM run_served_models WHERE run IN ({marks}) "
+                           "GROUP BY model ORDER BY min(rowid)", run_ids).fetchall()
+    finally:
+        con.close()
+    return [[m or None, int(n)] for m, n in rows]
+
+
+def model_identity(a):
+    """Which models were asked for and which the provider said answered, and whether every
+    call's model is known. Endora's from HQ's record; Claude Code's from its messages and
+    helper calls, each naming the model that answered."""
+    meta = a.get("meta") or {}
+    if a.get("arm") == "endora":
+        named = meta.get("served_models") or []
+        requested = meta.get("requested_models") or []
+    else:
+        counts = {}
+        for u in a.get("usage") or []:
+            key = u.get("model") or None
+            counts[key] = counts.get(key, 0) + 1
+        named = [[m, n] for m, n in counts.items()]
+        requested = [meta["requested_model"]] if meta.get("requested_model") else []
+    served = {m: n for m, n in named if m}
+    unknown = sum(n for m, n in named if not m)
+    return {"requested": requested, "served": served, "unknown_calls": unknown,
+            "complete": bool(served) and unknown == 0}
+
+
+def identity_equivalence(a, b):
+    """Whether two attempts are shown to have run on the same model: `match` when every call of
+    both names its model and the names are the same; `mismatch` when known names differ;
+    `incomplete` when either has calls whose model is not known, or none named at all. A
+    requested alias is never evidence."""
+    if not (a.get("complete") and b.get("complete")):
+        return {"verdict": "incomplete", "a": a, "b": b}
+    same = set(a["served"]) == set(b["served"])
+    return {"verdict": "match" if same else "mismatch", "a": a, "b": b}
+
+
 def final_report_of(posts, runs, transcripts, members):
     """The member's own last words: what the model said in the last transcript, then the
     member's posts since the last run began (a set_status reason becomes such a post). HQ's
@@ -901,6 +949,8 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
                             _split_kinds(t["body"]).count("reply") for t in transcripts.values()
                             if t["run"] in set(run_ids)),
                         "run_statuses": {r["id"]: r["status"] for r in runs},
+                        "requested_models": sorted({m for m in (model_of(r) for r in runs) if m}),
+                        "served_models": served_models_of(db, run_ids),
                         "reconciliation": reconciliation}}
     if charged:
         attempt["actual_charge_usd"] = charge_micros / 1_000_000
@@ -1024,7 +1074,7 @@ def attempt_metrics(a, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
             "continuations": sum(1 for e in sessions if e.get("continuation")),
             "tool_calls": calls,
             "reconciliation_ok": None if not rec or not rec.get("checked") else rec.get("match"),
-            "reconciliation": rec}
+            "reconciliation": rec, "model_identity": model_identity(a)}
 
 
 def totals(rows):
@@ -1050,8 +1100,13 @@ def totals(rows):
 
 def metrics(attempts, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
     rows = [attempt_metrics(a, tariff, threshold) for a in attempts]
-    return {"tariff": tariff.get("version"), "wasted_rule": WASTED_RULE,
-            "attempts": rows, "totals": totals(rows)}
+    out = {"tariff": tariff.get("version"), "wasted_rule": WASTED_RULE,
+           "attempts": rows, "totals": totals(rows)}
+    # A pair of the two arms: whether they are shown to have run on the same model.
+    if len(rows) == 2 and rows[0]["arm"] != rows[1]["arm"]:
+        out["identity"] = identity_equivalence(rows[0]["model_identity"],
+                                               rows[1]["model_identity"])
+    return out
 
 
 # ----------------------------------------------------------------------------- CLI

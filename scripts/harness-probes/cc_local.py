@@ -126,6 +126,7 @@ def run(args):
     )
     attempt["dispatched_at"] = summary["dispatched_at"]
     attempt["ended_at"] = summary["ended_at"]
+    attempt["meta"]["requested_model"] = args.model
     attempt_path = out / "attempt.json"
     attempt_path.write_text(json.dumps(attempt, indent=2) + "\n")
     observations = rig.keep_observations(publish, out / "observations.json")
