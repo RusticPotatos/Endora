@@ -121,7 +121,7 @@ function hqBoard(snap = HQ.snap || {}) {
     lines.push({ who: "", text: blocked.length ? `Nobody is working; ${blocked.length} stuck${who.length ? ` with ${who.join(", ")}` : ""}` : "Nobody is working now." });
     if (week.length) lines.push({ who: "", text: `${week.length} tasks closed this week${unverified ? `, ${unverified} not verified` : ""}.` });
   }
-  const parts = g ? [`${open.length} open`, ...(stuck ? [`, ${stuck} stuck`] : [])] : [];
+  const parts = g ? [`${open.length} open${stuck ? "," : ""}`, ...(stuck ? [` ${stuck} stuck`] : [])] : [];
   return { title: g ? g.title : "No goal yet", count: parts.join(""), parts, stuck: stuck > 0, lines, stopped: !!snap.stopped };
 }
 
@@ -277,7 +277,8 @@ function hqDrawRoom(g, scene) {
   // an 8 read as an S ("18" as "1S", council round 9), and Pixelify's 8 still did at 8px (round 10),
   // so the count is in Silkscreen, the headings' font, whose 8 is plainly an 8.
   g.font = HQ_SIGN_FONT; g.textAlign = "right";
-  if (board.stuck) { g.fillStyle = "#c0392b"; g.fillText(board.parts[1], x0 + bw, 10); g.fillStyle = "#6b6577"; g.fillText(board.parts[0], x0 + bw - g.measureText(board.parts[1]).width, 10); }
+  // Whole pixels, so a downscaled canvas keeps every column of a letter (the P of OPEN on a phone).
+  if (board.stuck) { g.fillStyle = "#c0392b"; g.fillText(board.parts[1], x0 + bw, 10); g.fillStyle = "#6b6577"; g.fillText(board.parts[0], Math.round(x0 + bw - g.measureText(board.parts[1]).width), 10); }
   else { g.fillStyle = "#6b6577"; g.fillText(board.count, x0 + bw, 10); }
   g.textAlign = "left";
   const lines = board.stopped ? [{ who: "", text: "The kill switch is pulled: nobody starts work.", red: true }] : board.lines.slice(0, 2);
@@ -380,6 +381,13 @@ function hqDrawPlaces(g, scene) {
   if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.24)"); }
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.
   for (const d of scene.desks) {
+    // A turn waiting to retry: no lamp (nothing runs), but an amber pool, the board's retry colour,
+    // so waiting differs from working across the desk and not only by its sign.
+    if (d.who && d.who.kind === "wait") {
+      const pool = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 36);
+      pool.addColorStop(0, "rgba(255,170,60,.38)"); pool.addColorStop(1, "rgba(255,170,60,0)");
+      g.fillStyle = pool; g.fillRect(d.x - 14, d.y - 14, 76, 72);
+    }
     if (d.lamp) {
       const glow = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 40);
       glow.addColorStop(0, "rgba(255,214,140,.60)"); glow.addColorStop(1, "rgba(255,214,140,0)");
