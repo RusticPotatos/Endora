@@ -355,10 +355,20 @@ function hqLogText(l) {
 // One line as a list item. A long one is shown to its first 240 characters, with "more" to
 // open it in place and "less" to fold it again; nothing is lost either way. A post HQ cut in
 // its event has "more" too, which asks HQ for the post whole.
+// The engine's own posts ("endora: …") are its records: shown to a short first line, the rest a
+// "more" away; and one that repeats the line beside it (the same minute, the same branch) is not
+// told twice (tabs climb, round 3). Nothing is reworded, only shortened or left out.
+const HQ_ENGINE_LINE = 90;
+const hqEnginePost = (t) => /^endora: /i.test(String(t || ""));
+function hqLogLines(lines) {
+  const branch = (t) => (String(t).match(/\bhq\/task-\d+[\w-]*/) || [""])[0];
+  const repeats = (l, i) => hqEnginePost(l.text) && branch(l.text) && [lines[i - 1], lines[i + 1]].some((n) => n && !hqEnginePost(n.text) && n.at === l.at && branch(n.text) === branch(l.text));
+  return lines.filter((l, i) => !repeats(l, i)).map(hqLogLine).join("");
+}
 function hqLogLine(l) {
-  const full = hqLogText(l), open = !!HQ.logOpen[l.key];
-  const long = full.length > HQ_LONG_LINE, cut = !!l.whole && full === l.text && /…$/.test(full);
-  const shown = long && !open ? full.slice(0, HQ_LONG_LINE) + "…" : full;
+  const full = hqLogText(l), open = !!HQ.logOpen[l.key], most = hqEnginePost(full) ? HQ_ENGINE_LINE : HQ_LONG_LINE;
+  const long = full.length > most, cut = !!l.whole && full === l.text && /…$/.test(full);
+  const shown = long && !open ? full.slice(0, most) + "…" : full;
   const toggle = long || cut ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
   return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${hqLogLinks(esc(shown), l.refs)}${toggle}</span></li>`;
 }
@@ -881,7 +891,7 @@ function hqRunningNow() {
 
 // The Activity tab: the turns running now, then the latest twenty, newest first, each line whole.
 function hqActivity() {
-  const log = HQ.log.slice(0, HQ_LOG_SHOWN).map(hqLogLine).join("");
+  const log = hqLogLines(HQ.log.slice(0, HQ_LOG_SHOWN));
   return `${hqRunningNow()}<section class="hq-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
     <div class="hq-row"><button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more</button></div></section>`;
 }
@@ -890,7 +900,7 @@ function hqActivity() {
 // through a task's turns, and Back (or Escape) returns to the Activity tab.
 function hqFeedView() {
   const f = HQ.feed;
-  const lines = (f.lines || []).map(hqLogLine).join("");
+  const lines = hqLogLines(f.lines || []);
   const body = f.error ? `<p class="hq-empty">${esc(f.error)}</p>`
     : !f.lines ? `<p class="hq-empty">Loading…</p>`
     : `<ul class="hq-log hq-log-whole">${lines || `<li class="hq-empty">Nothing older.</li>`}</ul>`;

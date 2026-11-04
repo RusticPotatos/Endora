@@ -85,7 +85,7 @@ function hqChessRound(l) {
     const said = result(a, b);
     return `<td class="${a === b ? "self" : said.replace(/[^a-z]/g, "")}">${said}</td>`;
   }).join("")}</tr>`).join("");
-  const standings = (l.table || []).map((r, i) => `<li>${i + 1}. ${esc(r.label)} ${hqSpark(r.history, r.label)} <small>${hqChessPoints(r)} · ${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
+  const standings = (l.table || []).map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${hqChessPoints(r)} · ${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small> ${hqSpark(r.history, r.label)}</li>`).join("");
   const left = Number(l.pairs_left || 0);
   return `<section class="hq-card hq-wide-card"><h2>This round</h2>
     <p>Round ${number}, ${since}.</p>

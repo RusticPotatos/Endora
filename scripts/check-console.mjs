@@ -2104,6 +2104,16 @@ if (failures.length) {
     const open = runInContext(`(() => { HQ.more.foldprobe2 = true; const h = hqFold("foldprobe2", "Title", "m", "<section class='hq-card'><h2>Title</h2><p>b</p></section>"); HQ.more.foldprobe2 = false; return h; })()`, context);
     if (open.includes("hq-fold\"") || !/<h2>Title<\/h2><button[^>]*hq:more:foldprobe2:toggle/.test(open)) fail(`hq: an open fold draws its own card besides its body: ${open.slice(0, 160)}`);
   }
+  // Tabs climb round 3: an engine post that repeats the line beside it (same minute, same branch)
+  // is not told twice; one that stays is cut to a short first line with "more".
+  {
+    const lines = runInContext(`(() => { const ls = [{ key: "a1", at: "06:54", kind: "you", text: "You pushed hq/task-9-x to the fork", refs: {} },
+      { key: "a2", at: "06:54", kind: "run", text: "endora: pushed hq/task-9-x (ca152b9) to git@github.com:someone/repo.git and more words here", refs: {} },
+      { key: "a3", at: "07:10", kind: "run", text: "endora: Submitted branch hq/task-8-y (3 files, +134 -0) at af6983b in https://github.com/x/y: document d245. It is kept on the node for judging and never pushed anywhere.", refs: {} }];
+      return hqLogLines(ls); })()`, context);
+    if (lines.includes("ca152b9") || !lines.includes("You pushed hq/task-9-x")) fail(`hq: an engine post repeating its neighbour is told twice: ${lines.slice(0, 200)}`);
+    if (lines.includes("never pushed anywhere") || !lines.includes("hq:logmore:a3:toggle")) fail("hq: an engine post is not cut to a short line with more");
+  }
   // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
   // phone its counters and legend are the Health tab's (2026-10-30).
   {

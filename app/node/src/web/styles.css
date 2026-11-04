@@ -435,9 +435,17 @@
   .hq-turn-id { white-space: nowrap; opacity: .75; }
   .hq-foldset > .hq-card { position: relative; }
   .hq .hq-fold-x { position: absolute; top: 10px; right: 14px; font: 11px var(--hq-mono); letter-spacing: 0; }
+  /* The heading of an open fold leaves room for its control, so the two never overlap. */
+  .hq-foldset > .hq-card > h2 { padding-right: 52px; }
+  .hq .hq-spark { margin-left: 6px; border-bottom: 1px solid var(--hq-line); }
   .hq pre.hq-doc { white-space: pre-wrap; overflow-wrap: anywhere; }
   .hq details > summary { cursor: pointer; }
   .hq details > summary::after { content: " ›"; opacity: .6; }
+  /* A drill-down summary reads like the label rows above it: sentence case, its chevron after it. */
+  .hq .hq-score-members, .hq details > summary { text-transform: none; letter-spacing: 0; }
+  .hq details > summary { display: inline-block; font: 600 12.5px var(--hq-mono); color: var(--hq-fg); list-style: none; }
+  .hq details > summary::-webkit-details-marker { display: none; }
+  .hq-turn-id { white-space: nowrap; opacity: .75; display: inline; }
   @media (max-width: 480px) { .hq-wide-card .hq-lines li small { display: block; } }
   .hq-replay-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .hq-replay-progress { font: 11px var(--hq-pixel); color: var(--hq-muted); }
