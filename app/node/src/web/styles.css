@@ -526,6 +526,13 @@
   .hq-foldset { display: grid; gap: 14px; min-width: 0; align-content: start; }
   /* A card whose table needs the width spans both columns on a wide screen. */
   .hq-wide-card { grid-column: 1 / -1; }
+  /* Health on a wide screen: outcomes then turns on the left, What failed spanning both on the right. */
+  .hq-health { display: contents; }
+  @media (min-width: 768px) {
+    .hq-side:has(> .hq-health) { grid-template-areas: "out fail" "turns fail"; }
+    .hq-h-out { grid-area: out; } .hq-h-turns { grid-area: turns; } .hq-h-fail { grid-area: fail; align-self: start; }
+  }
+  .hq details > summary { color: var(--hq-muted); font-weight: 400; }
   .hq-cross + * , .hq-lines li .hq-spark { white-space: nowrap; }
   .hq-need-title { display: block; margin: 0 0 4px; }
   .hq-cross td.won { color: var(--hq-green); font-weight: 600; }

@@ -790,7 +790,8 @@ function hqTabs(s) {
 function hqHealthCards(s) {
   const card = hqScorecard(s), cut = card.indexOf("<h3>The team's turns</h3>");
   if (cut < 0) return card + hqFailures();
-  return `${card.slice(0, cut)}</section>${hqFailures()}<section class="hq-card"><h2>The team's turns</h2>${card.slice(cut + "<h3>The team's turns</h3>".length)}`;
+  // Named areas: on a wide screen What failed spans both rows beside the outcomes and the turns.
+  return `<div class="hq-health">${card.slice(0, cut).replace('<section class="hq-card"', '<section class="hq-card hq-h-out"')}</section>${hqFailures().replace('<section class="hq-card"', '<section class="hq-card hq-h-fail"')}<section class="hq-card hq-h-turns"><h2>The team's turns</h2>${card.slice(cut + "<h3>The team's turns</h3>".length)}</div>`;
 }
 function hqPanel(id, html) {
   return `<div class="hq-side" role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"${hqTab() === id ? "" : " hidden"}>${html}</div>`;
