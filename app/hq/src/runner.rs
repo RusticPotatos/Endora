@@ -211,9 +211,10 @@ fn exit_of(req: &Ended) -> Exit {
     Exit::Unsaid
 }
 
-/// How a turn the runner was handed ended. The engine's next tick ends the run. A report from
-/// an attempt that is no longer the run's current one (its lease is out of date) is refused,
-/// 409, and changes nothing.
+/// How a turn the runner was handed ended. An accepted report asks the engine for a pass at
+/// once, which ends the run (ADR 0102, amended 2026-11-04): it used to wait for the next tick.
+/// A report from an attempt that is no longer the run's current one (its lease is out of date)
+/// is refused, 409, changes nothing and asks for no pass.
 async fn ended(
     Extract(state): Extract<State>,
     Path(run): Path<i64>,
@@ -236,6 +237,7 @@ async fn ended(
         )
             .into_response();
     }
+    state.hq.a_turn_has_ended();
     StatusCode::NO_CONTENT.into_response()
 }
 

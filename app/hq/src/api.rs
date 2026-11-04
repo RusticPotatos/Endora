@@ -2903,6 +2903,74 @@ mod tests {
         );
     }
 
+    /// Round 17 (ADR 0102, amended 2026-11-04): the runner's accepted report of an end asks for
+    /// a pass at once, so the turn is settled now, not on the clock; a report under another
+    /// attempt's lease changes nothing and asks for none.
+    #[tokio::test]
+    async fn an_accepted_end_report_asks_for_a_pass_and_a_stale_one_does_not() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = passes.clone();
+        let hq = Arc::new(
+            endora_team::application::engine::Engine::new(
+                SqliteTeamStore::in_memory().unwrap(),
+                Runner::Remote(RemoteRunner::default()),
+                SystemClock,
+                Settings::default(),
+            )
+            .with_pass_requests(Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        let st = State {
+            hq,
+            token: Arc::new(TOKEN.to_owned()),
+            runner_token: Some(Arc::new(RUNNER.to_owned())),
+            tick_seconds: 30,
+            last_tick: Arc::default(),
+        };
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let lease = handed["lease"].as_u64().unwrap();
+        let before = passes.load(Ordering::SeqCst);
+        let end = |lease: u64| {
+            call(
+                "POST",
+                &format!("/v1/runner/{}/ended", run.0),
+                Some(RUNNER),
+                &json!({ "succeeded": false, "lease": lease, "code": 137 }).to_string(),
+            )
+        };
+        let stale = app.clone().oneshot(end(lease + 1)).await.unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            before,
+            "a stale report asks for no pass"
+        );
+        let ended = app.oneshot(end(lease)).await.unwrap();
+        assert_eq!(ended.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            before + 1,
+            "an accepted report asks for one"
+        );
+        assert_eq!(st.hq.tick().unwrap().retrying, 1, "and the pass settles it");
+        assert_eq!(status_of(&st, run), RunStatus::RetryWaiting);
+    }
+
     #[tokio::test]
     async fn the_runners_reason_for_a_failed_turn_is_kept_on_the_run_and_an_old_report_still_taken()
     {

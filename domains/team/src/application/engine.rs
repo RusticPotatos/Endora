@@ -357,6 +357,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if by != Author::Owner || stored.is_err() {
             return;
         }
+        self.ask_for_a_pass();
+    }
+
+    /// The runner's report that a turn ended was accepted: ask for a pass, so the turn is
+    /// settled now rather than on the clock (ADR 0102, amended 2026-11-04, round 17). The pass
+    /// is the ordinary tick; how long a failed turn waits to be tried again is unchanged.
+    /// Called by the service with the engine's lock released.
+    pub fn a_turn_has_ended(&self) {
+        self.ask_for_a_pass();
+    }
+
+    /// Asks the service for a pass of the tick, when it listens (`with_pass_requests`).
+    fn ask_for_a_pass(&self) {
         if let Some(ask) = &self.pass_requests {
             ask();
         }
@@ -1141,12 +1154,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a task that does not exist; [`Refusal::OutOfReach`] for a
     /// member.
     pub fn post(&self, by: Author, task: TaskId, text: &str) -> Done<()> {
+        let woke = self.post_held(by, task, text)?;
+        // The owner's reply that woke someone asks for a pass, with the lock released: a turn
+        // it queued, or a waiting one it brought forward, starts now rather than on the clock
+        // (ADR 0102, amended 2026-11-04, round 17).
+        if woke {
+            self.ask_for_a_pass();
+        }
+        Ok(())
+    }
+
+    /// [`Self::post`] under the lock: whether the owner's reply woke someone (a turn queued, or
+    /// folded into one, which brings a waiting turn forward).
+    fn post_held(&self, by: Author, task: TaskId, text: &str) -> Done<bool> {
         let _held = self.held();
         if let Author::Member(_) = by {
             return Err(EngineError::Refused(Refusal::OutOfReach));
         }
         if by != Author::Owner {
-            return self.post_held_lock(by, task, text);
+            return self.post_held_lock(by, task, text).map(|()| false);
         }
         // The owner's reply on an open task wakes whoever has it at once, named or not: it is
         // new, so the back-off never holds it.
@@ -1156,15 +1182,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::Finished));
         }
         self.post_authored_held_lock_marked(by, task, text, &[], false, InputOrigin::Owner)?;
-        let Some(member) = found.holder() else {
-            return Ok(());
-        };
+        // Whoever the reply names was woken by the post itself.
         let members = self.store.members()?;
-        if mentions(text, &members).iter().any(|m| m.id == member) {
-            return Ok(());
+        let named = mentions(text, &members);
+        let Some(member) = found.holder() else {
+            return Ok(!named.is_empty());
+        };
+        if named.iter().any(|m| m.id == member) {
+            return Ok(true);
         }
-        self.wake_held_lock(member, Some(task), WakeReason::OwnerReplied)?;
-        Ok(())
+        let receipt = self.wake_held_lock(member, Some(task), WakeReason::OwnerReplied)?;
+        Ok(!named.is_empty() || matches!(receipt, Receipt::Queued | Receipt::Folded))
     }
 
     /// The owner's notes for every member working towards a goal, at most

@@ -83,6 +83,18 @@ body, key, tool argument or token count of the turn. Charges, budgets, routing a
 are unchanged. The count is kept 90 days (let go of at each start of the node) and indexed by
 run. Scenarios: `app/node/features/the-relay-keeps-its-own-count-of-model-requests.feature`.
 
+Amended 2026-11-04 (the agentic-harness climb, round 17): **a turn that can go on again is
+taken up at once.** HQ settled a turn the runner said had ended, and started a turn the owner's
+reply had brought forward, only on its tick. In the climb's interrupted run the owner's reply
+brought the stopped turn forward at once, and it then sat 8.6 s for the next tick (every 10 s on
+the NAS) before it ran. Now the runner's accepted report of an end (`/v1/runner/{run}/ended`;
+`Engine::a_turn_has_ended`) and the owner's reply that wakes someone (a turn queued, or folded,
+which brings a waiting one forward) ask for a pass, through the same coalesced asks as round 5:
+the ordinary `tick()`, with every guard it keeps. A report under another attempt's lease, and a
+reply refused, ask for none. How long a failed turn waits before it is tried again (a minute),
+and how many tries it gets, are unchanged; a pass never starts a waiting turn before its time.
+Scenarios: `domains/team/features/a-turn-that-can-go-on-starts-at-once.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

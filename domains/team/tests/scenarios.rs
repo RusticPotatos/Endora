@@ -71,6 +71,10 @@ mod caps;
 #[path = "scenarios/drains.rs"]
 mod drains;
 
+/// A turn that can go on again is taken up at once (ADR 0102, amended 2026-11-04, round 17).
+#[path = "scenarios/recovery.rs"]
+mod recovery;
+
 /// What done means comes first (ADR 0124, amended), in its own file.
 #[path = "scenarios/criteria.rs"]
 mod criteria;
