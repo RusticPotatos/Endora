@@ -849,6 +849,22 @@ def identity_equivalence(a, b):
     return {"verdict": "match" if same else "mismatch", "a": a, "b": b}
 
 
+def native_verification_of(posts):
+    """How HQ itself closed the task (round 14), from its own posts: `verified` when HQ's checks
+    passed ("done, with no review" on a solo loop: HQ's mechanical checks, no reviewer),
+    `not_verified` when HQ closed it "completed, not verified", else `None`. Kept apart from
+    the harness's terminal state and from the independent grade."""
+    for p in reversed(posts or []):
+        if p.get("author") != "endora":
+            continue
+        text = p.get("text", "")
+        if "completed, not verified" in text:
+            return "not_verified"
+        if "HQ's checks passed" in text:
+            return "verified"
+    return None
+
+
 def final_report_of(posts, runs, transcripts, members):
     """The member's own last words: what the model said in the last transcript, then the
     member's posts since the last run began (a set_status reason becomes such a post). HQ's
@@ -1057,6 +1073,8 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, n
                             if t["run"] in set(run_ids)),
                         "run_statuses": {r["id"]: r["status"] for r in runs},
                         "requested_models": sorted({m for m in (model_of(r) for r in runs) if m}),
+                        "native_verification": native_verification_of(
+                            posts if posts and "author" in posts[0] else []),
                         "served_models": served_models_of(db, run_ids),
                         **({"census": census_of(relay)} if relay_log else {}),
                         **({"node_census": node_census_rows(node_census, run_ids)}

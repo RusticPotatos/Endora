@@ -691,6 +691,17 @@ exit 0
         self.assertIn(("queue", 3.1, 11.78), waits)
         self.assertIn(("queue", 11.78, 12.18), waits)
 
+    def test_hqs_own_word_on_how_it_closed_the_task_is_kept_apart(self):
+        # Round 14: HQ closes a solo item "done, with no review" once its checks passed, or
+        # "completed, not verified" when nothing could check the cited evidence. Native
+        # completion and native verification are recorded apart; neither is the grader's.
+        a = self.build(task_status="done")
+        self.assertIsNone(a["meta"]["native_verification"])
+        d = tempfile.TemporaryDirectory(); self.addCleanup(d.cleanup)
+        for text, want in (("HQ's checks passed and Sol set it ready: done, with no review.", "verified"),
+                           ("Sol set it ready with its criteria cited: completed, not verified.", "not_verified")):
+            self.assertEqual(acc.native_verification_of([{"author": "endora", "text": text}]), want)
+
     def test_tool_calls_keep_their_output_for_the_grader(self):
         shell = [e for e in self.build()["events"] if e.get("tool") == "shell"]
         self.assertIn("exit 0", shell[0]["output"])
