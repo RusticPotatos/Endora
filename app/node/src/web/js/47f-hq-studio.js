@@ -55,7 +55,7 @@ const HQ_STUDIO = {
     ownerDesk: { x: 6, y: 124 }, lever: { x: 44, y: 120 }, rack: { x: 62, y: 124 },
     review: { x: 40, y: 160 }, chairs: [{ x: 22, y: 166, dir: "right" }],
     bookcase: { x: 10, y: 222, w: 84 }, sofas: [{ x: 18, y: 236 }, { x: 58, y: 236 }],
-    chess: { x: 104, y: 256 }, counter: { x: 140, y: 206, w: 48 }, stools: [{ x: 144, y: 232 }, { x: 168, y: 232 }],
+    rug: { x: 8, y: 234, w: 124, h: 40 }, chess: { x: 104, y: 256 }, counter: { x: 140, y: 206, w: 48 }, stools: [{ x: 144, y: 232 }, { x: 168, y: 232 }],
     door: null, window: null, sign: false,
     decor: [["PLANT", 4, 268], ["PLANT", 170, 268], ["CACTUS", 166, 164]],
   },
@@ -273,8 +273,9 @@ function hqDrawRoom(g, scene) {
   // Names in the 8px bold on every size: at 7px a bold B reads as an 8 ("Bo" as "8o", council round 8).
   const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = HQ_FONT_8B, step = big ? 9 : 8;
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
-  // The open count in plain ink; only its stuck part is red, to match the red folders.
-  g.font = HQ_FONT_7; g.textAlign = "right";
+  // The open count in plain ink; only its stuck part is red, to match the red folders. 8px: at 7px
+  // an 8 read as an S ("18" as "1S", council round 9).
+  g.font = HQ_FONT_8; g.textAlign = "right";
   if (board.stuck) { g.fillStyle = "#c0392b"; g.fillText(board.parts[1], x0 + bw, 10); g.fillStyle = "#6b6577"; g.fillText(board.parts[0], x0 + bw - g.measureText(board.parts[1]).width, 10); }
   else { g.fillStyle = "#6b6577"; g.fillText(board.count, x0 + bw, 10); }
   g.textAlign = "left";
@@ -362,8 +363,9 @@ function hqDrawPlaces(g, scene) {
   const stage = { canon: "#4f8f6f", insight: "#6f9bdf", observation: "#c0b65e" }, world = snap.world || {};
   (world.sections || []).map((s) => stage[s.stage] || "#9f9fc8").concat((snap.map_lines || []).map(() => "#c98fd6")).slice(0, Math.floor((bc.w - 6) / 3))
     .forEach((c, i) => hqR(g, bc.x + 4 + i * 3, bc.y + 3 + (i % 4 ? 1 : 0), 2, 8 - (i % 4 ? 1 : 0), c));
-  // A rug under the sofas and the chess table: decor, standing for nothing.
-  if (L.rug) { const r = L.rug; hqR(g, r.x, r.y, r.w, r.h, "#8f4a3a"); hqR(g, r.x + 2, r.y + 2, r.w - 4, r.h - 4, "#a95a44"); hqR(g, r.x + 4, r.y + 4, r.w - 8, 1, "rgba(255,220,180,.25)"); hqR(g, r.x + 4, r.y + r.h - 5, r.w - 8, 1, "rgba(255,220,180,.25)"); }
+  // A muted teal rug under the sofas and the chess table: decor, standing for nothing, and far from
+  // the red kept for stuck work.
+  if (L.rug) { const r = L.rug; hqR(g, r.x, r.y, r.w, r.h, "#3f5f66"); hqR(g, r.x + 2, r.y + 2, r.w - 4, r.h - 4, "#557a80"); hqR(g, r.x + 4, r.y + 4, r.w - 8, 1, "rgba(255,220,180,.25)"); hqR(g, r.x + 4, r.y + r.h - 5, r.w - 8, 1, "rgba(255,220,180,.25)"); }
   for (const s of L.sofas) hqImg(g, "SOFA_FRONT", s.x, s.y);
   const ch = L.chess, game = (((snap.games || {}).chess || {}).games || []).find((x) => x.status === "in_progress");
   hqR(g, ch.x - 1, ch.y + 16, 18, 2, "rgba(60,40,20,.2)"); hqR(g, ch.x + 6, ch.y + 16, 4, 5, "#6d5434"); hqR(g, ch.x, ch.y, 16, 16, "#e9dcc0");
