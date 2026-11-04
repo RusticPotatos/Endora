@@ -81,7 +81,11 @@ def run(args):
                "/tmp/harness-probe.bundle", *[r[0] for r in refs], "HEAD")
         docker(args.context, "cp", f"{args.node}:/tmp/harness-probe.bundle", str(out / "submission.bundle"))
         docker(args.context, "exec", args.node, "rm", "-f", "/tmp/harness-probe.bundle")
-        ref, sha = refs[-1]
+        # This task's own submission (`refs/submissions/hq/task-<N>-…`), never another's.
+        mine = [r for r in refs if f"/task-{args.task}-" in r[0]]
+        if not mine:
+            raise SystemExit(f"no submission of task {args.task} in the mirror: {refs}")
+        ref, sha = mine[-1]
         # The generated start is the same tree as the outside repo's main; its commit differs
         # only by when it was made. The grader judges file content, so the submitted tree's
         # files go over the generated start's.
@@ -93,7 +97,27 @@ def run(args):
         collected["graded_sha"] = sha
     (out / "collected.json").write_text(json.dumps(collected, indent=2) + "\n")
 
-    attempt = accounting.parse_endora(out / "hq.db", args.task, family=args.family, seed=args.seed)
+    # The node's own count of the attempt's model requests (round 9), read-only, through the
+    # node container's Python: its runs are the task tree's, from the store just copied.
+    import sqlite3
+    con = sqlite3.connect(out / "hq.db")
+    runs = [r[0] for r in con.execute(
+        "WITH RECURSIVE t(id) AS (SELECT ? UNION ALL SELECT tasks.id FROM tasks JOIN t "
+        "ON tasks.parent=t.id) SELECT runs.id FROM runs JOIN t ON runs.task = t.id", (args.task,))]
+    con.close()
+    census = None
+    if runs:
+        exported = subprocess.run(
+            ["docker", "--context", args.context, "exec", "-i", args.node, "python3", "-",
+             "--runs", ",".join(map(str, runs))],
+            input=(HERE / "export_census.py").read_text(), capture_output=True, text=True)
+        collected["census_exit"] = exported.returncode
+        if exported.returncode == 0:
+            census = out / "node-census.json"
+            census.write_text(exported.stdout)
+        (out / "collected.json").write_text(json.dumps(collected, indent=2) + "\n")
+    attempt = accounting.parse_endora(out / "hq.db", args.task, family=args.family, seed=args.seed,
+                                      node_census=census)
     # HQ's event log dates the item's creation and its terminal move; the rig's own clock is
     # the fallback for a store without one (it stamps the request a few seconds early).
     attempt["meta"]["rig_dispatched_at"] = args.dispatched_at
