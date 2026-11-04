@@ -849,6 +849,80 @@ class IdentityCensusTests(unittest.TestCase):
         self.assertEqual(acc.identity_equivalence(e, other)["verdict"], "mismatch")
 
 
+class UsageCoverageAndNodeCensusTests(unittest.TestCase):
+    """Round 9: Claude Code's usage coverage (records against its billing summary, by model and
+    by token kind) and Endora's identity from the node's own request census."""
+
+    @staticmethod
+    def cc(records, billed):
+        return {"arm": "claude-code", "usage": records,
+                "meta": {"requested_model": "claude-haiku-5-5", "model_usage": billed}}
+
+    @staticmethod
+    def rec(model, i, o, agent="main", status=None):
+        r = {"model": model, "agent": agent, "known": True, "input_uncached": i, "cache_read": 0,
+             "cache_write": 0, "output": o}
+        if status:
+            r["status"] = status
+        return r
+
+    def test_usage_lost_from_a_model_already_present_is_not_hidden_by_its_name(self):
+        billed = {"claude-haiku-5-5": {"inputTokens": 30, "outputTokens": 3,
+                                       "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}
+        whole = self.cc([self.rec("claude-haiku-5-5", 10, 1)] * 3, billed)
+        lost = self.cc([self.rec("claude-haiku-5-5", 10, 1)] * 2, billed)
+        self.assertTrue(acc.model_identity(whole)["usage_coverage"]["complete"])
+        cov = acc.model_identity(lost)["usage_coverage"]
+        self.assertFalse(cov["complete"])
+        self.assertEqual(cov["unobserved"], {"claude-haiku-5-5": {"input_uncached": 10, "output": 1}})
+
+    def test_a_helper_inferred_from_billing_is_not_an_observed_call(self):
+        billed = {"claude-haiku-5-5": {"inputTokens": 1339, "outputTokens": 1473,
+                                       "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}
+        a = self.cc([self.rec("claude-haiku-5-5", 8, 1453),
+                     self.rec("claude-haiku-5-5", 1331, 20, agent="helper", status="from_model_usage")],
+                    billed)
+        cov = acc.model_identity(a)["usage_coverage"]
+        self.assertFalse(cov["complete"])
+        self.assertEqual(cov["unobserved"], {"claude-haiku-5-5": {"input_uncached": 1331, "output": 20}})
+
+    @staticmethod
+    def endora(census_rows, served):
+        return {"arm": "endora", "usage": [],
+                "meta": {"requested_models": ["claude-haiku-5-5"], "served_models": served,
+                         "node_census": census_rows}}
+
+    @staticmethod
+    def row(outcome, served="claude-haiku-5-5", hq_told=1):
+        return {"run": 1, "outcome": outcome, "served_model": served, "hq_told": hq_told,
+                "usage_complete": int(outcome == "answered")}
+
+    def test_the_node_census_names_every_call_even_one_hq_never_heard_of(self):
+        a = self.endora([self.row("answered"), self.row("answered", hq_told=0)],
+                        [["claude-haiku-5-5", 1]])
+        i = acc.model_identity(a)
+        self.assertEqual(i["census"]["source"], "node-relay")
+        self.assertEqual(i["served"], {"claude-haiku-5-5": 2})
+        self.assertTrue(i["complete"], i)
+        self.assertEqual(i["hq_discrepancy"], {"census_charged": 2, "hq_recorded": 1, "hq_not_told": 1})
+
+    def test_an_unfinished_observation_never_counts_as_complete(self):
+        a = self.endora([self.row("answered"), self.row("unfinished", served=None, hq_told=None)],
+                        [["claude-haiku-5-5", 1]])
+        self.assertFalse(acc.model_identity(a)["complete"])
+
+    def test_a_failed_request_needs_no_model_and_a_cut_one_is_kept_apart(self):
+        a = self.endora([self.row("failed", served=None, hq_told=None), self.row("answered"),
+                         self.row("interrupted")], [["claude-haiku-5-5", 2]])
+        i = acc.model_identity(a)
+        self.assertEqual((i["census"]["failed"], i["census"]["interrupted"]), (1, 1))
+        self.assertEqual(i["served"], {"claude-haiku-5-5": 2})
+        self.assertTrue(i["complete"], i)
+        cut_unnamed = self.endora([self.row("answered"), self.row("interrupted", served=None)],
+                                  [["claude-haiku-5-5", 1], [None, 1]])
+        self.assertFalse(acc.model_identity(cut_unnamed)["complete"])
+
+
 class TotalsAndCliTests(unittest.TestCase):
     def test_totals_sum_attempts_and_propagate_incomplete(self):
         a = acc.parse_cc([TRACES / "cc_main.jsonl"], subagents_dir=TRACES / "subagents", family="f", seed=0)

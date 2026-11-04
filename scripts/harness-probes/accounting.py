@@ -696,6 +696,15 @@ def with_runner_attempts(events, runs, runner_log, who):
     return kept
 
 
+def node_census_rows(path, run_ids):
+    """The node's own request census (its `relay_requests` rows, exported as a JSON list), for
+    the attempt's runs only (round 9)."""
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    runs = set(run_ids)
+    return [r for r in rows if r.get("run") in runs]
+
+
 def census_of(relay):
     """The rig's relay log as a census of the attempt's model requests: every request it saw,
     answered (2xx) or failed (round 8)."""
@@ -735,6 +744,8 @@ def model_identity(a):
     Without a census, `accounted` is `None` and the identity is not complete. A requested alias
     never stands in for a name."""
     meta = a.get("meta") or {}
+    if a.get("arm") == "endora" and meta.get("node_census") is not None:
+        return node_census_identity(meta)
     if a.get("arm") == "endora":
         named = meta.get("served_models") or []
         requested = meta.get("requested_models") or []
@@ -757,10 +768,68 @@ def model_identity(a):
         if isinstance(billed, dict):
             census = {"source": "modelUsage", "models": sorted(billed), "answered": None}
             accounted = set(billed) == set(served)
-    return {"requested": requested, "served": served, "unknown_calls": unknown,
-            "census": census, "accounted": accounted,
+    out = {"requested": requested, "served": served, "unknown_calls": unknown,
+           "census": census, "accounted": accounted,
+           "single_model": len(served) == 1,
+           "complete": accounted is True and unknown == 0 and bool(served)}
+    if a.get("arm") != "endora":
+        out["usage_coverage"] = usage_coverage(a.get("usage") or [], meta.get("model_usage"))
+    return out
+
+
+# Claude Code's billing summary (`modelUsage`) by token kind, against the record's fields.
+BILLED_KINDS = {"input_uncached": "inputTokens", "output": "outputTokens",
+                "cache_read": "cacheReadInputTokens", "cache_write": "cacheCreationInputTokens"}
+
+
+def usage_coverage(usage, billed):
+    """Claude Code's usage coverage (round 9): the usage its observed records carry, by model
+    and token kind, against its billing summary. Records inferred from the summary itself (a
+    helper seen only there) are not observed calls, so usage lost from a model the records
+    already name shows as unobserved, never hidden by the name. This is coverage of usage, not
+    a census of requests. `complete` is `None` without a summary."""
+    if not isinstance(billed, dict):
+        return {"complete": None, "unobserved": None}
+    observed = [u for u in usage if u.get("status") != "from_model_usage"]
+    unobserved = {}
+    for model, seen in billed.items():
+        if not isinstance(seen, dict):
+            continue
+        for field, key in BILLED_KINDS.items():
+            have = sum(u[field] for u in observed if u.get("model") == model and is_int(u.get(field)))
+            if is_int(seen.get(key)) and seen[key] != have:
+                unobserved.setdefault(model, {})[field] = seen[key] - have
+    return {"complete": not unobserved, "unobserved": unobserved}
+
+
+def node_census_identity(meta):
+    """Endora's identity from the node's own request census (round 9): every request the relay
+    passed on, how it ended and the model that answered, kept by the node apart from HQ. Failed
+    requests (no model response) need no name; answered and interrupted ones each need one; an
+    unfinished observation leaves it incomplete. What HQ recorded is compared, not trusted: a
+    usage report HQ never received shows as a discrepancy."""
+    rows = meta.get("node_census") or []
+    by = {}
+    for r in rows:
+        by.setdefault(r.get("outcome"), []).append(r)
+    charged = by.get("answered", []) + by.get("interrupted", [])
+    served, unknown = {}, 0
+    for r in charged:
+        if r.get("served_model"):
+            served[r["served_model"]] = served.get(r["served_model"], 0) + 1
+        else:
+            unknown += 1
+    unfinished = len(by.get("unfinished", []))
+    hq_recorded = sum(n for _, n in meta.get("served_models") or [])
+    census = {"source": "node-relay", "requests": len(rows), "answered": len(by.get("answered", [])),
+              "interrupted": len(by.get("interrupted", [])), "failed": len(by.get("failed", [])),
+              "unfinished": unfinished}
+    return {"requested": meta.get("requested_models") or [], "served": served,
+            "unknown_calls": unknown, "census": census, "accounted": unfinished == 0,
             "single_model": len(served) == 1,
-            "complete": accounted is True and unknown == 0 and bool(served)}
+            "complete": unfinished == 0 and unknown == 0 and bool(served),
+            "hq_discrepancy": {"census_charged": len(charged), "hq_recorded": hq_recorded,
+                               "hq_not_told": sum(1 for r in charged if r.get("hq_told") == 0)}}
 
 
 def identity_equivalence(a, b):
@@ -801,7 +870,7 @@ def final_report_of(posts, runs, transcripts, members):
     return "\n".join(parts)
 
 
-def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
+def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, node_census=None):
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
     try:
@@ -987,6 +1056,8 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
                         "requested_models": sorted({m for m in (model_of(r) for r in runs) if m}),
                         "served_models": served_models_of(db, run_ids),
                         **({"census": census_of(relay)} if relay_log else {}),
+                        **({"node_census": node_census_rows(node_census, run_ids)}
+                           if node_census else {}),
                         "reconciliation": reconciliation}}
     if charged:
         attempt["actual_charge_usd"] = charge_micros / 1_000_000
@@ -1162,6 +1233,7 @@ def main(argv=None):
     en.add_argument("--task", type=int, required=True)
     en.add_argument("--relay-log")
     en.add_argument("--runner-log")
+    en.add_argument("--node-census", help="the node's relay_requests rows, as a JSON list")
     en.add_argument("--family", required=True)
     en.add_argument("--seed", type=int, required=True)
     en.add_argument("--out", required=True)
@@ -1174,7 +1246,7 @@ def main(argv=None):
         rec = parse_cc(args.session, args.subagents, args.stream_json, args.family, args.seed)
     elif args.cmd == "parse-endora":
         rec = parse_endora(args.db, args.task, args.relay_log, args.family, args.seed,
-                           runner_log=args.runner_log)
+                           runner_log=args.runner_log, node_census=args.node_census)
     else:
         attempts = []
         for p in args.attempts:
