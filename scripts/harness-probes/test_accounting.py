@@ -659,7 +659,9 @@ exit 0
         ident = metrics_of(a)["model_identity"]
         self.assertEqual(ident["requested"], ["claude-sonnet-5-5"])
         self.assertEqual(ident["served"], {"claude-sonnet-5-5-20261001": 2})
-        self.assertEqual((ident["unknown_calls"], ident["complete"]), (0, True))
+        # The relay log saw 2 answered calls and both are named: accounted for.
+        self.assertEqual((ident["unknown_calls"], ident["accounted"], ident["complete"]),
+                         (0, True, True))
 
     def test_calls_whose_model_is_not_known_leave_the_identity_incomplete(self):
         ident = metrics_of(self.build(served=[("", 1), ("claude-sonnet-5-5-20261001", 1)]))["model_identity"]
@@ -756,7 +758,95 @@ class ModelIdentityTests(unittest.TestCase):
         ident = metrics_of(a)["model_identity"]
         self.assertTrue(ident["served"])
         self.assertEqual(ident["requested"], ["claude-sonnet-5-5"])
-        self.assertTrue(ident["complete"], ident)
+        # No result event, so no billing census: every record named, but not shown complete.
+        self.assertEqual((ident["accounted"], ident["complete"]), (None, False))
+
+
+class IdentityCensusTests(unittest.TestCase):
+    """Round 8: an identity is complete only when it accounts for every call an independent
+    census saw, and a match needs one and the same model in both arms."""
+
+    def endora(self, relay_statuses, served):
+        """An Endora attempt whose relay log (the census) saw calls of `relay_statuses` and
+        whose store kept `served` identity rows."""
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        db = Path(d.name) / "hq.db"
+        con = sqlite3.connect(db)
+        con.executescript("""
+        CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT, brain TEXT);
+        CREATE TABLE tasks (id INTEGER PRIMARY KEY, parent INTEGER, status TEXT);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY, member INTEGER, task INTEGER, status TEXT,
+            attempts INTEGER, queued_at INTEGER, started_at INTEGER, retry_at INTEGER,
+            ended_at INTEGER, input_tokens INTEGER, cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER, output_tokens INTEGER);
+        CREATE TABLE run_served_models (run INTEGER, model TEXT, calls INTEGER);
+        """)
+        con.execute("INSERT INTO members VALUES (1, 'Sol', 'haiku')")
+        con.execute("INSERT INTO tasks VALUES (1, NULL, 'done')")
+        ok = sum(1 for s in relay_statuses if s == 200)
+        con.execute("INSERT INTO runs VALUES (1, 1, 1, 'succeeded', 1, 0, 1000, NULL, 4000, ?, 0, 0, ?)",
+                    (10 * ok, ok))
+        con.executemany("INSERT INTO run_served_models VALUES (1, ?, ?)", served)
+        con.commit()
+        con.close()
+        relay = Path(d.name) / "relay.jsonl"
+        write_jsonl(relay, [
+            {"t_start": float(i), "t_end": i + 0.5, "run": 1, "model": "claude-haiku-5-5",
+             "status": st, "input_uncached": 10 if st == 200 else None, "cache_read": 0 if st == 200 else None,
+             "cache_write": 0 if st == 200 else None, "output": 1 if st == 200 else None}
+            for i, st in enumerate(relay_statuses)])
+        return acc.parse_endora(db, 1, relay_log=relay, family="f", seed=0)
+
+    @staticmethod
+    def cc(models):
+        """A Claude Code identity whose billing census (`modelUsage`) names `models`."""
+        return {"arm": "claude-code", "usage": [
+            {"model": m, "known": True, "input_uncached": 1, "cache_read": 0, "cache_write": 0,
+             "output": 1} for m in models],
+            "meta": {"requested_model": "claude-haiku-5-5",
+                     "model_usage": {m: {"inputTokens": models.count(m)} for m in set(models)}}}
+
+    def ident(self, a):
+        return acc.model_identity(a)
+
+    def test_two_calls_with_one_identity_record_are_not_accounted_for(self):
+        i = self.ident(self.endora([200, 200], [("claude-haiku-5-5", 1)]))
+        self.assertEqual((i["census"]["answered"], i["accounted"], i["complete"]), (2, False, False))
+
+    def test_a_failed_request_then_a_named_success_is_accounted_for(self):
+        i = self.ident(self.endora([529, 200], [("claude-haiku-5-5", 1)]))
+        self.assertEqual((i["census"]["answered"], i["census"]["failed"]), (1, 1))
+        self.assertTrue(i["complete"], i)
+
+    def test_a_duplicated_usage_report_is_not_accounted_for(self):
+        i = self.ident(self.endora([200], [("claude-haiku-5-5", 2)]))
+        self.assertFalse(i["accounted"], i)
+
+    def test_no_census_leaves_completeness_unproven(self):
+        a = self.endora([200], [("claude-haiku-5-5", 1)])
+        a["meta"].pop("census", None)
+        i = self.ident(a)
+        self.assertEqual((i["accounted"], i["complete"]), (None, False))
+
+    def test_a_helper_with_no_identity_is_not_complete(self):
+        a = self.cc(["claude-haiku-5-5", "claude-haiku-5-5"])
+        a["usage"].append({"model": None, "known": True, "input_uncached": 1, "cache_read": 0,
+                           "cache_write": 0, "output": 1, "agent": "helper"})
+        self.assertFalse(self.ident(a)["complete"])
+
+    def test_matching_mixed_model_sets_are_ineligible_never_a_match(self):
+        a = self.cc(["claude-haiku-5-5"] * 7 + ["claude-sonnet-5-5"])
+        b = self.cc(["claude-haiku-5-5"] + ["claude-sonnet-5-5"] * 6)
+        verdict = acc.identity_equivalence(self.ident(a), self.ident(b))["verdict"]
+        self.assertEqual(verdict, "mixed")
+
+    def test_one_and_the_same_model_in_both_arms_with_every_call_accounted_for_matches(self):
+        e = self.ident(self.endora([200, 200, 200], [("claude-haiku-5-5", 3)]))
+        c = self.ident(self.cc(["claude-haiku-5-5"] * 5))
+        self.assertEqual(acc.identity_equivalence(e, c)["verdict"], "match")
+        other = self.ident(self.cc(["claude-haiku-5-5-20261115"] * 5))
+        self.assertEqual(acc.identity_equivalence(e, other)["verdict"], "mismatch")
 
 
 class TotalsAndCliTests(unittest.TestCase):

@@ -118,6 +118,16 @@ hidden tests. It checks forbidden edits by content against the regenerated start
   its first move to done or blocked (a worker's process may outlive it), and HQ's dispatch tick
   and the runner's pickup are harness waiting. Elapsed is the comparable speed; a worker's
   process lifetime and Claude Code's interval union are labelled apart and not compared.
+- Model identity (rounds 7 and 8): the model each call was answered by, as the provider named
+  it, kept apart from the alias asked for. An identity is complete only when its names account
+  for every call an independent census saw: for Endora, the relay's own request log (the rig's;
+  live HQ has no independent census yet, so live completeness stays unproven), every answered
+  request named exactly once and failed requests needing none; for Claude Code, the result's
+  `modelUsage`, the billing summary by model, every billed model named and every named model
+  billed. A lost or duplicated report, an unknown name, or no census leaves it incomplete.
+  Two arms **match** only when both are complete and both ran on the same single model,
+  helpers included; more than one model is **mixed**, ineligible for this comparison. A
+  requested alias is never evidence.
 - Handoffs: ownership transfers (another member taking the task, a handover note).
   Fresh sessions and continuations are reported apart.
 - Tool calls: total, failed (an error or a non-zero exit), refused, and wasted — wasted only

@@ -427,6 +427,8 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
                                  ("subtype", "is_error", "duration_ms", "duration_api_ms",
                                   "num_turns", "total_cost_usd")}
         meta["stream_result"]["result_events"] = results_seen
+        if isinstance(stream_result.get("modelUsage"), dict):
+            meta["model_usage"] = stream_result["modelUsage"]
         meta["reconciliation"] = reconcile_stream(usage_list, stream_result.get("usage"))
         helpers = helper_calls(usage_list, stream_result.get("modelUsage"))
         usage_list.extend(helpers)
@@ -694,6 +696,15 @@ def with_runner_attempts(events, runs, runner_log, who):
     return kept
 
 
+def census_of(relay):
+    """The rig's relay log as a census of the attempt's model requests: every request it saw,
+    answered (2xx) or failed (round 8)."""
+    rows = [c for calls in relay.values() for c in calls]
+    answered = sum(1 for c in rows if _relay_ok(c.get("status")))
+    return {"source": "relay-log", "requests": len(rows), "answered": answered,
+            "failed": len(rows) - answered}
+
+
 def served_models_of(db, run_ids):
     """The models that answered the runs' calls, as the provider named them, with their calls;
     `None` (written "") for calls whose model is not known. Empty for a store from before HQ
@@ -711,33 +722,57 @@ def served_models_of(db, run_ids):
 
 
 def model_identity(a):
-    """Which models were asked for and which the provider said answered, and whether every
-    call's model is known. Endora's from HQ's record; Claude Code's from its messages and
-    helper calls, each naming the model that answered."""
+    """Which models were asked for, which the provider said answered, and whether those names
+    account for every call an independent census saw (round 8). "Every reported call named" is
+    not "every call accounted for": a lost or duplicated report leaves no unknown row.
+
+    - Endora: the names are HQ's `run_served_models`; the census is the relay log's requests
+      (the rig's; live HQ has none, so completeness stays unproven there). Every answered
+      request must be accounted for exactly once; failed requests answered nothing.
+    - Claude Code: the names are its messages' and helpers'; the census is the result's
+      `modelUsage`, the billing summary by model. Every billed model must be named by the
+      records and every record's model billed.
+    Without a census, `accounted` is `None` and the identity is not complete. A requested alias
+    never stands in for a name."""
     meta = a.get("meta") or {}
     if a.get("arm") == "endora":
         named = meta.get("served_models") or []
         requested = meta.get("requested_models") or []
+        served = {m: n for m, n in named if m}
+        unknown = sum(n for m, n in named if not m)
+        census = meta.get("census")
+        reported = sum(n for _, n in named)
+        accounted = None if not census else reported == census.get("answered")
     else:
         counts = {}
         for u in a.get("usage") or []:
             key = u.get("model") or None
             counts[key] = counts.get(key, 0) + 1
-        named = [[m, n] for m, n in counts.items()]
         requested = [meta["requested_model"]] if meta.get("requested_model") else []
-    served = {m: n for m, n in named if m}
-    unknown = sum(n for m, n in named if not m)
+        served = {m: n for m, n in counts.items() if m}
+        unknown = counts.get(None, 0)
+        billed = meta.get("model_usage")
+        census = None
+        accounted = None
+        if isinstance(billed, dict):
+            census = {"source": "modelUsage", "models": sorted(billed), "answered": None}
+            accounted = set(billed) == set(served)
     return {"requested": requested, "served": served, "unknown_calls": unknown,
-            "complete": bool(served) and unknown == 0}
+            "census": census, "accounted": accounted,
+            "single_model": len(served) == 1,
+            "complete": accounted is True and unknown == 0 and bool(served)}
 
 
 def identity_equivalence(a, b):
-    """Whether two attempts are shown to have run on the same model: `match` when every call of
-    both names its model and the names are the same; `mismatch` when known names differ;
-    `incomplete` when either has calls whose model is not known, or none named at all. A
+    """Whether two attempts are shown to have run on one and the same model: `match` when both
+    identities are complete (every call accounted for against a census) and both name the same
+    single model; `mixed` when either ran on more than one (ineligible for a single-model
+    comparison); `mismatch` when each ran on one, but not the same; `incomplete` otherwise. A
     requested alias is never evidence."""
     if not (a.get("complete") and b.get("complete")):
         return {"verdict": "incomplete", "a": a, "b": b}
+    if len(a["served"]) != 1 or len(b["served"]) != 1:
+        return {"verdict": "mixed", "a": a, "b": b}
     same = set(a["served"]) == set(b["served"])
     return {"verdict": "match" if same else "mismatch", "a": a, "b": b}
 
@@ -951,6 +986,7 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
                         "run_statuses": {r["id"]: r["status"] for r in runs},
                         "requested_models": sorted({m for m in (model_of(r) for r in runs) if m}),
                         "served_models": served_models_of(db, run_ids),
+                        **({"census": census_of(relay)} if relay_log else {}),
                         "reconciliation": reconciliation}}
     if charged:
         attempt["actual_charge_usd"] = charge_micros / 1_000_000
