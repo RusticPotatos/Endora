@@ -894,13 +894,13 @@ function hqRunningNow() {
   const runs = ((HQ.snap && HQ.snap.runs) || []).filter((r) => r.status === "running");
   if (!runs.length) return "";
   const line = (r) => `<li><span>R${Number(r.id)} ${esc(hqName(r.member))}${r.task ? ` on ${hqKey(r.task)}` : ""}</span> <button class="hq-link" data-act="hq:from:watch:${Number(r.id)}">Watch</button></li>`;
-  return `<section class="hq-card hq-running"><h2>Running now <span class="hq-count">${runs.length}</span></h2><ul class="hq-running-list">${runs.map(line).join("")}</ul></section>`;
+  return `<section class="hq-card hq-running hq-wide-card"><h2>Running now <span class="hq-count">${runs.length}</span></h2><ul class="hq-running-list">${runs.map(line).join("")}</ul></section>`;
 }
 
 // The Activity tab: the turns running now, then the latest twenty, newest first, each line whole.
 function hqActivity() {
   const log = hqLogLines(HQ.log.slice(0, HQ_LOG_SHOWN));
-  return `${hqRunningNow()}<section class="hq-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
+  return `${hqRunningNow()}<section class="hq-card hq-wide-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
     <div class="hq-row"><button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more</button></div></section>`;
 }
 
