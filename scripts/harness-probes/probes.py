@@ -2105,7 +2105,7 @@ def grade(family, seed, repo, attempt, observations=None, publish_url=None, prot
 
 def recorded_contract(repo):
     """The contract in the task.json next to a generated repo: 1 for a task.json that predates contracts,
-    None (the latest) when there is no task.json."""
+    None when there is no task.json (the CLI then refuses to grade without --contract)."""
     path = Path(repo).resolve().parent / "task.json"
     try:
         task = json.loads(path.read_text(encoding="utf-8"))
@@ -2262,6 +2262,10 @@ def main(argv=None):
         return 0
     attempt = json.loads(Path(args.attempt).read_text())
     contract = args.contract if args.contract is not None else recorded_contract(args.repo)
+    if contract is None:
+        # Round 20's ruling: missing contract metadata never silently selects the latest.
+        print("no task.json with the task's contract next to the repo: give --contract", file=sys.stderr)
+        return 2
     res = grade(args.family, args.seed, args.repo, attempt, args.observations, args.publish_url, args.protocol,
                 contract)
     print(json.dumps(res, indent=2))

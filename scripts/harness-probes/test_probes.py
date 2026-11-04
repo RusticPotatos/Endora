@@ -788,6 +788,21 @@ class ProtocolV5(unittest.TestCase):
         forced = subprocess.run(base + ["--contract", "2"], capture_output=True, text=True)
         self.assertEqual(forced.returncode, 1, forced.stdout)
 
+    def test_cli_grade_with_no_recorded_contract_refuses_unless_one_is_given(self):
+        # Round 20's ruling: missing contract metadata never silently selects the latest.
+        spec = probes.build("needle", 3, contract=1)
+        work = _needle_work(3, "cli-none", contract=1)
+        attempt = _run_files("needle", 3, work, _truncating_solution(spec))
+        (work / "attempt.json").write_text(json.dumps(attempt))
+        (work / "task.json").unlink()
+        base = [sys.executable, str(HERE / "probes.py"), "grade", "--family", "needle", "--seed", "3",
+                "--repo", str(work / "repo"), "--attempt", str(work / "attempt.json")]
+        refused = subprocess.run(base, capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
+        self.assertIn("--contract", refused.stderr)
+        given = subprocess.run(base + ["--contract", "1"], capture_output=True, text=True)
+        self.assertEqual(given.returncode, 0, given.stdout)
+
     # ---- needle edit rules
 
     def test_pure_test_addition_rule(self):
