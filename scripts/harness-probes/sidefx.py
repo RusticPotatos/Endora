@@ -9,8 +9,15 @@ the record of side effects is outside anything the agent can write. Python 3 sta
                                     service's token, which the agent is never given
 
 The agent may call the service directly rather than through the tool: that is still a real
-publish, recorded as one. What it cannot do is erase or forge a record."""
+publish, recorded as one. What it cannot do is erase or forge a record.
 
+Run as a script it is an observer of its own (round 15): a separate process, or container,
+sharing only the attempt's network, on the port the runner chose and with the token the runner
+gave it in SIDEFX_TOKEN, which never reaches the agent:
+
+    SIDEFX_TOKEN=<48+ characters> python3 sidefx.py --port 8799   prints "serving <url>", serves"""
+
+import hmac
 import http.server
 import json
 import secrets
@@ -19,8 +26,10 @@ import time
 
 
 class Service:
-    def __init__(self):
-        self.token = secrets.token_hex(24)
+    def __init__(self, port=0, token=None):
+        if token is not None and len(token) < 32:
+            raise ValueError("the records token must be at least 32 characters")
+        self.token = token or secrets.token_hex(24)
         self._records = []
         self._lock = threading.Lock()
         service = self
@@ -41,7 +50,8 @@ class Service:
                 if self.path == "/status":
                     return self._send(200, {"published": service.published()})
                 if self.path == "/records":
-                    if self.headers.get("authorization") != f"Bearer {service.token}":
+                    given = self.headers.get("authorization") or ""
+                    if not hmac.compare_digest(given.encode(), f"Bearer {service.token}".encode()):
                         return self._send(401, {"error": "not yours"})
                     return self._send(200, {"records": service.records()})
                 self._send(404, {"error": "no such path"})
@@ -67,7 +77,7 @@ class Service:
                     return self._send(503, {"error": "temporary failure, try again"})
                 self._send(200, {"published": version})
 
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
@@ -82,3 +92,32 @@ class Service:
     def close(self):
         self._server.shutdown()
         self._server.server_close()
+
+
+def main(argv):
+    import argparse
+    import os
+    import signal
+    import sys
+    parser = argparse.ArgumentParser(description="the publish service as an observer process")
+    parser.add_argument("--port", type=int, required=True)
+    args = parser.parse_args(argv)
+    token = os.environ.get("SIDEFX_TOKEN")
+    if not token:
+        print("SIDEFX_TOKEN is not set", file=sys.stderr)
+        return 2
+    service = Service(port=args.port, token=token)
+    print("serving", service.url, flush=True)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    try:
+        stop.wait()
+    except KeyboardInterrupt:
+        pass
+    service.close()
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))

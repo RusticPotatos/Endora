@@ -47,5 +47,47 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(ask(self.s.url + "/records", token=self.s.token), (200, {"records": []}))
 
 
+class ObserverModeTests(unittest.TestCase):
+    """Round 15: the service as its own process (an observer container beside the workbench),
+    on a port and with a token the runner chose, so the runner can read the records later."""
+
+    def test_a_chosen_port_and_token(self):
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        s = sidefx.Service(port=port, token="t" * 48)
+        self.addCleanup(s.close)
+        self.assertEqual(s.url, f"http://127.0.0.1:{port}")
+        self.assertEqual(ask(s.url + "/records", token="t" * 48), (200, {"records": []}))
+        self.assertEqual(ask(s.url + "/records", token="t" * 47)[0], 401)
+
+    def test_a_short_token_is_refused(self):
+        with self.assertRaises(ValueError):
+            sidefx.Service(token="short")
+
+    def test_run_as_a_script_it_announces_itself_and_serves(self):
+        import os
+        import subprocess
+        env = {**os.environ, "SIDEFX_TOKEN": "k" * 48}
+        proc = subprocess.Popen([sys.executable, str(Path(sidefx.__file__)), "--port", "0"], env=env,
+                                stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.terminate)
+        line = proc.stdout.readline().strip()
+        self.assertTrue(line.startswith("serving http://127.0.0.1:"), line)
+        url = line.split()[1]
+        self.assertEqual(ask(url + "/publish", {"version": "1.0.0"})[0], 503)
+        self.assertEqual(ask(url + "/records", token="k" * 48)[1]["records"][0]["status"], 503)
+
+    def test_run_as_a_script_without_a_token_it_refuses_to_start(self):
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "SIDEFX_TOKEN"}
+        proc = subprocess.run([sys.executable, str(Path(sidefx.__file__)), "--port", "0"], env=env,
+                              capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(proc.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
