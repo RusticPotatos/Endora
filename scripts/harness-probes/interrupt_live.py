@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """The interrupted family's live adapter for Endora (round 16): watches the runner's Docker for
-the attempt's own turn container, reads the watched file from inside it, and at the family's
+the attempt's own turn container (the one with a run label among those mounting the item's
+sandbox volume, endora-item-<task>), reads the watched file from inside it, and at the family's
 milestone (rig.milestone_reached: the first complete, valid step 1) stops that container, as
 anything outside the worker stopping it would: the runner sees it end (137) and tells HQ. The
 item's kept sandbox (its keeper, ADR 0115) holds /work, so the tree is read again from the
-keeper right after the stop. Nothing else is touched: only a container labelled with this
-attempt's item AND a run is a target; the keeper (an item, no run) never is.
+keeper right after the stop. Nothing else is touched: only a turn on this item's sandbox is a
+target; the keeper (item label, no run) and check jobs never are.
 
     interrupt_live.py --task 1200 --file pkg/model.py --milestone '{...}' \\
         --docker "ssh runner.example.com docker" --out DIR [--timeout 600]
@@ -32,19 +33,20 @@ RUN_LABEL, ITEM_LABEL = "endora.run", "endora.item"
 
 
 def pick(ps_lines, task):
-    """(turn container id, keeper id) for `task`, from `docker ps` lines of
-    "<id>\\t<labels>": the turn has the item label and a run label; the keeper the item alone."""
+    """(turn container id and run, keeper id) for `task`, from `docker ps` lines of
+    "<id>\\t<labels>" already filtered to the item's volume: the runner labels a turn with its
+    run (and lease) only, and the keeper with the item."""
     turn = keeper = None
     for line in ps_lines:
         if "\t" not in line:
             continue
         cid, labels = line.split("\t", 1)
         kv = dict(p.split("=", 1) for p in labels.split(",") if "=" in p)
-        if kv.get(ITEM_LABEL) != str(task) or "endora.check" in kv:
+        if "endora.check" in kv:
             continue
         if RUN_LABEL in kv:
             turn = turn or (cid, kv[RUN_LABEL])
-        else:
+        elif kv.get(ITEM_LABEL) == str(task):
             keeper = keeper or cid
     return turn, keeper
 
@@ -65,9 +67,11 @@ class Docker:
         p = subprocess.run(self.argv(*args), capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
 
-    def ps(self):
-        """Lines of `docker ps`; raises when docker itself fails, so a broken watch is never silent."""
-        code, out, err = self("ps", "--no-trunc", "--format", "{{.ID}}\t{{.Labels}}")
+    def ps(self, task):
+        """Lines of `docker ps` for the containers mounting `task`'s sandbox (the runner's
+        endora-item-<task> volume); raises when docker itself fails, so a watch is never silent."""
+        code, out, err = self("ps", "--no-trunc", "--filter", f"volume=endora-item-{task}",
+                              "--format", "{{.ID}}\t{{.Labels}}")
         if code != 0:
             raise RuntimeError(err.strip() or f"docker ps exited {code}")
         return out.splitlines()
@@ -90,7 +94,7 @@ def watch(docker, task, rel, milestone, timeout, poll=0.25, repo="/work/repo"):
     failures = 0
     while time.time() < deadline:
         try:
-            lines = docker.ps()
+            lines = docker.ps(task)
             failures = 0
         except (RuntimeError, subprocess.TimeoutExpired) as e:
             failures += 1

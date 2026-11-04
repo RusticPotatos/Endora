@@ -155,16 +155,28 @@ class InterruptionTests(unittest.TestCase):
 class LiveInterruptTargetTests(unittest.TestCase):
     """Round 16: the live adapter stops only the attempt's own turn, never its keeper or another item's."""
 
-    def test_the_turn_of_this_item_and_its_keeper_are_told_apart(self):
+    def test_the_turn_on_this_items_sandbox_and_its_keeper_are_told_apart(self):
+        # As the runner labels them (runner.rs): a turn has run and lease labels only; the keeper
+        # has the item label. Both mount the item's volume, which is what `docker ps` is filtered by.
         import interrupt_live
         lines = ["k1\tendora.item=42,com.centurylinklabs.watchtower.enable=false",
-                 "t9\tendora.item=7,endora.run=900,endora.lease=1",
-                 "t1\tendora.item=42,endora.run=901,endora.lease=3",
-                 "c5\tendora.item=42,endora.check=5",
+                 "t1\tcom.centurylinklabs.watchtower.enable=false,endora.lease=3,endora.run=901",
+                 "c5\tendora.check=5,endora.branch=x",
                  "x\tsomething=else", "junk"]
         self.assertEqual(interrupt_live.pick(lines, 42), (("t1", "901"), "k1"))
-        self.assertEqual(interrupt_live.pick(lines, 7), (("t9", "900"), None))
-        self.assertEqual(interrupt_live.pick(lines, 4), (None, None))
+        self.assertEqual(interrupt_live.pick(lines[1:], 42), (("t1", "901"), None))
+        self.assertEqual(interrupt_live.pick(lines[2:], 42), (None, None))
+
+    def test_docker_ps_is_filtered_by_the_items_volume(self):
+        import interrupt_live
+        seen = []
+
+        class Recording(interrupt_live.Docker):
+            def __call__(self, *args, timeout=30):
+                seen.append(args)
+                return 0, "", ""
+        Recording("docker").ps(42)
+        self.assertIn("volume=endora-item-42", seen[0])
 
 
 class LiveInterruptTransportTests(unittest.TestCase):
