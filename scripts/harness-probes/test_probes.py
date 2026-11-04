@@ -278,13 +278,16 @@ class Determinism(unittest.TestCase):
                 self.assertTrue(REGENERATED_SAME[(family, seed)], f"{family} {seed}")
 
     def test_seeds_change_what_matters(self):
+        # Same seed, same words and tree; distinct seeds, distinct fixture contents. The task
+        # words may repeat across seeds (large_output's do while its trees differ): not asserted.
         for family in EXPECTED_FAMILIES:
+            for s in EXPOSED_SEEDS:
+                words = [json.loads((base / "task.json").read_text())["words"]
+                         for base in (GENERATED[(family, s)], ROOT / f"{family}-{s}-again")]
+                self.assertEqual(words[0], words[1], f"{family} {s}")
             trees = [_tree(GENERATED[(family, s)] / "repo") for s in EXPOSED_SEEDS]
-            words = [json.loads((GENERATED[(family, s)] / "task.json").read_text())["words"]
-                     for s in EXPOSED_SEEDS]
             self.assertEqual(len({json.dumps(t, sort_keys=True, default=str) for t in trees}),
                              len(EXPOSED_SEEDS), family)
-            self.assertEqual(len(set(words)), len(EXPOSED_SEEDS), family)
 
     def test_repo_is_one_commit_by_john_doe(self):
         for family in EXPECTED_FAMILIES:

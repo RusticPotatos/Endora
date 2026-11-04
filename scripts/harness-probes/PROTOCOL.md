@@ -152,12 +152,35 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - Cash: normalized with the one frozen tariff ([tariff.json](tariff.json), v1); the actual
   charge (Claude Code's `total_cost_usd`, HQ's ledger charges) is reported beside it.
 - Time: from dispatch to the terminal outcome, including model latency, local tools, harness
-  overhead and recovery. Reported apart: agent-active time (the union of model and tool
-  intervals), **harness waiting** (HQ's queue between ticks and its retry backoff: the
-  harness's own time, inside elapsed and never an excuse) and **external waiting** (time spent
-  on the world: checks, remote systems, injected waits). An attempt whose external waiting is
-  over 10% of elapsed is contaminated: it cannot establish parity and stays in the ledger.
-  External waiting is never agent-active time, even inside a worker process.
+  overhead and recovery. Reported apart, as exclusive parts that add up to elapsed (within
+  1e-6): `agent_active_s` (the union of model and tool intervals), `harness_wait_s` (HQ's
+  admission, its recovery after an interrupted turn and its retry backoff: the harness's own
+  time, inside elapsed and never an excuse), `agent_requested_wait_s` (below),
+  `external_wait_s` (time spent on the world: checks, remote systems, injected waits) and
+  `unaccounted_s` (what no event explains). An attempt whose external waiting is over 10% of
+  elapsed is contaminated: it cannot establish parity and stays in the ledger. External
+  waiting is never agent-active time, even inside a worker process.
+- HQ's scheduling waits are read per attempt from its event sequence, never from a run row: a
+  retried turn REUSES its row (`attempts` 1 to 2, `started_at` overwritten), so the row's
+  `queued_at` to `started_at` spans the first attempt (round 21: 13.32 s reported for 1.97 s
+  real). Initial admission is the item's `task.created` to its first `run.started`. A recovery
+  is a `run.ended` with result `retry_waiting` to that run's next `run.started` (`wait_kind`
+  `recovery`), split at the first news (an owner reply folded, a wake queued, or the retry
+  deadline) into `news_or_deadline` and `admission`; settlement, the runner's report reaching
+  HQ, is not observable in the store, so a recovery starts at `run.ended`. `meta.hq_waits`
+  records each recovery's boundaries and whether the report or the reply came first
+  (`report_first`, `reply_first`). A retry with no later `run.started` is left unaccounted. Only
+  a store with no such events for a run falls back to the row's own span, and says so
+  (`meta.hq_waits.source`, `rows_fallback_runs`).
+- Agent-requested waits: a `sleep N` (or `time.sleep(N)` in `python3 -c`) the agent's own
+  command executes stays inside elapsed, is never subtracted and never external. It is its own
+  part, `agent_requested_wait_s` (`wait_kind` `agent_sleep`), only with execution evidence: the
+  sleep is actually run in command order (not inside a string, comment or heredoc, not after
+  an `exit`, not backgrounded; behind `&&`, `||` or an `if`, only when the call lasted at least
+  N s) and the call's own `t_start`/`t_end` span covers at least N s. The part is
+  min(N, the call's span), never overlapping harness or external waits. With no timing on the
+  call (Endora's transcript tool calls carry none) nothing is attributed and
+  `time.agent_requested_wait_notes` says so.
 - A failed HTTP call with no usage stays unknown, never zero: totals with one are reported as
   known-cost subtotals, not complete totals.
 - The tariff (v1) is the published one. Endora's relay prices Sonnet 5.5 cache reads at half
