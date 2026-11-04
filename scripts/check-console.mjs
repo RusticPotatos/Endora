@@ -515,6 +515,15 @@ if (failures.length) {
   }
 }
 
+// HQ loads no font of its own beyond the two it has had since October (Silkscreen, IBM Plex Mono):
+// the owner wants no new third-party resource for the frontend's looks.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const families = [...source.matchAll(/family=([^&:"]+)/g)].map((m) => m[1]).sort().join(",");
+  if (families !== "IBM+Plex+Mono,Silkscreen") fail(`hq: the console asks for fonts beyond Silkscreen and IBM Plex Mono: ${families}`);
+  if (/Pixelify/.test(source)) fail("hq: the studio still names Pixelify Sans, a font HQ does not load");
+}
+
 // Endora HQ (ADR 0102): the office reads the snapshot; every decision is a button the owner
 // presses, each offering only what that kind of item takes; nothing a task says becomes markup.
 {

@@ -626,7 +626,7 @@ function hqFonts() {
   if (typeof document === "undefined" || !document.head || document.getElementById("hq-fonts")) return;
   const link = document.createElement("link");
   link.id = "hq-fonts"; link.rel = "stylesheet";
-  link.href = "https://fonts.googleapis.com/css2?family=Silkscreen&family=Pixelify+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+  link.href = "https://fonts.googleapis.com/css2?family=Silkscreen&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
   document.head.appendChild(link);
 }
 

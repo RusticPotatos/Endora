@@ -15,8 +15,9 @@ const HQ_SAY_SECONDS = 4;
 const HQ_SAY_MOST = 30;
 const HQ_DONE_KINDS = { met_criteria: true, completed_unverified: false };
 const HQ_WEEK_DAYS = 7;
-const HQ_FONT_8 = '8px "Pixelify Sans", monospace', HQ_FONT_8B = '600 8px "Pixelify Sans", monospace', HQ_FONT_7 = '7px "Pixelify Sans", monospace', HQ_FONT_7S = '600 7px "Pixelify Sans", monospace';
-const HQ_FONT_6 = '6px "Pixelify Sans", monospace', HQ_FONT_6B = '600 6px "Pixelify Sans", monospace', HQ_FONT_7B = '600 7px "Pixelify Sans", monospace';
+// The studio's words are in IBM Plex Mono, which HQ already loads: no font of its own.
+const HQ_FONT_8 = '8px "IBM Plex Mono", monospace', HQ_FONT_8B = '600 8px "IBM Plex Mono", monospace', HQ_FONT_7 = '7px "IBM Plex Mono", monospace', HQ_FONT_7S = '600 7px "IBM Plex Mono", monospace';
+const HQ_FONT_6 = '6px "IBM Plex Mono", monospace', HQ_FONT_6B = '600 6px "IBM Plex Mono", monospace', HQ_FONT_7B = '600 7px "IBM Plex Mono", monospace';
 const HQ_SIGN_FONT = "8px Silkscreen, monospace";
 const HQ_STUDIO = {
   wide: {
@@ -276,7 +277,7 @@ function hqDrawRoom(g, scene) {
   const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = HQ_FONT_8B, step = big ? 9 : 8;
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
   // The open count in plain ink; only its stuck part is red, to match the red folders. 8px: at 7px
-  // an 8 read as an S ("18" as "1S", council round 9), and Pixelify's 8 still did at 8px (round 10),
+  // an 8 read as an S ("18" as "1S", council round 9), and the earlier pixel font's 8 still did at 8px (round 10),
   // so the count is in Silkscreen, the headings' font, whose 8 is plainly an 8.
   g.font = HQ_SIGN_FONT; g.textAlign = "right";
   // Whole pixels, so a downscaled canvas keeps every column of a letter (the P of OPEN on a phone).
