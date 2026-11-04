@@ -11,7 +11,7 @@ use endora_team::application::office_ports::OfficeStore;
 use endora_team::application::run_ports::RunStore;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
@@ -146,6 +146,8 @@ type Hq = Engine<SqliteTeamStore, SimulatedRunner, Hands>;
 #[derive(World)]
 struct Office {
     hq: Hq,
+    /// How many times the engine has asked for a pass of the tick (the owner's new work).
+    passes_asked: Arc<AtomicUsize>,
     /// Members by name, as the owner hired them.
     members: HashMap<String, MemberId>,
     /// The goal the scenario set.
@@ -199,13 +201,19 @@ impl Office {
 impl Default for Office {
     fn default() -> Self {
         let clock = Hands(Arc::new(AtomicI64::new(OCT_17)));
+        let passes_asked = Arc::new(AtomicUsize::new(0));
+        let counted = passes_asked.clone();
         Self {
             hq: Engine::new(
                 SqliteTeamStore::in_memory().expect("an in-memory store"),
                 SimulatedRunner::new(4),
                 clock.clone(),
                 Settings::default(),
-            ),
+            )
+            .with_pass_requests(Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })),
+            passes_asked,
             clock,
             members: HashMap::new(),
             goal: None,
@@ -1411,6 +1419,82 @@ fn offered_alone(w: &mut Office, name: String, tools: String) {
 #[when("a tick passes")]
 fn a_tick_passes(w: &mut Office) {
     w.tick();
+}
+
+// --- The owner's new work is taken up at once ------------------------------------------------
+
+#[then(regex = r"^HQ has been asked for (\d+) pass(?:es)?$")]
+fn passes_asked(w: &mut Office, n: usize) {
+    assert_eq!(w.passes_asked.load(Ordering::SeqCst), n);
+}
+
+#[then("HQ has been asked for no pass")]
+fn no_pass_asked(w: &mut Office) {
+    assert_eq!(w.passes_asked.load(Ordering::SeqCst), 0);
+}
+
+/// The pass the engine asked for: the tick, run now rather than on its clock.
+#[given("the pass HQ was asked for runs")]
+#[when("the pass HQ was asked for runs")]
+fn the_asked_pass_runs(w: &mut Office) {
+    assert!(
+        w.passes_asked.load(Ordering::SeqCst) > 0,
+        "no pass was asked for"
+    );
+    w.tick();
+}
+
+#[then(expr = "{word} has a turn on {string}")]
+fn has_a_turn_on(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let turns: Vec<_> =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .collect();
+    assert_eq!(turns.len(), 1, "{name}'s turns on {title:?}: {turns:?}");
+}
+
+#[then(expr = "{word} has no turn on {string}")]
+fn has_no_turn_on(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let turns: Vec<_> =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .collect();
+    assert!(turns.is_empty(), "{name}'s turns on {title:?}: {turns:?}");
+}
+
+/// The owner's work without criteria, which HQ refuses (ADR 0124, amended).
+#[when(expr = "the owner gives {word} work with no criteria")]
+fn owner_gives_without_criteria(w: &mut Office, name: String) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let refused = w.hq.add_task_with(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: "Something vague".to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[],
+    );
+    assert!(
+        refused.is_err(),
+        "work with no criteria was taken: {refused:?}"
+    );
 }
 
 #[then(regex = r"^(\w+) has a downtime turn that costs nothing$")]

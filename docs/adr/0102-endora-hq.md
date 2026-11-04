@@ -41,6 +41,19 @@ unpublished, through the node's team gateway on 8788 (now published on the house
 every route needing a token), and starts each turn as an offline workbench that reaches the
 gateway and nothing else.
 
+Amended 2026-11-04 (the agentic-harness climb, round 5): **the owner's new work asks for a pass
+of the tick at once.** Work was taken up only on the tick, every 30 s on the NAS, so the owner's
+new item waited for anything up to the whole interval before any member read it: 8.7 s in the
+climb's live paired run, and exactly 30 s less the tick's phase on a disposable HQ (27.96 s,
+20.97 s, 13.98 s and 6.97 s at 2, 9, 16 and 23 s after a tick). Now, once the owner's task is in
+the store, the engine asks its service for a pass (`Engine::with_pass_requests`), and HQ's
+ticker (`app/hq/src/ticker.rs`) runs one: the same `tick()`, with every guard it keeps (the kill
+switch, the drain, budgets, capacity, order). Asks are coalesced (asks before a pass starts are
+served by it; asks during one bring one more after it), passes never overlap, the clock keeps
+its cadence, and an idle HQ passes no more often than before. Only the owner's stored work
+asks: a member's own work, and work refused, do not. Scenarios:
+`domains/team/features/the-owners-new-work-starts-at-once.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

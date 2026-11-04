@@ -257,7 +257,14 @@ pub struct Engine<S, W, C> {
     /// the first look is the last HQ's, for the restart that has now happened, and is lifted;
     /// every one after is this HQ's own.
     drain_checked: AtomicBool,
+    /// Asks the service for a pass of the tick now (ADR 0102, amended 2026-11-04): called once
+    /// the owner's new work is in the store, so it is taken up at once instead of at the next
+    /// tick. The service coalesces the asking; with none, work waits for the tick as before.
+    pass_requests: Option<PassRequests>,
 }
+
+/// How the engine asks its service for a pass of the tick (ADR 0102, amended 2026-11-04).
+pub type PassRequests = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// While it lives, the engine is doing what the owner asked; see [`Engine::for_owner`].
 struct ForOwner<'a>(&'a AtomicBool);
@@ -331,6 +338,27 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             for_owner: AtomicBool::new(false),
             acting: Mutex::new(None),
             drain_checked: AtomicBool::new(false),
+            pass_requests: None,
+        }
+    }
+
+    /// The engine that asks `ask` for a pass of the tick once the owner's new work is stored
+    /// (ADR 0102, amended 2026-11-04). The service wires it to its ticker, which coalesces
+    /// what is asked and keeps its own clock besides.
+    #[must_use]
+    pub fn with_pass_requests(mut self, ask: PassRequests) -> Self {
+        self.pass_requests = Some(ask);
+        self
+    }
+
+    /// Asks for a pass when the owner's work was stored: never for a member's own work, nor
+    /// for work refused. Called with the engine's lock released.
+    fn ask_for_a_pass_after(&self, by: Author, stored: &Done<TaskId>) {
+        if by != Author::Owner || stored.is_err() {
+            return;
+        }
+        if let Some(ask) = &self.pass_requests {
+            ask();
         }
     }
 
@@ -759,14 +787,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Refused`] if a member hands work up or across;
     /// [`EngineError::Unknown`] for a goal, task or member that does not exist.
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
-        let _held = self.held();
-        let _asked = (by == Author::Owner).then(|| self.for_owner());
-        let origin = if by == Author::Owner {
-            InputOrigin::Owner
-        } else {
-            InputOrigin::Unknown
+        let stored = {
+            let _held = self.held();
+            let _asked = (by == Author::Owner).then(|| self.for_owner());
+            let origin = if by == Author::Owner {
+                InputOrigin::Owner
+            } else {
+                InputOrigin::Unknown
+            };
+            self.add_task_authored_held_lock(by, task, origin)
         };
-        self.add_task_authored_held_lock(by, task, origin)
+        self.ask_for_a_pass_after(by, &stored);
+        stored
     }
 
     fn add_task_held_lock(&self, by: Author, task: NewTask) -> Done<TaskId> {

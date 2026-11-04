@@ -403,6 +403,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooMany`] past
     /// [`evidence::MOST_CRITERIA`]; and as [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
+        let stored = self.add_task_with_held(by, task, criteria);
+        self.ask_for_a_pass_after(by, &stored);
+        stored
+    }
+
+    fn add_task_with_held(
+        &self,
+        by: Author,
+        task: NewTask,
+        criteria: &[Criterion],
+    ) -> Done<TaskId> {
         let _held = self.held();
         let _asked = (by == Author::Owner).then(|| self.for_owner());
         let may = match by {
