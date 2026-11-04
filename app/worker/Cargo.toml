@@ -32,5 +32,15 @@ endora-team = { path = "../../domains/team" }
 # (ADR 0142, amended 2026-10-30: context sized to the turn).
 endora-capabilities = { path = "../../domains/capabilities" }
 
+# The owner's scenarios for the worker (docs/testing.md): `features/*.feature`, run by
+# `tests/scenarios.rs` against the real binary. The same cucumber the team context's scenarios
+# use (tests only, never shipped), and the executor it runs on.
+cucumber = "0.21"
+futures = "0.3"
+
+[[test]]
+name = "scenarios"
+harness = false
+
 [lints]
 workspace = true

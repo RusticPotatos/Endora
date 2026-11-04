@@ -27,6 +27,18 @@ pub const OUTPUT_AT_MOST: usize = 16 * 1024;
 /// left behind holding the pipe open does not hold the turn.
 const DRAINED_WITHIN: Duration = Duration::from_secs(2);
 
+/// What a command printed and what the shell cut of it, as the text it is part of holds it: the
+/// bytes printed, the bytes the shell left out, and where in that text the shell's note is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Earlier {
+    /// Bytes the command printed.
+    pub printed: usize,
+    /// Of those, bytes the shell left out.
+    pub cut: usize,
+    /// Where the shell's note of the cut is, in the text; `None` when it cut nothing.
+    pub marker: Option<std::ops::Range<usize>>,
+}
+
 /// The worker's own environment that a command is not given.
 const NOT_GIVEN: [&str; 1] = ["ENDORA_RUN_TOKEN"];
 
@@ -48,6 +60,13 @@ pub struct Ran {
     pub timed_out: bool,
     /// What it printed, stdout and stderr together, kept to [`OUTPUT_AT_MOST`].
     pub output: String,
+    /// How many bytes it printed in all.
+    pub printed: usize,
+    /// How many of those the shell left out of `output`: none when it was within the limit.
+    pub cut: usize,
+    /// Where in `output` the shell's own note of its cut is, when it cut: known here, never
+    /// read back from the text, so nothing a command prints can pass for it.
+    pub marker: Option<std::ops::Range<usize>>,
 }
 
 impl Ran {
@@ -63,6 +82,19 @@ impl Ran {
             return format!("{ended}\n(no output)");
         }
         format!("{ended}\n{}", self.output)
+    }
+
+    /// What was printed and what the shell cut, placed in [`Ran::said`]'s text: for whoever
+    /// cuts that text again.
+    #[must_use]
+    pub fn cut_in_said(&self, said: &str) -> Earlier {
+        // `said` is how it ended, a line, then the output.
+        let at = said.len() - self.output.len();
+        Earlier {
+            printed: self.printed,
+            cut: self.cut,
+            marker: self.marker.clone().map(|m| m.start + at..m.end + at),
+        }
     }
 
     /// Whether it went well: it ended, with 0.
@@ -132,18 +164,36 @@ impl Shell {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        let output = output.recv_timeout(DRAINED_WITHIN).unwrap_or_else(|_| {
-            "(its output could not be read: a process it started still holds it)".to_owned()
-        });
-        let output = if self.hidden.is_empty() {
-            output
+        let kept = output
+            .recv_timeout(DRAINED_WITHIN)
+            .unwrap_or_else(|_| Kept {
+                head: "(its output could not be read: a process it started still holds it)"
+                    .to_owned(),
+                ..Kept::default()
+            });
+        // The token is hidden in each part on its own, so the note stays where the shell put it.
+        let hide = |part: String| {
+            if self.hidden.is_empty() {
+                part
+            } else {
+                part.replace(&self.hidden, "[the turn's token]")
+            }
+        };
+        let (head, tail) = (hide(kept.head), hide(kept.tail));
+        let (output, marker) = if kept.cut == 0 {
+            (format!("{head}{tail}"), None)
         } else {
-            output.replace(&self.hidden, "[the turn's token]")
+            let note = format!("\n[… {} bytes cut …]\n", kept.cut);
+            let marker = head.len()..head.len() + note.len();
+            (format!("{head}{note}{tail}"), Some(marker))
         };
         Ok(Ran {
             code,
             timed_out,
             output,
+            printed: kept.printed,
+            cut: kept.cut,
+            marker,
         })
     }
 }
@@ -158,9 +208,30 @@ fn kill_group(leader: u32) {
         .status();
 }
 
-/// Reads all of `from`, keeping its first and last halves of [`OUTPUT_AT_MOST`] and saying how
-/// much was cut between them.
-fn kept(mut from: impl std::io::Read) -> String {
+/// What [`kept`] kept of a command's output: its start and its end, how much it printed and how
+/// much was left out between them, in bytes.
+#[derive(Debug, Default)]
+struct Kept {
+    head: String,
+    tail: String,
+    printed: usize,
+    cut: usize,
+}
+
+impl Kept {
+    /// The two parts with the shell's note between them, as the model reads them.
+    #[cfg(test)]
+    fn text(&self) -> String {
+        if self.cut == 0 {
+            return format!("{}{}", self.head, self.tail);
+        }
+        format!("{}\n[… {} bytes cut …]\n{}", self.head, self.cut, self.tail)
+    }
+}
+
+/// Reads all of `from`, keeping its first and last halves of [`OUTPUT_AT_MOST`]; the halves end
+/// and start on whole UTF-8 characters, and what is between them is counted as cut.
+fn kept(mut from: impl std::io::Read) -> Kept {
     let half = OUTPUT_AT_MOST / 2;
     let mut head: Vec<u8> = Vec::new();
     let mut tail: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
@@ -183,13 +254,34 @@ fn kept(mut from: impl std::io::Read) -> String {
             tail.push_back(byte);
         }
     }
-    let head = String::from_utf8_lossy(&head).into_owned();
-    let tail = String::from_utf8_lossy(tail.make_contiguous()).into_owned();
-    let cut = total.saturating_sub(OUTPUT_AT_MOST);
-    if cut == 0 {
-        return format!("{head}{tail}");
+    let mut tail: Vec<u8> = tail.into_iter().collect();
+    if total <= OUTPUT_AT_MOST {
+        head.extend_from_slice(&tail);
+        return Kept {
+            head: String::from_utf8_lossy(&head).into_owned(),
+            tail: String::new(),
+            printed: total,
+            cut: 0,
+        };
     }
-    format!("{head}\n[… {cut} bytes cut …]\n{tail}")
+    // A character split by either end of the cut goes with the cut, whole.
+    let ends_whole = std::str::from_utf8(&head).map_or_else(|e| e.valid_up_to(), |_| head.len());
+    if head.len() - ends_whole < 4 {
+        head.truncate(ends_whole);
+    }
+    let starts_whole = tail
+        .iter()
+        .take(3)
+        .take_while(|b| (0x80..0xC0).contains(*b))
+        .count();
+    tail.drain(..starts_whole);
+    let cut = total - head.len() - tail.len();
+    Kept {
+        head: String::from_utf8_lossy(&head).into_owned(),
+        tail: String::from_utf8_lossy(&tail).into_owned(),
+        printed: total,
+        cut,
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +379,54 @@ mod tests {
         );
         assert!(ran.output.len() < OUTPUT_AT_MOST + 100);
         // Exactly at the limit, nothing is cut.
-        assert_eq!(kept(&vec![b'y'; OUTPUT_AT_MOST][..]).len(), OUTPUT_AT_MOST);
+        assert_eq!(
+            kept(&vec![b'y'; OUTPUT_AT_MOST][..]).text().len(),
+            OUTPUT_AT_MOST
+        );
+    }
+
+    /// The bytes of `ran.output` that are the command's own, not the shell's note of its cut.
+    fn its_own(ran: &Ran) -> usize {
+        ran.output.len() - ran.marker.as_ref().map_or(0, std::ops::Range::len)
+    }
+
+    #[test]
+    fn a_cut_output_says_what_was_printed_what_was_cut_and_where_its_note_is() {
+        let ran = here()
+            .run(
+                "echo first; head -c 100000 /dev/zero | tr '\\0' x; echo; echo last",
+                USUAL,
+            )
+            .unwrap();
+        assert_eq!(ran.printed, 6 + 100_000 + 1 + 5);
+        assert_eq!(ran.cut, ran.printed - its_own(&ran));
+        let marker = ran.marker.clone().expect("the shell's note of its cut");
+        assert_eq!(
+            &ran.output[marker],
+            format!("\n[… {} bytes cut …]\n", ran.cut)
+        );
+    }
+
+    #[test]
+    fn a_cut_keeps_whole_characters_and_counts_bytes() {
+        // 30,000 characters of two bytes each: the cut never splits one.
+        let ran = here()
+            .run("python3 -c \"print('é' * 30000, end='')\"", USUAL)
+            .unwrap();
+        assert_eq!(ran.printed, 60_000);
+        assert!(!ran.output.contains('\u{FFFD}'), "a character was split");
+        assert_eq!(ran.cut, ran.printed - its_own(&ran));
+    }
+
+    #[test]
+    fn output_within_the_limit_is_whole_and_has_no_note() {
+        let ran = here().run("echo short", USUAL).unwrap();
+        assert_eq!((ran.printed, ran.cut, ran.marker.clone()), (6, 0, None));
+    }
+
+    #[test]
+    fn a_note_a_command_prints_itself_is_not_the_shells() {
+        let ran = here().run("echo '[… 99999 bytes cut …]'", USUAL).unwrap();
+        assert_eq!((ran.cut, ran.marker.clone()), (0, None));
     }
 }

@@ -371,8 +371,14 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                     continue;
                 }
                 only_already = false;
+                // What the shell's command printed and what the shell cut, for the cut below.
+                let mut printed = None;
                 let reply = match (&shell, setup.workbench.as_deref()) {
-                    (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
+                    (Some(shell), _) if call.name == SHELL => {
+                        let (reply, ran) = in_the_shell(shell, &mut did, call);
+                        printed = ran;
+                        reply
+                    }
                     (_, Some(dir)) if is_repo_tool(&call.name) => in_the_repo(
                         &node,
                         dir,
@@ -411,7 +417,13 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 let asked_whole =
                     arguments(&call.arguments).is_ok_and(|args| crate::gist::wants_raw(&args));
                 if !asked_whole {
-                    reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
+                    reply.text = for_the_model(
+                        setup.api,
+                        &call.name,
+                        &on_the_node,
+                        reply.text,
+                        printed.as_ref(),
+                    );
                 }
                 let ended = if reply.asked {
                     Some(Taken::AskedTheOwner)
@@ -1856,7 +1868,18 @@ const RESULT_END_KEPT: usize = 1024;
 /// ask for less, whichever API the turn is on. HQ's own results (a briefing, a document's part)
 /// are sized by HQ and read whole; on a house turn a long result's gist, when it has one, is what
 /// the model reads.
-pub(crate) fn for_the_model(_api: Api, tool: &str, on_the_node: &[String], text: String) -> String {
+///
+/// A shell result comes with what its command printed and what the shell cut (`earlier`, from
+/// the shell itself, never read back from the text): when this cut takes the shell's note with
+/// it, one note says both, so the model is told truly how many of the bytes the command printed
+/// it is not shown (the agentic-harness climb, round 1: told 10 KB when 44 KB were missing).
+pub(crate) fn for_the_model(
+    _api: Api,
+    tool: &str,
+    on_the_node: &[String],
+    text: String,
+    earlier: Option<&crate::shell::Earlier>,
+) -> String {
     let the_labs = tool == SHELL || on_the_node.iter().any(|n| n == tool);
     if !the_labs || text.len() <= RESULT_AT_MOST {
         return text;
@@ -1871,16 +1894,55 @@ pub(crate) fn for_the_model(_api: Api, tool: &str, on_the_node: &[String], text:
     while !text.is_char_boundary(end_from) {
         end_from += 1;
     }
-    let end_from = text[end_from..]
+    let mut end_from = text[end_from..]
         .find('\n')
         .map_or(end_from, |at| end_from + at + 1);
-    let left_out = end_from.saturating_sub(start_end);
-    format!(
-        "{}[{left_out} bytes of this result's middle left out, to keep the turn within its \
-         budget: ask for less (a path, grep, head, tail or sed -n, fewer lines).]\n{}",
-        &text[..start_end],
-        &text[end_from..]
-    )
+    let mut start_end = start_end;
+    let Some(earlier) = earlier else {
+        let left_out = end_from.saturating_sub(start_end);
+        return format!(
+            "{}[{left_out} bytes of this result's middle left out, to keep the turn within its \
+             budget: ask for less (a path, grep, head, tail or sed -n, fewer lines).]\n{}",
+            &text[..start_end],
+            &text[end_from..]
+        );
+    };
+    // The shell's note, when this cut reaches it, goes whole, and is said in this one.
+    let folded = earlier
+        .marker
+        .clone()
+        .filter(|m| m.start < end_from && start_end < m.end);
+    if let Some(m) = &folded {
+        start_end = start_end.min(m.start);
+        end_from = end_from.max(m.end);
+    }
+    let removed = end_from.saturating_sub(start_end);
+    let ask = "Ask for less (a path, grep, head, tail or sed -n, fewer lines).";
+    let printed = earlier.printed;
+    let note = match &folded {
+        Some(m) => {
+            let ours = removed - m.len();
+            let left_out = earlier.cut + ours;
+            let half = crate::shell::OUTPUT_AT_MOST / 2;
+            format!(
+                "[{left_out} of the {printed} bytes the command printed are left out of this \
+                 result: the shell kept its first and last {half} bytes and cut {}, and {ours} \
+                 more were left out to keep the turn within its budget. {ask}]",
+                earlier.cut
+            )
+        }
+        None if earlier.cut > 0 => format!(
+            "[{removed} more of the {printed} bytes the command printed are left out here, to \
+             keep the turn within its budget, besides the {} the shell cut, noted in this \
+             result. {ask}]",
+            earlier.cut
+        ),
+        None => format!(
+            "[{removed} of the {printed} bytes the command printed are left out of this result, \
+             to keep the turn within its budget. {ask}]"
+        ),
+    };
+    format!("{}{note}\n{}", &text[..start_end], &text[end_from..])
 }
 
 /// `text` on one line, cut to `most` characters.
@@ -2076,7 +2138,11 @@ fn shell_tool() -> Value {
 /// Runs one call of the workbench's shell, here in the sandbox, and notes it in the turn's
 /// line. A command without a reason is refused, as a contract would; one that fails, or runs
 /// out of time, is said as such to the model.
-fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
+fn in_the_shell(
+    shell: &Shell,
+    did: &mut Ledger,
+    call: &Call,
+) -> (Reply, Option<crate::shell::Earlier>) {
     let refused = |text: String| Reply {
         text: format!("Refused: {text}"),
         refused: true,
@@ -2087,25 +2153,28 @@ fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
         Ok(args) => args,
         Err(why) => {
             did.unreadable(SHELL);
-            return refused(why);
+            return (refused(why), None);
         }
     };
     let command = args["command"].as_str().unwrap_or("").trim();
     let shown = cut(command);
     if command.is_empty() {
         did.ran("tried to run nothing, refused".to_owned());
-        return refused("give the command to run, in `command`".to_owned());
+        return (
+            refused("give the command to run, in `command`".to_owned()),
+            None,
+        );
     }
     if args["why"].as_str().is_none_or(|why| why.trim().is_empty()) {
         did.ran(format!("tried to run `{shown}`, refused"));
-        return refused("say why you run it, in `why`".to_owned());
+        return (refused("say why you run it, in `why`".to_owned()), None);
     }
     let within = Shell::within(args["seconds"].as_u64());
     let ran = match shell.run(command, within) {
         Ok(ran) => ran,
         Err(why) => {
             did.ran(format!("tried to run `{shown}`, failed"));
-            return refused(why);
+            return (refused(why), None);
         }
     };
     let how = match (ran.timed_out, ran.code) {
@@ -2115,12 +2184,17 @@ fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
         (false, None) => " (killed)".to_owned(),
     };
     did.ran(format!("ran `{shown}`{how}"));
-    Reply {
-        text: ran.said(within),
-        refused: !ran.ok(),
-        asked: false,
-        moved_on: false,
-    }
+    let text = ran.said(within);
+    let printed = ran.cut_in_said(&text);
+    (
+        Reply {
+            text,
+            refused: !ran.ok(),
+            asked: false,
+            moved_on: false,
+        },
+        Some(printed),
+    )
 }
 
 /// A command as the turn's line shows it: on one line, cut short.
@@ -4669,10 +4743,127 @@ mod tests {
                 return i;
             }
             read += next;
-            let text = for_the_model(Api::Anthropic, tool, on_the_node, text.clone());
+            let text = for_the_model(Api::Anthropic, tool, on_the_node, text.clone(), None);
             round(&mut talk, &format!("c{i}"), tool, args, &text);
         }
         calls.len()
+    }
+
+    /// A shell result as `Ran::said` makes one, with the shell's cut where the shell puts it.
+    fn a_cut_shell_result(printed: usize, filler: &str) -> (String, crate::shell::Earlier) {
+        let half = crate::shell::OUTPUT_AT_MOST / 2;
+        let line = |n: usize| format!("row {n:05} {filler}\n");
+        let mut whole = String::new();
+        let mut n = 0;
+        while whole.len() < printed {
+            whole.push_str(&line(n));
+            n += 1;
+        }
+        let mut end = printed;
+        while !whole.is_char_boundary(end) {
+            end -= 1;
+        }
+        whole.truncate(end);
+        while whole.len() < printed {
+            whole.push('x');
+        }
+        let mut head_end = half;
+        while !whole.is_char_boundary(head_end) {
+            head_end -= 1;
+        }
+        let mut tail_from = printed - half;
+        while !whole.is_char_boundary(tail_from) {
+            tail_from += 1;
+        }
+        let cut = tail_from - head_end;
+        let note = format!("\n[… {cut} bytes cut …]\n");
+        let said = format!(
+            "exit 0\n{}{note}{}",
+            &whole[..head_end],
+            &whole[tail_from..]
+        );
+        let at = "exit 0\n".len() + head_end;
+        (
+            said,
+            crate::shell::Earlier {
+                printed,
+                cut,
+                marker: Some(at..at + note.len()),
+            },
+        )
+    }
+
+    /// `(left out, printed)` from the note of a cut result, and the bytes of the command's own
+    /// it shows: what it reads but the first line and the note.
+    fn the_note(read: &str) -> (usize, usize, usize) {
+        let line = read
+            .lines()
+            .find(|l| l.contains("bytes the command printed"))
+            .unwrap_or_else(|| panic!("no note: {read}"));
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let left_out = words[0].trim_start_matches('[').parse().unwrap();
+        let printed = words[3].parse().unwrap();
+        let shown = read.len() - "exit 0\n".len() - (line.len() + 1);
+        (left_out, printed, shown)
+    }
+
+    /// Round 1 of the agentic-harness climb (4 Nov): a 50 KB report was cut by the shell to 16
+    /// KB and by the turn to about 6 KB, and the turn's cut took the shell's note with it, so the
+    /// model was told 10 KB were left out when 44 KB were. Now one note says both, in bytes.
+    #[test]
+    fn a_result_cut_twice_says_truly_how_much_of_what_was_printed_is_missing() {
+        for (printed, filler) in [
+            (50_000, "abcdefgh abcdefgh"),
+            (50_000, "é→€ é→€ é→€"),
+            (16_385, "x"),
+        ] {
+            let (said, earlier) = a_cut_shell_result(printed, filler);
+            let read = for_the_model(Api::Anthropic, SHELL, &[], said, Some(&earlier));
+            assert!(read.len() <= RESULT_AT_MOST + 400, "{}", read.len());
+            assert!(
+                !read.contains("bytes cut"),
+                "the shell's note is folded into one: {read}"
+            );
+            assert!(!read.contains('\u{FFFD}'));
+            let (left_out, told_printed, shown) = the_note(&read);
+            assert_eq!(told_printed, printed);
+            assert_eq!(left_out, printed - shown, "{read}");
+        }
+    }
+
+    /// Output the shell kept whole but the turn cuts says, likewise, how much of what was
+    /// printed is missing.
+    #[test]
+    fn a_result_cut_once_by_the_turn_says_so_of_what_was_printed() {
+        let output = "a line of the report\n".repeat(500);
+        let printed = output.len();
+        let said = format!("exit 0\n{output}");
+        let earlier = crate::shell::Earlier {
+            printed,
+            cut: 0,
+            marker: None,
+        };
+        let read = for_the_model(Api::Anthropic, SHELL, &[], said, Some(&earlier));
+        let (left_out, told_printed, shown) = the_note(&read);
+        assert_eq!(
+            (told_printed, left_out),
+            (printed, printed - shown),
+            "{read}"
+        );
+    }
+
+    /// A note a command prints itself is only text: the counts come from the shell.
+    #[test]
+    fn a_note_a_command_prints_does_not_change_the_count() {
+        let (said, earlier) = a_cut_shell_result(50_000, "[… 99999 bytes cut …]");
+        let read = for_the_model(Api::Anthropic, SHELL, &[], said, Some(&earlier));
+        let note = read
+            .lines()
+            .find(|l| l.contains("bytes the command printed"))
+            .unwrap();
+        assert!(!note.contains("99999"), "{note}");
+        let (left_out, _, shown) = the_note(&read);
+        assert_eq!(left_out, 50_000 - shown);
     }
 
     /// D20 of round 3 (1 Nov): Ada's Haiku turns on 949 (pin homepage and stats) read 400 to
@@ -4686,7 +4877,7 @@ mod tests {
     fn a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn() {
         let on_the_node = vec!["image_tags".to_owned(), "container_logs".to_owned()];
         let listing = a_large_listing();
-        let read = for_the_model(Api::Anthropic, SHELL, &on_the_node, listing.clone());
+        let read = for_the_model(Api::Anthropic, SHELL, &on_the_node, listing.clone(), None);
         assert!(read.len() <= RESULT_AT_MOST + 400, "{}", read.len());
         assert!(
             read.starts_with("roles/role0/defaults/main.yml"),
@@ -4703,20 +4894,27 @@ mod tests {
             "container_logs",
             &on_the_node,
             listing.clone(),
+            None,
         );
         assert!(logs.len() < listing.len());
         let small = "a short answer (receipt r1)".to_owned();
         assert_eq!(
-            for_the_model(Api::Anthropic, SHELL, &on_the_node, small.clone()),
+            for_the_model(Api::Anthropic, SHELL, &on_the_node, small.clone(), None),
             small
         );
         assert_eq!(
-            for_the_model(Api::Anthropic, "read_doc", &on_the_node, listing.clone()),
+            for_the_model(
+                Api::Anthropic,
+                "read_doc",
+                &on_the_node,
+                listing.clone(),
+                None
+            ),
             listing
         );
         // DeepSeek's turns go the house's way and filled their budget the same way (Rae, 238 KB
         // over 7 calls on 955, 1 Nov): held to size on every API.
-        let deepseek = for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone());
+        let deepseek = for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone(), None);
         assert!(deepseek.len() <= RESULT_AT_MOST + 200, "{}", deepseek.len());
         assert!(deepseek.contains("left out"), "{deepseek}");
         // A turn of 949's shape: read whole, the budget ends it before its submission (9 of 11
