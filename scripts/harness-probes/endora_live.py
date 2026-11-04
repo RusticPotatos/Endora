@@ -137,7 +137,9 @@ def run(args):
         attempt["ended_at"] = time.time()
     attempt_path = out / "attempt.json"
     attempt_path.write_text(json.dumps(attempt, indent=2) + "\n")
-    verdict = rig.grade(args.family, args.seed, probe, attempt_path)
+    # tool_failure: the side effects as the item's observer recorded them, exported by the rig
+    # through the runner host's Docker (round 18); without them the criterion is unknown.
+    verdict = rig.grade(args.family, args.seed, probe, attempt_path, observations=args.observations)
     (out / "grade.json").write_text(json.dumps(verdict, indent=2) + "\n")
     print(json.dumps({"collected": collected, "terminal": attempt["terminal"],
                       "artifact_pass": verdict.get("artifact_pass"), "pass": verdict.get("pass"),
@@ -156,6 +158,7 @@ def main(argv=None):
     p.add_argument("--context", default="nas")
     p.add_argument("--hq", default="endora-hq")
     p.add_argument("--node", default="endora-node")
+    p.add_argument("--observations", help="tool_failure: the observer's exported records (JSON list)")
     return run(p.parse_args(argv))
 
 
