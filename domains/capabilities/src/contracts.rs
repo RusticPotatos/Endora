@@ -75,41 +75,6 @@ pub struct Contract {
 }
 
 impl Contract {
-    /// Whether a turn of a member in `role` may be given what this returns: a Confidential
-    /// contract (a log) by the bridge's rule, to a turn on the house's model or to the lead's on
-    /// a cloud model, as the owner decided (ADR 0109).
-    #[must_use]
-    pub fn may_be_seen_by(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        let tier = if self.tier == "confidential" {
-            endora_kernel::Tier::Confidential
-        } else {
-            endora_kernel::Tier::Internal
-        };
-        crate::bridge::may_see(tier, self.name, role, on_a_cloud_model)
-    }
-
-    /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
-    /// act only for a member who works on the house, as the bridge's profiles say: the lead and
-    /// the developers. The CEO reads what the lead reads and directs; it takes no step on the
-    /// house itself (ADR 0111, 0120), and nor do the reviewer and the researcher (amended
-    /// 2026-10-19). The wing's git contracts (ADR 0115) go to
-    /// a lead or a developer, whatever its brain: the fork is public. The tester is offered the
-    /// checkout alone (amended 2026-10-19): checking a branch out is her reading of it, the one
-    /// receipt of her own she could not otherwise have; she submits nothing.
-    #[must_use]
-    pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        if self.name == REPO_CHECKOUT {
-            return matches!(role, "lead" | "developer" | "reviewer");
-        }
-        if self.name == REPO_SUBMIT {
-            return matches!(role, "lead" | "developer");
-        }
-        if self.kind == Kind::AutomaticAct && !crate::bridge::may(role, crate::bridge::Kind::Act) {
-            return false;
-        }
-        self.may_be_seen_by(role, on_a_cloud_model)
-    }
-
     /// As an MCP tool: name, description and input schema.
     #[must_use]
     pub fn as_tool(&self) -> Value {
@@ -186,12 +151,13 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_CHECKOUT,
-            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Upstream ansible-nas comes with it, read-only, as upstream/<its default branch>, so `git log --oneline <base>..upstream/<branch>` shows what upstream has that the fork lacks (the checkout names both). Free; the sandbox stays offline.",
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Upstream ansible-nas comes with it, read-only, as upstream/<its default branch>, so `git log --oneline <base>..upstream/<branch>` shows what upstream has that the fork lacks (the checkout names both). Your sandbox keeps the item's work between turns: a checkout already there is said to be, and kept as it is, unless you ask to refresh it. Free; the sandbox stays offline.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug (a submitted one of your work)." },
                 "why": { "type": "string", "description": "Why, in a few words." },
+                "refresh": { "type": "boolean", "description": "Only when the checkout is already there: true fetches the node's latest into it as node/<branch>, beside your work, never over it." },
             }, "required": ["why"] }),
         },
         Contract {
@@ -484,103 +450,34 @@ mod tests {
         assert_eq!(all()[1].tier, "confidential", "logs are");
     }
 
+    /// Every member is offered every contract (ADR 0142, one team): none is Restricted, the
+    /// one tier the bridge never gives, so no title or model keeps one from a turn. What a
+    /// contract may do is its own guard's (Endora's own containers, the switches, the wing).
     #[test]
-    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_a_tester_may_only_check_out() {
+    fn no_contract_is_restricted_so_every_turn_is_offered_each() {
+        for contract in all() {
+            assert!(
+                matches!(contract.tier, "internal" | "confidential"),
+                "{}",
+                contract.name
+            );
+        }
         let all = all();
         let (checkout, submit) = (&all[5], &all[6]);
         assert_eq!((checkout.name, submit.name), (REPO_CHECKOUT, REPO_SUBMIT));
-        for contract in [checkout, submit] {
-            assert_eq!(contract.tier, "internal", "the fork is public");
-            for role in ["lead", "developer"] {
-                for cloud in [false, true] {
-                    assert!(
-                        contract.offered_to(role, cloud),
-                        "{} to a {role}",
-                        contract.name
-                    );
-                }
-            }
-            for role in ["ceo", "researcher", ""] {
-                assert!(
-                    !contract.offered_to(role, false),
-                    "{} to a {role}",
-                    contract.name
-                );
-            }
+        assert_eq!(
+            (checkout.tier, submit.tier),
+            ("internal", "internal"),
+            "the fork is public"
+        );
+        for contract in &all[3..5] {
+            assert_eq!(contract.tier, "internal", "names and wiring only");
         }
-        // Live (task 670): the tester had no way to read a submitted branch, so no reading of
-        // her own, so no pass was ever possible. Checking it out is her reading (ADR 0115,
-        // amended); she submits nothing, on any brain.
-        for cloud in [false, true] {
-            assert!(checkout.offered_to("reviewer", cloud));
-            assert!(!submit.offered_to("reviewer", cloud));
-        }
-    }
-
-    #[test]
-    fn every_role_on_any_brain_may_look_up_an_images_tags() {
         // A sandbox is offline: HQ twice failed to pin an image off latest for want of a
-        // registry to ask (2026-10-30). The tags are public, so every role reads them.
-        let all = all();
+        // registry to ask (2026-10-30). The tags are public.
         let tags = all.iter().find(|c| c.name == IMAGE_TAGS).unwrap();
         assert_eq!((tags.kind, tags.tier), (Kind::Read, "internal"));
         assert_eq!(tags.input["required"], json!(["image"]));
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            for cloud in [false, true] {
-                assert!(tags.offered_to(role, cloud), "a {role}");
-            }
-        }
-    }
-
-    #[test]
-    fn a_restart_is_offered_only_to_the_roles_that_act() {
-        // The bridge's profiles say who acts on the house: the lead and the developers. The
-        // reviewer, the researcher and the CEO only read, and a role not listed does nothing.
-        let all = all();
-        let restart = all.iter().find(|c| c.name == RESTART_CONTAINER).unwrap();
-        for cloud in [false, true] {
-            for role in ["lead", "developer"] {
-                assert!(restart.offered_to(role, cloud), "a {role}");
-            }
-            for role in ["ceo", "reviewer", "researcher", "owner", ""] {
-                assert!(!restart.offered_to(role, cloud), "a {role}");
-            }
-        }
-    }
-
-    #[test]
-    fn every_role_on_any_brain_is_offered_the_map_and_the_docs() {
-        let all = all();
-        for contract in &all[3..5] {
-            assert_eq!(contract.tier, "internal", "names and wiring only");
-            for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-                for cloud in [false, true] {
-                    assert!(
-                        contract.offered_to(role, cloud),
-                        "{} to a {role}",
-                        contract.name
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_log_goes_to_any_turn_on_any_model() {
-        // ADR 0141: Confidential is open to Claude.
-        let all = all();
-        let (status, logs, restart) = (&all[0], &all[1], &all[2]);
-        for role in ["lead", "developer", "reviewer", "researcher"] {
-            for cloud in [false, true] {
-                assert!(logs.may_be_seen_by(role, cloud), "{role}, cloud {cloud}");
-                assert!(status.may_be_seen_by(role, cloud) && restart.may_be_seen_by(role, cloud));
-            }
-        }
-        // The CEO reads the home lab as the lead does, its state and its logs, and never acts
-        // on it (ADR 0120, the owner's word of 2026-10-18).
-        assert!(status.offered_to("ceo", true) && logs.offered_to("ceo", true));
-        assert!(!restart.offered_to("ceo", true) && !restart.offered_to("ceo", false));
-        assert!(restart.offered_to("lead", true));
     }
 
     #[test]

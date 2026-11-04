@@ -21,8 +21,9 @@ use super::work::{Millis, Refusal, RunId, TaskId};
 pub const EXCERPT_MOST: usize = 300;
 /// The most of a call's arguments a receipt keeps, in characters.
 pub const ARGS_MOST: usize = 120;
-/// The most a criterion says, in characters.
-pub const CRITERION_MOST: usize = 200;
+/// The most a criterion says, in characters. Set 3's longest was 582; at 200, 21 of its 49 were
+/// cut, and a member never read what they ended with (#1049).
+pub const CRITERION_MOST: usize = 1000;
 /// The most criteria a task has.
 pub const MOST_CRITERIA: usize = 8;
 /// The most references one claim cites.
@@ -220,8 +221,11 @@ impl Criterion {
     }
 
     /// The owner's criteria from the screen, a line each: `live:` before one marks it live.
-    #[must_use]
-    pub fn from_lines(lines: &[String]) -> Vec<Self> {
+    ///
+    /// # Errors
+    /// A criterion past [`CRITERION_MOST`], naming it ([`Self::written`]). Every line given is
+    /// read, none left out: a list past [`MOST_CRITERIA`] is the hand-out's to refuse.
+    pub fn from_lines(lines: &[String]) -> Result<Vec<Self>, String> {
         lines
             .iter()
             .filter_map(|line| {
@@ -230,10 +234,27 @@ impl Criterion {
                     Some(head) if head.eq_ignore_ascii_case("live:") => (line[5..].trim(), true),
                     _ => (line, false),
                 };
-                (!text.is_empty()).then(|| Self::new(text, live))
+                (!text.is_empty()).then_some((text, live))
             })
-            .take(MOST_CRITERIA)
+            .enumerate()
+            .map(|(i, (text, live))| Self::written(i + 1, text, live))
             .collect()
+    }
+
+    /// Criterion `n` as the owner or a member wrote it: whole, or refused when it is past
+    /// [`CRITERION_MOST`], since a criterion cut short is a different one (#1049).
+    ///
+    /// # Errors
+    /// Saying which criterion, how long it is and the most it may be.
+    pub fn written(n: usize, text: &str, live: bool) -> Result<Self, String> {
+        let long = super::record::clean(text).chars().count();
+        if long > CRITERION_MOST {
+            return Err(format!(
+                "criterion {n} is {long} characters, more than the {CRITERION_MOST} characters \
+                 one may be: say it shorter, or split it in two"
+            ));
+        }
+        Ok(Self::new(text, live))
     }
 }
 
@@ -255,11 +276,14 @@ pub fn criteria_hash(criteria: &[Criterion]) -> String {
 /// [`owner_may_hand_out`].)
 ///
 /// # Errors
-/// [`Refusal::NoCriteria`] when work handed on has none, [`Refusal::TooLong`] past
+/// [`Refusal::NoCriteria`] when work handed on has none, [`Refusal::TooMany`] past
 /// [`MOST_CRITERIA`].
 pub fn may_hand_on(criteria: &[Criterion], to_another: bool) -> Result<(), Refusal> {
     if criteria.len() > MOST_CRITERIA {
-        return Err(Refusal::TooLong(MOST_CRITERIA));
+        return Err(Refusal::TooMany {
+            most: MOST_CRITERIA,
+            of: "criteria",
+        });
     }
     if to_another && criteria.is_empty() {
         return Err(Refusal::NoCriteria);
@@ -273,11 +297,14 @@ pub fn may_hand_on(criteria: &[Criterion], to_another: bool) -> Result<(), Refus
 /// has nothing to check a part against.
 ///
 /// # Errors
-/// [`Refusal::OwnerNeedsCriteria`] when there are none, [`Refusal::TooLong`] past
+/// [`Refusal::OwnerNeedsCriteria`] when there are none, [`Refusal::TooMany`] past
 /// [`MOST_CRITERIA`].
 pub fn owner_may_hand_out(criteria: &[Criterion]) -> Result<(), Refusal> {
     if criteria.len() > MOST_CRITERIA {
-        return Err(Refusal::TooLong(MOST_CRITERIA));
+        return Err(Refusal::TooMany {
+            most: MOST_CRITERIA,
+            of: "criteria",
+        });
     }
     if criteria.is_empty() {
         return Err(Refusal::OwnerNeedsCriteria);
@@ -859,7 +886,7 @@ mod tests {
         assert_eq!(Criterion::read(""), []);
         let lines = ["live: radarr answers", "  ", "the queue is empty"].map(str::to_owned);
         assert_eq!(
-            Criterion::from_lines(&lines),
+            Criterion::from_lines(&lines).unwrap(),
             [
                 Criterion::new("radarr answers", true),
                 Criterion::new("the queue is empty", false)
@@ -964,7 +991,10 @@ mod tests {
         let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
         assert_eq!(
             may_hand_on(&many, true),
-            Err(Refusal::TooLong(MOST_CRITERIA))
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
     }
 
@@ -979,13 +1009,58 @@ mod tests {
         let many = vec![Criterion::new("x", false); MOST_CRITERIA + 1];
         assert_eq!(
             owner_may_hand_out(&many),
-            Err(Refusal::TooLong(MOST_CRITERIA))
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
         let words = Refusal::OwnerNeedsCriteria.to_string();
         assert!(words.contains("what done means"), "{words}");
         assert!(
             words.contains("live:"),
             "it says how to mark a live one: {words}"
+        );
+    }
+
+    /// Set 3's #1049: the owner's third criterion was 582 characters, and HQ kept its first 200,
+    /// so the member never read its last requirement ("plain SimpleEval still raises
+    /// FeatureNotAvailable for a set comprehension"), and the blind judge failed the work for
+    /// the missing test. 21 of the set's 49 criteria were longer than 200. A criterion that long
+    /// is now kept whole, and one past the most is refused, saying which, never cut.
+    #[test]
+    fn a_criterion_as_long_as_set_threes_is_kept_whole_and_a_longer_one_refused() {
+        let third = "EvalWithCompoundTypes evaluates set comprehensions: `{x % 3 for x in [1, 2, 3, 4]}` -> {0, 1, 2} and `{(x, y) for x in [1, 2] for y in [1, 2] if x != y}` -> {(1, 2), (2, 1)}; the loop variable is not visible after evaluation; a set comprehension producing more than MAX_COMPREHENSION_LENGTH items raises IterableTooLong; plain SimpleEval still raises FeatureNotAvailable for a set comprehension.";
+        let kept = Criterion::from_lines(&[third.to_owned()]).unwrap();
+        assert_eq!(kept[0].text, third);
+        let long = "x".repeat(CRITERION_MOST + 1);
+        let why = Criterion::from_lines(&["fine".to_owned(), long]).unwrap_err();
+        assert!(
+            why.contains("criterion 2") && why.contains(&format!("{CRITERION_MOST} characters")),
+            "{why}"
+        );
+    }
+
+    /// The owner's screen gives criteria a line each, and every line given is read: one past
+    /// [`MOST_CRITERIA`] is not left out here, so the owner's route refuses the list whole
+    /// rather than making the task with its last requirement missing.
+    #[test]
+    fn every_line_of_the_owners_criteria_is_read_and_none_is_left_out() {
+        let lines: Vec<String> = (1..=MOST_CRITERIA + 1)
+            .map(|n| format!("requirement {n}"))
+            .collect();
+        let read = Criterion::from_lines(&lines).unwrap();
+        assert_eq!(read.len(), MOST_CRITERIA + 1);
+        assert_eq!(read[MOST_CRITERIA].text, lines[MOST_CRITERIA]);
+        // A count is said as a count, not as characters (it read "longer than 8 characters").
+        let words = owner_may_hand_out(&read).unwrap_err().to_string();
+        assert!(words.contains("more than the 8 criteria"), "{words}");
+        assert!(!words.contains("characters"), "{words}");
+        assert_eq!(
+            owner_may_hand_out(&read),
+            Err(Refusal::TooMany {
+                most: MOST_CRITERIA,
+                of: "criteria"
+            })
         );
     }
 

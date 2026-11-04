@@ -129,6 +129,19 @@ waiting line of the outcomes (0132), and the member's roster line.
 It is on from the start because a runaway on free models is the failure it prevents, and because
 nothing is lost: the turns wait.
 
+**Amended 2026-11-01 (D15 of the baseline experiment's round 3): waste, not a count.** Bo, on the
+house's model, stopped at "60 turns a day" on 31 Oct whatever his turns achieved, partly from
+looping on one item's questions. A count stops work that is moving as surely as a loop that is
+not. The cap is now **ten turns in a row today, on the house's own models, that showed nothing**
+(`THRESHOLDS.free_turns_wasted`): a turn whose label is not productive (talk only, empty, or a
+failure that ran), counted oldest first by the owner's day; a turn that did something (a reading,
+an act, a move, a block, or new work kept on its item's branch, as D12 counts it) sets the count
+back to none; a turn not yet settled, or that never started, says nothing. Past it the member's
+work turns wait until the day turns, as before: *"waiting for tomorrow: 10 turns in a row on the
+house's own models showed nothing"*. A runaway whose turns look busy is the tripwire's, below;
+repeated failure of an item is its climb (0142); an item blocked and judged wakes nobody but for
+the owner (0142, amended 2026-10-31).
+
 ### A runaway tripwire, on from the start
 
 **More than 40 turns started by the team in any 10 minutes** (`THRESHOLDS.runaway_turns`,

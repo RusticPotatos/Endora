@@ -332,6 +332,9 @@ run start --round 2 --from-tasks 882-890,903 --yes  # prints the new ids as JSON
 run status --tasks 923-932                          # per task, as JSON
 run fields --tasks 923-932 --header                 # the round's table, to paste below
 run check --task 929                                # the final post's quotes against its receipts
+run metrics --tasks 947-955 --label "Round 3" --verified 947-949,951-955   # the rounds' table
+run metrics --tasks 882-890,903 --label "Round 0" --tasks 913-922 --label "Round 1"  # side by side
+run metrics --tasks 960-973 --label "Round 4" --groups fixed=960-969,fresh=970-972,outside=973
 ```
 
 - **`start`** (the only writing subcommand, and only with `--yes`) sets the previous round aside:
@@ -351,6 +354,23 @@ run check --task 929                                # the final post's quotes ag
   exists and is the task's, and every quoted line (`>` lines, fenced lines, long `inline`
   spans) is in a cited receipt's stored result. It exits 1 on a problem. Judging stays the
   owner's (or the judge's).
+- **`metrics`** scores a round on one measure, the rows of "Rounds side by side" and the piping
+  audit's (round 4's item E), a column a round and one a group (`--groups`, so a round reads
+  three ways: the fixed ten, the homelab's fresh tasks, the task outside it), as Markdown or
+  `--json`. Verified is the judge's and comes from `--verified`; the store cannot know it.
+  Spend is the ledger's charges; turns are the turns that started, and "changed nothing" is
+  HQ's own flag (`runs.moved_forward` unset); checkouts are `repo_checkout` receipts; wakes are
+  by reason, with every refused wake in brackets; handovers and climbs are HQ's own posts
+  ("Handover of #…", "It failed 3 times at …'s rank: it goes to …, one rank up."); time working
+  is the sum of the turns' durations, waiting the time from the task's making to done (or its
+  last turn) with no turn running; the transcript bytes cover only the turns whose transcript
+  is still kept (thirty days), and say how many. Interventions use `fields`' rule (every
+  answered question card), which counts a blocked item's repeated questions and questions after
+  ready, so it reads above a round's judged count where those happened (rounds 0–2).
+  Checked on 1 Nov against rounds 0–3: reported, spend, turns, changed nothing, checkouts,
+  wakes and desk questions match the record's "Rounds side by side, on one measure"; its climbs for rounds 0–2 included a review
+  "one rank up" (that wording ended in round 3), so `metrics` gives 14, 10 and 22 climbs, not
+  27, 19 and 47.
 
 ### Round 1 (30 Oct): the design defects, and a stronger bottom seat
 
@@ -1363,6 +1383,13 @@ new agent, orchestration layer or scoring framework.
    round: **judgment correctness** (does the judge accept and refuse rightly?) and **judgment
    delivery** (is the verdict recorded and acted on?). D19 was a delivery failure; a test of the
    reasoning alone would have passed it.
+   *Built on `round4`: four cases (one known-good README, a wrong default, the owner's own values
+   touched, a CI run no push can give) in `domains/team/tests/fixtures/judge.json`, each with its
+   right verdict. `the-judge-is-tested.feature` runs each through HQ: what HQ's rules find, the
+   reviewer (Ada, at Haiku's rank) offered the review tool up front, a wrong pass refused where a
+   rule knows it cannot hold, and the verdict recorded in the thread and acted on (done; or back
+   to the worker, woken, with one failure). Correctness of a model judge: `hq-round` step 1.5
+   gives the round's judge each case and compares.*
 7. **E. The piping audit, before round 4's changes are final (owner, 1 Nov: "let the agents be
    agents").** The question is whether HQ's own process, not the models, causes the failures.
    Round 3's record so far: 296 turns for nine tasks (Claude Code took one session each); 209
@@ -1565,6 +1592,13 @@ owner to reopen the series.
   NAS's model, which costs nothing) reached "60 turns a day is the most a member takes" and
   stopped until tomorrow, partly from looping on 953's questions. The cap guards against a
   runaway; for a free model a loop that keeps failing is what should stop it, not the count.
+  *Fixed on `round4` (ADR 0133, amended 2026-11-01): a free model waits for tomorrow after ten
+  turns in a row today that showed nothing (talk only, empty, or failed), not after sixty
+  turns; a turn that did something, or kept new work on its item's branch, sets the count back
+  to none. A busy-looking runaway is still the tripwire's. Tests
+  `a_free_models_turns_that_do_work_are_not_stopped_by_a_count`,
+  `ten_turns_in_a_row_that_show_nothing_wait_for_tomorrow_and_start_when_the_day_turns`;
+  scenarios in `caps-on-talk-and-runaway.feature`.*
   *Fixed on `round4` (7aa23595: a waste check (looping, re-reviews, rooms that keep nothing) replaces the 60-turn count), to release with round 4.*
 - [ ] **D16. The top-up refusal names a figure it then refuses.** HQ said "$2.84 may still be
   added today" and refused $2.84; $2.83 went through. The room is rounded up when said.
@@ -1574,6 +1608,14 @@ owner to reopen the series.
   failures 1 to 3, so the item climbed to Kit (Sonnet) and then Mara (Opus), who only re-checked
   the same head. $0.24 of its $0.36 came after it was ready, and the reviews went above Haiku's
   rank despite the cap (D7).
+  *Fixed on `round4`: the cause was the stranded-work check, not the refusal itself. An item in
+  review that sat with no turn was "stalled" like work in hand: one of its failures at the
+  holder's rank, and a recovery wake to the holder that HQ then refused (`in_review`). Now a
+  stalled item in review is no failure and does not climb; its holder is not woken, and its
+  reviewer is asked again, once for each time the item has moved since (`loop_stalled`,
+  `engine/loops.rs`; test `work_waiting_for_its_review_is_no_failure_of_its_holder`, which
+  reproduced 947's "failed at every rank" before the fix; scenario in
+  `what-wakes-an-item-in-the-loops.feature`).*
   *Fixed on `round4` (0345027c: a wake refused while the item waits in review is not a failure), to release with round 4.*
 - [x] **D18. DeepSeek's turns ran out of room eleven times in a row and kept nothing.** Round 3,
   948: Rae's turns ended at the budget without keeping work in progress (D12's fix), and the item
@@ -1594,6 +1636,22 @@ owner to reopen the series.
   checkout); after 12 continuations HQ counted three failures and handed it to Kit, who finished
   it in 10 turns for $0.94 (22:02–22:20 UTC), of the task's $1.38. The cap on results a turn
   reads, or a smaller `image_tags` answer, would keep it at Haiku's price. Related to D12 and D17.
+  *Fixed on `round4`. The cause was not `image_tags`, which already answers 30 tags at most
+  (about a kilobyte, `MOST_TAGS` in `domains/capabilities/src/registry.rs`), nor the checkout,
+  whose answer the model reads as a paragraph. A Claude turn reads every result whole (no stubs,
+  no gist, so the cache holds) and its budget sums every call's whole prompt: a 16 KB shell
+  listing read at the second call is counted again on each call after it. Now a result of the
+  shell's or the node's lab tools adds at most 6 KB to a Claude turn: its first 5 KB and last
+  kilobyte (the receipt), with how much was left out and to ask for less (`for_the_model`,
+  `app/worker/src/turn.rs`; ADR 0142, amended 2026-11-01), and since the owner's word of 1 Nov
+  to every API's turns, DeepSeek's among them (Rae filled 238 KB over 7 calls on 955), except a
+  result asked for whole. And on a cached model (Claude, DeepSeek) the budget now holds the
+  conversation, each byte counted once, not every resend summed: Rae's 50 KB conversation had
+  been counted as 238 KB (`counts_conversation`, `domain/handover.rs`; ADR 0142, amended
+  2026-11-01; scenario "A turn on a cached model counts its conversation once"). Test
+  `a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn`: a turn of 949's shape on a
+  measured Haiku opening (23 KB) made 9 of its 11 calls read whole, all 11 held to size. The
+  worker has no scenario suite; its test stands for one, as D19's did.*
   *Fixed on `round4` (4117683b and 92c51ac7: every lab or shell result held to 6 KB on every API, unless asked raw), to release with round 4.*
 - [x] **D21. A member capped a second time in a day stalls in silence while the pool has money.**
   Round 3, 31 Oct: Ada had today's $0.50 allowance (card 5025, approved) and reached her limit
@@ -1606,6 +1664,13 @@ owner to reopen the series.
   something cents"): the once-a-day mark for Ada was cleared, HQ raised card 5054 itself, and it
   was approved at $2.00 for the day (in place of $0.50; the pool had $3.77). A money decision
   and a setup fault, not counted as an intervention on a task.*
+  *Fixed on `round4` (ADR 0113, amended 2026-11-01), both ways the defect named. A member is asked
+  about again after each allowance it has had that day, while the pool has money and its work
+  waits (never while a card waits; not after the owner declines): test
+  `a_member_capped_again_after_an_allowance_is_asked_about_again`, scenario in
+  `projects-and-their-money.feature`. And shares no longer follow price: most of the day goes to
+  Haiku (`Brain::claim_class`), so round 3's team gives Ada about 55% of a day where she had
+  about 1%.*
   *Fixed on `round4` (2a4e60df: a member capped again after an allowance is asked about again), to release with round 4.*
 - [x] **D22. Work that meets the bar's reading of a criterion ends blocked, never delivered.**
   Round 3, 949: the branch pins all seven tags, each real on its registry, and lints exactly as

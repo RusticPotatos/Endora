@@ -51,6 +51,19 @@ Settings.
   worker's last word or a reviewer's notes, and the limits) in the team's domain,
   `domains/team/src/domain/lessons.rs`. The owner edits them whole through
   `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
+- A loop worked by one member alone (ADR 0142, amended 2026-11-01, round 4's solo arm) is a
+  setting of the loop's beside its rank and items (`loop_solo:<project>`, set through
+  `/v1/projects/{id}/solo`), and its rules are in the loops' engine
+  (`domains/team/src/application/engine/loops.rs`); no screen.
+- A round of the experiment under way (ADR 0142, amended 2026-11-01) is a setting of HQ's
+  (`round_running`, its items), set by `scripts/experiment.py start` through `/v1/round`, and its
+  rule (no downtime while an item is open) is the office's, in
+  `domains/team/src/application/engine/office.rs`; no screen.
+- A loop's repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) is a setting
+  of its project (`project_repo:<project>`), set by the owner through
+  `/v1/hq/projects/{id}/repo`; the rule of which addresses may be named is the kernel's
+  (`shared/kernel/src/lab.rs`, `outside_repo`), and the node's mirrors of such repositories sit
+  in its data folder under `outside-repos/`, beside the fork's. No screen yet.
 - Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
   added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
   them can hold: **Work**
@@ -63,12 +76,27 @@ Settings.
   foot of the Projects card); after those, the team board (a line a member: name, model, what it
   is doing, today's money; the rest on a tap) and hiring, accepted work waiting to merge with its
   two switches (ADR 0115, amended 2026-10-31), what the team may do on the home lab, what the
-  team knows — the world's pages and the house — and the office with its games), **Health** (how
+  team knows — the world's pages and the house — and the office's games), **Health** (how
   the team and the lab are doing: the scorecard and outcomes, the
   turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
-  the latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
-  Older; never an endless scroll). The office animation
-  plays above every tab. Each tab shows one line per thing at rest and the rest on a tap: the
+  a "Running now" strip of the turns in progress, each with a Watch link to its live replay; the
+  latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
+  Older; never an endless scroll. What a line names opens where it already lives, with a way
+  back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
+  board; no new screen). The studio plays above every tab (the owner, 4 Nov; it replaced the office
+  floor; `47f-hq-studio.js`): a small research studio whose areas are told apart by their floors, glass
+  stubs and steps, not walls. Desks stand on oak planks under the board, and a desk's lamp and screen
+  are lit only while a turn runs there; a turn waiting to retry keeps its desk, dark, with an
+  hourglass. The owner's corner is one step up on blue tile: the decisions waiting on your desk as
+  papers, the kill-switch lever, the rack with today's spend, and the review table with a folder for
+  each item in review, where a stuck worker sits. The library alcove holds the week's done work as
+  spines by subject, pale when not verified; the lounge, one step down, has the sofas against a low
+  bookcase (a spine for each of the team's notes and map lines), the chess table where the live game's
+  players sit, and a kitchenette with stools for whoever else is free. Words appear only on the
+  board (the goal, open and stuck, who is on which subject), in a brief one-line bubble when a real
+  post arrives, and in what a tap opens under Looking at; a sign beside a head says stuck, a failed
+  check, waiting to retry, or recovered. Nothing is shown as progress or activity unless the record
+  says it happened, and a phone gets its own plan, the same areas stacked. Each tab shows one line per thing at rest and the rest on a tap: the
   desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
   project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
   behind a fold. The console check measures each tab at rest and holds it to a budget; fold
@@ -78,8 +106,8 @@ Settings.
   31 Oct: none of the three could hold a live board, a bracket and every game without breaking
   its budget): the league's games in play with their boards, this round's bracket and
   standings, and every finished game a page at a time with its PGN. The Work card says so in a
-  line with a way there and shows none of the league itself. The office's chess board stays in
-  the office, on Manage; it is a different game (ADR 0121). Information conversations also
+  line with a way there and shows none of the league itself. The office's chess board stays: its
+  table stands in the studio's lounge, its games on Manage's Office card; it is a different game (ADR 0121). Information conversations also
   live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
   requests, their results and project charges, source grants/revocation, and cancellation stay
   inside that conversation's Work view; they add no top-level screen. Something that needs your
@@ -98,11 +126,11 @@ Settings.
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
-| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
+| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), its studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
-| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi) |
+| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo) |
 | `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |

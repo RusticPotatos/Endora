@@ -116,6 +116,41 @@ fn docker_log_frames_are_decoded_without_transport_headers() {
     assert_eq!(decode_logs(&bytes[..10]), "Log frame interrupted");
 }
 
+/// A log's newest lines are what a reader asks a log for: past what it keeps, the oldest go.
+#[test]
+fn a_decoded_log_longer_than_it_keeps_keeps_its_newest_lines() {
+    use endora_capabilities::infrastructure::terminal::decode_logs;
+    let log: String = (1..=100)
+        .map(|n| format!("line {n:03} {}\n", "x".repeat(1_000)))
+        .collect();
+    let kept = decode_logs(log.as_bytes());
+    assert!(kept.ends_with(&format!("line 100 {}\n", "x".repeat(1_000))));
+    assert!(!kept.contains("line 001 "), "the oldest went");
+}
+
+/// A container whose last hundred lines pass 64 KB (`stats-smartctl` writes 1.3 KB lines: 135 KB
+/// for a hundred) is read, not refused as Portainer not answering: what a reader sees is cut
+/// after the read.
+#[test]
+fn a_log_longer_than_64_kb_is_read_and_its_newest_lines_kept() {
+    use endora_capabilities::application::HomeConsole;
+    let id = "ab".repeat(32);
+    let log: String = (1..=100)
+        .map(|n| format!("line {n:03} {}\n", "x".repeat(1_300)))
+        .collect();
+    let (adapter, mock) = mock_adapter(
+        "portainer",
+        vec![("GET /api/endpoints/1/docker/containers/abab", json!(log))],
+    );
+    let read = adapter.read("logs", &id);
+    mock.join().unwrap();
+    let summary = read.expect("a long log is read")["summary"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(summary.contains("line 100 "), "the newest line is kept");
+}
+
 /// Exercises production adapters against a bounded local fake, including headers/routes.
 fn mock_adapter(
     service: &'static str,

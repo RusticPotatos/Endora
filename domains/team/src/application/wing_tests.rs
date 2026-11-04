@@ -15,7 +15,7 @@ use crate::application::receipt_ports::ReceiptStore;
 use crate::application::wing_ports::WingStore;
 use crate::domain::wing::{WING_GOAL, WING_PROJECT};
 use crate::domain::{
-    Brain, Criterion, GoalId, MemberId, Priority, Refusal, Role, TaskId, TaskStatus, WakeReason,
+    Brain, Criterion, GoalId, MemberId, Priority, Refusal, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -49,15 +49,11 @@ struct Wing {
 }
 
 fn wing(hq: &Hq<'_>) -> Wing {
-    let lead = hq
-        .hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
-        .unwrap();
+    let lead = hq.hire("Kit", 25, 2, 5).unwrap();
     hq.set_brain(lead, Brain::Sonnet.name()).unwrap();
     let mut developers = Vec::new();
     for (name, look) in [("Rae", 2), ("Zed", 4)] {
-        let id = hq
-            .hire(name, Role::Developer, Role::Developer.share(), 2, look)
-            .unwrap();
+        let id = hq.hire(name, 40, 2, look).unwrap();
         hq.set_brain(id, Brain::Haiku.name()).unwrap();
         developers.push(id);
     }
@@ -99,12 +95,12 @@ struct Team {
 
 fn team(hq: &Hq<'_>) -> Team {
     let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dee = hq.hire("Dee", 20, 2, 1).unwrap();
     hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
     let seeded = wing(hq);
@@ -610,11 +606,7 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
     let woken = wakes_after(&hq, before);
     assert!(woken.contains(&(t.kit, WakeReason::CheckDone)), "{woken:?}");
     assert!(woken.contains(&(t.rae, WakeReason::CheckDone)), "{woken:?}");
-    // The tester judges and does not run the lab's checks; work with no branch has nothing to check.
-    quiet(&hq);
-    let dee = woken_turn(&hq, t.dee, task);
-    let refused = ask(&dee).unwrap_err();
-    assert!(refused.contains("lead or developer"), "{refused}");
+    // Work with no branch has nothing to check.
     quiet(&hq);
     let other = raes_other_task(&hq, &t);
     let rae_again = woken_turn(&hq, t.rae, other);
@@ -894,15 +886,10 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
-    let sam = hq
-        .hire_by_owner("Sam", Role::Developer, "claude-haiku-5-5")
-        .unwrap();
+    let sam = hq.hire_by_owner("Sam", "claude-haiku-5-5").unwrap();
     let members = hq.store().members().unwrap();
     let found = members.iter().find(|m| m.id == sam).unwrap();
-    assert_eq!(
-        (found.role, found.brain, found.share_percent),
-        (Role::Developer, Brain::Haiku, 40)
-    );
+    assert_eq!((found.brain, found.share_percent), (Brain::Haiku, 40));
     let hired = hq
         .events_after(0)
         .unwrap()
@@ -914,16 +901,14 @@ fn the_owner_hires_any_title_on_any_model_endora_has() {
         (Some("Sam"), Some("owner"))
     );
     // A title is a name only (ADR 0142): a second CEO, or a researcher on Sonnet, is a member.
-    hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5")
-        .unwrap();
-    hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5")
-        .unwrap();
+    hq.hire_by_owner("Second", "claude-opus-5-5").unwrap();
+    hq.hire_by_owner("Pat", "claude-sonnet-5-5").unwrap();
     assert!(matches!(
-        hq.hire_by_owner("Quinn", Role::Researcher, "gpt-5"),
+        hq.hire_by_owner("Quinn", "gpt-5"),
         Err(super::EngineError::Refused(Refusal::NotABrain { .. }))
     ));
     assert_eq!(
-        hq.hire_by_owner("sam", Role::Developer, "local"),
+        hq.hire_by_owner("sam", "local"),
         Err(super::EngineError::Refused(Refusal::NotAName)),
         "names stay unique"
     );
@@ -1009,4 +994,159 @@ fn each_step_is_told_once_and_merging_waits_for_its_setting() {
     assert_eq!(hq.snapshot().unwrap()["accepted"], json!([]));
     let landed = hq.snapshot().unwrap()["scorecard"]["outcomes"]["day"]["landed"].clone();
     assert_eq!(landed, 1, "an automatic push is a landed change");
+}
+
+// --- A repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) ---------------
+
+fn wing_project(hq: &Hq<'_>) -> crate::domain::ProjectId {
+    hq.store()
+        .projects()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.title == WING_PROJECT)
+        .expect("the wing's project")
+        .id
+}
+
+/// The owner names the repository a project's work is done in: a public GitHub address alone,
+/// kept in its one plain form, and taken away again with none.
+#[test]
+fn the_owner_names_an_outside_repository_on_a_project_and_only_a_public_github_one() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let project = wing_project(&hq);
+    for refused in [
+        "https://gitlab.com/example/tiny",
+        "git@github.com:example/tiny.git",
+        // A credential in the address (split so it reads as no mailbox).
+        concat!("https://jane:secret", "@", "github.com/example/tiny"),
+        "http://github.com/example/tiny",
+    ] {
+        let why = hq
+            .set_project_repo(project, Some(refused))
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("only a public https://github.com/"), "{why}");
+    }
+    assert_eq!(hq.project_repo(project).unwrap(), None, "nothing kept");
+    assert_eq!(
+        hq.set_project_repo(project, Some("https://github.com/example/tiny.git"))
+            .unwrap()
+            .as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    // A turn on work under the project (Rae's task sits under the plan, which is in it) is
+    // told the repository; the node mirrors and hands out that one.
+    let task = raes_task(&hq, &t);
+    let rae = turn(&hq, t.rae);
+    use_tool(&hq, &rae, "claim", &json!({ "task": task.0 })).unwrap();
+    let (run, _) = hq.turn_of(&rae.token).unwrap().expect("a running turn");
+    assert_eq!(
+        hq.outside_repo_of_run(run.id).unwrap().as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    hq.set_project_repo(project, None).unwrap();
+    assert_eq!(hq.outside_repo_of_run(run.id).unwrap(), None);
+}
+
+/// A branch of an outside repository is kept on the node for judging: no check of the lab's is
+/// queued (ansible's checks say nothing of it), its item's criteria are its gate, and accepted,
+/// it is listed as never pushed: not due to the node, not carded, whatever the deploy key.
+#[test]
+fn a_branch_of_an_outside_repository_is_kept_for_judging_and_never_delivered() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
+        .unwrap();
+    let (task, _, recorded) = submitted(&hq, &t, true);
+    assert_eq!(recorded.check, 0, "no check is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let last = thread(&hq, task).pop().unwrap();
+    assert!(
+        last.contains("kept on the node for judging") && last.contains("never pushed"),
+        "{last}"
+    );
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["status"], "accepted", "{listed}");
+    assert!(
+        listed[0]["why"].as_str().unwrap().contains("never pushed"),
+        "{listed}"
+    );
+    // With the cards back on the desk, still no push card for it.
+    hq.set_delivery(Some(true), None).unwrap();
+    all_turns_over(&hq);
+    let (other, _, _) = submitted(&hq, &t, true);
+    hq.store().set_task_status(other, TaskStatus::Done).unwrap();
+    hq.offer_push(other).unwrap();
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    assert!(hq.deliveries().unwrap().push.is_empty());
+}
+
+/// #1048 of set 3: Sol's simpleeval fix was submitted and its gate open, and Sol asked for it
+/// to be checked again for a receipt to cite. HQ queued the lab's check on the outside branch;
+/// the check box fetched its bundle where the lab's branches live, got the node's 404, and the
+/// failed check shut the gate and counted as one of the item's failures, twice. No check of the
+/// lab's applies to an outside repository, so asking for one is refused, saying how the work is
+/// evidenced instead, and nothing is queued or shut.
+#[test]
+fn a_check_again_of_an_outside_branch_is_refused_and_the_gate_stays_open() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
+        .unwrap();
+    let (task, rae, _) = submitted(&hq, &t, true);
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let said = use_tool(
+        &hq,
+        &rae,
+        "recheck",
+        &json!({ "task": task.0, "why": "a receipt to cite for in_review" }),
+    )
+    .unwrap_err();
+    assert!(
+        said.contains("no check of the lab's applies to https://github.com/example/tiny")
+            && said.contains("set_status in_review")
+            && said.contains("repo_submit"),
+        "{said}"
+    );
+    assert!(hq.store().checks().unwrap().is_empty(), "nothing is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(
+        hq.store().gate(task).unwrap(),
+        Some(true),
+        "the gate stays open"
+    );
+    // As the refusal says: in review, citing the submission's receipt for each criterion.
+    let receipt = hq
+        .record_receipt(
+            &rae.token,
+            &super::engine::Called {
+                tool: "repo_submit".to_owned(),
+                args: r#"{"branch":"hq/task-3-tidy-the-deluge-role"}"#.to_owned(),
+                excerpt: "Submitted hq/task-3-tidy-the-deluge-role".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    // Rae's task has one criterion.
+    let evidence = json!([[format!("r{receipt}")]]);
+    let moved = use_tool(
+        &hq,
+        &rae,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "its tests pass",
+                 "evidence": evidence }),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let status = hq.store().task(task).unwrap().unwrap().status;
+    assert_eq!(status, TaskStatus::InReview, "{moved}");
 }

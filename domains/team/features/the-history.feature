@@ -18,6 +18,28 @@ Feature: The team's history
     Then the replay of Zed's turn shows "I read the logs and will cap sonarr at 512M."
     And the replay of Zed's turn says it is kept for 30 days
 
+  # ADR 0129, amended 2026-11-01: the worker tells the conversation after every model round,
+  # so the owner can watch a turn as it works; each tell is the whole so far, and replaces the last.
+  Scenario: The owner watches a running turn's conversation as it goes
+    Given Zed has the task "Cap sonarr's memory"
+    When Zed's turn starts
+    And Zed's worker tells the node what the turn said: "I read the logs."
+    Then the replay of Zed's turn is live
+    And the replay of Zed's turn shows "I read the logs."
+    When Zed's worker tells the node what the turn said: "I read the logs.\nI will cap sonarr at 512M."
+    Then the replay of Zed's turn shows "I read the logs." once
+    And the replay of Zed's turn shows "I will cap sonarr at 512M."
+    When Zed's turn ends
+    Then the replay of Zed's turn is not live
+
+  # ADR 0129, amended 2026-11-01: the model's reasoning is kept, before what it said and called.
+  Scenario: The owner reads what a turn thought before each step
+    Given Zed has the task "Cap sonarr's memory"
+    When Zed's turn starts
+    And Zed's worker tells the node the turn thought "sonarr swaps, so cap it" and then said "Capping sonarr."
+    And Zed's turn ends
+    Then the replay of Zed's turn shows "--- thinking ---\nsonarr swaps, so cap it\n--- assistant ---\nCapping sonarr."
+
   Scenario: The owner sees what a turn was given: its tools by name, its rules and its briefing
     Given Zed has the task "Cap sonarr's memory"
     When Zed's turn starts
@@ -81,3 +103,13 @@ Feature: The team's history
     And Ada's turn starts
     Then Ada's briefing shows Zed's post on one line, under his name, cleaned
     And what Ada reads of the thread with my_turn shows the same
+
+  # my_turn shows a thread's newest twelve posts. Older ones were dropped with no sign under
+  # "The thread, newest last:", so an owner's early word could fall out of what a member read
+  # while the thread read as whole. Seed: without the line saying so, the Then fails.
+  Scenario: A thread longer than a turn reads says what it left out, and where it is
+    Given Zed has the task "Cap sonarr's memory"
+    When the owner posts 13 lines on "Cap sonarr's memory"
+    And Zed's turn starts
+    Then what Zed reads of the thread with my_turn says "the thread's 1 older post (ask_record with task"
+    And what Zed reads of the thread with my_turn says "Owner line 13"

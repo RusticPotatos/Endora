@@ -11,9 +11,21 @@ on as `sys.argv[1:]`:
 Subcommands (every one but `start` only reads):
 
     start  --round N --from-tasks 882-890,903 [--previous 913-922] [--yes]
+    start  --round N --from-tasks 1001-1003 --solo NAME [--yes]
     status --tasks 913-922
     fields --tasks 913-922 [--header]
     check  --task 919
+    metrics --tasks 947-956 [--label "Round 3"] [--tasks ... --label ...]
+            [--groups fixed=947-956,fresh=957-959,outside=960] [--verified 948,952] [--json]
+
+`metrics` scores rounds on one measure, a column each (and one each group, so a round is read
+three ways: the fixed ten, the homelab's fresh tasks, the task outside the homelab): reported
+done (verified is the judge's, given with --verified), interventions, spend (the ledger's
+charges), turns and turns that changed nothing (`runs.moved_forward`, HQ's own flag), checkouts,
+wakes by reason and refused, handovers and climbs (HQ's posts), desk questions, time to first
+ready and to done, hours working against waiting, tokens, and the bytes of the kept transcripts
+spent on the briefing, the protocol's calls (`my_turn`, `claim`, `find_tools`), checkouts and the
+rest. A task's numbers include the tasks under it.
 
 Where things are, from the environment (each also a flag, which wins):
 
@@ -21,7 +33,15 @@ Where things are, from the environment (each also a flag, which wins):
     HQ_URL         HQ's API, for `start` only             (default http://127.0.0.1:8790; --url)
     HQ_TOKEN_FILE  the file holding HQ's bearer token     (--token-file); never printed
 
-`start` without `--yes` only says what it would do.
+`start` without `--yes` only says what it would do. With `--yes` it also tells HQ the round's
+tasks (`POST /v1/round`, ADR 0142, amended 2026-11-01): no downtime or chess turn starts while
+any of them is open, so the round has the runner and the models to itself. Both arms' starts
+add up; a round whose items are all done or dropped is over on its own, and
+`POST /v1/round {"close": true}` ends one sooner. With `--solo NAME` it starts round 4's
+solo arm ("one member, one long turn, no ladder", ADR 0142, amended 2026-11-01): the tasks are
+made in a project of their own, `Round N solo (NAME)`, worked by that member alone, so the
+team's arm and the solo arm share no loop; nothing is archived, since the team's arm of the
+same round is running beside it.
 """
 
 import argparse
@@ -228,6 +248,307 @@ FIELDS_HEADER = (
     "| # | HQ task | Accepted | Cost | Elapsed | Interventions | Rework |\n"
     "|---|---|---|---|---|---|---|"
 )
+
+
+# ---- a round's numbers, on one measure ------------------------------------------------------
+
+# The team protocol's own calls, set against the work's: what a turn spends on being a turn.
+PROTOCOL_TOOLS = ("my_turn", "claim", "find_tools")
+CHECKOUT_TOOL = "repo_checkout"
+# HQ's own posts that mark a hand-on of an item: a handover (domain::handover::START), and a
+# climb after three failures at a rank (engine::loops::climb). A review "one rank up" (rounds
+# 0-2's wording) is a review, not a climb: it is counted with the wakes, as `review_requested`.
+HANDOVER_POST = "Handover of #%"
+CLIMB_POST = "It failed % times at %'s rank: it goes to %, one rank up."
+# A transcript's section heads (ADR 0129): `--- call: NAME ---`, `--- result ---`, and others.
+SECTION_HEAD = re.compile(r"^--- ([^\n]*?) ---$", re.M)
+
+
+def families(conn, roots):
+    """Every task under the roots, at any depth, the roots included, once each."""
+    found = []
+    for root in roots:
+        task_row(conn, root)
+        found.extend(t for t in family(conn, root) if t not in found)
+    return sorted(found)
+
+
+def median(values):
+    values = sorted(v for v in values if v is not None)
+    if not values:
+        return None
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) / 2
+
+
+def covered_ms(spans, start, end):
+    """How much of [start, end] the spans cover, overlaps counted once."""
+    total, reached = 0, start
+    for low, high in sorted(spans):
+        low, high = max(low, reached), min(high, end)
+        if high > low:
+            total += high - low
+            reached = high
+    return total
+
+
+def transcript_bytes(body):
+    """A kept transcript's bytes by what they were spent on: the briefing (the system prompt and
+    the first user message), the protocol's calls, checkouts, and every other call; a call's
+    bytes are its arguments and its result. Results answer the calls before them in order (a
+    turn may make several calls before their results come back)."""
+    spent = {"briefing": 0, "protocol": 0, "checkout": 0, "other": 0}
+    calls = {"protocol": 0, "checkout": 0, "other": 0}
+    heads = list(SECTION_HEAD.finditer(body))
+    waiting = []
+    users = 0
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        size = len(body[head.end() : end].strip("\n").encode())
+        name = head.group(1)
+        if name == "system" or (name == "user" and users == 0):
+            users += name == "user"
+            spent["briefing"] += size
+            continue
+        if name.startswith("call: "):
+            tool = name[len("call: ") :]
+            kind = "protocol" if tool in PROTOCOL_TOOLS else "other"
+            kind = "checkout" if tool == CHECKOUT_TOOL else kind
+            calls[kind] += 1
+            spent[kind] += size
+            waiting.append(kind)
+            continue
+        if name.startswith("result") and waiting:
+            spent[waiting.pop(0)] += size
+    return spent, calls
+
+
+def round_metrics(conn, roots, verified=None):
+    """One column of the rounds' table: the roots (a round's tasks, or a group of them) and the
+    work under them, read from the store. `verified` is the judge's list, which the store does
+    not hold; None when not given."""
+    tasks = families(conn, roots)
+    q = placeholders(tasks)
+    done = [t for t in roots if task_row(conn, t)["status"] == "done"]
+    turns = conn.execute(
+        f"""SELECT COALESCE(SUM(started_at IS NOT NULL), 0) AS turns,
+                   COALESCE(SUM(started_at IS NOT NULL AND moved_forward = 0), 0) AS idle,
+                   COALESCE(SUM(input_tokens + cache_read_tokens + cache_write_tokens), 0) AS tin,
+                   COALESCE(SUM(cache_read_tokens), 0) AS cached,
+                   COALESCE(SUM(output_tokens), 0) AS tout
+            FROM runs WHERE task IN ({q})""",
+        tasks,
+    ).fetchone()
+    charged = conn.execute(
+        f"""SELECT COALESCE(SUM(amount), 0) FROM ledger
+            WHERE kind = 'charge' AND run IN (SELECT id FROM runs WHERE task IN ({q}))""",
+        tasks,
+    ).fetchone()[0]
+    wakes = {
+        r["reason"]: {"all": r["n"], "refused": r["refused"]}
+        for r in conn.execute(
+            f"""SELECT reason, COUNT(*) AS n, SUM(refused IS NOT NULL) AS refused FROM wakes
+                WHERE task IN ({q}) GROUP BY reason ORDER BY reason""",
+            tasks,
+        )
+    }
+
+    def count(sql, *extra):
+        return conn.execute(sql.format(q=q), (*extra, *tasks)).fetchone()[0]
+
+    checkouts = count(
+        "SELECT COUNT(*) FROM call_receipts WHERE tool = ? AND task IN ({q})", CHECKOUT_TOOL
+    )
+    handovers = count(
+        "SELECT COUNT(*) FROM posts WHERE author = 'endora' AND text LIKE ? AND task IN ({q})",
+        HANDOVER_POST,
+    )
+    climbs = count(
+        "SELECT COUNT(*) FROM posts WHERE author = 'endora' AND text LIKE ? AND task IN ({q})",
+        CLIMB_POST,
+    )
+    questions = count("SELECT COUNT(*) FROM desk WHERE kind = 'question' AND task IN ({q})")
+    per_task = []
+    working_ms = waiting_ms = 0
+    for root in roots:
+        made, ready, finished = marks(conn, root)
+        under = family(conn, root)
+        spans = [
+            (r["started_at"], r["ended_at"])
+            for r in conn.execute(
+                f"""SELECT started_at, ended_at FROM runs WHERE task IN ({placeholders(under)})
+                    AND started_at IS NOT NULL AND ended_at IS NOT NULL""",
+                under,
+            )
+        ]
+        working_ms += sum(high - low for low, high in spans)
+        start = made if made is not None else min((s[0] for s in spans), default=None)
+        end = finished if finished is not None else max((s[1] for s in spans), default=start)
+        if start is not None and end is not None:
+            waiting_ms += max(0, (end - start) - covered_ms(spans, start, end))
+        per_task.append(
+            {
+                "task": root,
+                "status": task_row(conn, root)["status"],
+                "to_first_ready_min": minutes_between(made, ready),
+                "to_done_min": minutes_between(made, finished),
+            }
+        )
+    kept = []
+    if has_table(conn, "transcripts"):
+        kept = conn.execute(f"SELECT body FROM transcripts WHERE task IN ({q})", tasks).fetchall()
+    spent = {"briefing": 0, "protocol": 0, "checkout": 0, "other": 0}
+    calls = {"protocol": 0, "checkout": 0, "other": 0}
+    for row in kept:
+        b, c = transcript_bytes(row["body"])
+        for k in spent:
+            spent[k] += b[k]
+        for k in calls:
+            calls[k] += c[k]
+    ready = [t["to_first_ready_min"] for t in per_task]
+    finished = [t["to_done_min"] for t in per_task]
+    return {
+        "tasks": list(roots),
+        "with_subtasks": tasks,
+        "reported_done": len(done),
+        "reported_done_tasks": done,
+        # Of those, the ones HQ closed with nothing checked (ADR 0124, amended 2026-11-03).
+        "reported_done_unverified": unverified(conn, done),
+        "verified": None if verified is None else len([t for t in roots if t in verified]),
+        "interventions": len(interventions(conn, tasks)),
+        "spend_usd": round(charged / 1_000_000, 6),
+        "turns": turns["turns"],
+        "turns_changed_nothing": turns["idle"],
+        "tokens_in": turns["tin"],
+        "tokens_in_cached": turns["cached"],
+        "tokens_out": turns["tout"],
+        "checkouts": checkouts,
+        "wakes": wakes,
+        "wakes_refused": sum(w["refused"] for w in wakes.values()),
+        "handovers": handovers,
+        "climbs": climbs,
+        "desk_questions": questions,
+        "first_ready": {"n": sum(m is not None for m in ready), "median_min": median(ready)},
+        "done": {"n": sum(m is not None for m in finished), "median_min": median(finished)},
+        "working_h": round(working_ms / 3_600_000, 1),
+        "waiting_h": round(waiting_ms / 3_600_000, 1),
+        "transcripts_kept": len(kept),
+        "transcript_bytes": spent,
+        "transcript_calls": calls,
+        "per_task": per_task,
+    }
+
+
+def unverified(conn, done):
+    """How many of the `done` tasks HQ closed as completed, not verified: a solo item with no
+    branch, whose cited evidence nothing checked. None in a store from before they were kept."""
+    if not done or not has_table(conn, "unverified_closings"):
+        return 0
+    return conn.execute(
+        f"SELECT COUNT(*) FROM unverified_closings WHERE task IN ({placeholders(done)})",
+        done,
+    ).fetchone()[0]
+
+
+def has_table(conn, name):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def groups_of(text):
+    """`fixed=947-955,fresh=956-957,outside=958` -> [("fixed", [947..955]), ...]: a part with
+    `=` starts a group, and a part without one goes on the group before it."""
+    found = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            name, ids = part.split("=", 1)
+            found.append((name.strip(), ids))
+            continue
+        if not found:
+            raise ValueError(f"{part} is in no group: name it first, e.g. fixed={part}")
+        found[-1] = (found[-1][0], f"{found[-1][1]},{part}")
+    return [(name, ids_of(ids)) for name, ids in found]
+
+
+def kb(n):
+    return f"{n / 1000:,.0f} KB" if n < 10_000_000 else f"{n / 1_000_000:,.1f} MB"
+
+
+def minutes(value):
+    return "—" if value is None else f"{value:.0f} min"
+
+
+METRIC_ROWS = [
+    ("Tasks", lambda m: str(len(m["tasks"]))),
+    (
+        "Reported (HQ done)",
+        lambda m: str(m["reported_done"])
+        + (f" ({m['reported_done_unverified']} not verified)" if m["reported_done_unverified"] else ""),
+    ),
+    ("Verified (judge)", lambda m: "—" if m["verified"] is None else str(m["verified"])),
+    ("Interventions", lambda m: str(m["interventions"])),
+    ("Spend (HQ's runs)", lambda m: f"${m['spend_usd']:.2f}"),
+    ("Turns", lambda m: str(m["turns"])),
+    ("Turns that changed nothing (HQ's own flag)", lambda m: str(m["turns_changed_nothing"])),
+    ("Fork checkouts", lambda m: str(m["checkouts"])),
+    (
+        "Wakes: continued / recovery (refused, any reason) / review asked / assigned",
+        lambda m: "{} / {} ({}) / {} / {}".format(
+            m["wakes"].get("continued", {}).get("all", 0),
+            m["wakes"].get("recovery", {}).get("all", 0),
+            m["wakes_refused"],
+            m["wakes"].get("review_requested", {}).get("all", 0),
+            m["wakes"].get("assigned", {}).get("all", 0),
+        ),
+    ),
+    ("Handovers / climbs one rank up", lambda m: f"{m['handovers']} / {m['climbs']}"),
+    ("Questions on the desk", lambda m: str(m["desk_questions"])),
+    (
+        "First ready: tasks / median from made",
+        lambda m: f"{m['first_ready']['n']} / {minutes(m['first_ready']['median_min'])}",
+    ),
+    (
+        "Done: tasks / median from made",
+        lambda m: f"{m['done']['n']} / {minutes(m['done']['median_min'])}",
+    ),
+    ("Hours working (sum of turns) / waiting (no turn)", lambda m: f"{m['working_h']} / {m['waiting_h']}"),
+    (
+        "Tokens in (cached) / out",
+        lambda m: f"{m['tokens_in']:,} ({m['tokens_in_cached']:,}) / {m['tokens_out']:,}",
+    ),
+    (
+        "Kept transcripts: briefing / protocol / checkout / other calls",
+        lambda m: "{} / {} ({} calls) / {} ({}) / {} ({}); {} of {} turns kept".format(
+            kb(m["transcript_bytes"]["briefing"]),
+            kb(m["transcript_bytes"]["protocol"]),
+            m["transcript_calls"]["protocol"],
+            kb(m["transcript_bytes"]["checkout"]),
+            m["transcript_calls"]["checkout"],
+            kb(m["transcript_bytes"]["other"]),
+            m["transcript_calls"]["other"],
+            m["transcripts_kept"],
+            m["turns"],
+        ),
+    ),
+]
+
+
+def metrics_table(columns):
+    """The rounds' table: a row a measure, a column a round or group."""
+    lines = [
+        "| | " + " | ".join(name for name, _ in columns) + " |",
+        "|---|" + "---|" * len(columns),
+    ]
+    for label, cell in METRIC_ROWS:
+        lines.append(f"| {label} | " + " | ".join(cell(m) for _, m in columns) + " |")
+    return "\n".join(lines)
 
 
 # ---- checks of a final post -----------------------------------------------------------------
@@ -458,6 +779,49 @@ def plan_round(conn, round_number, from_tasks, previous):
     return {"round": round_number, "archive": archive, "sources": sources, "problems": problems}
 
 
+def solo_member(conn, name):
+    """The member named to work the solo arm: (id, problems, notes)."""
+    row = conn.execute(
+        "SELECT id, brain, furloughed_at FROM members WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if row is None:
+        return None, [f"no member is called {name}"], []
+    if row["furloughed_at"] is not None:
+        return None, [f"{name} has retired"], []
+    notes = []
+    if row["brain"] != "haiku":
+        notes.append(f"{name} thinks with {row['brain']}, not haiku: the arm as planned is Haiku's")
+    return row["id"], [], notes
+
+
+def plan_solo(conn, round_number, from_tasks, name):
+    """Round `round_number`'s solo arm: its tasks, copied from `from_tasks`, in a project of its
+    own worked by `name` alone. One goal, since a project serves one."""
+    sources = [source_of(conn, t) for t in from_tasks]
+    member, problems, notes = solo_member(conn, name)
+    goals = sorted({s["goal"] for s in sources})
+    if len(goals) != 1:
+        problems.append(f"the tasks serve goals {goals}: a solo arm's project serves one")
+    project = None
+    if member is not None and len(goals) == 1:
+        project = {
+            "goal": goals[0],
+            "title": f"Round {round_number} solo ({name})",
+            "reason": f"Round {round_number}'s solo arm of the baseline experiment: one member, "
+            "one long turn, no ladder (ADR 0142, amended 2026-11-01).",
+            "lead": member,
+            "solo": member,
+        }
+    return {
+        "round": round_number,
+        "archive": None,
+        "solo": project,
+        "notes": notes,
+        "sources": sources,
+        "problems": problems,
+    }
+
+
 def run_round(conn, hq, plan):
     """Sets aside the open items, then makes the round's tasks, and checks each against its
     source as the store now has it."""
@@ -473,6 +837,12 @@ def run_round(conn, hq, plan):
             hq.post(f"/v1/tasks/{task}/project", {"project": project})
         hq.post(f"/v1/projects/{project}", {"action": "drop"})
         archived = {"project": project, "tasks": archive["tasks"]}
+    solo = plan.get("solo")
+    if solo:
+        made = hq.post("/v1/projects", solo)["project"]
+        solo = {"project": made, "member": solo["solo"]}
+        for s in plan["sources"]:
+            s["project"] = made
     made_tasks = []
     for s in plan["sources"]:
         body = {
@@ -484,6 +854,9 @@ def run_round(conn, hq, plan):
         if s["project"] is not None:
             body["project"] = s["project"]
         made_tasks.append({"from": s["from"], "task": hq.post("/v1/tasks", body)["task"]})
+    # No downtime while the round runs: HQ holds the round's tasks, the other arm's beside them.
+    ids = [m["task"] for m in made_tasks]
+    paused = hq.post("/v1/round", {"items": ids}).get("running", False)
     mismatches = []
     for s, m in zip(plan["sources"], made_tasks):
         copy = source_of(conn, m["task"])
@@ -493,9 +866,11 @@ def run_round(conn, hq, plan):
     return {
         "round": plan["round"],
         "archived": archived,
+        "solo": solo,
         "tasks": made_tasks,
-        "ids": [m["task"] for m in made_tasks],
-        "warnings": [w for s in plan["sources"] for w in s["lost"]],
+        "ids": ids,
+        "downtime_paused": paused,
+        "warnings": [w for s in plan["sources"] for w in s["lost"]] + plan.get("notes", []),
         "mismatches": mismatches,
     }
 
@@ -524,6 +899,9 @@ def parser():
     start.add_argument("--from-tasks", required=True, help="round 0's tasks, e.g. 882-890,903")
     start.add_argument("--previous", help="the previous round's tasks (default: open by title)")
     start.add_argument("--yes", action="store_true", help="really write; without it, a dry run")
+    start.add_argument(
+        "--solo", metavar="NAME", help="the solo arm: the tasks in a project NAME works alone"
+    )
     for name in ("status", "fields"):
         one = sub.add_parser(name)
         one.add_argument("--tasks", required=True)
@@ -531,7 +909,36 @@ def parser():
             one.add_argument("--header", action="store_true")
     check = sub.add_parser("check")
     check.add_argument("--task", type=int, required=True)
+    metrics = sub.add_parser("metrics", help="a round's numbers on one measure, as the record's")
+    metrics.add_argument(
+        "--tasks", action="append", required=True, help="a round's tasks; repeat for each round"
+    )
+    metrics.add_argument(
+        "--label", action="append", default=[], help="a column's name, one per --tasks, in order"
+    )
+    metrics.add_argument(
+        "--groups", help="columns for parts of the round, e.g. fixed=947-955,fresh=956,outside=957"
+    )
+    metrics.add_argument("--verified", help="the tasks the judge verified, e.g. 948,952")
+    metrics.add_argument("--json", action="store_true", help="JSON instead of a Markdown table")
     return top
+
+
+def print_metrics(args, conn, out):
+    if len(args.label) > len(args.tasks):
+        raise SystemExit("more --label than --tasks: one label a round, in order")
+    verified = ids_of(args.verified) if args.verified else None
+    columns = []
+    for i, text in enumerate(args.tasks):
+        name = args.label[i] if i < len(args.label) else f"Tasks {text}"
+        columns.append((name, ids_of(text)))
+    columns += groups_of(args.groups) if args.groups else []
+    measured = [(name, round_metrics(conn, ids, verified)) for name, ids in columns]
+    if args.json:
+        print(json.dumps({name: m for name, m in measured}, indent=2), file=out)
+        return 0
+    print(metrics_table(measured), file=out)
+    return 0
 
 
 def main(argv=None, out=sys.stdout):
@@ -558,10 +965,15 @@ def command(args, conn, out):
         result = check_task(conn, args.task)
         print(json.dumps(result, indent=2), file=out)
         return 0 if result["ok"] else 1
+    if args.command == "metrics":
+        return print_metrics(args, conn, out)
     if args.round < 1:
         raise SystemExit("--round is 1 or more: round 0 is the baseline itself")
     previous = ids_of(args.previous) if args.previous else None
-    plan = plan_round(conn, args.round, ids_of(args.from_tasks), previous)
+    if args.solo:
+        plan = plan_solo(conn, args.round, ids_of(args.from_tasks), args.solo)
+    else:
+        plan = plan_round(conn, args.round, ids_of(args.from_tasks), previous)
     if plan["problems"]:
         print(json.dumps({"refused": plan["problems"]}, indent=2), file=out)
         return 1

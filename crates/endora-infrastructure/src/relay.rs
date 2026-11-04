@@ -622,73 +622,51 @@ pub fn betas_passed(header: Option<&str>) -> Option<String> {
     Some(kept.join(","))
 }
 
-/// The most one turn of a member in `role` may spend, in micros (ADR 0111): a dollar for the
-/// CEO, forty cents for everyone else. The relay holds each call to it, whatever HQ says is
-/// left, as HQ holds each turn's reservation.
+/// The most one turn of a member whose brain is `brain` may spend, in micros (ADR 0111, 0142):
+/// a dollar for the member who thinks with Opus, forty cents for everyone else. The relay holds
+/// each call to it, whatever HQ says is left, as HQ holds each turn's reservation.
 #[must_use]
-pub fn most_a_turn(role: &str) -> i64 {
-    if role == "ceo" {
+pub fn most_a_turn(brain: &str) -> i64 {
+    if is_opus(brain) {
         return 1_000_000;
     }
     400_000
 }
 
-/// Whether a member in `role` may call `model`, by the plan's models by role: Opus or Sonnet
-/// for the CEO; Sonnet for the developer, the reviewer and the lead, Haiku for the researcher
-/// (and for them all, being cheaper). Opus is the CEO's alone (the owner's decision of
-/// 2026-10-17, ADR 0111). A role the relay does not know may call nothing.
+/// Whether a member whose brain is `brain` may call `model` (ADR 0142, one team): Sonnet or
+/// Haiku for every member; Opus or Sonnet for the one whose brain is Opus, which is its alone
+/// (the owner's decision of 2026-10-17, ADR 0111); no Claude for a member who thinks with
+/// DeepSeek; nothing for a brain HQ did not name.
 ///
 /// # Errors
 /// Why not, said to the worker.
-pub fn may_use(role: &str, model: &str) -> Result<(), String> {
-    let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
-    if is("claude-opus-5-5") && role != "ceo" {
-        return Err("Opus is the CEO's alone, by the owner's decision".to_owned());
-    }
-    let allowed = match role {
-        "ceo" => is("claude-opus-5-5") || is("claude-sonnet-5-5"),
-        "developer" | "reviewer" | "lead" => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
-        "researcher" => is("claude-haiku-5-5"),
-        _ => false,
-    };
-    if allowed {
-        return Ok(());
-    }
-    Err(format!("a {role} may not use {model}"))
-}
-
-/// Whether a model is Opus, the CEO's under ADR 0111 and the top rank's under ADR 0142.
-fn is_opus(model: &str) -> bool {
-    model == "claude-opus-5-5" || model.starts_with("claude-opus-5-5-")
-}
-
-/// [`most_a_turn`] for a member whose brain is `brain`: since one team (ADR 0142) has no CEO,
-/// the member who thinks with Opus has the dollar a turn the CEO had.
-#[must_use]
-pub fn most_a_turn_as(role: &str, brain: &str) -> i64 {
-    if is_opus(brain) {
-        return most_a_turn("ceo");
-    }
-    most_a_turn(role)
-}
-
-/// [`may_use`] for a member whose brain is `brain`: since one team (ADR 0142) the member who
-/// thinks with Opus may use it, and what the CEO could; every other member stays as its role
-/// allows, Opus refused.
-///
-/// # Errors
-/// Why not, said to the worker.
-pub fn may_use_as(role: &str, brain: &str, model: &str) -> Result<(), String> {
+pub fn may_use(brain: &str, model: &str) -> Result<(), String> {
     // A member who thinks with DeepSeek thinks with nothing else: no Claude on its turn.
     if brain.starts_with("deepseek") {
         return Err(format!(
             "a member who thinks with {brain} may not use {model}"
         ));
     }
-    if is_opus(brain) {
-        return may_use("ceo", model);
+    let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
+    if is("claude-opus-5-5") && !is_opus(brain) {
+        return Err("Opus is for the member who thinks with Opus alone".to_owned());
     }
-    may_use(role, model)
+    let allowed = match brain {
+        "" => false,
+        _ if is_opus(brain) => is("claude-opus-5-5") || is("claude-sonnet-5-5"),
+        _ => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(format!(
+        "a member who thinks with {brain} may not use {model}"
+    ))
+}
+
+/// Whether a model is Opus, the top rank's under ADR 0142.
+fn is_opus(model: &str) -> bool {
+    model == "claude-opus-5-5" || model.starts_with("claude-opus-5-5-")
 }
 
 /// What to ask Anthropic to count before a call: the call's prompt, without what only a
@@ -1357,31 +1335,39 @@ mod tests {
         assert_eq!(betas_passed(None), None);
     }
 
+    /// The models a member may call follow its brain alone (ADR 0142, one team): Sonnet or
+    /// Haiku for every member, Opus and Sonnet for the one whose brain is Opus, and nothing for a
+    /// turn whose brain HQ did not name.
     #[test]
-    fn a_role_uses_the_models_the_plan_gives_it_and_opus_is_the_ceos_alone() {
-        for role in ["developer", "reviewer", "lead"] {
-            assert!(may_use(role, "claude-sonnet-5-5").is_ok(), "{role}");
+    fn a_member_uses_the_models_its_brain_allows_and_opus_only_its_own() {
+        for brain in ["claude-haiku-5-5", "claude-sonnet-5-5", "local", "mac"] {
+            assert!(may_use(brain, "claude-sonnet-5-5").is_ok(), "{brain}");
             assert!(
-                may_use(role, "claude-haiku-5-5").is_ok(),
-                "{role}: cheaper is fine"
+                may_use(brain, "claude-haiku-5-5-20261001").is_ok(),
+                "{brain}"
             );
+            let why = may_use(brain, "claude-opus-5-5").unwrap_err();
+            assert!(why.contains("Opus"), "{why}");
+            assert_eq!(most_a_turn(brain), 400_000, "{brain}");
         }
-        assert!(may_use("researcher", "claude-haiku-5-5-20261001").is_ok());
-        assert!(may_use("researcher", "claude-sonnet-5-5").is_err());
-        for role in ["developer", "lead", "researcher", "reviewer"] {
-            let why = may_use(role, "claude-opus-5-5").unwrap_err();
-            assert!(why.contains("CEO's alone"), "{why}");
-            assert_eq!(most_a_turn(role), 400_000, "{role}");
+        let opus = "claude-opus-5-5";
+        assert!(may_use(opus, opus).is_ok());
+        assert!(may_use(opus, "claude-opus-5-5-20261001").is_ok());
+        assert!(
+            may_use(opus, "claude-sonnet-5-5").is_ok(),
+            "cheaper is fine"
+        );
+        assert!(
+            may_use(opus, "claude-haiku-5-5").is_err(),
+            "as the CEO's was"
+        );
+        assert_eq!(most_a_turn(opus), 1_000_000);
+        for brain in ["claude-haiku-5-5", opus] {
+            assert!(may_use(brain, "deepseek-chat").is_err(), "{brain}");
         }
-        assert!(may_use("ceo", "claude-opus-5-5").is_ok());
-        assert!(may_use("ceo", "claude-opus-5-5-20261001").is_ok());
-        assert!(may_use("ceo", "claude-sonnet-5-5").is_ok());
-        assert!(may_use("ceo", "claude-haiku-5-5").is_err(), "not the CEO's");
-        assert!(may_use("ceo", "deepseek-chat").is_err());
-        assert_eq!(most_a_turn("ceo"), 1_000_000);
         assert!(
             may_use("", "claude-sonnet-5-5").is_err(),
-            "no role, no model"
+            "no brain, no model"
         );
     }
 
@@ -1432,27 +1418,8 @@ mod tests {
         );
         // Its calls go to DeepSeek alone: the Anthropic relay refuses it every Claude.
         for model in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"] {
-            assert!(
-                may_use_as("developer", "deepseek-flash", model).is_err(),
-                "{model}"
-            );
+            assert!(may_use("deepseek-flash", model).is_err(), "{model}");
         }
-        assert_eq!(most_a_turn_as("developer", "deepseek-flash"), 400_000);
-    }
-
-    #[test]
-    fn since_one_team_the_member_whose_brain_is_opus_thinks_with_it_at_the_dollar_cap() {
-        // ADR 0142: members are models, ranked; Mara is Opus and a plain member.
-        let opus = "claude-opus-5-5";
-        assert!(may_use_as("developer", opus, opus).is_ok());
-        assert!(
-            may_use_as("developer", opus, "claude-sonnet-5-5").is_ok(),
-            "cheaper is fine"
-        );
-        assert_eq!(most_a_turn_as("developer", opus), 1_000_000);
-        let why = may_use_as("developer", "claude-sonnet-5-5", opus).unwrap_err();
-        assert!(why.contains("Opus"), "{why}");
-        assert_eq!(most_a_turn_as("developer", "claude-sonnet-5-5"), 400_000);
-        assert!(may_use_as("researcher", "claude-haiku-5-5", "claude-sonnet-5-5").is_err());
+        assert_eq!(most_a_turn("deepseek-flash"), 400_000);
     }
 }

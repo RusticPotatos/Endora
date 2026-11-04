@@ -309,12 +309,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             } else {
                 ""
             };
-            said.push_str(&format!(
-                "- {} ({}, {}{away})\n",
-                m.name,
-                m.role.title(),
-                m.brain.label()
-            ));
+            said.push_str(&format!("- {} ({}{away})\n", m.name, m.brain.label()));
         }
         Ok(said)
     }

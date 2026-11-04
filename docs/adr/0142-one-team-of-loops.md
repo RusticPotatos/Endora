@@ -277,6 +277,30 @@ shrank each call; nothing bounded the turn.
   stubbed; a Claude turn of that length with every result whole read about 119,500, so 120,000
   lets it finish on its own and cuts only the long ones. Claude Code's runtime keeps its own
   compaction and is out of scope.
+- **A result of the lab's or the shell's adds at most 6 KB to a Claude turn (amended 2026-11-01,
+  D20 of round 3).** A Claude turn reads every result whole, and its budget sums every call's
+  whole prompt, so a 16 KB listing read at the second call was counted again on every call after
+  it: Ada's Haiku turns on 949 ended at the budget after 6 or 7 calls, every turn, and the item
+  climbed to Sonnet after twelve continuations. `image_tags` was not the cause (it answers 30 tags
+  at most, about a kilobyte). Past 6 KB, such a result keeps its first 5 KB and its last
+  kilobyte (where a command's exit, a log's newest lines and the receipt are), and says how much
+  was left out and to ask for less. HQ's own results (a briefing, a document's 20,000-character
+  part) are sized by HQ and read whole; a house turn's are read through a gist as before.
+  *Extended to every API the same day (the owner's word): DeepSeek's turns go the house's way
+  and filled their budget the same way (Rae, 238 KB over 7 calls on 955). On a house or
+  DeepSeek turn a long result's gist, when it has one, is still what the model reads; the cap
+  holds the raw result when there is no gist (or the gist call failed); a result the model asked
+  for whole (`"raw": true`) is read whole.*
+- **On a cached model the budget holds the conversation, each byte once (amended 2026-11-01, the
+  owner's word).** Every call of a turn resends the conversation so far, and the budget summed
+  every resend: Rae's DeepSeek turn on 955 was a 50 KB conversation (a 12 KB opening, results of
+  12 KB at most) counted as 238 KB, and it ended after 7 calls. Claude's and DeepSeek's providers
+  cache the part a call repeats, so a resend costs little: on them the turn now ends when its
+  conversation would pass the budget (HQ hands the worker `budget_counts: conversation`,
+  `ENDORA_BUDGET_COUNTS`). The house's own models on the NAS and the Mac read every resend again,
+  slowly, so their turns still sum them (`every_call`). The figures are unchanged; HQ's own test
+  of a turn that ran out of room (half the budget metered) holds either way, since what is
+  metered is at least the conversation.
 - **Its last word says it goes on.** The worker posts what the model said on the way and that
   the prompt reached its budget, as its last word (not progress), marked `continues`. Only the
   worker sets the mark: it strips `last_word` and `continues` from the model's own posts, so a
@@ -460,6 +484,22 @@ Round 2 of the baseline experiment found three ways an item was woken wrongly
   item now, not to a member it has since left. Round 1's repeats (915 five times) each followed an
   answer, which the member did not find enough; one card at a time caps the desk, it does not
   stop a member asking again after an answer.
+
+  *Amended 2026-11-01 (round 3).* That gap let two repeats through: 950 (card 5061, answered at
+  04:28 UTC with the task's own words, then 5062 at 04:29 from the turn the answer woke) and 956
+  (5064 answered at 14:23 UTC the same way, then 5065 at 14:25, again from the woken turn). Each
+  first card was already seen, so nothing waited and the second was a card of its own. The owner's
+  direction is fewer questions ("let the agents be agents"). Now, once the owner has answered a
+  question about an item in words, a member's further question on it (`ask_owner`) is refused for
+  the rest of the item's life, quoting the newest answer (kept as the setting `answered:<task>`)
+  and saying to act on it, or, if its tools cannot meet it, to block the item with the reason.
+  Nothing reaches the desk. A question seen with no words stops nothing. What still reaches the
+  owner is not a member's question: a block (HQ's own question, once), an approval for a step that
+  cannot be undone (its own card, running the one action it stored), a credential the work needs
+  and money (HQ's own cards). This is simpler than judging whether the new question "asks the
+  same kind of thing": that would compare model wording (5061 and 5062 share little of it), which
+  this repository has learned not to trust, and every decision that should still reach the owner
+  already has a route that is not `ask_owner`.
 
 ## Amended 2026-10-31: a long item makes progress across turns (D12)
 
@@ -692,3 +732,241 @@ unnoticed. The owner approved both changes on 31 Oct.
   Narrow by design: a GitHub Actions push filter only. Path filters are not read (they make a run
   the branch filter allows conditional, never possible where it was not), nor schedules, manual
   dispatch or pull requests, which HQ does not open.
+
+## Amended 2026-11-01: what round 3 found (D22–D28)
+
+Round 3 of the baseline experiment (31 Oct to 1 Nov) found these in HQ's own record; each is a
+rule changed here, with a scenario of what happened.
+
+- **D23. The gate belongs to the head.** Item 951 was submitted at a head whose check passed;
+  a later turn ran out of room and the worker kept that same head as work in progress, which
+  shut the gate and queued no check, so both of the reviewer's passes were refused and nothing a
+  reviewer or the owner could do reopened it. Keeping work in progress at the head the item's
+  newest branch already holds now leaves the gate as it is; a new head still shuts it until its
+  check passes.
+- **D24. Nobody reviews work she had a hand in.** Ada's turns kept work in progress on item
+  952; it climbed to Kit, who squashed her commits into his; Ada then reviewed it and closed it,
+  because the own-work check asked only who submitted the head. The loops' reviewer is now
+  chosen, by the same rule, among members who had no hand in the item: none kept a branch of it
+  or of its sub-tasks, and none took a turn of work on it (taken, gone on with, woken back to it
+  by a send-back, a check or a nudge). Reviewing it is not a hand in it.
+- **D26. A review turn with neither verdict is not done, and the review goes on.** Rae
+  reviewed items 955, 952 and 953 with one `repo_checkout` each and ended with no verdict and no
+  post; each sat in review. A review turn that ends (not out of room, which goes on afresh as
+  before) with the item still in review and still hers to review is now recorded in the thread
+  as not done, she is passed over on that review, and the next reviewer by the same rule is
+  asked; with nobody left, the owner is asked about the item. A new ask for review starts the
+  review again with nobody passed over.
+- **D25. Only a criterion that asks for a CI run's result needs one.** Item 955's criterion "It
+  reports today's offenders without failing CI on them" was read by D6's check as asking for a
+  run no push of the branch could have, and HQ would not pass it; the criterion asks what CI's
+  steps make of the rule's findings, which the check of the head shows. Of the criteria about
+  CI, D6's refusal now applies only to those that ask for a run's result: they name a run (a CI
+  run, a workflow run) or say CI passes, goes green or succeeds
+  (`mechanical::asks_for_a_run`). For the others the report says no run is needed and gives the
+  newest check of the head, which runs the lint steps CI runs against develop, as the measure;
+  nothing is refused on them.
+- **D22. A lint criterion is measured against develop, and a blocked item's work is kept.**
+  Item 949's branch pinned every tag and linted exactly as develop does, which is how Claude
+  Code's arm and round 2's 931 were accepted; HQ's check measured "no worse than develop", yet
+  the reviewer sent it back on "passes" read literally, the next member asked the owner, and it
+  ended blocked, its work left only in the node's mirror. Now:
+  - the check states its measure: "…: no more findings than develop: met", or "…: new
+    findings against develop on ansible-lint: not met" (ADR 0115's wording, amended; until
+    2026-11-03 the first read "no new findings against develop", more than a comparison of
+    each linter's count proves);
+  - HQ's mechanical checks give, for each criterion about lint (a word naming it: `lint`,
+    `ansible-lint`, `yamllint`, `lints`, `linting`), the newest check of the head as its
+    measure, and tell the reviewer to take the check's verdict for it, as for CI; a finding
+    develop has too fails nothing;
+  - when an item in the loops ends blocked (its member's block, or failed at every rank), its
+    newest submission, if its check passed, is listed on Manage as `kept_blocked` with a bundle
+    to download. It is not accepted and HQ never pushes it; moving the item back to work is the
+    owner's, as before.
+- **D27. A loop's item has the fork's tools up front, and the sandbox is said to start
+  empty.** On item 950, Bo (the house model) did call `repo_checkout` when he found it behind
+  `find_tools`, but in the turns that asked the owner and the one that blocked he met a fresh,
+  empty sandbox, ran `git init` with a made-up remote, and took the failures for "the sandbox
+  is offline". On the house model the fork's tools stayed held back beside weather and news
+  tools. Now HQ's `tools/list` carries, in its own `_meta` under `endora/up_front`, the node's
+  tools a turn on a loop's item loads up front (`protocol::node_tools_up_front`):
+  `repo_checkout` and `repo_submit` for the member who holds it, `repo_checkout` for its
+  reviewer, none where the loop's own list of tools leaves the fork out. The worker puts HQ's
+  mark on those tools, so they load up front on the house's model and on Claude as D19 made
+  HQ's own marks load (Claude Code loads every tool the bridge offers, so holds none back). The
+  handover's line on kept work now begins "Your sandbox starts empty each turn: check out the
+  kept branch first." The shell's description and the instructions no longer say "offline":
+  the sandbox has no internet, starts empty each turn, and the fork comes in with
+  `repo_checkout`.
+- **D28. Python's byproducts are not work.** All three heads kept on item 950's work branch
+  added only `__pycache__/*.pyc` (the fork has no ignore entry for them), and the handover said
+  the turn "kept new work"; 947 and 951 carried the same file. The worker's keep now never adds
+  `__pycache__/` or `*.pyc`, and a branch whose only change from its base is such byproducts is
+  not kept (nothing is sent to the node). Work the model committed itself is kept as it is.
+
+## Amended 2026-11-01: a loop worked by one member alone (round 4's solo arm)
+
+Round 4's piping audit (item E of the baseline experiment; the owner, 1 Nov: "let the agents be
+agents") asks whether HQ's process, not the models, causes the failures, and settles it with an
+arm of "one member, one long turn, no ladder" beside the team's. Configuration could not give
+that arm: a loop's starting rank (`loop_rank:<project>`) and items at once (`loop_items:`) choose
+who takes an item, but not who reviews it (`review::reviewer_among`, any other member at work),
+where a failure goes (`loop_failed` climbs to the member one rank up), nor whom the item goes to
+by name; only pausing every other member would cut the hand-offs, which stops the team's arm, and
+no `ENDORA_*` variable touches the loops. So:
+
+- **The owner may set a loop to be worked by one member alone** (`loop_solo:<project>`, a
+  member's id; `POST /v1/projects/{id}/solo` with `{"member": id}` or `null`, or `"solo": id` when
+  making the project). Its items go to that member only, one at a time, whatever its starting
+  rank.
+- **Its item is done when HQ's checks pass and the member sets it ready.** Setting it in review is
+  refused until the check of its newest head has passed (for work the gate holds) and while a CI
+  run its criteria ask for cannot be had (D6), as a reviewer's pass would be (the refusal tells
+  the member, who has nobody to send it back to, to block it with the reason); then HQ's
+  mechanical checks at review run as for any item (a forbidden path sends it back, one of its
+  failures), and with nothing sent back it is done with no review, and goes on as accepted work
+  does (the push, the merge). The member's own judged evidence on setting it ready is unchanged.
+- **Nothing hands it on.** A failure (a failed check, a send-back by HQ's checks, turns that kept
+  running out of room) is counted and said on the thread, and the item stays with its member: no
+  climb, no hold for an away member, no hand-up while the member is paused. A turn that runs
+  out of room goes on with the same member, as for every item. The ninth failure (three ranks'
+  worth, the team arm's ceiling) blocks it with the reason and asks the owner, as the team's
+  top rank's last failure does, so neither arm's spend on one item is unbounded.
+- **The member takes no part in the team's loops** while it works a loop alone (an active or
+  paused one): no hand-out, climb, hand-up or review of another loop's item goes to it, so the two
+  arms share nobody. The arm wants its own Haiku member, hired for it, so the team keeps Ada.
+
+Everything else (the turn, its briefing and tools, the checks, the delivery) is the team's own:
+the arm differs from the team only by the hand-offs it leaves out, and by one paragraph of the
+briefing that tells the member it works alone and that setting the item ready, once HQ's check
+has passed, closes it with no review. A member named on two loops worked alone would hold an
+item of each at once; the round's script makes one such loop a member. A round starts it with
+`scripts/experiment.py start --round N --from-tasks <ids> --solo <name>`, which makes the tasks
+in a project of their own, `Round N solo (<name>)`, worked by that member alone, and archives
+nothing. Scenario: `features/one-member-works-a-loop-alone.feature`.
+
+## Amended 2026-11-01: an item keeps its sandbox between its turns (round 4, item E)
+
+Round 3's piping audit (the experiment's record, "Rounds side by side" and item E): 295 turns
+for nine tasks, 246 of them changing nothing by HQ's own flag, and 255 `repo_checkout` calls,
+because every turn started in an empty sandbox (D27) and checked the fork out again. The owner,
+1 Nov: cut the time-wasters, "let the agents be agents".
+
+- **An item's sandbox is kept between its turns, by any member.** On the Pi's runner (the
+  workbench), a turn with a shell on an item has `/work` in the item's own volume,
+  `endora-item-<task>`: a tmpfs, as before (256 MB, owned by the workbench's user, `noexec`,
+  `nosuid`, `nodev`, never filled from the image), which a keeper container holds mounted
+  between the item's turns, since a tmpfs volume is emptied when nothing has it mounted. The
+  keeper is the workbench image asleep (`sleep infinity`), on no network, read-only, with no
+  capabilities, 16 MB, labelled `endora.item=<task>`; it holds no token and runs nothing a turn
+  gives it. A later turn on the item finds `/work/repo`, committed or not, where the last turn
+  left it. Items never share a sandbox, and two turns on one item at once do not either: the
+  second has a `/work` of its own. The runner's word picks the volume; HQ's picks only which
+  item's, by the task it already names in each turn it hands out.
+- **It goes when the item closes, or after three idle days.** Every minute the runner asks HQ
+  (`POST /v1/runner/sandboxes`, `{"items": [...]}`, through the gateway on the Pi) which of the
+  items it keeps sandboxes for are open; a done, dropped or blocked item's keeper is removed,
+  then its volume (`TaskStatus::keeps_its_sandbox`). One with no turn started on it for three
+  days goes too, and an HQ that does not know the route lets idleness alone decide. A runner
+  that restarts takes the keepers back by their label. A keeper that stopped (the Pi rebooted,
+  Docker restarted) took the sandbox with it: the next turn has a new, empty one, which the
+  wording below allows for. Work worth keeping beyond that is kept as before, on the node, as a
+  submitted or work-in-progress branch.
+- **What a turn is told.** The handover's kept-work line, the shell tool's description and the
+  instructions say "Your sandbox keeps the item's work between turns; /work/repo is there if a
+  turn checked it out", replacing D27's "starts empty each turn" and "gone when the turn ends";
+  the handover still names the kept branch, to check out if `/work/repo` is not there. The
+  reviewer's paragraph no longer says its work is gone either.
+- **`repo_checkout` on a checkout already there says so.** For a member who may submit, a
+  checkout of no branch, or of a branch the kept checkout has, asks the node for nothing: it says
+  where `/work/repo` stands (its branch, head and uncommitted changes) and that the member should
+  go on from it, and takes the checkout over for that member (its commits carry their trailer).
+  `refresh: true` (a new optional input of the contract) fetches the node's latest into it as
+  `node/<branch>`, beside the work and never over it, for the member to rebase on; to start over
+  the member removes `/work/repo` in the shell. A reviewer, who reads what was submitted, has it
+  from the node every time, as before (which replaces the checkout: by then the work is
+  submitted). Every rule of the wing is unchanged: the forbidden paths, the submission's checks,
+  no remote and nothing pushed from the sandbox.
+- **A Claude Code turn's ledger is its own.** The bridge keeps a turn's calls in
+  `/work/.endora/did.json`; the worker removes it before Claude Code starts, so an earlier turn's
+  calls, or its question to the owner, are never read as this turn's.
+
+Where it does not apply: the NAS's runner starts no workbench (no shell and no `/work`), so it
+has nothing to keep and is unchanged; and Claude Code's own session is still not resumed between
+turns (ADR 0117's "per-task `--resume`" stays an alternative), though its folder now lives in the
+kept `/work`. Scenario: `features/a-long-item-makes-progress-across-turns.feature` ("An item keeps
+its sandbox between its turns until it is closed"); the runner's, the worker's and HQ's tests
+hold the rest.
+
+## Amended 2026-11-01: no protocol moves (round 4, D30)
+
+The house-model replay of 1 Nov and round 3's store: turns opened with `my_turn`, which repeats
+the briefing the first message already holds, and `claim`, for an item already theirs, and both
+models asked `find_tools` for tools they were already offered.
+
+- **A turn on the item its member holds is offered neither `my_turn` nor `claim`**
+  (`protocol::tools_for_turn`): the item was handed to the member, or it goes on with it after a
+  handover, and the worker has already read the briefing and claimed for it before the first
+  round, as before. HQ still answers both calls, for the worker and for a model that asks
+  anyway. A turn on an item someone else holds (a review) keeps them.
+- **`find_tools` asked for a tool the turn already has says so, at no cost to the turn.** By
+  name, or by a search every part of whose name it says ("container logs" names
+  `container_logs`), it answers "Already yours: … Call it directly." A round in which every call
+  was such an answer is not counted against the turn's rounds, two at most; its bytes still count
+  against the budget.
+
+Scenario: `features/a-turn-spends-no-moves-on-the-protocol.feature`; the worker's end-to-end
+test stands for `find_tools`'s.
+
+## Amended 2026-11-01: downtime waits while a round runs (round 4)
+
+Downtime and chess turns (wake reason `downtime`) ran beside a round's items, taking the
+runner's places and the house's model from the work being measured. Now none starts while a
+round of the experiment is under way: HQ's setting `round_running` holds the round's items, and
+while any of them is neither done nor dropped, no member is given a downtime turn, no chess move
+is picked up, and a downtime turn queued before the round began stays queued. The round lapses
+on its own once every item is finished; `POST /v1/round` with `{"items": [...]}` adds a round's
+items (both arms' starts add up, finished ones are let go), `{"close": true}` ends it sooner, and
+`GET /v1/round` says what it holds. `scripts/experiment.py start --yes` sets it with the tasks it
+makes. Scenario: `features/the-office.feature` ("Downtime waits while a round of the experiment
+is under way").
+
+## Amended 2026-11-02: roles retired
+
+The cut-over made every member a plain one and a title a name only, but the code still carried
+`Role` (CEO, lead, developer, researcher, reviewer) and decided by it in eight places. Live, every
+member at work was a developer and the two holding other roles were on furlough, so none of those
+decisions separated anyone. They are gone, and with them the type, the member's field, the hire
+form's title and the office's seating by title:
+
+- **What a member may do with the bridge's tools and the node's contracts** no longer reads a
+  role (`bridge::PROFILES`, `Contract::offered_to`). Every protection that refused anything live
+  stays and keeps its tests: a tool the owner switched off is never run, an approval re-checks the
+  stance, Restricted is never offered, a turn on the NAS's own model is kept from what can end on
+  the owner's desk, an act given arguments asks after a stranger's words, Endora's own containers
+  are refused, HQ's per-task `only` and `never` lists hold, and a member not at work (`wing:
+  false`) submits no branch.
+- **What models a turn may call** follows its brain alone (`relay::may_use`, `most_a_turn`):
+  Sonnet or Haiku for every member, Opus and Sonnet (a dollar a turn) for the member who thinks
+  with Opus, no Claude for one on DeepSeek, nothing for a brain HQ did not name.
+- **A recheck** of a kept branch may be asked by any member with reach of the task.
+- **Hiring** takes a name and a model; the share is `A_MEMBERS_SHARE` (40). A title an older
+  console still sends is ignored. The `role` columns of `members` and the node's
+  `team_approvals` are kept and written as `developer`, so a build from before (a rollback) reads
+  every row as it did; nothing reads them now. HQ no longer says a turn's role to the node or the
+  runner.
+- **What was given up:** a read-only member (the old researcher or reviewer). No member at work
+  was one. The two who were, Cy and Dee, are on furlough, and nothing in Endora brings a member
+  back: recall retired with the reporting lines (this ADR's cut-over), no route, desk decision or
+  store call clears a furlough (`furlough_member` is the only writer of `recalled_at`, and it
+  writes NULL), and a furloughed member is refused every wake, is handed no task, has no turn and
+  so no token the node offers a tool to, and changes no lab
+  (`a_furloughed_member_never_gets_a_turn_so_no_tool_reaches_it`). Bringing one back would take a
+  change to Endora, which is where its permissions are decided. Read-only work is asked for in the
+  task's words and held by HQ's `only` and `never` lists, which bind whoever takes the task.
+- **Found on the way:** the console's New project form offered as leads only members titled lead
+  or CEO, which since the cut-over was nobody. It now offers every member at work.
+
+Scenarios: `domains/capabilities/features/tools-that-fit-the-turn.feature` (every member is
+offered the same, by where it thinks); the team's scenarios hire by the old titles only to set a
+share.

@@ -166,11 +166,11 @@ fn held_to(text: &str, most: usize) -> String {
     format!("{}{}{}", &text[..head], mark(tail - head), &text[tail..])
 }
 
-/// `POST /team-relay/transcript`: what a turn said, told by its own worker at the end of the
-/// turn, with the turn's token (ADR 0129). The node scrubs it of secrets with the scrubber the
-/// receipts use, and of the turn's own token, holds it to a megabyte (head and tail, the cut
-/// marked), and tells HQ, which keeps it for thirty days. Any running turn's worker may tell
-/// its own; HQ keeps one a turn.
+/// `POST /team-relay/transcript`: what a turn said, told by its own worker after every model
+/// round and at the end of the turn, with the turn's token (ADR 0129, amended 2026-11-01). The
+/// node scrubs it of secrets with the scrubber the receipts use, and of the turn's own token,
+/// holds it to a megabyte (head and tail, the cut marked), and tells HQ, which keeps it for
+/// thirty days. Any running turn's worker may tell its own; HQ keeps the latest an attempt.
 pub(super) async fn turn_transcript(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -281,7 +281,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"tok\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": false, "brain": "local", "runtime": "worker" })
                 .to_string(),
             ),
@@ -357,14 +357,14 @@ mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "claude-code" })
                 .to_string(),
             ),
             "/v1/team/turn" if body.contains("\"worker\"") => (
                 200,
                 "application/json",
-                json!({ "run": 8, "member": "Zed", "role": "developer", "left": 1000,
+                json!({ "run": 8, "member": "Zed", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "worker" })
                 .to_string(),
             ),
@@ -461,7 +461,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": 1000,
+                json!({ "run": 7, "member": "Rae", "left": 1000,
                         "cloud": true, "brain": "claude-haiku-5-5", "runtime": "claude-code" })
                 .to_string(),
             ),

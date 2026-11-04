@@ -9,7 +9,7 @@ use serde_json::json;
 
 use endora_team::application::run_ports::RunStore;
 use endora_team::application::{Author, TeamStore};
-use endora_team::domain::{Brain, DeskId, Receipt, RunStatus, TaskStatus};
+use endora_team::domain::{Brain, DeskId, Receipt, RunStatus, TaskStatus, WakeReason};
 use endora_team::infrastructure::Script;
 
 use super::Office;
@@ -160,6 +160,20 @@ fn one_question_about(w: &mut Office, title: String) {
     w.question_about(&title);
 }
 
+#[then(expr = "the owner's desk holds no question about {string}")]
+fn no_question_about(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let waiting: Vec<_> = w
+        .waiting_on_desk("question")
+        .into_iter()
+        .filter(|d| d.task == Some(task))
+        .collect();
+    assert!(
+        waiting.is_empty(),
+        "questions about {title:?}: {waiting:#?}"
+    );
+}
+
 #[when(regex = r"^(\d+) hours pass, with HQ ticking every few minutes$")]
 fn hours_pass(w: &mut Office, hours: i64) {
     for _ in 0..hours * 12 {
@@ -237,4 +251,152 @@ fn ends_at_budget(w: &mut Office, name: String, title: String, times: String) {
         let said = w.runs_out_of_room(&name, 50_000, "The turn's prompt reached its budget.");
         assert!(!said.contains("not continued"), "{said}");
     }
+}
+
+#[then(expr = "{string} still waits for its review")]
+fn still_in_review(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    assert_eq!(found.status, TaskStatus::InReview, "{found:?}");
+}
+
+#[then(expr = "HQ refused no wake of {word}'s on {string}")]
+fn no_wake_refused(w: &mut Office, name: String, title: String) {
+    let (member, task) = (w.member(&name), w.task(&title));
+    let refused: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|wake| wake.member == member && wake.task == Some(task))
+            .filter(|wake| matches!(wake.receipt, Receipt::Refused(_)))
+            .collect();
+    assert!(refused.is_empty(), "{name}'s refused wakes: {refused:#?}");
+}
+
+#[then(regex = r"^a turn on (\w+) counts its budget by (its conversation|every call)$")]
+fn turn_counts_budget(_w: &mut Office, model: String, counting: String) {
+    let brain = Brain::from_name(&model).expect("a model");
+    assert_eq!(
+        endora_team::domain::handover::counts_conversation(brain),
+        counting == "its conversation",
+        "{model}"
+    );
+}
+
+// ---- One member works a loop alone (ADR 0142, amended 2026-11-01) --------------------------
+
+#[given(expr = "the owner sets the loop {string} to be worked by {word} alone")]
+fn loop_worked_alone(w: &mut Office, project: String, name: String) {
+    let project = w.project(&project).id;
+    let member = w.member(&name);
+    w.hq.set_loop_solo(project, Some(member))
+        .expect("the owner names the member");
+}
+
+/// The member sets its item ready (in review) citing its newest reading, in its turn; a
+/// refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing (?:his|her) reading$"#)]
+fn sets_ready(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let reading = w.newest_reading(&name);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "Done, as the reading shows.",
+                 "evidence": [reading] }),
+    );
+}
+
+/// The receipt and the document HQ's thread names for the newest check of `task`, as its line
+/// says them: `(receipt r12, document d34)`.
+fn check_line_ids(w: &Office, task: endora_team::domain::TaskId) -> (String, String) {
+    let line =
+        w.hq.store()
+            .thread(task)
+            .expect("the store answers")
+            .into_iter()
+            .rev()
+            .find(|p| p.text.starts_with("Check c"))
+            .expect("the check's line is in the thread")
+            .text;
+    let between = |from: &str| {
+        let start = line.find(from).expect("the line names it") + from.len();
+        line[start..]
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    (
+        format!("r{}", between("receipt r")),
+        format!("d{}", between("document d")),
+    )
+}
+
+/// The member sets its item ready citing the document the check wrote, as set 4's turns did;
+/// a refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing the check's document$"#)]
+fn sets_ready_citing_document(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (_, document) = check_line_ids(w, task);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "Done, as the check shows.",
+                 "evidence": [document] }),
+    );
+}
+
+#[then(regex = r#"^the refusal names the receipt of the check of "(.+)" to cite$"#)]
+fn refusal_names_check_receipt(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let (receipt, document) = check_line_ids(w, task);
+    let said = w.refused.as_deref().expect("it was refused");
+    assert!(
+        said.contains(&format!(
+            "{document} is a document, not a receipt: cite {receipt}"
+        )),
+        "{said}"
+    );
+}
+
+/// The member claims its item and sets it ready citing the item for each criterion, in its
+/// turn; a refusal is noted, not a failure of the step.
+#[when(regex = r#"^(\w+) sets "(.+)" ready, citing the item for each criterion$"#)]
+fn sets_ready_citing_the_item(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    w.use_tool(&name, "claim", &json!({ "task": task.0 }))
+        .expect("the member takes its item");
+    let found =
+        w.hq.store()
+            .task(task)
+            .expect("the store answers")
+            .expect("the item");
+    let evidence: Vec<_> = found
+        .criteria
+        .iter()
+        .map(|_| json!([format!("task {}", task.0)]))
+        .collect();
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "ready",
+                 "evidence": evidence }),
+    );
+}
+
+#[then(expr = "no member is asked to review {string}")]
+fn nobody_reviews(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    let asked: Vec<_> =
+        w.hq.wakes()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|k| k.task == Some(task) && k.reason == WakeReason::ReviewRequested)
+            .collect();
+    assert!(asked.is_empty(), "asked to review: {asked:#?}");
 }

@@ -212,6 +212,31 @@ pub fn names_upstream(name: &str) -> bool {
     bare == "upstream" || bare.starts_with("upstream/")
 }
 
+/// The one rule of which repositories outside the lab may be named: a public
+/// `https://github.com/<owner>/<name>`, the kernel's, which HQ holds the owner to as well.
+pub use endora_kernel::lab::outside_repo;
+
+/// Why a branch of a repository outside the lab is not pushed or merged (ADR 0115, amended
+/// 2026-11-01).
+pub const OUTSIDE_KEPT: &str = "a branch of a repository outside the lab is kept on the node for \
+     judging and is never pushed anywhere";
+
+/// The default branch of the repository at `url`, asked of it (`git ls-remote --symref`), with
+/// `dir` as git's working folder.
+///
+/// # Errors
+/// What git said, or a repository that names no plain default branch.
+pub fn default_branch(dir: &Path, url: &str) -> Result<String, String> {
+    plain_remote(url)?;
+    let said = text(git(dir, &["ls-remote", "--symref", url, "HEAD"], &[])?);
+    said.lines()
+        .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+        .and_then(|r| r.split('\t').next())
+        .filter(|b| crate::ansible_nas::plain_branch(b))
+        .map(str::to_owned)
+        .ok_or_else(|| "the repository names no default branch".to_owned())
+}
+
 /// A remote's address as one key, so the same repository is known by any of its addresses:
 /// GitHub's HTTPS and SSH forms of `owner/name` are the same key; any other address is itself.
 fn repo_key(url: &str) -> String {
@@ -361,6 +386,9 @@ pub struct Mirror {
     url: String,
     base: String,
     upstream: Option<String>,
+    /// A repository outside the lab (ADR 0115, amended 2026-11-01): its branches are kept for
+    /// judging and never pushed or merged anywhere.
+    outside: bool,
     refreshed: Mutex<Option<i64>>,
 }
 
@@ -376,8 +404,45 @@ impl Mirror {
             url: url.to_owned(),
             base: base.to_owned(),
             upstream: None,
+            outside: false,
             refreshed: Mutex::new(None),
         }
+    }
+
+    /// The mirror of a repository outside the lab at `url`, worked from `base` (its default
+    /// branch), kept under `data_dir/outside-repos/<its address as a folder name>` beside the
+    /// fork's (ADR 0115, amended 2026-11-01: round 4's F4). Checked out and submitted to as the
+    /// fork is, with no upstream; what is submitted stays in it, since [`Self::push`] and
+    /// [`Self::merge_into_base`] refuse every branch of it. The caller has held `url` to
+    /// `endora_kernel::lab::outside_repo`.
+    #[must_use]
+    pub fn outside(data_dir: &Path, url: &str, base: &str) -> Self {
+        let folder: String = repo_key(url)
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let root = data_dir.join("outside-repos").join(folder);
+        Self {
+            dir: root.join("mirror.git"),
+            submissions: root.join("submissions"),
+            url: url.trim().to_owned(),
+            base: base.to_owned(),
+            upstream: None,
+            outside: true,
+            refreshed: Mutex::new(None),
+        }
+    }
+
+    /// Whether this is the mirror of a repository outside the lab, whose branches stay here.
+    #[must_use]
+    pub fn is_outside(&self) -> bool {
+        self.outside
     }
 
     /// With upstream at `url` kept beside the fork, read-only (ADR 0106, amended 2026-10-31):
@@ -1015,6 +1080,9 @@ impl Mirror {
         remote: &str,
         key: Option<&Path>,
     ) -> Result<String, String> {
+        if self.outside {
+            return Err(OUTSIDE_KEPT.to_owned());
+        }
         if self
             .upstream
             .as_deref()
@@ -1158,6 +1226,9 @@ impl Mirror {
         remote: &str,
         key: Option<&Path>,
     ) -> Result<String, String> {
+        if self.outside {
+            return Err(OUTSIDE_KEPT.to_owned());
+        }
         if self
             .upstream
             .as_deref()

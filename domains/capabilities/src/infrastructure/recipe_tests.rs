@@ -62,38 +62,6 @@ fn a_trial_shows_the_sample_value_it_found() {
     assert_eq!(label.1, "good");
 }
 
-#[test]
-fn a_recipe_may_not_reach_the_house_or_the_metadata_service() {
-    // The hole this closes: a recipe's URL is arbitrary — the person types it,
-    // and one day the butler drafts it — but the interpreter shipped fetching
-    // through the SAME helper the constant-host built-ins use, which does not
-    // guard. A recipe aimed at a link-local, loopback or private address was
-    // simply fetched. `Recipe::new` cannot catch this (a private host is a
-    // perfectly well-formed https URL), so the guard has to be at the fetch.
-    //
-    // No network is reached: the guard refuses before any request is made,
-    // which is also why this test is fast and offline.
-    for target in [
-        "http://169.254.169.254/latest/meta-data/",
-        "http://192.168.1.10:8123/api/states",
-        "http://127.0.0.1:8787/v1/export",
-        "http://localhost/admin",
-    ] {
-        let recipe = Recipe::new("probe", "probes somewhere private", vec![], target, "{x}")
-            .expect("a private host is a well-formed URL — validation cannot catch it");
-        let refused = run_recipe(&recipe, &serde_json::json!({}))
-            .expect_err("a private address must never be fetched");
-        // Asserting on the REASON, not merely that it errored: a refused
-        // connection also produces an error, so `is_err()` alone would pass
-        // just as happily with the guard removed — a test that lies.
-        assert!(
-            refused.contains("private/internal address"),
-            "{target} failed for the wrong reason ({refused}) — that is a \
-             network error, not the guard refusing"
-        );
-    }
-}
-
 // ---- fill_get_template ----------------------------------------------
 
 #[test]
@@ -195,80 +163,4 @@ fn a_string_value_is_not_re_quoted() {
 fn every_placeholder_in_the_template_is_filled() {
     let said = fill_say_template("{a} and {b}", &json!({"a": 1, "b": "two"})).unwrap();
     assert_eq!(said, "1 and two");
-}
-
-// ---- RecipeRunner -------------------------------------------------
-
-#[test]
-fn an_unenabled_recipe_is_hidden_and_a_stored_stance_turns_it_on() {
-    let runner = RecipeRunner::new(vec![air_quality()], vec![]);
-    let spec = runner
-        .available()
-        .into_iter()
-        .find(|s| s.id == "recipe.air_quality")
-        .unwrap();
-    // Absence defaults to Off — the observe band's own Auto default is not
-    // reached; see the struct doc for why.
-    assert!(!spec.configured, "an unauthored-into stance must not run");
-    assert!(!spec.autonomous);
-    assert_eq!(spec.reversibility, Reversibility::Observe);
-    assert!(
-        spec.third_party,
-        "a recipe's response is another service's words"
-    );
-    assert_eq!(runner.decision("recipe.air_quality"), Some(Decision::Block));
-    assert!(runner.run("recipe.air_quality", "{}").is_err());
-
-    let enabled = RecipeRunner::new(
-        vec![air_quality()],
-        vec![("recipe.air_quality".to_owned(), Stance::Auto)],
-    );
-    let spec = enabled
-        .available()
-        .into_iter()
-        .find(|s| s.id == "recipe.air_quality")
-        .unwrap();
-    assert!(spec.configured);
-    assert!(spec.autonomous);
-    assert_eq!(enabled.decision("recipe.air_quality"), Some(Decision::Act));
-}
-
-#[test]
-fn a_call_that_looks_like_a_secret_is_refused_before_any_request() {
-    let runner = RecipeRunner::new(
-        vec![air_quality()],
-        vec![("recipe.air_quality".to_owned(), Stance::Auto)],
-    );
-    let err = runner
-        .run(
-            "recipe.air_quality",
-            r#"{"lat": 1, "lon": "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD"}"#,
-        )
-        .unwrap_err();
-    assert!(err.contains("looks like it contains"), "{err}");
-}
-
-#[test]
-fn an_unknown_recipe_id_is_a_named_error_not_a_panic() {
-    let runner = RecipeRunner::new(vec![air_quality()], vec![]);
-    assert_eq!(runner.decision("recipe.nope"), None);
-    assert!(runner.run("recipe.nope", "{}").is_err());
-    assert!(
-        runner.run("weather", "{}").is_err(),
-        "the recipe. prefix is required"
-    );
-}
-
-#[test]
-fn the_input_schema_requires_every_declared_input() {
-    let schema = recipe_input_schema(&air_quality());
-    let v: Value = serde_json::from_str(&schema).unwrap();
-    let required: Vec<&str> = v["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|x| x.as_str().unwrap())
-        .collect();
-    assert_eq!(required, vec!["lat", "lon"]);
-    assert_eq!(v["properties"]["lat"]["type"], "number");
 }

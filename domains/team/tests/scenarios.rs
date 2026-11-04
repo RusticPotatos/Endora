@@ -25,7 +25,7 @@ use endora_team::application::{
 use endora_team::domain::money::DOLLAR;
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
-    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt, Role,
+    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt,
     TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -116,6 +116,16 @@ mod reviews;
 /// file.
 #[path = "scenarios/delivery.rs"]
 mod delivery;
+
+/// The judge tested on known-good and known-bad work, for its verdict's delivery and what HQ's
+/// rules find (the baseline experiment's round 4, item D), in its own file.
+#[path = "scenarios/judge.rs"]
+mod judge;
+
+/// A branch outside the lab is never given the lab's check (ADR 0115, amended 2026-11-01), in
+/// its own file.
+#[path = "scenarios/outside.rs"]
+mod outside;
 
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
@@ -353,15 +363,9 @@ impl Office {
 
     // ---- One helper a job, for every feature's steps (review of 31 Oct) --------------------
 
-    /// The owner's team member `name`, one model: hired under the role its model is ranked to
-    /// (ADR 0142), as production's five were.
+    /// The owner's team member `name`, one model (ADR 0142).
     fn hires_model(&mut self, name: &str, model: &str) {
-        let role = match model {
-            "opus" => Role::Ceo,
-            "sonnet" | "haiku" => Role::Lead,
-            _ => Role::Developer,
-        };
-        let id = self.hq.hire(name, role, 10, 2, 0).expect("HQ hires");
+        let id = self.hq.hire(name, 10, 2, 0).expect("HQ hires");
         self.hq.set_model(id, model).expect("a model Endora has");
         self.members.insert(name.to_owned(), id);
     }
@@ -479,13 +483,15 @@ impl Office {
         reason: &str,
         evidence: &serde_json::Value,
     ) {
-        self.use_tool(
-            name,
-            "set_status",
-            &json!({ "task": task.0, "status": "in_review", "reason": reason,
-                     "evidence": evidence }),
-        )
-        .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        let said = self
+            .use_tool(
+                name,
+                "set_status",
+                &json!({ "task": task.0, "status": "in_review", "reason": reason,
+                         "evidence": evidence }),
+            )
+            .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        self.answer = Some(said);
         self.ends_turn(name);
     }
 
@@ -527,48 +533,42 @@ fn alarm(w: &mut Office, said: String) {
 
 // --- The team ----------------------------------------------------------------------------
 
-/// The owner hires a member by role.
+/// The owner hires a member, its title a name only (ADR 0142): the title the scenario gives
+/// it sets the share and slots the member was hired with when titles were roles.
 #[given(expr = "{word} is the {word}")]
-fn hire(w: &mut Office, name: String, role: String) {
-    if role == "CEO" {
-        let id =
-            w.hq.hire(&name, Role::Ceo, 35, 1, 3)
-                .expect("the owner hires a CEO");
+fn hire(w: &mut Office, name: String, title: String) {
+    if title == "CEO" {
+        let id = w.hq.hire(&name, 35, 1, 3).expect("the owner hires a CEO");
         w.hq.set_brain(id, "claude-opus-5-5")
             .expect("a CEO thinks with Opus");
         w.members.insert(name, id);
         return;
     }
-    let (role, share) = match role.as_str() {
-        "lead" => (Role::Lead, 25),
-        "developer" => (Role::Developer, 40),
-        // The reviewer's role is what the owner reads as the tester (ADR 0114).
-        "reviewer" | "tester" => (Role::Reviewer, 20),
-        "researcher" => (Role::Researcher, 15),
-        other => panic!("the team has no role called {other}"),
+    let share = match title.as_str() {
+        "lead" => 25,
+        "developer" => 40,
+        "reviewer" | "tester" => 20,
+        "researcher" => 15,
+        other => panic!("the team never had a title called {other}"),
     };
-    let id = w.hq.hire(&name, role, share, 2, 0).expect("HQ hires");
+    let id = w.hq.hire(&name, share, 2, 0).expect("HQ hires");
     w.members.insert(name, id);
 }
 
 #[given(expr = "{word} thinks with Claude")]
 fn thinks_with_claude(w: &mut Office, name: String) {
     let id = w.member(&name);
-    let role =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired")
-            .role;
-    let brain = if role == Role::Researcher {
-        "claude-haiku-5-5"
-    } else {
-        "claude-sonnet-5-5"
-    };
-    w.hq.set_brain(id, brain)
-        .expect("a brain the role may think with");
+    w.hq.set_brain(id, "claude-sonnet-5-5")
+        .expect("a brain a member may think with");
+}
+
+/// A member on Claude's cheapest model, which most of the pool goes to (ADR 0113, amended
+/// 2026-11-01).
+#[given(expr = "{word} thinks with Claude Haiku")]
+fn thinks_with_claude_haiku(w: &mut Office, name: String) {
+    let id = w.member(&name);
+    w.hq.set_brain(id, "claude-haiku-5-5")
+        .expect("a brain a member may think with");
 }
 
 #[when(regex = r#"^the owner sets (\w+)'s brain to "(.+)"$"#)]
@@ -826,7 +826,7 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
     let task = w.task(&title);
     for amount in [first, second] {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide.
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         let context = w.turn_of(&name);
         assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
@@ -886,7 +886,7 @@ fn spent_of_share(w: &mut Office, name: String, dollars: f64) {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide, and
         // the first of these joins the turn Endora's handing queued.
         let task = w.task(&title);
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         turn_spends(w, &name, &title, amount);
         left -= amount;
@@ -915,6 +915,42 @@ fn share_spent(w: &mut Office, name: String) {
             .share_committed(member, w.today())
             .expect("the store answers");
     assert!(used >= share, "{name} used {used} of {share}");
+}
+
+impl Office {
+    /// `name`'s share for today, as the roster shows it.
+    fn share_today(&self, name: &str) -> Micros {
+        let member = self.member(name);
+        self.hq.snapshot().expect("the snapshot is built")["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|m| m["id"] == member.0)
+            .expect("on the team")["per_day"]
+            .as_i64()
+            .expect("a share")
+    }
+}
+
+#[then(regex = r"^(\w+)'s share for today is more than half the pool's day$")]
+fn share_over_half(w: &mut Office, name: String) {
+    let day = w.hq.snapshot().expect("the snapshot is built")["pool"]["per_day"]
+        .as_i64()
+        .expect("the pool's day");
+    let share = w.share_today(&name);
+    assert!(share * 2 > day, "{name}'s {share} of {day}");
+}
+
+#[then(
+    regex = r"^(\w+)'s share for today is more than (\w+)'s on \w+ and (\w+)'s on \w+ together$"
+)]
+fn share_over_both(w: &mut Office, name: String, one: String, other: String) {
+    let (share, one, other) = (
+        w.share_today(&name),
+        w.share_today(&one),
+        w.share_today(&other),
+    );
+    assert!(share > one + other, "{share} against {one} and {other}");
 }
 
 #[then(regex = r"^the pool shows \$(\d+\.\d\d) spent today$")]
@@ -1003,15 +1039,13 @@ struct Wing {
 /// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task, the plan.
 #[given("the engineering wing")]
 fn the_wing(w: &mut Office) {
-    let kit =
-        w.hq.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)
-            .expect("Kit is hired");
+    let kit = w.hq.hire("Kit", 25, 2, 5).expect("Kit is hired");
     w.hq.set_brain(kit, "claude-sonnet-5-5")
         .expect("Kit thinks with Sonnet");
     w.members.insert("Kit".to_owned(), kit);
     for (name, look) in [("Rae", 2), ("Zed", 4)] {
         let id =
-            w.hq.hire(name, Role::Developer, Role::Developer.share(), 2, look)
+            w.hq.hire(name, 40, 2, look)
                 .expect("the developer is hired");
         w.hq.set_brain(id, "claude-haiku-5-5")
             .expect("the developer thinks with Haiku");
@@ -1198,9 +1232,8 @@ fn task_is(w: &mut Office, title: String, status: String) {
 
 #[given(expr = "the owner hires {word} as a {word}")]
 #[when(expr = "the owner hires {word} as a {word}")]
-fn owner_hires(w: &mut Office, name: String, role: String) {
-    let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
-    let hired = w.hq.hire_by_owner(&name, role, "local");
+fn owner_hires(w: &mut Office, name: String, _title: String) {
+    let hired = w.hq.hire_by_owner(&name, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }
@@ -1391,6 +1424,44 @@ fn has_a_free_downtime_turn(w: &mut Office, name: String) {
 #[then(regex = r"^(\w+) has no downtime turn$")]
 fn has_no_downtime_turn(w: &mut Office, name: String) {
     assert!(w.downtime_turns(&name).is_empty());
+}
+
+/// A round of the experiment under way (ADR 0142, amended 2026-11-01), as
+/// `scripts/experiment.py start` sets it: its item, handed to `name`.
+#[given(regex = r#"^a round of the experiment is under way, with (\w+) working its item "(.+)"$"#)]
+fn a_round_runs(w: &mut Office, name: String, title: String) {
+    let goal = match w.goal {
+        Some(goal) => goal,
+        None => {
+            let goal =
+                w.hq.set_goal("Close the gap to Claude Code", "", Author::Owner)
+                    .expect("the owner sets a goal");
+            w.goal = Some(goal);
+            goal
+        }
+    };
+    let to = w.member(&name);
+    let made = w.hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    );
+    let task = w.note(made).expect("the owner hands it out");
+    w.hq.add_to_round(&[task]).expect("the round is set");
+}
+
+#[when(regex = r#"^the round's item "(.+)" is dropped$"#)]
+fn the_rounds_item_is_dropped(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    w.hq.drop_task(task).expect("the owner drops it");
 }
 
 #[when(regex = r"^(\w+) tries to create a task in her downtime turn$")]

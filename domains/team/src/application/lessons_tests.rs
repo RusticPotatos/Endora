@@ -11,7 +11,7 @@ use super::engine::{Author, Called, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext};
 use crate::domain::lessons::{LOOP_LESSON_MOST, LOOP_LESSONS_MOST};
 use crate::domain::money::DOLLAR;
-use crate::domain::{GoalId, MemberId, Priority, ProjectId, Role, TaskId, WakeReason};
+use crate::domain::{GoalId, MemberId, Priority, ProjectId, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -49,7 +49,7 @@ fn a_loop(clock: &Hands) -> Loop<'_> {
         .set_goal("Keep the lab healthy", "you asked", Author::Owner)
         .unwrap();
     let seat = |name: &str, model: &str| {
-        let id = hq.hire(name, Role::Developer, 10, 2, 0).unwrap();
+        let id = hq.hire(name, 10, 2, 0).unwrap();
         hq.set_model(id, model).unwrap();
         id
     };

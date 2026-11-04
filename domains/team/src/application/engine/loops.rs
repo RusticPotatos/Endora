@@ -7,9 +7,12 @@
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::{
-    Brain, Member, MemberId, Millis, ProjectId, ProjectStatus, Refusal, Role, Task, TaskId,
-    TaskStatus, WakeReason,
+    Brain, Member, MemberId, Millis, ProjectId, ProjectStatus, Refusal, Task, TaskId, TaskStatus,
+    WakeReason,
 };
+
+/// The setting that keeps, by item, the reviewers passed over on its review (D26).
+const PASSED_OVER: &str = "review_passed_over:";
 
 /// The five members and their models, ranked (ADR 0142).
 const SEATS: [(&str, Brain); 5] = [
@@ -38,6 +41,10 @@ const HEALTH_CHECK: &str = "Check the home lab";
 /// How many failed checks at one rank move an item up (ADR 0142).
 const FAILURES_A_RANK: u32 = 3;
 
+/// How many failures block an item of a loop worked alone (amended 2026-11-01): three ranks'
+/// worth, the team arm's ceiling, so neither arm's spend on one item is unbounded.
+const FAILURES_ALONE: u32 = 3 * FAILURES_A_RANK;
+
 /// Where an item's failures at its rank are counted.
 fn failures_key(task: TaskId) -> String {
     format!("loop_failures:{}", task.0)
@@ -64,6 +71,12 @@ const ITEMS_AT_ONCE_MOST: u8 = 4;
 /// Where a loop's items at once are kept.
 fn items_key(project: ProjectId) -> String {
     format!("loop_items:{}", project.0)
+}
+
+/// Where the member a loop is worked by alone is kept (ADR 0142, amended 2026-11-01): empty
+/// when the team works it.
+fn solo_key(project: ProjectId) -> String {
+    format!("loop_solo:{}", project.0)
 }
 
 /// Whether an item is in hand: given to a member, and not yet in review or finished.
@@ -111,7 +124,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .find(|(name, _)| name.eq_ignore_ascii_case(&member.name))
             {
                 self.store.set_brain(member.id, *model)?;
-                self.store.set_role(member.id, Role::Developer)?;
                 seated.push(member.name.clone());
                 continue;
             }
@@ -207,6 +219,93 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .unwrap_or(ITEMS_AT_ONCE))
     }
 
+    /// The owner sets a loop to be worked by one member alone, or (`None`) by the team again
+    /// (ADR 0142, amended 2026-11-01: round 4's "one member, one long turn, no ladder" arm).
+    /// Its items go to that member only, one at a time; nobody reviews them, a failure never
+    /// climbs or hands one on, and the member takes no other loop's work nor reviews it.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a project or member that does not exist;
+    /// [`Refusal::Scenario`] for a member no longer at work; a store failure.
+    pub fn set_loop_solo(&self, project: ProjectId, member: Option<MemberId>) -> Done<()> {
+        let _held = self.held();
+        self.project(project)?;
+        if let Some(member) = member {
+            if self.member(member)?.furloughed() {
+                return Err(EngineError::Refused(Refusal::Scenario(
+                    "a loop is worked alone by a member at work".to_owned(),
+                )));
+            }
+        }
+        let kept = member.map(|m| m.0.to_string()).unwrap_or_default();
+        self.store.set_setting(&solo_key(project), &kept)?;
+        Ok(())
+    }
+
+    /// The member who works a loop alone, if the owner named one.
+    pub fn loop_solo(&self, project: ProjectId) -> Done<Option<MemberId>> {
+        Ok(self
+            .store
+            .setting(&solo_key(project))?
+            .and_then(|v| v.parse().ok())
+            .map(MemberId))
+    }
+
+    /// The member who works an item's loop alone, if its loop is so worked.
+    pub(super) fn solo_of(&self, task: &Task) -> Done<Option<MemberId>> {
+        let Some(project) = task.project else {
+            return Ok(None);
+        };
+        self.loop_solo(project)
+    }
+
+    /// What a turn on an item of a loop its member works alone is told of that (amended
+    /// 2026-11-01): nobody reviews it or takes it over, and setting it ready closes it once HQ's
+    /// check has passed. Empty for any other turn.
+    pub(super) fn alone_said(
+        &self,
+        member: &Member,
+        run: &crate::application::ports::Run,
+    ) -> Done<String> {
+        let Some(task) = run.task else {
+            return Ok(String::new());
+        };
+        if self.solo_of(&self.task(task)?)? != Some(member.id) {
+            return Ok(String::new());
+        }
+        Ok(format!(
+            "You work this loop alone: nobody reviews your item and nobody takes it over. Check \
+             its criteria yourself. Once HQ's check of your newest submission has passed, setting \
+             it ready (set_status in_review) closes it, with no review. Three failures do not \
+             take it a rank up: after {FAILURES_ALONE} it is blocked; if it cannot be done, block \
+             it yourself with the reason.\n"
+        ))
+    }
+
+    /// The members who work a loop alone (one active or paused): out of the team's loops.
+    fn solo_members(&self) -> Done<Vec<MemberId>> {
+        let mut solo = Vec::new();
+        for project in self.store.projects()? {
+            if !matches!(
+                project.status,
+                ProjectStatus::Active | ProjectStatus::Paused
+            ) {
+                continue;
+            }
+            solo.extend(self.loop_solo(project.id)?);
+        }
+        Ok(solo)
+    }
+
+    /// The members who take part in the team's loops: those in the loops, less any who work a
+    /// loop alone. Climbs, hand-ups, reviews and the team's hand-outs draw on these.
+    fn team_members(&self) -> Done<Vec<Member>> {
+        let solo = self.solo_members()?;
+        let mut members = self.loop_members()?;
+        members.retain(|m| !solo.contains(&m.id));
+        Ok(members)
+    }
+
     /// The members who take part in the loops.
     pub(super) fn loop_members(&self) -> Done<Vec<Member>> {
         Ok(self
@@ -236,21 +335,138 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Who reviews an item in the loops (ADR 0142): the member one rank above its holder, and
     /// the top rank's work the member just below it; never above Haiku's rank for work done
     /// below it (amended 2026-10-31, D7: [`crate::domain::review::reviewer_among`]). `None` for
-    /// work outside the loops.
+    /// work outside the loops. Nobody reviews work she had a hand in ([`Self::had_a_hand_in`]),
+    /// nor this review again once her turn on it ended with no verdict ([`Self::passed_over`]).
     pub(crate) fn loop_reviewer_of(&self, task: &Task) -> Done<Option<Member>> {
         let Some(holder) = self.loop_holder(task)? else {
             return Ok(None);
         };
-        let members = self.loop_members()?;
+        // A loop worked alone has no reviewer (amended 2026-11-01).
+        if self.solo_of(task)?.is_some() {
+            return Ok(None);
+        }
+        let mut not_them = self.had_a_hand_in(task.id)?;
+        not_them.extend(self.passed_over(task.id)?);
+        // Nor does a member who works a loop alone review the team's work.
+        not_them.extend(self.solo_members()?);
+        let members: Vec<Member> = self
+            .loop_members()?
+            .into_iter()
+            .filter(|m| m.id == holder.id || !not_them.contains(&m.id))
+            .collect();
         let ranked: Vec<_> = members.iter().map(|m| (m.id, m.brain.rank())).collect();
         let reviewer =
             crate::domain::review::reviewer_among(holder.id, holder.brain.rank(), &ranked);
         Ok(reviewer.and_then(|id| members.into_iter().find(|m| m.id == id)))
     }
 
+    /// The reviewers passed over on an item's review as it stands: their review turn ended with
+    /// neither verdict (D26). Cleared when the item is asked for review again.
+    pub(super) fn passed_over(&self, task: TaskId) -> Done<Vec<MemberId>> {
+        Ok(self
+            .store
+            .setting(&format!("{PASSED_OVER}{}", task.0))?
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.parse().ok().map(MemberId))
+            .collect())
+    }
+
+    /// Clears the reviewers passed over on an item: its review starts again.
+    pub(super) fn review_starts_again(&self, task: TaskId) -> Done<()> {
+        self.store
+            .set_setting(&format!("{PASSED_OVER}{}", task.0), "")?;
+        Ok(())
+    }
+
+    /// After a turn that ended (the lock held), D26 of round 3: Rae reviewed three items with
+    /// one checkout each and ended with no verdict and no post, and each sat in review. A review
+    /// turn that ends with neither verdict, the item still in review and still hers to review,
+    /// and not out of room (which goes on afresh), is recorded as not done: she is passed over,
+    /// and the next reviewer by the same rule is asked, or with nobody left, the owner.
+    pub(super) fn after_review_turn(&self, run: &crate::application::ports::Run) -> Done<()> {
+        let Some(task) = run.task else {
+            return Ok(());
+        };
+        if self.reason_for(run)? != WakeReason::ReviewRequested.name()
+            || self.ran_out_of_room(run)?
+        {
+            return Ok(());
+        }
+        let found = self.task(task)?;
+        if found.status != TaskStatus::InReview
+            || self
+                .loop_reviewer_of(&found)?
+                .is_none_or(|r| r.id != run.member)
+        {
+            return Ok(());
+        }
+        let mut over = self.passed_over(task)?;
+        over.push(run.member);
+        let kept: Vec<String> = over.iter().map(|m| m.0.to_string()).collect();
+        self.store
+            .set_setting(&format!("{PASSED_OVER}{}", task.0), &kept.join(","))?;
+        let name = self.member(run.member)?.name;
+        let said = format!("{name}'s review ended with neither verdict: not done.");
+        let Some(next) = self.loop_reviewer_of(&found)? else {
+            self.post_held_lock(super::Author::Endora, task, &said)?;
+            return self.ask_about_the_item(
+                task,
+                None,
+                &format!(
+                    "Nobody is left to review #{}: each review turn on it ended with neither \
+                     verdict. Read it yourself, or move it back to work.",
+                    task.0
+                ),
+            );
+        };
+        self.post_held_lock(
+            super::Author::Endora,
+            task,
+            &format!("{said} {} reviews this.", next.name),
+        )?;
+        self.wake_held_lock(next.id, Some(task), WakeReason::ReviewRequested)?;
+        Ok(())
+    }
+
+    /// The members who had a hand in an item's work (D24 of round 3: Ada reviewed and closed
+    /// 952, whose branch carried her commits, because HQ asked only who submitted its head):
+    /// whoever kept a branch of it, its sub-tasks' included, and whoever took a turn of work on
+    /// it (taking it, going on with it, or woken back to it), as against a review.
+    pub(super) fn had_a_hand_in(&self, task: TaskId) -> Done<Vec<MemberId>> {
+        let work = self.work_of(task)?;
+        let mut hands: Vec<MemberId> = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task))
+            .map(|b| b.member)
+            .collect();
+        for run in self.store.runs_of(task)? {
+            if run.started_at.is_none() || hands.contains(&run.member) {
+                continue;
+            }
+            let worked = self.store.wake(run.wake)?.is_some_and(|w| {
+                matches!(
+                    w.reason,
+                    WakeReason::Assigned
+                        | WakeReason::AssignmentRecovery
+                        | WakeReason::Continued
+                        | WakeReason::Recovery
+                        | WakeReason::SentBack
+                        | WakeReason::CheckDone
+                )
+            });
+            if worked {
+                hands.push(run.member);
+            }
+        }
+        Ok(hands)
+    }
+
     /// Whether an item is held by a member in the loops: its stalls and failures climb the
     /// ranks, not the ladder, and no guard of coordination looks at it.
-    pub(super) fn loop_holds(&self, task: &Task) -> Done<bool> {
+    pub(crate) fn loop_holds(&self, task: &Task) -> Done<bool> {
         Ok(self.loop_holder(task)?.is_some())
     }
 
@@ -261,7 +477,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// An item that sat with nothing moving it, after its one nudge: one of its failures. Kept
     /// at its rank, its holder is woken to try again; past the third, it has climbed.
+    ///
+    /// Work in review waits on its reviewer, not its holder (D17 of round 3: task 947 counted
+    /// "Failure 1 of 3 at Mara's rank" while it waited, and was blocked as failed at every
+    /// rank): no failure, no climb, and the holder, whose wake HQ would refuse, is not woken.
+    /// The reviewer is asked again, once for each time the item has moved since.
     pub(super) fn loop_stalled(&self, task: &Task) -> Done<()> {
+        if task.status == TaskStatus::InReview {
+            if let Some(reviewer) = self.loop_reviewer_of(task)? {
+                self.nudge_once(task, reviewer.id, WakeReason::ReviewRequested)?;
+            }
+            return Ok(());
+        }
         let holder = task.holder();
         self.loop_failed(task.id)?;
         let now = self.task(task.id)?;
@@ -324,6 +551,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if !self.blocked_in_the_loops(task)? {
             return Ok(());
         }
+        self.keep_blocked_submission(task)?;
         let found = self.task(task)?;
         let who = self.member(member)?;
         let text = format!(
@@ -475,7 +703,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             else {
                 continue;
             };
-            if self.in_a_scenario(task.id)? {
+            // A scenario's item, or one of a loop worked alone, waits for its holder.
+            if self.in_a_scenario(task.id)? || self.solo_of(&task)?.is_some() {
                 continue;
             }
             // A turn of the holder's still running on it ends first; the next tick hands it on.
@@ -639,6 +868,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(holder) = self.loop_holder(&found)? else {
             return Ok(());
         };
+        if self.solo_of(&found)?.is_some() {
+            return self.failed_alone(&found, &holder);
+        }
         // Held for an away member above: it neither counts nor climbs until one is free.
         if self.held_above(task)? {
             return Ok(());
@@ -657,7 +889,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             );
         }
         self.store.set_setting(&failures_key(task), "0")?;
-        let all = self.loop_members()?;
+        let all = self.team_members()?;
         let members: Vec<Member> = all
             .iter()
             .filter(|m| !self.mac_away_for(m))
@@ -674,6 +906,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store.release(task)?;
             self.store.set_assignee(task, None)?;
             self.store.set_task_status(task, TaskStatus::Blocked)?;
+            self.keep_blocked_submission(task)?;
             let text = format!(
                 "{} failed at every rank, {} the last to try it. It is blocked and its loop has \
                  moved on; its thread says what was tried.",
@@ -682,6 +915,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return self.ask_about_the_item(task, None, &text);
         };
         self.climb(&found, &holder, up.id)
+    }
+
+    /// One of the failures of an item whose loop `holder` works alone (amended 2026-11-01):
+    /// counted and said, and it stays with `holder`. Nothing climbs and nothing is handed on.
+    /// The [`FAILURES_ALONE`]th blocks it with the reason and asks the owner, as the team's top
+    /// rank's last failure does.
+    fn failed_alone(&self, found: &Task, holder: &Member) -> Done<()> {
+        let task = found.id;
+        let failures = self.loop_failures(task)? + 1;
+        self.store
+            .set_setting(&failures_key(task), &failures.to_string())?;
+        if failures < FAILURES_ALONE {
+            return self.post_held_lock(
+                super::Author::Endora,
+                task,
+                &format!(
+                    "Failure {failures} of {FAILURES_ALONE}: {} works this loop alone, so it \
+                     stays with {}.",
+                    holder.name, holder.name
+                ),
+            );
+        }
+        self.store.release(task)?;
+        self.store.set_assignee(task, None)?;
+        self.store.set_task_status(task, TaskStatus::Blocked)?;
+        self.keep_blocked_submission(task)?;
+        let text = format!(
+            "{} failed {FAILURES_ALONE} times with {} working this loop alone. It is blocked and \
+             its loop has moved on; its thread says what was tried.",
+            found.title, holder.name
+        );
+        self.post_held_lock(super::Author::Endora, task, &text)?;
+        self.ask_about_the_item(task, None, &text)
     }
 
     /// The item goes one rank up, to `up`, after [`FAILURES_A_RANK`] failures at `holder`'s.
@@ -794,8 +1060,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if members.is_empty() {
             return Ok(());
         }
-        self.paused_let_go(&members)?;
-        self.climb_held(&members)?;
+        // A member who works a loop alone is in no hand-up, climb or hand-out of the team's.
+        let solo = self.solo_members()?;
+        let team: Vec<Member> = members
+            .iter()
+            .filter(|m| !solo.contains(&m.id))
+            .cloned()
+            .collect();
+        self.paused_let_go(&team)?;
+        self.climb_held(&team)?;
         let tasks = self.store.tasks()?;
         for project in self.store.projects()? {
             if project.status != ProjectStatus::Active || project.pause.is_some() {
@@ -826,8 +1099,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let start = self.loop_rank(project.id)?;
             // The members at the starting rank or nearest above it, as many as the loop has
             // items at once: an item never climbs further for want of a free member.
-            let mut near: Vec<&Member> =
-                members.iter().filter(|m| m.brain.rank() <= start).collect();
+            // A loop worked alone hands its items to its member only, one at a time.
+            let mut near: Vec<&Member> = match self.loop_solo(project.id)? {
+                Some(alone) => members.iter().filter(|m| m.id == alone).collect(),
+                None => team.iter().filter(|m| m.brain.rank() <= start).collect(),
+            };
             near.sort_by_key(|m| (std::cmp::Reverse(m.brain.rank()), m.id.0));
             near.truncate(at_once);
             for top in waiting {

@@ -1,6 +1,6 @@
 //! Turns: queued, started, ended and retried.
 
-use super::{COLLEAGUE_HELP, Done, Engine, EngineError, STANDARDS};
+use super::{Done, Engine, EngineError, STANDARDS};
 use crate::application::ports::{Clock, Run, TeamStore, WorkerAdapter};
 use crate::domain::handover;
 use crate::domain::mac;
@@ -86,6 +86,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 2026-10-30).
         if status == RunStatus::Succeeded {
             self.after_out_of_room(&run)?;
+            // A review turn that ended with neither verdict (D26).
+            self.after_review_turn(&run)?;
         }
         Ok(())
     }
@@ -227,23 +229,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         if self.in_the_loops(member.id)? && !in_a_game {
             told.push_str(&self.loops_said(run)?);
+            told.push_str(&self.alone_said(member, run)?);
             // Its own section: the item's handover, when it came to this member (ADR 0142,
             // amended 2026-10-30).
             told.push_str(&self.handover_briefed(member, run)?);
         }
-        // Decided last, once the briefing has recorded what it showed the turn: a turn is told
-        // of colleague help only when it is offered the tools (downtime lists them itself).
-        if self.reason_for(run)? != WakeReason::Downtime.name()
-            && self.colleague_help_said(member, run)?
-        {
-            told.push_str(COLLEAGUE_HELP);
-        }
         Ok(told)
-    }
-
-    pub(super) fn colleague_help_said(&self, _member: &Member, _run: &Run) -> Done<bool> {
-        // Colleagues are no longer asked (ADR 0142): the loops' checks and ranks are the help.
-        Ok(false)
     }
 
     /// The briefing, around what it carries of the world (`memory`). Every member is told the
@@ -484,7 +475,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let thread = self.all_authored_posts(task)?;
         let seen = self.thread_seen(task, &thread)?;
         let told = self.handover_kept_for(member, task)?;
-        let left_out = handover::left_out_said(&seen);
+        let mut left_out = handover::left_out_said(&seen);
         let mut shown: Vec<crate::application::history_ports::PostInput> = thread
             .into_iter()
             .zip(seen)
@@ -492,7 +483,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .map(|(p, _)| p)
             .filter(|p| told.as_deref() != Some(p.post.text.as_str()))
             .collect();
-        let shown = shown.split_off(shown.len().saturating_sub(most));
+        // Past the newest `most`, a post is said to be left out, never dropped with no sign.
+        let older = shown.len().saturating_sub(most);
+        let shown = shown.split_off(older);
+        if older > 0 {
+            let (posts, them, their) = if older == 1 {
+                ("post", "it", "its")
+            } else {
+                ("posts", "them", "their")
+            };
+            left_out.get_or_insert_with(String::new).push_str(&format!(
+                "Left out here, kept in the record: the thread's {older} older {posts} \
+                 (ask_record with task {} finds {them} by {their} words).\n",
+                task.0
+            ));
+        }
         for input in &shown {
             self.inherit_authored_input(run.id, input.origin)?;
         }

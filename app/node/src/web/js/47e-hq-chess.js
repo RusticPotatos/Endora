@@ -49,7 +49,7 @@ function hqChessLive(l) {
   const next = Number(l.pairs_left || 0)
     ? "The next pair sits down when two members are free and nothing else is being played."
     : "Every pair has played this round; resetting the league starts the next.";
-  if (!playing.length) return `<section class="hq-card"><h2>Live</h2><p class="hq-empty">No league game is being played now.</p><p class="hq-note">${next}</p></section>`;
+  if (!playing.length) return `<section class="hq-card hq-wide-card"><h2>Live</h2><p class="hq-empty">No league game is being played now.</p><p class="hq-note">${next}</p></section>`;
   const boards = playing.map((g) => {
     const white = hqChessLabel(l, g.white), black = hqChessLabel(l, g.black);
     const side = g.to_move === "black" ? `Black, ${black}` : `White, ${white}`;
@@ -60,7 +60,7 @@ function hqChessLive(l) {
       <p>${side}, to move. ${last}.</p>
       <div class="hq-row"><button class="hq-btn" data-act="hq:holo:watch:${Number(g.task)}">Watch move by move</button></div>`;
   }).join("");
-  return `<section class="hq-card"><h2>Live</h2>${boards}</section>`;
+  return `<section class="hq-card hq-wide-card"><h2>Live</h2>${boards}</section>`;
 }
 
 // This round: what a round is, the bracket (each row's result against each column) in a box
@@ -85,9 +85,9 @@ function hqChessRound(l) {
     const said = result(a, b);
     return `<td class="${a === b ? "self" : said.replace(/[^a-z]/g, "")}">${said}</td>`;
   }).join("")}</tr>`).join("");
-  const standings = (l.table || []).map((r, i) => `<li>${i + 1}. ${esc(r.label)} ${hqSpark(r.history, r.label)} <small>${hqChessPoints(r)} · ${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
+  const standings = (l.table || []).map((r, i) => `<li>${i + 1}. ${esc(r.label)} <small>${hqChessPoints(r)} · ${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small> ${hqSpark(r.history, r.label)}</li>`).join("");
   const left = Number(l.pairs_left || 0);
-  return `<section class="hq-card"><h2>This round</h2>
+  return `<section class="hq-card hq-wide-card"><h2>This round</h2>
     <p>Round ${number}, ${since}.</p>
     <p class="hq-note">The league is a round robin: every pair of brains plays once a round, and a round runs until the league is reset. ${left ? `${left} pair${left === 1 ? "" : "s"} still to meet.` : "Every pair has met."}</p>
     <div class="hq-scroll" role="region" aria-label="Who has played whom this round: each row's result against each column" tabindex="0"><table class="hq-cross"><thead><tr><th scope="col"></th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
@@ -99,9 +99,11 @@ function hqChessRound(l) {
 function hqChessAll() {
   const c = HQ.chessGames;
   const d = c && c.data;
-  if (!d) return `<section class="hq-card"><h2>All games</h2><p class="hq-empty">Loading…</p></section>`;
+  // A failed load says so in the card, with a way to try again, rather than "Loading…" for ever.
+  if (!d && c && c.error) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty" title="${esc(c.error)}">Couldn't load the league's games.</p><div class="hq-row"><button class="hq-btn" data-act="hq:holo:page:1">Try again</button></div></section>`;
+  if (!d) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty">Loading…</p></section>`;
   const games = d.games || [];
-  if (!games.length) return `<section class="hq-card"><h2>All games</h2><p class="hq-empty">No league game has finished yet.</p></section>`;
+  if (!games.length) return `<section class="hq-card hq-wide-card"><h2>All games</h2><p class="hq-empty">No league game has finished yet.</p></section>`;
   const items = games.map((g) => {
     const white = esc(g.white_label || g.white), black = esc(g.black_label || g.black);
     const said = g.result === "abandoned" ? "stopped with no result" : hqChessEnd(g.result, white, black);
@@ -113,7 +115,7 @@ function hqChessAll() {
   const busy = c.busy ? " disabled" : "";
   const pager = pages > 1 ? `<div class="hq-row">${page > 1 ? `<button class="hq-btn" data-act="hq:holo:page:${page - 1}"${busy}>Newer</button>` : ""}
     <span class="hq-note">Page ${page} of ${pages}</span>${page < pages ? `<button class="hq-btn" data-act="hq:holo:page:${page + 1}"${busy}>Older</button>` : ""}</div>` : "";
-  return `<section class="hq-card"><h2>All games <span class="hq-count">${Number(d.total) || 0}</span></h2><ul class="hq-lines">${items}</ul>${pager}</section>`;
+  return `<section class="hq-card hq-wide-card"><h2>All games <span class="hq-count">${Number(d.total) || 0}</span></h2><ul class="hq-lines">${items}</ul>${pager}</section>`;
 }
 
 // While the tab is showing, the list is asked for once, and again (from its newest page) when the
@@ -133,8 +135,8 @@ async function hqChessLoad(page, seen) {
   c.busy = true;
   try {
     c.data = await api("GET", `/v1/hq/league/games?page=${Math.max(1, Number(page) || 1)}`);
-    c.page = Number(c.data.page) || 1;
-  } catch (e) { flash("Couldn't load the league's games: " + e.message, "err"); }
+    c.page = Number(c.data.page) || 1; c.error = "";
+  } catch (e) { c.error = String((e && e.message) || e); }
   c.busy = false;
   render();
 }

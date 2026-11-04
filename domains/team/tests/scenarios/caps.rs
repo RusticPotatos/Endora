@@ -23,8 +23,16 @@ fn asked_to_talk(w: &mut Office, name: String, title: String) {
 
 impl Office {}
 
-#[when(regex = r#"^(\w+) takes (\d+) turns on "(.+)", two minutes apart$"#)]
-fn takes_turns_two_minutes_apart(w: &mut Office, name: String, turns: usize, title: String) {
+#[when(
+    regex = r#"^(\w+) takes (\d+) turns on "(.+)" that (only talk|each take a reading), two minutes apart$"#
+)]
+fn takes_turns_two_minutes_apart(
+    w: &mut Office,
+    name: String,
+    turns: usize,
+    title: String,
+    what: String,
+) {
     let member = w.member(&name);
     let task = w.task(&title);
     for i in 0..turns {
@@ -42,6 +50,9 @@ fn takes_turns_two_minutes_apart(w: &mut Office, name: String, turns: usize, tit
             &json!({ "task": task.0, "text": format!("Still weighing how to do it ({i}).") }),
         )
         .expect("a member may post in its own turn's task");
+        if what == "each take a reading" {
+            w.reads(&name, "homelab_status", "{}", &format!("all well ({i})"));
+        }
         super::turn_ends(w, name.clone());
         w.clock.0.fetch_add(2 * 60_000, Ordering::SeqCst);
     }
@@ -60,7 +71,7 @@ fn turn_waits_for_tomorrow(w: &mut Office, name: String, title: String) {
             .unwrap_or_else(|| panic!("{name} has no turn waiting on {title:?}"));
     assert_eq!(
         waiting.end_reason,
-        "waiting for tomorrow: 60 turns a day is the most a member takes on the house's own models"
+        "waiting for tomorrow: 10 turns in a row on the house's own models showed nothing"
     );
     // The owner's roster says the same.
     let shown = w.hq.snapshot().expect("the snapshot is built");
@@ -81,10 +92,13 @@ fn the_bar_counts_tomorrow(w: &mut Office, count: u64) {
 
 // --- A runaway ------------------------------------------------------------------------------
 
-/// Two members are woken in turn, a turn comes and goes at once for each, every `seconds`: what a
-/// crash loop looks like. It goes on until HQ stops the team, or a couple of hundred have been
-/// tried.
-#[when(regex = r"^(\w+) and (\w+) are woken again and again, a turn every (\d+) seconds$")]
+/// Two members are woken in turn, a turn comes and goes at once for each, every `seconds`, each
+/// taking a reading: what a crash loop that looks busy looks like (one that shows nothing is
+/// stopped by the check on waste first). It goes on until HQ stops the team, or a couple of
+/// hundred have been tried.
+#[when(
+    regex = r"^(\w+) and (\w+) are woken again and again, a turn every (\d+) seconds, each taking a reading$"
+)]
 fn woken_again_and_again(w: &mut Office, first: String, second: String, seconds: i64) {
     let task = w.task("Plan the backups");
     let members = [w.member(&first), w.member(&second)];
@@ -95,6 +109,7 @@ fn woken_again_and_again(w: &mut Office, first: String, second: String, seconds:
         w.hq.wake(members[tried % 2], Some(task), WakeReason::Mentioned)
             .expect("a wake has a receipt");
         w.tick();
+        w.read_in_running_turns();
         w.end_running_turns();
         w.tick();
         w.clock.0.fetch_add(seconds * 1_000, Ordering::SeqCst);
@@ -172,6 +187,34 @@ fn stopped_by_the_owner(w: &mut Office) {
 
 impl Office {
     /// Ends every turn that runs, as its worker would.
+    /// Every running turn takes a reading, as the node records one.
+    fn read_in_running_turns(&mut self) {
+        for context in self.hq.runner().started() {
+            let running = self
+                .hq
+                .store()
+                .run(context.run)
+                .expect("the store answers")
+                .is_some_and(|r| r.status == RunStatus::Running);
+            if !running {
+                continue;
+            }
+            self.hq
+                .record_receipt(
+                    &context.token,
+                    &endora_team::application::engine::Called {
+                        tool: "homelab_status".to_owned(),
+                        args: "{}".to_owned(),
+                        excerpt: "all well".to_owned(),
+                        ok: true,
+                        act: false,
+                        confidential: false,
+                    },
+                )
+                .expect("the node's receipt");
+        }
+    }
+
     fn end_running_turns(&mut self) {
         for run in self
             .hq

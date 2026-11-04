@@ -11,7 +11,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use crate::domain::office;
-use crate::domain::{GoalId, MemberId, Priority, Role, WakeReason};
+use crate::domain::{GoalId, MemberId, Priority, WakeReason};
 use crate::infrastructure::simulated::Script;
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -51,10 +51,10 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-    let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 40, 2, 4).unwrap();
+    let cy = hq.hire("Cy", 20, 1, 1).unwrap();
+    let dee = hq.hire("Dee", 20, 1, 2).unwrap();
     Team { ada, bo, cy, dee }
 }
 
@@ -218,4 +218,68 @@ fn downtime_does_not_count_as_a_turn_on_the_scorecard() {
         snap["scorecard"]["week"]["turns"]["total"], 0,
         "downtime is not work"
     );
+}
+
+/// ADR 0142, amended 2026-11-01: no downtime turn starts while a round of the experiment is
+/// under way, any of its items open; the round lapses as its items finish, both arms' items
+/// add up, and the close ends it at once.
+#[test]
+fn no_downtime_while_a_round_of_the_experiment_is_under_way() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let goal: GoalId = hq
+        .set_goal("Close the gap to Claude Code", "", Author::Owner)
+        .unwrap();
+    let item = |title: &str| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee: Some(t.dee),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    let (team_arm, solo_arm) = (item("Pin the images"), item("Pin the images, alone"));
+    assert!(!hq.round_running().unwrap(), "no round yet");
+    assert!(hq.add_to_round(&[crate::domain::TaskId(999)]).is_err());
+    assert_eq!(hq.add_to_round(&[team_arm]).unwrap(), [team_arm]);
+    assert_eq!(
+        hq.add_to_round(&[solo_arm, team_arm]).unwrap(),
+        [team_arm, solo_arm],
+        "the second arm adds to the first"
+    );
+    assert!(hq.round_running().unwrap());
+    hq.runner().script(t.dee, Script::Succeeds);
+    for _ in 0..3 {
+        end_all(&hq);
+    }
+    assert!(
+        downtime_turns(&hq).is_empty(),
+        "nobody plays during a round"
+    );
+    hq.drop_task(team_arm).unwrap();
+    assert!(hq.round_running().unwrap(), "the solo arm's item is open");
+    hq.drop_task(solo_arm).unwrap();
+    assert!(!hq.round_running().unwrap(), "every item finished");
+    end_all(&hq);
+    assert_eq!(downtime_turns(&hq).len(), 1, "downtime goes on");
+    // The close ends a round whose items are still open.
+    let next = item("Pin the restic image");
+    hq.add_to_round(&[next]).unwrap();
+    assert_eq!(
+        hq.round_items().unwrap(),
+        [next],
+        "the finished ones let go"
+    );
+    hq.close_round().unwrap();
+    assert!(!hq.round_running().unwrap());
+    assert!(hq.round_items().unwrap().is_empty());
 }

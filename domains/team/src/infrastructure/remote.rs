@@ -212,7 +212,7 @@ mod tests {
     use crate::application::engine::{Author, Engine, Settings};
     use crate::application::ports::{Clock, NewTask};
     use crate::application::run_ports::RunStore;
-    use crate::domain::{MemberId, Priority, Role, RunStatus};
+    use crate::domain::{MemberId, Priority, RunStatus};
     use crate::infrastructure::SqliteTeamStore;
 
     const GRACE: Duration = Duration::from_secs(10);
@@ -476,7 +476,7 @@ mod tests {
             Noon,
             Settings::default(),
         );
-        let dev = hq.hire("John Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = hq.hire("John Doe", 40, 2, 0).unwrap();
         let goal = hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
             .unwrap();

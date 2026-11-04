@@ -310,6 +310,15 @@ pub fn tools_key(id: ProjectId) -> String {
     format!("project_tools:{}", id.0)
 }
 
+/// The repository outside the lab a project's work is done in (ADR 0115, amended 2026-11-01:
+/// round 4's F4), kept as one setting a project: a public `https://github.com/<owner>/<name>`
+/// alone, held to `endora_kernel::lab::outside_repo`. The node mirrors it, `repo_checkout` hands
+/// it out and `repo_submit` keeps the branch on the node; nothing of it is ever pushed.
+#[must_use]
+pub fn repo_key(id: ProjectId) -> String {
+    format!("project_repo:{}", id.0)
+}
+
 /// A project's tools, as [`tools_key`] keeps them: `None` for no list.
 #[must_use]
 pub fn tools_read(kept: Option<&str>) -> Option<Vec<String>> {

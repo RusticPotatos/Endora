@@ -7,8 +7,8 @@ use crate::domain::{Criterion, Label, Ref};
 use crate::domain::{Evidence, ProjectId, ProjectStatus};
 use crate::domain::{Exit, Goal, Liveness, Project};
 use crate::domain::{
-    GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
-    RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
+    GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
 
 /// A store that failed.
@@ -256,21 +256,6 @@ pub struct DeskItem {
     pub at: Millis,
 }
 
-/// A regular wake: the lead's look over the team's work, for one.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Timer {
-    /// Its id.
-    pub id: i64,
-    /// Whose turn it raises.
-    pub member: MemberId,
-    /// Why.
-    pub reason: WakeReason,
-    /// When it is next due.
-    pub due_at: Millis,
-    /// How often.
-    pub every_ms: Millis,
-}
-
 /// HQ's own store (spec section 14). Every change the engine makes goes through it, and the
 /// engine is its only writer, one change at a time.
 pub trait TeamStore:
@@ -287,14 +272,7 @@ pub trait TeamStore:
     + super::office_ports::OfficeStore
 {
     /// Adds a member.
-    fn add_member(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Stored<MemberId>;
+    fn add_member(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Stored<MemberId>;
     /// Every member, in the order they joined.
     fn members(&self) -> Stored<Vec<Member>>;
     /// Pauses or resumes a member.
@@ -311,8 +289,6 @@ pub trait TeamStore:
     fn set_runtime(&self, member: MemberId, runtime: crate::domain::Runtime) -> Stored<()>;
     /// Renames a member.
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
-    /// Sets a member's role (ADR 0142's cut-over makes every member a plain one).
-    fn set_role(&self, member: MemberId, role: Role) -> Stored<()>;
 
     /// Adds a goal.
     fn add_goal(

@@ -67,7 +67,7 @@ fn ids(what: &str) -> Value {
 /// One piece of evidence as the model gave it: an id, a finding with ids in it, or an object
 /// whose values are ids (`{"receipt": "r301", "task": 695}`, its keys naming the kind of a bare
 /// number). A finding or an object holding no id is refused, as words are.
-fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
+fn refs_of(v: &Value, wrote: &Wrote) -> Result<Vec<Ref>, String> {
     let read: Vec<Ref> = match v {
         Value::Object(fields) => fields
             .iter()
@@ -86,16 +86,45 @@ fn refs_of(v: &Value) -> Result<Vec<Ref>, String> {
         }),
     };
     if read.is_empty() {
+        let quoted = crate::domain::evidence::short(&v.to_string(), 40);
+        if let Some(document) = document_in(&v.to_string()) {
+            let cite = wrote(document).map_or_else(
+                || {
+                    "cite the receipt of the call that wrote it (r12, named in the same result)"
+                        .to_owned()
+                },
+                |receipt| format!("cite r{receipt}, the receipt that wrote it"),
+            );
+            return Err(format!(
+                "`{quoted}` is not evidence: d{document} is a document, not a receipt: {cite}"
+            ));
+        }
         return Err(format!(
-            "`{}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340",
-            crate::domain::evidence::short(&v.to_string(), 40)
+            "`{quoted}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340"
         ));
     }
     Ok(read)
 }
 
+/// The receipt that wrote a document, by the document's number ([`Engine::receipt_of_document`]).
+type Wrote<'a> = dyn Fn(i64) -> Option<i64> + 'a;
+
+/// The first document a piece of evidence names as the tools do (`d241`), if any.
+fn document_in(said: &str) -> Option<i64> {
+    said.split(|c: char| !c.is_ascii_alphanumeric())
+        .find_map(|w| w.strip_prefix('d').and_then(|n| n.parse().ok()))
+        .filter(|n: &i64| *n > 0)
+}
+
+/// What names the receipt behind a document cited as evidence, for `engine`'s refusal.
+fn wrote_by<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+) -> impl Fn(i64) -> Option<i64> + '_ {
+    |document| engine.receipt_of_document(document).ok().flatten()
+}
+
 /// The `evidence` argument, one list per criterion: each item an id or a list of ids.
-fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
+fn evidence_lists(args: &Value, wrote: &Wrote) -> Result<Vec<Vec<Ref>>, String> {
     let Some(items) = args["evidence"].as_array() else {
         return Ok(Vec::new());
     };
@@ -104,48 +133,49 @@ fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
         .map(|item| match item {
             Value::Array(list) => Ok(list
                 .iter()
-                .map(refs_of)
+                .map(|one| refs_of(one, wrote))
                 .collect::<Result<Vec<_>, _>>()?
                 .concat()),
-            other => refs_of(other),
+            other => refs_of(other, wrote),
         })
         .collect()
 }
 
 /// The `evidence` argument as one list.
-fn evidence_flat(args: &Value) -> Result<Vec<Ref>, String> {
-    Ok(evidence_lists(args)?.concat())
+fn evidence_flat(args: &Value, wrote: &Wrote) -> Result<Vec<Ref>, String> {
+    Ok(evidence_lists(args, wrote)?.concat())
 }
 
 /// The `criteria` argument: each `{ text, live }`, or a line of text.
-fn criteria_arg(args: &Value) -> Vec<Criterion> {
-    args["criteria"]
-        .as_array()
-        .map(|all| {
-            all.iter()
-                .filter_map(|c| {
-                    let (text, live) = match c {
-                        Value::String(s) => (s.as_str(), false),
-                        other => (
-                            other["text"].as_str()?,
-                            other["live"].as_bool() == Some(true),
-                        ),
-                    };
-                    if text.trim().is_empty() {
-                        return None;
-                    }
-                    let made = Criterion::new(text, live);
-                    // A wait, in minutes from the work's last change (ADR 0120).
-                    Some(
-                        match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
-                            Some(minutes) => made.after(minutes),
-                            None => made,
-                        },
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+///
+/// # Errors
+/// A criterion past the most one may be ([`Criterion::written`]).
+fn criteria_arg(args: &Value) -> Result<Vec<Criterion>, String> {
+    let Some(all) = args["criteria"].as_array() else {
+        return Ok(Vec::new());
+    };
+    let mut criteria = Vec::new();
+    for c in all {
+        let (text, live) = match c {
+            Value::String(s) => (s.as_str(), false),
+            other => match other["text"].as_str() {
+                Some(text) => (text, other["live"].as_bool() == Some(true)),
+                None => continue,
+            },
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let made = Criterion::written(criteria.len() + 1, text, live)?;
+        // A wait, in minutes from the work's last change (ADR 0120).
+        criteria.push(
+            match c["after"].as_u64().and_then(|m| u32::try_from(m).ok()) {
+                Some(minutes) => made.after(minutes),
+                None => made,
+            },
+        );
+    }
+    Ok(criteria)
 }
 
 /// The `handover` a post may carry (ADR 0134): only when HQ has told the turn a restart is
@@ -224,7 +254,7 @@ pub fn tools() -> Value {
     let mut all = json!([
         tool(
             "my_turn",
-            "What this turn is for: your role, the task and why it exists, what is new, and its thread. Call it first.",
+            "What this turn is for: who you are, the task and why it exists, what is new, and its thread. Call it first.",
             json!({}),
             &[]
         ),
@@ -242,19 +272,19 @@ pub fn tools() -> Value {
         ),
         tool(
             "set_status",
-            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); another member re-checks it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
+            "Move your task on, with a reason. in_review cites evidence per criterion (a live one: a reading this turn); HQ's checks and the evidence decide it, and that is how work becomes done. A routine's check you close as done yourself, with evidence, once you have looked. done says why: met_criteria, superseded (name the successor) or not_needed.",
             json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review or a check closed as done: what shows each criterion holds."), "why": { "type": "string", "enum": ["met_criteria", "superseded", "not_needed"], "description": "for done" }, "successor": { "type": "integer", "description": "for superseded: the task carrying the work on" } }),
             &["task", "status", "reason"]
         ),
         tool(
             "create_task",
-            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
+            "Create a sub-task of your task, for yourself (work is never handed to another member), with the tasks it waits on and its acceptance criteria: what done means, a short list. Mark live any criterion about the lab as it is now.",
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "your own name, or leave it out" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" }, "after": { "type": "integer", "minimum": 1, "description": "minutes it waits from the work's last change before it can be shown, e.g. 60 for 'no new alarm since'" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
             "ask_owner",
-            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: work that keeps failing goes a rank up on its own.",
+            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: HQ asks the owner itself when work keeps failing.",
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
@@ -374,7 +404,25 @@ fn tools_for_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if woken_for == Some(crate::domain::WakeReason::Downtime) {
         list.retain(|t| t["name"] == "my_turn" || t["name"] == "chess");
     }
+    // No protocol moves (D30 of round 3): a turn on an item its member holds already has its
+    // briefing (the worker reads `my_turn` for it before the first round) and the item, so it
+    // is offered neither `my_turn` nor `claim`. HQ still answers both, for the worker.
+    if holds_its_item(engine, run, member) {
+        list.retain(|t| t["name"] != "my_turn" && t["name"] != "claim");
+    }
     all
+}
+
+/// Whether `run` is on an item its `member` holds (D30 of round 3): one handed to it, or one it
+/// goes on with after a handover.
+fn holds_its_item<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> bool {
+    run.task
+        .and_then(|t| engine.store().task(t).ok().flatten())
+        .is_some_and(|task| task.holder() == Some(member.id))
 }
 
 /// The most a member writes in one post: a thread is read by every turn after it.
@@ -431,6 +479,43 @@ pub fn tools_in_v2<S: TeamStore, W: WorkerAdapter, C: Clock>(
     member: &Member,
 ) -> Value {
     tools_for_turn(engine, run, member)
+}
+
+/// The node's tools a turn is to be offered up front, which HQ names in its listing's own
+/// `_meta` (under [`UP_FRONT`]) since it does not list them itself (D27 of round 3): on a loop's
+/// item, the fork's checkout and submit for the member who holds it, and the checkout for its
+/// reviewer, unless the loop's own list of tools leaves the fork out. The worker loads them as
+/// it loads what HQ marks of its own; the node decides every call, as before.
+#[must_use]
+pub fn node_tools_up_front<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    member: &Member,
+) -> Vec<&'static str> {
+    const CHECKOUT: &str = "repo_checkout";
+    let Some(task) = run.task.and_then(|t| engine.store().task(t).ok().flatten()) else {
+        return Vec::new();
+    };
+    if !engine.loop_holds(&task).unwrap_or(false) {
+        return Vec::new();
+    }
+    if engine
+        .lab_tools_of(run.id)
+        .ok()
+        .flatten()
+        .is_some_and(|given| !given.iter().any(|g| g == CHECKOUT))
+    {
+        return Vec::new();
+    }
+    if task.holder() == Some(member.id) {
+        return vec![CHECKOUT, "repo_submit"];
+    }
+    let reviews = engine
+        .loop_reviewer_of(&task)
+        .ok()
+        .flatten()
+        .is_some_and(|r| r.id == member.id);
+    if reviews { vec![CHECKOUT] } else { Vec::new() }
 }
 
 /// Run a v2 tool through the existing token, authority, lineage and drain gates.
@@ -649,7 +734,7 @@ fn tool_post<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         return Ok("Posted.".to_owned());
     }
-    let cited = evidence_flat(args)?;
+    let cited = evidence_flat(args, &wrote_by(engine))?;
     // A handover note with the post (ADR 0134) is a wrap-up for a restart: the note is
     // read, and refused, before anything is posted; the turn ends and keeps its task.
     let wrap = super::protocol_world::handover_arg(args)?;
@@ -682,7 +767,7 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .to_owned()
         })?;
     let reason = text_arg(args, "reason")?;
-    let cited = evidence_lists(args)?;
+    let cited = evidence_lists(args, &wrote_by(engine))?;
     // Done says why when it is not "met its criteria" (ADR 0124): checked first, so a
     // reason not in the set, a superseded that names no successor (or itself, or a task
     // that is not there) changes nothing.
@@ -711,6 +796,27 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
         engine
             .done_because_in(run.id, task, closure, successor)
             .map_err(|e| said(&e))?;
+    }
+    // HQ may move it on as it is set (a loop worked alone closes an item set ready): the answer
+    // says what it is now, never only what was asked (run 5316).
+    let now = engine
+        .store()
+        .task(task)
+        .map_err(|e| e.to_string())?
+        .map_or(to, |t| t.status);
+    if now != to {
+        // Done says how (ADR 0124): a completion nothing checked is said to be one.
+        let how = engine
+            .store()
+            .closure(task)
+            .map_err(|e| e.to_string())?
+            .map_or_else(String::new, |c| format!(": {}", c.closure.plainly()));
+        return Ok(format!(
+            "Task {} is {}, not {}{how}. HQ moved it on as you set it (its thread says why).",
+            task.0,
+            now.name(),
+            to.name()
+        ));
     }
     Ok(format!("Task {} is {}.", task.0, to.name()))
 }
@@ -763,7 +869,7 @@ fn tool_create_task<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 priority: Priority::Normal,
                 waits_on,
             },
-            &criteria_arg(args),
+            &criteria_arg(args)?,
         )
         .map_err(|e| said(&e))?;
     Ok(format!("Created task {}.", id.0))
@@ -814,7 +920,7 @@ fn tool_ask_owner<S: TeamStore, W: WorkerAdapter, C: Clock>(
     args: &Value,
 ) -> Result<String, String> {
     let text = text_arg(args, "text")?;
-    let cited = evidence_flat(args)?;
+    let cited = evidence_flat(args, &wrote_by(engine))?;
     match engine
         .ask_owner_citing(run.id, text, &cited)
         .map_err(|e| said(&e))?
@@ -839,7 +945,7 @@ fn tool_review<S: TeamStore, W: WorkerAdapter, C: Clock>(
         return Err(format!("notes are at most {LONGEST_POST} characters"));
     }
     let reason = reason_arg(args, !approve)?;
-    let cited = evidence_lists(args)?;
+    let cited = evidence_lists(args, &wrote_by(engine))?;
     match engine.test_in(run.id, task, approve, notes, &cited, reason) {
         Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
         Ok(()) => Ok(format!(

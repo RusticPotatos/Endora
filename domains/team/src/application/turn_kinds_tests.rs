@@ -11,9 +11,7 @@ use super::ports::{Clock, NewTask, Run, TeamStore};
 use crate::application::desk_ports::DeskStore;
 use crate::domain::guards::Stopped;
 use crate::domain::money::DOLLAR;
-use crate::domain::{
-    Brain, GoalId, MemberId, Priority, Role, RunStatus, TaskId, TaskStatus, WakeReason,
-};
+use crate::domain::{Brain, GoalId, MemberId, Priority, RunStatus, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -57,19 +55,14 @@ struct Team {
 
 /// A lead on Claude Haiku, a reviewer on the Mac, and a goal.
 fn team(hq: &Hq<'_>) -> Team {
-    let hired = |name: &str, role: Role| {
-        let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
-        let brain = if role == Role::Lead {
-            "claude-haiku-5-5"
-        } else {
-            "mac"
-        };
+    let hired = |name: &str, share: u8, brain: &str| {
+        let id = hq.hire(name, share, 2, 0).unwrap();
         hq.set_brain(id, brain).unwrap();
         id
     };
     Team {
-        lead: hired("Ada", Role::Lead),
-        reviewer: hired("Grace", Role::Reviewer),
+        lead: hired("Ada", 25, "claude-haiku-5-5"),
+        reviewer: hired("Grace", 20, "mac"),
         goal: hq
             .set_goal("Keep the lab healthy", "you asked", Author::Owner)
             .unwrap(),
@@ -114,7 +107,8 @@ fn status_of(hq: &Hq<'_>, task: TaskId) -> TaskStatus {
 /// decision waits for budget instead of starting. Returns the turn that waits.
 fn spend_the_day(hq: &Hq<'_>, member: MemberId, task: TaskId) -> Run {
     loop {
-        hq.wake(member, Some(task), WakeReason::Decide).unwrap();
+        hq.wake(member, Some(task), WakeReason::ProposalDecided)
+            .unwrap();
         hq.tick().unwrap();
         let run = latest(hq, member);
         if run.status == RunStatus::Queued {
@@ -155,7 +149,7 @@ fn work_whose_turn_waits_for_budget_is_held_never_stuck_and_nothing_climbs() {
     assert!(
         after.iter().all(|w| !matches!(
             w.reason,
-            WakeReason::Recovery | WakeReason::AssignmentRecovery | WakeReason::Decide
+            WakeReason::Recovery | WakeReason::AssignmentRecovery
         ) || w.task != Some(own)),
         "nothing woke anyone for it: {after:?}"
     );

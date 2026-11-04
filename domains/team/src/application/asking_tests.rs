@@ -10,7 +10,7 @@ use super::engine::{Author, Called};
 use super::history_tests::{Hands, Hq, NOON, end, engine, task_for, turn_of};
 use super::ports::RunContext;
 use super::protocol::call;
-use crate::domain::{GoalId, MemberId, Role, TaskId, WakeReason};
+use crate::domain::{GoalId, MemberId, TaskId, WakeReason};
 use std::sync::atomic::AtomicI64;
 
 struct Team {
@@ -24,13 +24,13 @@ struct Team {
 /// model.
 fn team(hq: &Hq<'_>) -> Team {
     {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    let rae = hq.hire("Rae", Role::Developer, 40, 2, 2).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    let linus = hq.hire("Linus", 40, 2, 4).unwrap();
+    let rae = hq.hire("Rae", 40, 2, 2).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -164,7 +164,8 @@ fn a_turn_on_claude_is_given_what_a_turn_that_read_confidential_data_said() {
     // Ada with the house's own model.
     hq.set_brain(t.rae, "claude-haiku-5-5").unwrap();
     let proxy = task_for(&hq, t.goal, t.rae, "Check the proxy");
-    hq.wake(t.rae, Some(proxy), WakeReason::Decide).unwrap();
+    hq.wake(t.rae, Some(proxy), WakeReason::ProposalDecided)
+        .unwrap();
     let (_, ada) = ada_asks_in_a_turn(&hq, &t);
     hq.tick().unwrap();
     let rae = turn_of(&hq, t.rae);

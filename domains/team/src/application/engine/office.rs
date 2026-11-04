@@ -9,12 +9,16 @@ use serde_json::json;
 use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::office;
-use crate::domain::{Member, MemberId, Millis, RunId, WakeId, WakeReason};
+use crate::domain::{Member, MemberId, Millis, RunId, TaskId, WakeId, WakeReason};
 
 /// Set once HQ has put the default layout on the floor, so it never does again.
 const OFFICE_SEEDED: &str = "office_seeded";
 /// How long a member rests between downtime turns, so none follows another across midnight.
 const DOWNTIME_REST_MS: Millis = 12 * 60 * 60 * 1000;
+/// The items of the experiment's round under way (ADR 0142, amended 2026-11-01): their ids,
+/// comma-separated, set by `scripts/experiment.py start` through `/v1/round`. While any is open,
+/// no downtime turn starts.
+pub(super) const ROUND_RUNNING: &str = "round_running";
 
 /// What the downtime turns so far say.
 pub(super) struct Downtimes {
@@ -95,6 +99,62 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(seen)
     }
 
+    // ---- a round of the experiment under way ----------------------------------------------
+
+    /// The items of the experiment's round under way, as set.
+    pub fn round_items(&self) -> Done<Vec<TaskId>> {
+        Ok(self
+            .store
+            .setting(ROUND_RUNNING)?
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|id| id.trim().parse().ok())
+            .map(TaskId)
+            .collect())
+    }
+
+    /// Adds `items` to the round under way (both arms of a round start one after the other);
+    /// those of it already finished are let go. With none, the round is over and the setting
+    /// cleared.
+    ///
+    /// # Errors
+    /// [`super::EngineError::Unknown`] for an item HQ has no task for; a store failure.
+    pub fn add_to_round(&self, items: &[TaskId]) -> Done<Vec<TaskId>> {
+        let _held = self.held();
+        for item in items {
+            self.task(*item)?;
+        }
+        let mut kept: Vec<TaskId> = Vec::new();
+        for item in self.round_items()?.into_iter().chain(items.iter().copied()) {
+            let open = self.store.task(item)?.is_some_and(|t| !t.status.finished());
+            if open && !kept.contains(&item) {
+                kept.push(item);
+            }
+        }
+        let said: Vec<String> = kept.iter().map(|t| t.0.to_string()).collect();
+        self.store.set_setting(ROUND_RUNNING, &said.join(","))?;
+        Ok(kept)
+    }
+
+    /// Ends the round under way: downtime goes on.
+    pub fn close_round(&self) -> Done<()> {
+        let _held = self.held();
+        self.store.set_setting(ROUND_RUNNING, "")?;
+        Ok(())
+    }
+
+    /// Whether a round of the experiment is under way: any of its items still open (neither
+    /// done nor dropped). Downtime and chess turns wait while it is, so they take no slot, model
+    /// or money from the round's work (the owner, 1 Nov).
+    pub fn round_running(&self) -> Done<bool> {
+        for item in self.round_items()? {
+            if self.store.task(item)?.is_some_and(|t| !t.status.finished()) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// The look at who has nothing to do (the lock held): at most one member, once a day, is
     /// woken for a downtime turn, and only one such turn runs at a time. A member qualifies
     /// when it is at work and not the CEO, has no live turn, no open task and no routine due,
@@ -102,6 +162,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// work on the NAS's own model (ADR 0131): it costs nothing, and takes nobody's share.
     /// Returns how many were woken.
     pub(super) fn downtime_look(&self, now: Millis) -> Done<usize> {
+        // No downtime while a round of the experiment runs (ADR 0142, amended 2026-11-01).
+        if self.round_running()? {
+            return Ok(0);
+        }
         let today = self.today().to_string();
         let members = self.store.members()?;
         let mut waiting: Vec<&Member> = Vec::new();

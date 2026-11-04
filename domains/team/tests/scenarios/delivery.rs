@@ -230,3 +230,9 @@ fn cards_off(w: &mut Office) {
     w.hq.set_delivery(Some(false), None)
         .expect("the owner's setting is kept");
 }
+
+#[then(expr = "Manage shows {string} as kept, its item blocked")]
+fn manage_kept_blocked(w: &mut Office, branch: String) {
+    let row = w.accepted_row(&branch).expect("listed");
+    assert_eq!(row["status"], "kept_blocked", "{row}");
+}

@@ -76,7 +76,8 @@ const CLAUDE_CODE_RULES: &str = "\n\nYou are running in Claude Code, headless, f
     reachable but Endora's tools; edit files with Edit and Write. \
     Each of your own tool calls is recorded as a sandbox-reported receipt, which you may cite \
     for what you did in the sandbox, but never as a reading of the lab: a reading comes from \
-    Endora's own tools. Nothing you leave in /work outlives the turn.";
+    Endora's own tools. Your sandbox keeps the item's work between turns; /work/repo is there \
+    if a turn checked it out.";
 
 /// How a Claude Code run ended, from its JSON.
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +416,9 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
     std::fs::create_dir_all(&files)
         .map_err(|e| Stopped::Failed(format!("{} could not be made: {e}", files.display())))?;
     let ledger = files.join("did.json");
+    // The sandbox keeps the item's work between turns (ADR 0142, amended 2026-11-01), and with
+    // it an earlier turn's ledger: this turn's calls are its own.
+    let _ = std::fs::remove_file(&ledger);
     let rules = files.join("rules.md");
     let mcp = files.join("mcp.json");
     let told = format!(
@@ -914,6 +918,7 @@ mod tests {
             api: Api::Anthropic,
             most_rounds: 30,
             prompt_budget: crate::turn::CLAUDE_PROMPT_BUDGET,
+            counts_conversation: true,
             workbench: Some("/work".into()),
             effort: Some("low".to_owned()),
             claude_code: true,

@@ -30,7 +30,8 @@ T0 = 1_800_000_000_000
 
 # The tables the script reads, with the columns it uses (HQ's own schema has more).
 SCHEMA = """
-CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+    brain TEXT NOT NULL DEFAULT 'local', furloughed_at INTEGER);
 CREATE TABLE goals (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
 CREATE TABLE projects (id INTEGER PRIMARY KEY, goal INTEGER NOT NULL, title TEXT NOT NULL,
     reason TEXT NOT NULL, lead INTEGER NOT NULL, status TEXT NOT NULL);
@@ -40,7 +41,17 @@ CREATE TABLE tasks (id INTEGER PRIMARY KEY, goal INTEGER NOT NULL, parent INTEGE
 CREATE TABLE runs (id INTEGER PRIMARY KEY, member INTEGER NOT NULL, task INTEGER,
     status TEXT NOT NULL, queued_at INTEGER NOT NULL, started_at INTEGER, ended_at INTEGER,
     spent INTEGER NOT NULL DEFAULT 0, end_reason TEXT NOT NULL DEFAULT '', label TEXT,
-    brain TEXT);
+    brain TEXT, moved_forward INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE wakes (id INTEGER PRIMARY KEY, member INTEGER NOT NULL, task INTEGER,
+    reason TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '', refused TEXT, run INTEGER,
+    at_ms INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE ledger (id INTEGER PRIMARY KEY, run INTEGER NOT NULL, member INTEGER NOT NULL,
+    day INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL, amount INTEGER NOT NULL,
+    at_ms INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE transcripts (run INTEGER PRIMARY KEY, member INTEGER NOT NULL, task INTEGER,
+    body TEXT NOT NULL, at_ms INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE events (id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, kind TEXT NOT NULL,
     data TEXT NOT NULL);
 CREATE TABLE desk (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task INTEGER, text TEXT NOT NULL,
@@ -76,6 +87,7 @@ class Store:
             "INSERT INTO members (id, name) VALUES (?, ?)",
             [(1, "John Doe"), (2, "Jane Doe")],
         )
+        db.execute("INSERT INTO members (id, name, brain) VALUES (3, 'Richard Roe', 'haiku')")
         db.execute("INSERT INTO goals VALUES (1, 'Tidy the fork', 'active')")
         db.execute("INSERT INTO projects VALUES (1, 1, 'Fork clean-up', '', 2, 'active')")
         db.execute("INSERT INTO projects VALUES (9, 1, 'Round 0 (archived)', '', 2, 'dropped')")
@@ -109,7 +121,7 @@ class Store:
 
 
 class FakeHq(http.server.ThreadingHTTPServer):
-    """The four routes `start` uses, writing to the temporary store as HQ would (minus all the
+    """The five routes `start` uses, writing to the temporary store as HQ would (minus all the
     rest HQ does); refuses a missing or wrong token."""
 
     daemon_threads = True
@@ -118,6 +130,8 @@ class FakeHq(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), FakeHandler)
         self.store = store
         self.calls = []
+        self.solo = {}
+        self.round = []
 
     @property
     def url(self):
@@ -154,6 +168,8 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
                 "INSERT INTO projects (goal, title, reason, lead, status) VALUES (?,?,?,?,'active')",
                 (body["goal"], body["title"], body["reason"], body["lead"]),
             )
+            if "solo" in body:
+                self.server.solo[cur.lastrowid] = body["solo"]
             return {"project": cur.lastrowid}
         if parts[0] == "projects":
             assert body == {"action": "drop"}
@@ -184,6 +200,9 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
             data = {"task": cur.lastrowid, "project": body.get("project"), "status": "todo"}
             Store.event(db, T0 + 999 * MIN, "task.created", data)
             return {"task": cur.lastrowid}
+        if parts == ["round"]:
+            self.server.round.extend(body["items"])
+            return {"items": self.server.round, "running": True}
         if parts[0] == "tasks" and parts[2] == "project":
             db.execute("UPDATE tasks SET project = ? WHERE id = ?", (body["project"], int(parts[1])))
             return {"task": int(parts[1]), "project": body["project"]}
@@ -232,6 +251,9 @@ class Start(unittest.TestCase):
         self.assertEqual(self.hq.calls[0][1]["title"], "Round 1 (archived)")
         self.assertEqual(self.hq.calls[0][1]["lead"], 2)
         self.assertEqual(done["archived"], {"project": 10, "tasks": [3, 4]})
+        # Last, HQ is told the round's tasks: no downtime while any is open.
+        self.assertEqual(self.hq.calls[-1], ("/v1/round", {"items": [6, 7]}))
+        self.assertTrue(done["downtime_paused"])
         db = self.store.db()
         statuses = dict(db.execute("SELECT id, status FROM tasks WHERE id IN (3,4,5)").fetchall())
         self.assertEqual(statuses, {3: "dropped", 4: "dropped", 5: "done"})
@@ -264,7 +286,7 @@ class Start(unittest.TestCase):
         code, out = run(self.base + ["start", "--round", "2", "--from-tasks", "1-2", "--yes"])
         self.assertEqual(code, 0, out)
         self.assertIsNone(json.loads(out)["archived"])
-        self.assertEqual([p for p, _ in self.hq.calls], ["/v1/tasks", "/v1/tasks"])
+        self.assertEqual([p for p, _ in self.hq.calls], ["/v1/tasks", "/v1/tasks", "/v1/round"])
 
     def test_refuses_a_project_no_longer_active(self):
         db = self.store.db()
@@ -275,6 +297,66 @@ class Start(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("project 1 is paused", out)
         self.assertEqual(self.hq.calls, [])
+
+
+class StartSolo(unittest.TestCase):
+    """Round 4's solo arm (ADR 0142, amended 2026-11-01): the round's tasks in a project of
+    their own, worked by one member alone, beside the team's arm."""
+
+    setUp = Start.setUp
+    tearDown = Start.tearDown
+
+    def test_without_yes_nothing_is_written(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "Richard Roe"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        shown = json.loads(out)["would"]
+        self.assertIsNone(shown["archive"])
+        self.assertEqual(shown["solo"]["solo"], 3)
+        self.assertEqual(self.hq.calls, [])
+
+    def test_makes_a_project_worked_alone_and_archives_nothing(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "richard roe", "--yes"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        done = json.loads(out)
+        paths = [p for p, _ in self.hq.calls]
+        self.assertEqual(paths, ["/v1/projects", "/v1/tasks", "/v1/tasks", "/v1/round"])
+        self.assertEqual(self.hq.round, [6, 7], "the solo arm's tasks join the round")
+        made = self.hq.calls[0][1]
+        self.assertEqual((made["lead"], made["solo"], made["goal"]), (3, 3, 1))
+        self.assertEqual(made["title"], "Round 4 solo (richard roe)")
+        self.assertEqual(done["solo"], {"project": 10, "member": 3})
+        self.assertEqual(self.hq.solo, {10: 3})
+        self.assertIsNone(done["archived"])
+        self.assertEqual(done["mismatches"], [])
+        db = self.store.db()
+        projects = [r[0] for r in db.execute("SELECT project FROM tasks WHERE id IN (6, 7)")]
+        self.assertEqual(projects, [10, 10])
+        statuses = dict(db.execute("SELECT id, status FROM tasks WHERE id IN (3, 4)").fetchall())
+        self.assertEqual(statuses, {3: "doing", 4: "todo"}, "the team's arm is left alone")
+        db.close()
+
+    def test_refuses_a_member_who_is_not_there_or_retired(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "Nobody", "--yes"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 1)
+        self.assertIn("no member is called Nobody", out)
+        db = self.store.db()
+        db.execute("UPDATE members SET furloughed_at = 1 WHERE id = 3")
+        db.commit()
+        db.close()
+        argv[-2] = "Richard Roe"
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 1)
+        self.assertIn("Richard Roe has retired", out)
+        self.assertEqual(self.hq.calls, [])
+
+    def test_a_member_off_haiku_is_noted(self):
+        argv = ["start", "--round", "4", "--from-tasks", "1-2", "--solo", "John Doe"]
+        code, out = run(self.base + argv)
+        self.assertEqual(code, 0, out)
+        self.assertIn("not haiku", json.loads(out)["would"]["notes"][0])
 
 
 class Reading(unittest.TestCase):
@@ -462,7 +544,241 @@ class Check(unittest.TestCase):
         self.assertIn("uncited receipt(s) [2] only", problems)
 
 
+TRANSCRIPT = """--- system ---
+SYSTEM-10B
+--- user ---
+BRIEF-12345
+--- assistant ---
+looking
+--- call: my_turn ---
+{}
+--- call: shell ---
+{"c":1}
+--- result ---
+MYTURN-RESULT
+--- result ---
+SHELL-RESULT-1
+--- call: repo_checkout ---
+{}
+--- result: refused ---
+NO
+--- user ---
+not the briefing
+"""
+
+
+class Metrics(unittest.TestCase):
+    """Two fictional rounds: tasks 3 (with subtask 4) and 5 in the first, task 6 in the second.
+    Task 3 is done at +200 min (first ready at +82); 5 is done at +30; 6 never ready."""
+
+    def setUp(self):
+        self.store = Store()
+        db = self.store.db()
+        db.execute(
+            "INSERT INTO tasks (id, goal, title, description, status) VALUES (6, 1, 'x', '', 'doing')"
+        )
+        Store.event(db, T0, "task.created", {"task": 6})
+        for at, task, status in [(82, 3, "in_review"), (200, 3, "done"), (30, 5, "done")]:
+            Store.event(db, T0 + at * MIN, "task.changed", {"task": task, "status": status})
+        db.execute("UPDATE tasks SET status = 'done' WHERE id = 3")
+        # run id, task, started, ended (min), moved_forward, spent, tokens in/cached/out
+        runs = [
+            (1, 3, 0, 10, 1, 20_000, 100, 50, 10),
+            (2, 3, 5, 15, 0, 10_000, 200, 0, 20),
+            (3, 4, 40, 50, 0, 5_000, 0, 0, 0),
+            (4, 3, None, None, 0, 0, 0, 0, 0),
+            (5, 5, 0, 20, 1, 1_000, 0, 0, 0),
+            (6, 6, 0, 60, 0, 0, 0, 0, 0),
+        ]
+        for rid, task, start, end, moved, spent, tin, cached, tout in runs:
+            db.execute(
+                "INSERT INTO runs (id, member, task, status, queued_at, started_at, ended_at,"
+                " spent, moved_forward, input_tokens, cache_read_tokens, output_tokens)"
+                " VALUES (?, 1, ?, 'succeeded', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    task,
+                    T0,
+                    None if start is None else T0 + start * MIN,
+                    None if end is None else T0 + end * MIN,
+                    spent,
+                    moved,
+                    tin,
+                    cached,
+                    tout,
+                ),
+            )
+            if spent:
+                for kind, amount in [("reserve", 99_000), ("charge", spent), ("release", 99_000)]:
+                    db.execute(
+                        "INSERT INTO ledger (run, member, kind, amount) VALUES (?, 1, ?, ?)",
+                        (rid, kind, amount),
+                    )
+        wakes = [
+            (3, "continued", None),
+            (3, "continued", None),
+            (4, "recovery", "held"),
+            (3, "recovery", None),
+            (3, "assigned", "away"),
+            (3, "review_requested", None),
+            (6, "assigned", None),
+        ]
+        for task, reason, refused in wakes:
+            db.execute(
+                "INSERT INTO wakes (member, task, reason, refused) VALUES (1, ?, ?, ?)",
+                (task, reason, refused),
+            )
+        for rid, task in [(1, 3), (2, 4), (3, 3), (4, 6)]:
+            db.execute(
+                "INSERT INTO call_receipts (run, member, task, tool, args, excerpt, ok, act,"
+                " confidential, at_ms) VALUES (?, 1, ?, ?, '{}', '', 1, 0, 0, 0)",
+                (rid, task, "repo_checkout" if rid < 4 else "shell"),
+            )
+        posts = [
+            (3, "endora", "Handover of #3 to Jane Doe (its turn ran out of room). Go on."),
+            (3, "endora", "It failed 3 times at John Doe's rank: it goes to Jane Doe, one rank up."),
+            (3, "endora", "Jane Doe reviews this, one rank up."),
+            (4, "endora", "Handover of #4 to John Doe (continuation 1 of 3)."),
+            (3, "Jane Doe", "Handover of #3 to me, said a member"),
+        ]
+        for task, author, text in posts:
+            db.execute(
+                "INSERT INTO posts (task, author, text, at_ms) VALUES (?, ?, ?, ?)",
+                (task, author, text, T0),
+            )
+        for kind, task, status, at in [("question", 3, "seen", 10), ("notice", 3, "seen", 11)]:
+            db.execute(
+                "INSERT INTO desk (kind, task, text, status, at_ms) VALUES (?, ?, 'q', ?, ?)",
+                (kind, task, status, T0 + at * MIN),
+            )
+        db.execute(
+            "INSERT INTO posts (task, author, text, at_ms) VALUES (3, 'owner', 'yes', ?)",
+            (T0 + 12 * MIN,),
+        )
+        db.execute(
+            "INSERT INTO transcripts (run, member, task, body) VALUES (1, 1, 3, ?)", (TRANSCRIPT,)
+        )
+        db.commit()
+        db.close()
+
+    def tearDown(self):
+        self.store.close()
+
+    def metrics(self, *argv):
+        code, out = run(["--db", self.store.path, "metrics", *argv])
+        self.assertEqual(code, 0, out)
+        return out
+
+    def test_a_round_on_one_measure(self):
+        m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]
+        self.assertEqual(m["with_subtasks"], [3, 4, 5])
+        self.assertEqual((m["reported_done"], m["reported_done_tasks"]), (2, [3, 5]))
+        self.assertIsNone(m["verified"])
+        self.assertEqual(m["interventions"], 1)
+        self.assertAlmostEqual(m["spend_usd"], 0.036)
+        # Started turns only; changed nothing is the store's own flag.
+        self.assertEqual((m["turns"], m["turns_changed_nothing"]), (4, 2))
+        self.assertEqual((m["tokens_in"], m["tokens_in_cached"], m["tokens_out"]), (350, 50, 30))
+        self.assertEqual(m["checkouts"], 3)
+        self.assertEqual(m["wakes"]["continued"], {"all": 2, "refused": 0})
+        self.assertEqual(m["wakes"]["recovery"], {"all": 2, "refused": 1})
+        self.assertEqual(m["wakes_refused"], 2)
+        # HQ's handovers on the task and its subtask; a member's words are not one; a review one
+        # rank up is not a climb.
+        self.assertEqual((m["handovers"], m["climbs"]), (2, 1))
+        self.assertEqual(m["desk_questions"], 1)
+        self.assertEqual(m["first_ready"], {"n": 2, "median_min": 56.0})
+        self.assertEqual(m["done"], {"n": 2, "median_min": 115.0})
+        # Working: 10 + 10 + 10 + 20 min; waiting: task 3's 200 min less 15 (0-15) and 10
+        # (40-50) covered, task 5's 30 less 20.
+        self.assertEqual(m["working_h"], round(50 / 60, 1))
+        self.assertEqual(m["waiting_h"], round((175 + 10) / 60, 1))
+
+    def test_done_with_nothing_checked_is_counted_apart(self):
+        # ADR 0124, amended 2026-11-03: a solo item with no branch closes completed, not
+        # verified; its done never counts as a verified outcome. A store from before the closures
+        # table, or a closing met on evidence, counts none.
+        m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]
+        self.assertEqual(m["reported_done_unverified"], 0)
+        db = self.store.db()
+        db.execute(
+            "CREATE TABLE closures (task INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+            " why TEXT NOT NULL, duplicate_of INTEGER, successor INTEGER, by TEXT NOT NULL,"
+            " at_ms INTEGER NOT NULL)"
+        )
+        db.execute("INSERT INTO closures VALUES (3, 'done', 'met_criteria', NULL, NULL, 'endora', 0)")
+        # Kept apart from closures, so a build from before it was named never misreads it.
+        db.execute(
+            "CREATE TABLE unverified_closings (task INTEGER PRIMARY KEY, by TEXT NOT NULL,"
+            " at_ms INTEGER NOT NULL)"
+        )
+        db.execute("INSERT INTO unverified_closings VALUES (5, 'endora', 0)")
+        db.commit()
+        db.close()
+        m = json.loads(self.metrics("--tasks", "3,5", "--label", "R1", "--json"))["R1"]
+        self.assertEqual((m["reported_done"], m["reported_done_unverified"]), (2, 1))
+        rows = {
+            line.split(" | ")[0][2:]: line.split(" | ")[1:]
+            for line in self.metrics("--tasks", "3,5", "--label", "R1").splitlines()[2:]
+        }
+        self.assertEqual(rows["Reported (HQ done)"], ["2 (1 not verified) |"])
+
+    def test_transcript_bytes_by_what_they_were_spent_on(self):
+        m = json.loads(self.metrics("--tasks", "3", "--json"))["Tasks 3"]
+        self.assertEqual(m["transcripts_kept"], 1)
+        self.assertEqual(m["transcript_calls"], {"protocol": 1, "checkout": 1, "other": 1})
+        self.assertEqual(
+            m["transcript_bytes"],
+            {
+                "briefing": len("SYSTEM-10B") + len("BRIEF-12345"),
+                "protocol": len("{}") + len("MYTURN-RESULT"),
+                "checkout": len("{}") + len("NO"),
+                "other": len('{"c":1}') + len("SHELL-RESULT-1"),
+            },
+        )
+
+    def test_groups_and_verified_and_the_table(self):
+        out = self.metrics(
+            "--tasks", "3,5,6", "--label", "Round 9", "--groups", "fixed=3,5,outside=6",
+            "--verified", "3,6",
+        )
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "| | Round 9 | fixed | outside |")
+        rows = {line.split(" | ")[0][2:]: line.split(" | ")[1:] for line in lines[2:]}
+        self.assertEqual(rows["Reported (HQ done)"], ["2", "2", "0 |"])
+        self.assertEqual(rows["Verified (judge)"], ["2", "1", "1 |"])
+        self.assertEqual(rows["Turns"], ["5", "4", "1 |"])
+        self.assertEqual(rows["Handovers / climbs one rank up"], ["2 / 1", "2 / 1", "0 / 0 |"])
+        self.assertEqual(rows["First ready: tasks / median from made"][2], "0 / — |")
+        self.assertIn(
+            "Wakes: continued / recovery (refused, any reason) / review asked / assigned", rows
+        )
+        self.assertEqual(
+            rows["Wakes: continued / recovery (refused, any reason) / review asked / assigned"][0],
+            "2 / 2 (2) / 1 / 2",
+        )
+
+    def test_rounds_side_by_side(self):
+        out = self.metrics("--tasks", "3,5", "--label", "A", "--tasks", "6", "--label", "B")
+        self.assertTrue(out.startswith("| | A | B |"))
+
+    def test_a_task_not_in_the_store_is_refused(self):
+        with self.assertRaises(SystemExit):
+            run(["--db", self.store.path, "metrics", "--tasks", "77"])
+
+
 class Pieces(unittest.TestCase):
+    def test_groups(self):
+        self.assertEqual(
+            EXP.groups_of("fixed=1-3,7,fresh=8,outside=9"),
+            [("fixed", [1, 2, 3, 7]), ("fresh", [8]), ("outside", [9])],
+        )
+        with self.assertRaises(ValueError):
+            EXP.groups_of("4,fixed=5")
+
+    def test_covered_counts_overlaps_once(self):
+        self.assertEqual(EXP.covered_ms([(0, 10), (5, 15), (40, 50), (90, 120)], 0, 100), 35)
+
     def test_ids(self):
         self.assertEqual(EXP.ids_of("882-884,903"), [882, 883, 884, 903])
         with self.assertRaises(ValueError):

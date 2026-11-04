@@ -36,24 +36,23 @@ pub mod target_search;
 pub mod tiers;
 
 pub use application::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
-    CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
-    CapabilitySpec, CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
-    KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot, Recipe,
-    RecipeInput, RecipeInputKind, RecipeRepository, Sampling, Stance, TargetAlias,
-    TargetAliasRepository, TransitionLog, WriteKind, not_answering, watch_for_change,
-    worth_waking_for,
+    AutonomyEnvelope, ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
+    CapabilityRead, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec, CapabilityUse,
+    ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository, KEEP_TRANSITIONS_FOR_MS,
+    McpServer, McpServerRegistry, McpTransport, ModelSlot, Recipe, RecipeInput, RecipeInputKind,
+    RecipeRepository, Sampling, Stance, TargetAlias, TargetAliasRepository, TransitionLog,
+    WriteKind, not_answering, watch_for_change, worth_waking_for,
 };
 pub use domain::{DWELL_MS, SetupField, SetupForm, Transition, Watched};
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
-    McpClient, McpResource, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RecipeRunner,
-    RecipeTrial, RegistryRunner, ReversibleOnlyRunner, SettingSpec, TargetSearchRunner,
-    WithdrawnRunner, arguments_for_a_test_call, channels_of, default_capabilities, default_stance,
-    place_filled_in, redact_pii_in_text, redact_pii_in_value, same_call_as, scan_outbound_secret,
-    scrub_secrets, settings_complete, settings_ready, tools_the_toggle_governs,
-    tools_to_open_on_connect, try_recipe,
+    McpClient, McpResource, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RecipeTrial,
+    RegistryRunner, ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner,
+    arguments_for_a_test_call, channels_of, default_capabilities, default_stance, place_filled_in,
+    redact_pii_in_text, redact_pii_in_value, same_call_as, scan_outbound_secret, scrub_secrets,
+    settings_complete, settings_ready, tools_the_toggle_governs, tools_to_open_on_connect,
+    try_recipe,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;

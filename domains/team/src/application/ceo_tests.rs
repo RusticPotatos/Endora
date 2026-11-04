@@ -10,7 +10,7 @@ use serde_json::json;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, RunContext};
 use super::protocol::call;
-use crate::domain::{GoalId, MemberId, Priority, Refusal, Role, TaskId};
+use crate::domain::{GoalId, MemberId, Priority, Refusal, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -53,13 +53,13 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// The CEO (Mara, seated as HQ seats it, on Opus), a lead on Sonnet, a developer as hired (on
 /// Haiku), and a reviewer when `with_reviewer`; a goal.
 fn team(hq: &Hq<'_>, with_reviewer: bool) -> Team {
-    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    let ceo = hq.hire("Mara", 35, 1, 3).unwrap();
     hq.set_brain(ceo, "claude-opus-5-5").unwrap();
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
-    hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Linus", 40, 2, 4).unwrap();
     if with_reviewer {
-        hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+        hq.hire("Grace", 20, 2, 1).unwrap();
     }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)

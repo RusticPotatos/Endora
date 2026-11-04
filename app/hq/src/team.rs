@@ -58,7 +58,14 @@ fn answer(
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
         "tools/list" => {
-            json!({ "tools": protocol::tools_in_v2(hq, run, member) })
+            let tools = protocol::tools_in_v2(hq, run, member);
+            // The node's tools the turn loads up front, which HQ does not list (D27).
+            let node = protocol::node_tools_up_front(hq, run, member);
+            if node.is_empty() {
+                json!({ "tools": tools })
+            } else {
+                json!({ "tools": tools, "_meta": { protocol::UP_FRONT: node } })
+            }
         }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
@@ -172,16 +179,18 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         let only = hq.lab_tools_of(run.id)?;
         // And what it may never use: the lab's acts, on a task that leaves the lab as it is.
         let never = hq.lab_tools_refused(run.id)?;
+        // The repository outside the lab the turn's work is in (ADR 0115, amended 2026-11-01):
+        // the node mirrors it, and its checkout and submission work there, not in the fork.
+        let repo = hq.outside_repo_of_run(run.id)?;
         Ok::<_, endora_team::application::EngineError>(Some((
-            run, member, runtime, wing, only, never,
+            run, member, runtime, wing, only, never, repo,
         )))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime, wing, only, never)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing, only, never, repo)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
-            "role": member.role.name(),
             "left": (run.reserved - run.spent).max(0),
             // The check point the node's relays, contracts and bridge ask (ADR 0109): a turn
             // on a cloud model is given no Confidential result beyond what the owner allowed,
@@ -194,6 +203,7 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "wing": wing,
             "only": only,
             "never": never,
+            "repo": repo,
         }))
         .into_response(),
         Ok(Ok(None)) => (

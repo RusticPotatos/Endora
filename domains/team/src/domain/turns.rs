@@ -42,8 +42,9 @@ pub enum Wait {
     Budget,
     /// It needs the Mac, and the Mac cannot take it now, for this reason (ADR 0130).
     Mac(String),
-    /// It is work on the house's own models, which cost nothing, and the member has started as
-    /// many turns on them today as it may (ADR 0133): it waits until the day turns.
+    /// It is work on the house's own models, which cost nothing, and the member's turns on them
+    /// today have shown nothing too many times in a row (ADR 0133, amended 2026-11-01: waste,
+    /// not a count): it waits until the day turns.
     DayCap,
     /// A restart is coming and a drain holds every new turn back (ADR 0134): it starts once
     /// HQ is up again.
@@ -66,9 +67,9 @@ impl Wait {
             Self::Budget => "waiting for budget: the budget for it is spent".to_owned(),
             Self::Mac(why) => super::mac::waiting_words(why),
             Self::DayCap => format!(
-                "{}{} turns a day is the most a member takes on the house's own models",
+                "{}{} turns in a row on the house's own models showed nothing",
                 WAITING[2],
-                super::guards::THRESHOLDS.free_turns_a_day
+                super::guards::THRESHOLDS.free_turns_wasted
             ),
             Self::Restart => format!("{}nothing new starts until it has been", WAITING[3]),
         }
@@ -102,9 +103,9 @@ pub struct Facts {
     pub mac_waits: Option<String>,
     /// Whether the budget lets a paid turn start now.
     pub can_afford: bool,
-    /// How many turns the member has started today on the house's own models, the one being
-    /// placed aside (ADR 0133).
-    pub free_turns_today: usize,
+    /// How many of the member's turns today on the house's own models, newest back, showed
+    /// nothing (ADR 0133, amended 2026-11-01): a turn that did something ends the run.
+    pub free_turns_wasted: usize,
 }
 
 /// Where a turn goes.
@@ -117,8 +118,9 @@ pub enum Placed {
 }
 
 /// Where a turn on `brain` runs: there, or it waits. A paid turn waits for the money; a turn on
-/// the house's own models, past the member's turns for the day, waits for the day to turn (ADR
-/// 0133), and one on the Mac waits for the Mac.
+/// the house's own models, after the member's turns today showed nothing too many times in a
+/// row, waits for the day to turn (ADR 0133, amended 2026-11-01), and one on the Mac waits for
+/// the Mac.
 #[must_use]
 pub fn place(brain: Brain, facts: &Facts) -> Placed {
     if brain.cloud() {
@@ -127,7 +129,7 @@ pub fn place(brain: Brain, facts: &Facts) -> Placed {
         }
         return Placed::Waits(Wait::Budget);
     }
-    if facts.free_turns_today >= super::guards::THRESHOLDS.free_turns_a_day {
+    if facts.free_turns_wasted >= super::guards::THRESHOLDS.free_turns_wasted {
         return Placed::Waits(Wait::DayCap);
     }
     match (brain, &facts.mac_waits) {
@@ -144,7 +146,7 @@ mod tests {
         Facts {
             mac_waits: mac_waits.map(str::to_owned),
             can_afford: true,
-            free_turns_today: 0,
+            free_turns_wasted: 0,
         }
     }
 
@@ -156,7 +158,7 @@ mod tests {
         );
         let broke = Facts {
             can_afford: false,
-            free_turns_today: 500,
+            free_turns_wasted: 500,
             ..facts(None)
         };
         assert_eq!(place(Brain::Sonnet, &broke), Placed::Waits(Wait::Budget));
@@ -182,20 +184,26 @@ mod tests {
         assert_eq!(TurnKind::on(Brain::Mac), TurnKind::Work);
     }
 
-    /// A member takes sixty turns a day on the house's own models (ADR 0133): they cost nothing,
-    /// so no budget stops a member that has run away with them. The sixty-first waits until the
-    /// day turns, and that is the longer wait with the Mac busy as well.
+    /// D15 of round 3 (31 Oct): Bo, on the house's own model, which costs nothing, stopped at
+    /// "60 turns a day" whatever his turns achieved. A count is not what should stop a free
+    /// model; waste is. Turns that do work never wait, however many; the tenth turn in a row
+    /// that showed nothing (or failed) waits until the day turns, the Mac's turns alike.
     #[test]
-    fn the_sixty_first_turn_of_the_day_on_the_house_waits_for_tomorrow() {
-        let taken = |n| Facts {
-            free_turns_today: n,
+    fn a_free_model_waits_for_tomorrow_on_waste_not_on_a_count() {
+        let wasted = |n| Facts {
+            free_turns_wasted: n,
             ..facts(Some("owner active"))
         };
-        assert_eq!(place(Brain::Local, &taken(59)), Placed::On(Brain::Local));
+        assert_eq!(place(Brain::Local, &wasted(0)), Placed::On(Brain::Local));
+        assert_eq!(place(Brain::Local, &wasted(9)), Placed::On(Brain::Local));
         for brain in [Brain::Local, Brain::Mac] {
-            assert_eq!(place(brain, &taken(60)), Placed::Waits(Wait::DayCap));
+            assert_eq!(place(brain, &wasted(10)), Placed::Waits(Wait::DayCap));
         }
-        assert_eq!(place(Brain::Haiku, &taken(500)), Placed::On(Brain::Haiku));
+        assert_eq!(place(Brain::Haiku, &wasted(500)), Placed::On(Brain::Haiku));
+        assert_eq!(
+            Wait::DayCap.words(),
+            "waiting for tomorrow: 10 turns in a row on the house's own models showed nothing"
+        );
     }
 
     #[test]

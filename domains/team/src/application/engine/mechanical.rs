@@ -150,6 +150,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(report);
         };
         let files = self.branch_files(&branch)?;
+        report.check = self
+            .store
+            .checks()?
+            .into_iter()
+            .filter(|c| c.branch == branch.id)
+            .max_by_key(|c| c.id)
+            .map(|c| mechanical::HeadCheck {
+                id: c.id,
+                branch: branch.name.clone(),
+                ok: c.ok.filter(|_| c.status == "done"),
+                summary: c.summary,
+            });
         let mut words = format!("{}\n{}", task.title, task.description);
         for c in &task.criteria {
             words.push('\n');
@@ -160,6 +172,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             mechanical::scope(&files.changed, &words),
         ));
         let criteria: Vec<&str> = task.criteria.iter().map(|c| c.text.as_str()).collect();
+        report.lint = mechanical::asks_for_lint(&criteria);
         let asks_for_ci = mechanical::asks_for_ci(&criteria);
         if !asks_for_ci.is_empty() {
             report.ci = Some(mechanical::ci(
@@ -277,6 +290,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             crate::domain::Refusal::NoCiRun {
                 branch: ci.branch.clone(),
                 criteria: ci.criteria.clone(),
+                alone: self.solo_of(task)?.is_some(),
             },
         ))
     }

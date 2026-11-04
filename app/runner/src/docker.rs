@@ -19,6 +19,10 @@ pub const LEASE_LABEL: &str = "endora.lease";
 /// The label a check job's container carries: its check (ADR 0115).
 pub const CHECK_LABEL: &str = "endora.check";
 
+/// The label an item's keeper carries (ADR 0142, amended 2026-11-01): the item (its task) whose
+/// sandbox it keeps between turns.
+pub const ITEM_LABEL: &str = "endora.item";
+
 /// The label that keeps a container out of Watchtower, which every container the runner starts
 /// carries, set to `"false"`: Endora's image is built, not pulled, and a check or a turn
 /// recreated at night would be cut (D11).
@@ -50,6 +54,16 @@ pub struct Left {
     pub check: String,
     /// When it was made, in seconds since the Unix epoch.
     pub created: u64,
+}
+
+/// An item's keeper, as Docker lists it: the container that holds the item's sandbox mounted
+/// between its turns, so what is in it stays (ADR 0142, amended 2026-11-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Keeper {
+    /// The container.
+    pub id: String,
+    /// Its item label, as it is written.
+    pub item: String,
 }
 
 /// What the runner asks of Docker, and nothing else.
@@ -95,6 +109,16 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn left(&self) -> Result<Vec<Left>, String>;
+    /// Every container labelled with an item: the items' keepers, running or not.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn keepers(&self) -> Result<Vec<Keeper>, String>;
+    /// Removes a named volume. One gone is no failure.
+    ///
+    /// # Errors
+    /// What Docker said (one still in use stays), or that it could not be reached.
+    fn remove_volume(&self, name: &str) -> Result<(), String>;
 }
 
 /// Docker's Engine API on its unix socket.
@@ -159,6 +183,15 @@ fn checked(id: &str) -> Result<&str, String> {
         return Err("not a container's id".to_owned());
     }
     Ok(id)
+}
+
+/// A volume's name, as the runner makes one (`endora-item-12`), so it goes into a path as
+/// nothing else.
+fn checked_volume(name: &str) -> Result<&str, String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err("not a volume's name".to_owned());
+    }
+    Ok(name)
 }
 
 impl Docker for Engine {
@@ -281,6 +314,39 @@ impl Docker for Engine {
         let mut seen = std::collections::BTreeSet::new();
         all.retain(|left| seen.insert(left.id.clone()));
         Ok(all)
+    }
+
+    fn keepers(&self) -> Result<Vec<Keeper>, String> {
+        // `filters={"label":["endora.item"]}`, written for a URL.
+        let path = format!(
+            "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{ITEM_LABEL}%22%5D%7D"
+        );
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("list them", &answer));
+        }
+        Ok(answer
+            .json()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(Keeper {
+                    id: c["Id"].as_str()?.to_owned(),
+                    item: c["Labels"][ITEM_LABEL].as_str()?.to_owned(),
+                })
+            })
+            .collect())
+    }
+
+    fn remove_volume(&self, name: &str) -> Result<(), String> {
+        let path = format!("/volumes/{}", checked_volume(name)?);
+        let answer = self.call("DELETE", &path, None)?;
+        // 404: gone already. 409 (in use) is a failure: it stays, and is tried again.
+        if matches!(answer.status, 204 | 404) {
+            return Ok(());
+        }
+        Err(refusal("remove the volume", &answer))
     }
 }
 
@@ -460,6 +526,50 @@ mod tests {
             ],
             "only the runner's own containers, turns and checks, stopped ones too"
         );
+    }
+
+    /// An item's keeper (ADR 0142, amended 2026-11-01): listed by its label, and its volume
+    /// removed by name; one still in use stays and is a failure, one gone is none.
+    #[test]
+    fn the_items_keepers_are_listed_and_their_volumes_removed() {
+        let (engine, asked) = docker("keepers", |line| match line {
+            l if l.starts_with("GET /containers/json?") => whole(
+                "200 OK",
+                r#"[{"Id":"k1","Labels":{"endora.item":"12"}},{"Id":"odd","Labels":{}}]"#,
+            ),
+            "DELETE /volumes/endora-item-12 HTTP/1.1" => {
+                "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+            }
+            "DELETE /volumes/endora-item-13 HTTP/1.1" => {
+                whole("404 Not Found", r#"{"message":"no such volume"}"#)
+            }
+            _ => whole("409 Conflict", r#"{"message":"volume is in use"}"#),
+        });
+        assert_eq!(
+            engine.keepers().unwrap(),
+            vec![Keeper {
+                id: "k1".to_owned(),
+                item: "12".to_owned()
+            }]
+        );
+        engine.remove_volume("endora-item-12").unwrap();
+        engine.remove_volume("endora-item-13").unwrap();
+        let in_use = engine.remove_volume("endora-item-14").unwrap_err();
+        assert!(in_use.contains("in use"), "{in_use}");
+        for odd in ["../x", "a b", "", "v?force=1"] {
+            assert!(engine.remove_volume(odd).is_err(), "{odd}");
+        }
+        let lines: Vec<String> = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(l, _)| l.clone())
+            .collect();
+        assert_eq!(
+            lines[0],
+            "GET /containers/json?all=true&filters=%7B%22label%22%3A%5B%22endora.item%22%5D%7D HTTP/1.1"
+        );
+        assert_eq!(lines.len(), 4, "no odd name was sent: {lines:?}");
     }
 
     #[test]

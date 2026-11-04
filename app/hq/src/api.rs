@@ -19,7 +19,7 @@ use serde_json::json;
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
-    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, RunId, TaskId,
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, RoutineId, RunId, TaskId,
 };
 
 use crate::Hq;
@@ -92,14 +92,21 @@ pub fn app(state: State) -> Router {
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
+        // The repository outside the lab a project's work is in (ADR 0115, amended 2026-11-01).
+        .route("/v1/projects/{id}/repo", post(project_repo))
         .route("/v1/projects/{id}/rank", post(loop_rank))
         .route("/v1/projects/{id}/items", post(loop_items))
+        // A loop worked by one member alone (ADR 0142, amended 2026-11-01), or by the team.
+        .route("/v1/projects/{id}/solo", post(loop_solo))
         // A loop's lessons (ADR 0142, amended 2026-10-31): read, and set whole by the owner.
         .route(
             "/v1/projects/{id}/lessons",
             get(loop_lessons).post(set_loop_lessons),
         )
         .route("/v1/one-team", post(one_team))
+        // A round of the experiment under way (ADR 0142, amended 2026-11-01): its items, set by
+        // `scripts/experiment.py start`; no downtime turn starts while any is open.
+        .route("/v1/round", get(round_shown).post(set_round))
         // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
         .route("/v1/league", post(start_league))
@@ -397,7 +404,8 @@ async fn add_task(
         return Err(Failed(EngineError::Unknown("task title")));
     }
     let hq = state.hq.clone();
-    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria);
+    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria)
+        .map_err(|why| Failed(EngineError::Refused(Refusal::Criterion(why))))?;
     let task = blocking(move || {
         hq.add_task_with(
             Author::Owner,
@@ -451,7 +459,6 @@ async fn decide(
 #[derive(Deserialize)]
 struct HireRequest {
     name: String,
-    role: String,
     /// Its model; the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
@@ -462,9 +469,8 @@ async fn hire(
     Extract(state): Extract<State>,
     Json(req): Json<HireRequest>,
 ) -> Result<Json<serde_json::Value>, Failed> {
-    let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
     let hq = state.hq.clone();
-    let id = blocking(move || hq.hire_by_owner_with(&req.name, role, req.brain.as_deref())).await?;
+    let id = blocking(move || hq.hire_by_owner_with(&req.name, req.brain.as_deref())).await?;
     Ok(Json(json!({ "member": id.0 })))
 }
 
@@ -743,9 +749,12 @@ struct ProjectRequest {
     lead: i64,
     #[serde(default)]
     cap: Option<serde_json::Value>,
+    /// The member who works the loop alone (ADR 0142, amended 2026-11-01), if any.
+    #[serde(default)]
+    solo: Option<i64>,
 }
 
-/// The owner makes a project, active at once.
+/// The owner makes a project, active at once, worked alone by `solo` when it names a member.
 async fn add_project(
     Extract(state): Extract<State>,
     Json(req): Json<ProjectRequest>,
@@ -753,13 +762,17 @@ async fn add_project(
     let cap = cap_of(req.cap.as_ref())?;
     let hq = state.hq.clone();
     let id = blocking(move || {
-        hq.add_project(
+        let id = hq.add_project(
             GoalId(req.goal),
             &req.title,
             &req.reason,
             MemberId(req.lead),
             cap,
-        )
+        )?;
+        if let Some(solo) = req.solo {
+            hq.set_loop_solo(id, Some(MemberId(solo)))?;
+        }
+        Ok(id)
     })
     .await?;
     Ok(Json(json!({ "project": id.0 })))
@@ -925,6 +938,49 @@ async fn reset_league(Extract(state): Extract<State>) -> Result<Json<serde_json:
     Ok(Json(blocking(move || hq.reset_league()).await?))
 }
 
+#[derive(Deserialize)]
+struct Round {
+    /// Items to add to the round under way.
+    #[serde(default)]
+    items: Vec<i64>,
+    /// The round is over: downtime goes on.
+    #[serde(default)]
+    close: bool,
+}
+
+/// The round of the experiment under way, as HQ holds it: its items and whether any is open.
+fn round_said(hq: &Hq) -> Result<serde_json::Value, EngineError> {
+    let items: Vec<i64> = hq.round_items()?.into_iter().map(|t| t.0).collect();
+    Ok(json!({ "items": items, "running": hq.round_running()? }))
+}
+
+/// The round of the experiment under way (ADR 0142, amended 2026-11-01).
+async fn round_shown(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || round_said(&hq)).await?))
+}
+
+/// The owner, or `scripts/experiment.py start`, adds a round's items (each arm's in turn), or
+/// closes the round: while any of its items is open, no downtime or chess turn starts.
+async fn set_round(
+    Extract(state): Extract<State>,
+    Json(req): Json<Round>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(
+        blocking(move || {
+            if req.close {
+                hq.close_round()?;
+            } else {
+                let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+                hq.add_to_round(&items)?;
+            }
+            round_said(&hq)
+        })
+        .await?,
+    ))
+}
+
 /// The owner's cut-over to one team of loops (ADR 0142): what it did.
 async fn one_team(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
@@ -961,6 +1017,23 @@ async fn loop_items(
     let hq = state.hq.clone();
     blocking(move || hq.set_loop_items(ProjectId(id), req.items)).await?;
     Ok(Json(json!({ "project": id, "items": req.items })))
+}
+
+#[derive(Deserialize)]
+struct LoopSolo {
+    member: Option<i64>,
+}
+
+/// The owner sets a loop to be worked by one member alone, or (`null`) by the team again
+/// (ADR 0142, amended 2026-11-01).
+async fn loop_solo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopSolo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_solo(ProjectId(id), req.member.map(MemberId))).await?;
+    Ok(Json(json!({ "project": id, "solo": req.member })))
 }
 
 /// A loop's lessons, oldest first (ADR 0142, amended 2026-10-31).
@@ -1024,6 +1097,24 @@ async fn project_tools(
     let hq = state.hq.clone();
     let kept = blocking(move || hq.project_tools(ProjectId(id))).await?;
     Ok(Json(json!({ "project": id, "tools": kept })))
+}
+
+#[derive(Deserialize)]
+struct ProjectRepo {
+    /// A public `https://github.com/<owner>/<name>`, or null to take it away.
+    url: Option<String>,
+}
+
+/// The owner names the repository outside the lab a project's work is in (ADR 0115, amended
+/// 2026-11-01: round 4's F4): a public GitHub address alone, refused otherwise.
+async fn project_repo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectRepo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let kept = blocking(move || hq.set_project_repo(ProjectId(id), req.url.as_deref())).await?;
+    Ok(Json(json!({ "project": id, "repo": kept })))
 }
 
 #[derive(Deserialize)]
@@ -1168,7 +1259,7 @@ mod tests {
     use endora_team::application::receipt_ports::ReceiptStore;
     use endora_team::application::run_ports::RunStore;
     use endora_team::application::wing_ports::WingStore;
-    use endora_team::domain::{Role, RunId, RunStatus, TaskId};
+    use endora_team::domain::{RunId, RunStatus, TaskId};
     use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
@@ -1192,10 +1283,10 @@ mod tests {
             Settings::default(),
         ));
         if simulated {
-            let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-            hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-            hq.hire("Cy", Role::Researcher, 15, 2, 2).unwrap();
-            hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+            let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+            hq.hire("Bo", 40, 2, 4).unwrap();
+            hq.hire("Cy", 15, 2, 2).unwrap();
+            hq.hire("Dee", 20, 2, 1).unwrap();
             let goal = hq
                 .set_goal("Keep the home lab healthy", "", Author::Owner)
                 .unwrap();
@@ -1235,7 +1326,7 @@ mod tests {
 
     /// A developer is handed a task, and the tick starts their turn: it waits for a runner.
     fn a_turn_starts(st: &State) -> (RunId, TaskId) {
-        let dev = st.hq.hire("John Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("John Doe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
@@ -1266,7 +1357,7 @@ mod tests {
     /// from its turns alone.
     fn a_wing_turn_starts(st: &State) -> (RunId, TaskId) {
         let (run, task) = a_turn_starts(st);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 1).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 1).unwrap();
         let wing = st
             .hq
             .set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
@@ -1331,8 +1422,8 @@ mod tests {
     #[tokio::test]
     async fn a_game_is_read_as_pgn() {
         let st = state(false);
-        let white = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 4).unwrap();
-        let black = st.hq.hire("John Doe", Role::Developer, 40, 2, 4).unwrap();
+        let white = st.hq.hire("Jane Doe", 40, 2, 4).unwrap();
+        let black = st.hq.hire("John Doe", 40, 2, 4).unwrap();
         let goal = st.hq.set_goal("Holodeck", "", Author::Owner).unwrap();
         let project = st.hq.add_project(goal, "Chess", "", white, None).unwrap();
         st.hq
@@ -1794,12 +1885,11 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         // Every member is offered the same tools, and none of the company's (ADR 0142): the
-        // work's, the record's, chess, and the map.
+        // work's, the record's, chess, and the map. The task is the member's, so neither
+        // `my_turn` nor `claim` (D30).
         assert_eq!(
             names,
             [
-                "my_turn",
-                "claim",
                 "post",
                 "set_status",
                 "create_task",
@@ -1990,7 +2080,12 @@ mod tests {
             .oneshot(tell(Some(TOKEN), &turn.token, said))
             .await
             .unwrap();
-        assert_eq!(again.status(), StatusCode::BAD_REQUEST, "a turn has one");
+        // Told again while it runs, the latest replaces it (ADR 0129, amended 2026-11-01).
+        assert_eq!(
+            again.status(),
+            StatusCode::OK,
+            "a running turn tells it as it goes"
+        );
         // The owner's replay carries it.
         let replay = json_of(
             app.clone()
@@ -2171,7 +2266,11 @@ mod tests {
             .expect("the demo hands Ada a task")
             .id;
         st.hq
-            .wake(ada, Some(hers), endora_team::domain::WakeReason::Decide)
+            .wake(
+                ada,
+                Some(hers),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -2574,10 +2673,72 @@ mod tests {
                 ("the disk is under 80% full", true)
             ]
         );
+        // #1049 of set 3: a criterion as long as the set's longest (582 characters) is kept
+        // whole; one past the most is refused, saying which, and nothing is made.
+        let long = format!("{} plain SimpleEval still refuses it.", "x".repeat(540));
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Support set comprehensions",
+                "criteria": [long.clone()] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let task = json_of(res).await["task"].as_i64().unwrap();
+        let kept = st.hq.store().task(TaskId(task)).unwrap().unwrap().criteria;
+        assert_eq!(kept[0].text, long);
+        let made = st.hq.store().tasks().unwrap().len();
+        let res = app
+            .clone()
+            .oneshot(give(json!({ "goal": goal, "title": "Too long",
+                "criteria": ["fine", "y".repeat(1001)] })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("criterion 2 is 1001 characters"),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
+        );
+        // One criterion more than the most is refused, saying the most, and nothing is made:
+        // never a task whose last requirement was left out.
+        let many: Vec<String> = (1..=endora_team::domain::evidence::MOST_CRITERIA + 1)
+            .map(|n| format!("requirement {n}"))
+            .collect();
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Too many", "criteria": many }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"].as_str().unwrap().contains(&format!(
+                "more than the {} criteria",
+                endora_team::domain::evidence::MOST_CRITERIA
+            )),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
+        );
     }
 
-    /// The runner's three routes, each with a body it might send.
-    const RUNNER_ROUTES: [(&str, &str, &str); 3] = [
+    /// The runner's four routes, each with a body it might send.
+    const RUNNER_ROUTES: [(&str, &str, &str); 4] = [
         ("POST", "/v1/runner/next", r#"{"free":1}"#),
         (
             "POST",
@@ -2585,6 +2746,7 @@ mod tests {
             r#"{"succeeded":true,"lease":1}"#,
         ),
         ("GET", "/v1/runner/stops", ""),
+        ("POST", "/v1/runner/sandboxes", r#"{"items":[1]}"#),
     ];
 
     #[tokio::test]
@@ -2668,7 +2830,7 @@ mod tests {
         let turn = json_of(res).await;
         assert_eq!(turn["run"], run.0);
         assert_eq!(turn["member"], "John Doe");
-        assert_eq!(turn["role"], "developer");
+        assert!(turn.get("role").is_none(), "no title is said: {turn}");
         assert_eq!(turn["task"], task.0);
         assert_eq!(
             turn["brain"], "local",
@@ -2945,7 +3107,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_gives_a_member_a_cloud_brain_and_the_runner_and_the_node_hear_it() {
         let st = state(false);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, brain: &str| {
             call(
@@ -3015,7 +3177,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(lead, Some(look), endora_team::domain::WakeReason::Decide)
+            .wake(
+                lead,
+                Some(look),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -3046,7 +3212,7 @@ mod tests {
         .await;
         assert_eq!(found["cloud"], true, "the node's check point is told");
         assert_eq!(found["brain"], "claude-sonnet-5-5");
-        assert_eq!(found["role"], "lead");
+        assert!(found.get("role").is_none(), "no title is said: {found}");
     }
 
     #[tokio::test]
@@ -3054,7 +3220,7 @@ mod tests {
         // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
         // turn of hers until the runtime was set by hand.
         let st = state(false);
-        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
         st.hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
         st.hq.set_runtime(dev, "claude-code").unwrap();
         let app = app(st.clone());
@@ -3092,9 +3258,9 @@ mod tests {
     #[tokio::test]
     async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
         let st = state(false);
-        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
         st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 1).unwrap();
         st.hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, runtime: &str| {
@@ -3171,7 +3337,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(dev, Some(tidy), endora_team::domain::WakeReason::Decide)
+            .wake(
+                dev,
+                Some(tidy),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -3200,6 +3370,38 @@ mod tests {
         )
         .await;
         assert_eq!(found["runtime"], "claude-code", "the relay is told");
+        assert_eq!(found["repo"], json!(null), "work in no outside repository");
+    }
+
+    /// ADR 0142, amended 2026-11-01: the runner keeps an item's sandbox between its turns, and
+    /// asks HQ which to go on keeping: the open items, not a closed one nor one HQ has no task
+    /// for.
+    #[tokio::test]
+    async fn the_runner_hears_which_items_sandboxes_to_keep() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let ask = |items: serde_json::Value| {
+            call(
+                "POST",
+                "/v1/runner/sandboxes",
+                Some(RUNNER),
+                &json!({ "items": items }).to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(ask(json!([task.0, 999])))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["keep"], json!([task.0]));
+        st.hq.drop_task(task).unwrap();
+        let res = app.clone().oneshot(ask(json!([task.0]))).await.unwrap();
+        assert_eq!(json_of(res).await["keep"], json!([]), "dropped: it goes");
+        let many: Vec<i64> = (0..1001).collect();
+        let res = app.oneshot(ask(json!(many))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -3242,7 +3444,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_switches_and_runs_a_routine_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3364,7 +3566,7 @@ mod tests {
 
     /// The home lab's routine, which takes its alarms: a member's, under the lab's goal.
     fn lab_routine(st: &State) {
-        let member = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let member = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3522,7 +3724,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_renames_a_member_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let res = app
             .clone()
@@ -3556,14 +3758,94 @@ mod tests {
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Round 4's solo arm (ADR 0142, amended 2026-11-01): the owner makes a loop worked by one
+    /// member alone, and may give it back to the team.
+    #[tokio::test]
+    async fn the_owner_makes_a_loop_worked_alone() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st.clone());
+        let post = |uri: String, body: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", &uri, Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, made) = post(
+            "/v1/projects".to_owned(),
+            json!({ "goal": goal.0, "title": "Round 4 solo", "lead": lead.0, "solo": lead.0 })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = ProjectId(made["project"].as_i64().unwrap());
+        assert_eq!(st.hq.loop_solo(id).unwrap(), Some(lead));
+        let (status, _) = post(
+            format!("/v1/projects/{}/solo", id.0),
+            json!({ "member": null }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(st.hq.loop_solo(id).unwrap(), None);
+        let (status, _) = post(
+            "/v1/projects/999/solo".to_owned(),
+            json!({ "member": lead.0 }).to_string(),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "no such loop");
+    }
+
+    /// ADR 0142, amended 2026-11-01: `scripts/experiment.py start` sets the round's items; no
+    /// downtime turn starts while any is open, and the close ends it.
+    #[tokio::test]
+    async fn a_round_of_the_experiment_is_set_read_and_closed() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let send = |method: &str, body: &str| {
+            let app = app.clone();
+            let (method, body) = (method.to_owned(), body.to_owned());
+            async move {
+                let res = app
+                    .oneshot(call(&method, "/v1/round", Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, none) = send("GET", "").await;
+        assert_eq!(status, StatusCode::OK, "{none}");
+        assert_eq!(none, json!({ "items": [], "running": false }));
+        let (status, set) = send("POST", &json!({ "items": [task.0] }).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set, json!({ "items": [task.0], "running": true }));
+        assert!(st.hq.round_running().unwrap());
+        let (status, _) = send("POST", r#"{"items":[99999]}"#).await;
+        assert_ne!(status, StatusCode::OK, "no such task");
+        let (_, closed) = send("POST", r#"{"close":true}"#).await;
+        assert_eq!(closed, json!({ "items": [], "running": false }));
+        let unsigned = app
+            .clone()
+            .oneshot(call("POST", "/v1/round", None, r#"{"close":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn the_owner_makes_caps_and_pauses_a_project() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq
-            .hire("Richard Roe", Role::Developer, 40, 2, 0)
-            .unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Richard Roe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3645,6 +3927,37 @@ mod tests {
             )
         );
         assert_eq!(snap["tasks"][0]["project"], id);
+        // The repository outside the lab its work is in (ADR 0115, amended 2026-11-01): a
+        // public GitHub address alone, kept plainly; anything else is refused.
+        let (status, refused) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://gitlab.com/example/tiny" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{refused}"
+        );
+        let (status, kept) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://github.com/example/tiny.git" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        assert_eq!(kept["repo"], "https://github.com/example/tiny");
+        let (status, gone) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": null }).to_string(),
+        )
+        .await;
+        assert_eq!(
+            (status, gone["repo"].clone()),
+            (StatusCode::OK, json!(null))
+        );
     }
 
     #[tokio::test]
@@ -3725,10 +4038,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let members = st.hq.store().members().unwrap();
         let rae = members.iter().find(|m| m.name == "Rae").unwrap();
-        assert_eq!(
-            (rae.role, rae.brain.name()),
-            (Role::Developer, "claude-haiku-5-5")
-        );
+        assert_eq!(rae.brain.name(), "claude-haiku-5-5");
         // A model Endora lacks is refused, whatever the title.
         let res = app
             .clone()
@@ -3739,11 +4049,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // A title an older console still sends is a name only (ADR 0142): it decides nothing.
         let res = app
             .oneshot(hire(Some(TOKEN), json!({ "name": "X", "role": "wizard" })))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     /// D12 (ADR 0142, amended 2026-10-31): work in progress the node kept as a turn ran out of

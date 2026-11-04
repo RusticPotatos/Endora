@@ -1,7 +1,7 @@
 //! Money: the team pool, each member's share of it per day, and what one turn may spend.
 //!
-//! The day's pool is shared among the members by their roles' weights and the price class of
-//! the Claude each judges with (ADR 0111, 0131). Only a turn of judgment is paid for: work, on
+//! The day's pool is shared among the members by their roles' weights and the claim class of
+//! the brain each judges with, most of it to Haiku's (ADR 0111, 0131; 0113 amended 2026-11-01). Only a turn of judgment is paid for: work, on
 //! the Mac or the house's model, costs nothing and is never turned away for money.
 //!
 //! Amounts are millionths of a dollar, so a model's per-token price adds up without rounding.
@@ -20,8 +20,9 @@ pub const POOL_PER_MONTH: Micros = 70 * DOLLAR;
 pub const DAYS_A_MONTH: i64 = 30;
 /// The most one turn may spend: $0.40.
 pub const MOST_A_TURN: Micros = 400_000;
-/// The most one of the CEO's turns may spend: $1.00 (ADR 0111).
-pub const CEO_MOST_A_TURN: Micros = DOLLAR;
+/// The most one turn on Opus may spend: $1.00, the dollar the CEO had (ADR 0111) and the relay
+/// still gives an Opus turn.
+pub const OPUS_MOST_A_TURN: Micros = DOLLAR;
 /// Less than this left for today, and a member cannot start a turn.
 pub const LEAST_A_TURN: Micros = 10_000;
 /// The prompt a turn's opening call writes to Anthropic's cache, in tokens: the runtime's own
@@ -51,12 +52,12 @@ pub const fn pool_a_day(pool_per_month: Micros) -> Micros {
     pool_per_month / DAYS_A_MONTH
 }
 
-/// A member's claim on the pool (ADR 0113, amended): its role's weight times the price class
-/// ([`Brain::price_class`]) of the Claude it judges with, so two members on Haiku do not dilute
-/// the lead on Sonnet as if they cost what it does.
+/// A member's claim on the pool (ADR 0113, amended 2026-11-01): its role's weight times the
+/// claim class ([`Brain::claim_class`]) of the brain it judges with, so most of the day goes to
+/// the members on Haiku, and the climbs to Sonnet and Opus draw on what is left.
 #[must_use]
 pub const fn claim(weight: u8, brain: Brain) -> i64 {
-    weight as i64 * brain.price_class()
+    weight as i64 * brain.claim_class()
 }
 
 /// A paid member's budget for one day: its claim's part of the day's pool, shared among the
@@ -89,7 +90,7 @@ pub const fn most_top_up(pool_per_month: Micros) -> Micros {
 #[must_use]
 pub const fn most_a_turn_of(brain: Brain) -> Micros {
     if matches!(brain, Brain::Opus) {
-        return CEO_MOST_A_TURN;
+        return OPUS_MOST_A_TURN;
     }
     MOST_A_TURN
 }
@@ -167,7 +168,6 @@ pub const fn crossed(spent: Micros, reserved: Micros) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::work::Role;
 
     #[test]
     fn the_pool_is_split_per_day_among_the_paid_by_their_weights() {
@@ -185,8 +185,8 @@ mod tests {
         );
         // Only the CEO and the lead paid: they split the day by 35 to 25.
         let (ceo, lead) = (
-            member_a_day(POOL_PER_MONTH, i64::from(Role::Ceo.share()), 60),
-            member_a_day(POOL_PER_MONTH, i64::from(Role::Lead.share()), 60),
+            member_a_day(POOL_PER_MONTH, 35, 60),
+            member_a_day(POOL_PER_MONTH, 25, 60),
         );
         assert_eq!((ceo, lead), (1_361_110, 972_222), "$1.36 and $0.97");
         assert!(ceo + lead <= pool_a_day(POOL_PER_MONTH));
@@ -197,25 +197,35 @@ mod tests {
         );
     }
 
+    /// The owner, 1 Nov (round 4, D21): most of the money goes to Haiku, the cheapest paid
+    /// model and the one doing most of the work; the climbs to Sonnet and Opus draw on what is
+    /// left. Round 3's team weighted shares by price, so Ada on Haiku had $0.19 of a $16.60 day
+    /// and stopped at $0.88 with $3.77 left in the pool.
     #[test]
-    fn a_members_claim_is_its_weight_times_its_brains_price_class() {
-        // The live team: Mara on Opus, Ada and Kit on Sonnet, Cy, Rae and Zed on Haiku.
-        let team = [
-            claim(Role::Ceo.share(), Brain::Opus),
-            claim(Role::Lead.share(), Brain::Sonnet),
-            claim(Role::Lead.share(), Brain::Sonnet),
-            claim(Role::Researcher.share(), Brain::Haiku),
-            claim(Role::Developer.share(), Brain::Haiku),
-            claim(Role::Developer.share(), Brain::Haiku),
-        ];
-        let paid: i64 = team.iter().sum();
-        let share = |c: i64| member_a_day(POOL_PER_MONTH, c, paid);
-        assert!(
-            share(team[1]) > share(team[4]),
-            "the Sonnet lead's share exceeds a Haiku developer's"
+    fn most_of_the_pool_is_haikus_and_the_climbs_draw_on_the_rest() {
+        // Round 3's team: Mara on Opus, Kit on Sonnet, Ada on Haiku, Rae on DeepSeek, Bo on the
+        // house's model.
+        let (mara, kit, ada, rae, bo) = (
+            claim(35, Brain::Opus),
+            claim(25, Brain::Sonnet),
+            claim(25, Brain::Haiku),
+            claim(40, Brain::DeepSeek),
+            claim(40, Brain::Local),
         );
-        assert!(team.iter().map(|c| share(*c)).sum::<i64>() <= pool_a_day(POOL_PER_MONTH));
-        assert_eq!(claim(Role::Developer.share(), Brain::Local), 0);
+        let paid = mara + kit + ada + rae + bo;
+        let day = 16_600_000;
+        let share = |c: i64| share_of_day(day, c, paid);
+        assert!(
+            share(ada) * 2 > day,
+            "Ada's share is most of the day: {}",
+            share(ada)
+        );
+        assert!(share(ada) > share(kit) && share(kit) > share(mara));
+        assert_eq!(bo, 0, "the house's model costs nothing and claims nothing");
+        assert!([mara, kit, ada, rae].iter().map(|c| share(*c)).sum::<i64>() <= day);
+        // Each paid share still affords its brain's turns: Mara's, twice over, an Opus turn.
+        assert!(share(mara) >= 2 * least_a_turn(Brain::Opus));
+        assert!(share(kit) >= 2 * least_a_turn(Brain::Sonnet));
     }
 
     #[test]

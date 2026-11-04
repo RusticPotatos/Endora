@@ -9,11 +9,10 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::application::desk_ports::DeskStore;
 use crate::application::event_ports::EventStore;
-use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::money::MOST_A_TURN;
 use crate::domain::runs::{LONGEST_TURN_MS, RETRY_AFTER_MS};
 use crate::domain::{
-    GoalId, MemberId, Priority, Receipt, Refusal, Refused, Role, RunStatus, TaskId, TaskStatus,
+    GoalId, MemberId, Priority, Receipt, Refusal, Refused, RunStatus, TaskId, TaskStatus,
     WakeReason,
 };
 use crate::infrastructure::{Script, SimulatedRunner, SqliteTeamStore};
@@ -57,9 +56,9 @@ struct Team {
 
 fn team(hq: &Hq<'_>) -> Team {
     Team {
-        lead: hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap(),
-        dev: hq.hire("Linus", Role::Developer, 40, 2, 0).unwrap(),
-        reviewer: hq.hire("Grace", Role::Reviewer, 20, 2, 0).unwrap(),
+        lead: hq.hire("Ada", 25, 2, 0).unwrap(),
+        dev: hq.hire("Linus", 40, 2, 0).unwrap(),
+        reviewer: hq.hire("Grace", 20, 2, 0).unwrap(),
         goal: hq
             .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
             .unwrap(),
@@ -67,10 +66,11 @@ fn team(hq: &Hq<'_>) -> Team {
 }
 
 /// Every member thinks with Claude, so every turn is paid from the pool: a member on the
-/// house's model costs nothing and is never turned away for money (ADR 0111).
+/// house's model costs nothing and is never turned away for money (ADR 0111). Cy, when hired,
+/// thinks with Haiku and the rest with Sonnet.
 fn all_paid(hq: &Hq<'_>) {
     for m in hq.store().members().unwrap() {
-        let brain = if m.role == Role::Researcher {
+        let brain = if m.name == "Cy" {
             "claude-haiku-5-5"
         } else {
             "claude-sonnet-5-5"
@@ -820,7 +820,7 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
 
 /// What wakes a member for a turn that is paid for. Only a turn of judgment is (ADR 0131), and
 /// the tests of the pool, the shares and the caps are about money: they ask for a decision.
-const PAID: WakeReason = WakeReason::Decide;
+const PAID: WakeReason = WakeReason::ProposalDecided;
 
 /// A task the owner hands to `to`, which `to` is also asked to decide: the turn it starts is the
 /// owner's asking, and one of judgment, so it is paid from the pool.
@@ -1290,25 +1290,6 @@ fn a_paused_member_is_turned_away_and_a_runner_that_says_no_is_a_retry() {
 }
 
 #[test]
-fn a_timer_wakes_the_lead_and_a_late_tick_fires_it_once() {
-    let clock = hands();
-    let hq = hq(&clock, 4);
-    let t = team(&hq);
-    hq.store()
-        .add_timer(t.lead, WakeReason::LeadReview, NOON, 60 * 60 * 1000)
-        .unwrap();
-    clock.forward(5 * 60 * 60 * 1000); // five hours late
-    assert_eq!(hq.tick().unwrap().timers, 1);
-    assert_eq!(
-        hq.tick().unwrap().timers,
-        0,
-        "missed ticks are not replayed"
-    );
-    let wake = &hq.wakes().unwrap()[0];
-    assert_eq!((wake.member, wake.reason), (t.lead, WakeReason::LeadReview));
-}
-
-#[test]
 fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let clock = hands();
     let hq = hq(&clock, 4);
@@ -1663,27 +1644,30 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
     task_for(&hq, t.goal, Some(t.dev), "Restart prowlarr again");
 }
 
+/// The owner, 1 Nov (ADR 0113, amended 2026-11-01): most of the money goes to Haiku, the
+/// cheapest paid model and the one doing most of the work, and the climbs to Sonnet and Opus
+/// draw on what is left. The roster's daily share says so.
 #[test]
-fn a_members_daily_share_is_weighted_by_its_brains_price() {
+fn most_of_a_members_daily_share_goes_to_haiku() {
     let clock = hands();
     let hq = hq(&clock, 8);
     {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let on = |name: &str, role: Role, brain: &str| {
-        let id = hq.hire(name, role, role.share(), 2, 0).unwrap();
+    let on = |name: &str, brain: &str| {
+        let id = hq.hire(name, crate::domain::A_MEMBERS_SHARE, 2, 0).unwrap();
         hq.set_brain(id, brain).unwrap();
         id
     };
-    let ada = on("Ada", Role::Lead, "claude-sonnet-5-5");
-    on("Kit", Role::Lead, "claude-sonnet-5-5");
-    on("Cy", Role::Researcher, "claude-haiku-5-5");
-    let rae = on("Rae", Role::Developer, "claude-haiku-5-5");
-    on("Zed", Role::Developer, "claude-haiku-5-5");
+    let ada = on("Ada", "claude-sonnet-5-5");
+    on("Kit", "claude-sonnet-5-5");
+    on("Cy", "claude-haiku-5-5");
+    let rae = on("Rae", "claude-haiku-5-5");
+    on("Zed", "claude-haiku-5-5");
     // Dee is hired as she is, so she is the house's own model.
-    let local = hq.hire("Dee", Role::Reviewer, 20, 1, 0).unwrap();
+    let local = hq.hire("Dee", 20, 1, 0).unwrap();
     let snap = hq.snapshot().unwrap();
     let share = |id: MemberId| {
         snap["members"]
@@ -1696,10 +1680,10 @@ fn a_members_daily_share_is_weighted_by_its_brains_price() {
             .unwrap()
     };
     assert!(
-        share(ada) > share(rae),
-        "the Sonnet lead's {} against a Haiku developer's {}",
-        share(ada),
-        share(rae)
+        share(rae) > share(ada),
+        "a Haiku developer's {} against the Sonnet lead's {}",
+        share(rae),
+        share(ada)
     );
     assert_eq!(share(local), 0, "the house's model claims nothing");
 }
@@ -1870,6 +1854,59 @@ fn approving_lets_the_member_spend_the_allowance_today_and_not_tomorrow() {
     linus_spends_all_he_may(&hq, &t, work);
     let day = crate::domain::money::day_of(NOON + 24 * 60 * 60 * 1000, 0);
     assert_eq!(hq.store().share_committed(t.dev, day).unwrap(), 1_882_352);
+}
+
+/// D21 of round 3 (31 Oct): Ada had the day's allowance, approved, and reached her limit again
+/// at 22:42 UTC with $3.78 in the pool; HQ asked about a member once a day, so no card came, and
+/// her review and her next item stayed queued until the owner's next day. A member capped again
+/// after an allowance, while the pool has money and its work waits, is asked about again; once
+/// the owner declines, it is not.
+#[test]
+fn a_member_capped_again_after_an_allowance_is_asked_about_again() {
+    let clock = hands();
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(8),
+        &clock,
+        Settings {
+            pool_per_month: 150 * crate::domain::money::DOLLAR,
+            ..Settings::default()
+        },
+    );
+    let t = team(&hq);
+    // Cy on Haiku claims most of the day (ADR 0113, amended 2026-11-01), as Ada did.
+    hq.hire("Cy", 15, 2, 0).unwrap();
+    all_paid(&hq);
+    let work = endoras_task(&hq, t.goal, "Add a list");
+    linus_spends_all_he_may(&hq, &t, work);
+    assert!(waits_for_budget(&hq, t.dev, work));
+    let first = out_for_day_items(&hq);
+    assert_eq!(first.len(), 1);
+    hq.decide_saying(first[0].id, "approve", "0.5").unwrap();
+    // The allowance is spent, and he is capped again with the pool's day not spent.
+    linus_spends_all_he_may(&hq, &t, work);
+    assert!(waits_for_budget(&hq, t.dev, work));
+    let items = out_for_day_items(&hq);
+    assert_eq!(items.len(), 2, "asked about again: {items:?}");
+    let again = items.iter().find(|d| d.status == "waiting").unwrap();
+    assert_eq!(again.member, Some(t.dev));
+    assert!(
+        again.text.contains("Linus is out for today"),
+        "{}",
+        again.text
+    );
+    assert!(
+        again.text.contains("$0.50 already given today"),
+        "{}",
+        again.text
+    );
+    // Asked while that card waits, nothing more is added.
+    assert!(waits_for_budget(&hq, t.dev, work));
+    assert_eq!(out_for_day_items(&hq).len(), 2);
+    // Declined, it is not asked again today.
+    hq.decide(again.id, "decline").unwrap();
+    assert!(waits_for_budget(&hq, t.dev, work));
+    assert_eq!(out_for_day_items(&hq).len(), 2);
 }
 
 #[test]
@@ -2168,4 +2205,69 @@ fn what_the_desk_keeps_of_a_long_text_shows_where_it_was_cut() {
         .find(|d| d.id == short)
         .unwrap();
     assert_eq!(fits.text, "fits");
+}
+
+/// Roles retired (ADR 0142, amended 2026-11-02): Cy and Dee, the read-only researcher and
+/// reviewer, are on furlough, and a member at work may read and act alike. What keeps a write
+/// from reaching them is that nothing in Endora brings a member back from furlough: recall was
+/// retired with the reporting lines, and nothing clears a furlough. A furloughed member is never
+/// woken, never handed work, never given a turn (so the node never offers it a tool), and is
+/// never one that changes the lab. Bringing one back is a change to Endora, not a quiet one.
+#[test]
+fn a_furloughed_member_never_gets_a_turn_so_no_tool_reaches_it() {
+    let clock = hands();
+    let hq = hq(&clock, 8);
+    let t = team(&hq);
+    let cy = hq.hire("Cy", 15, 2, 0).unwrap();
+    hq.store().furlough_member(cy, NOON).unwrap();
+    let task = endoras_task(&hq, t.goal, "Read the NAS fans");
+
+    for reason in [
+        WakeReason::Assigned,
+        WakeReason::Mentioned,
+        WakeReason::Downtime,
+    ] {
+        assert_eq!(
+            hq.wake(cy, Some(task), reason).unwrap(),
+            Receipt::Refused(Refused::Furloughed),
+            "{reason:?}"
+        );
+    }
+    let handed = hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal: t.goal,
+            project: None,
+            parent: None,
+            title: "Restart sonarr".to_owned(),
+            description: String::new(),
+            assignee: Some(cy),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    );
+    assert!(
+        matches!(handed, Err(EngineError::Refused(Refusal::Furloughed(_)))),
+        "{handed:?}"
+    );
+    for _ in 0..3 {
+        hq.tick().unwrap();
+        clock.forward(60_000);
+    }
+    assert!(
+        hq.store().runs().unwrap().iter().all(|r| r.member != cy),
+        "a furloughed member has no turn, so no token the node would offer a tool to"
+    );
+    assert!(!hq.changes_the_lab(cy).unwrap(), "and submits no branch");
+    let cy_now = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == cy)
+        .unwrap();
+    assert!(
+        cy_now.furloughed() && !cy_now.at_work(),
+        "and nothing brought it back"
+    );
 }

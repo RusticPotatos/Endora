@@ -15,8 +15,8 @@ use crate::application::event_ports::EventStore;
 use crate::domain::money::DOLLAR;
 use crate::domain::routines::DAY_MS;
 use crate::domain::{
-    GoalId, MemberId, Pause, Priority, ProjectId, ProjectStatus, Receipt, Refusal, Refused, Role,
-    TaskId, TaskStatus, WakeReason,
+    GoalId, MemberId, Pause, Priority, ProjectId, ProjectStatus, Receipt, Refusal, Refused, TaskId,
+    TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -50,11 +50,11 @@ struct Team {
 /// The CEO on Opus, a lead on Sonnet, a developer on the house's model, and the home lab's
 /// goal.
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    let ceo = hq.hire("Mara", 35, 1, 3).unwrap();
     hq.set_brain(ceo, "claude-opus-5-5").unwrap();
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -131,7 +131,8 @@ fn last_wake(hq: &Hq<'_>) -> (MemberId, Option<TaskId>, WakeReason, Receipt) {
 /// A turn of the lead's on `task` that spends `amount`, then ends. It is a decision, the turn
 /// that is paid for (ADR 0131).
 fn spend(hq: &Hq<'_>, lead: MemberId, task: TaskId, amount: i64) {
-    hq.wake(lead, Some(task), WakeReason::Decide).unwrap();
+    hq.wake(lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let context = turn(hq, lead);
     assert_eq!(context.task, Some(task));
     hq.report_usage(context.run, amount).unwrap();
@@ -230,7 +231,8 @@ fn a_cloud_turn_on_a_capped_project_reserves_no_more_than_is_left_of_it() {
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
     // The lead is asked to decide it: the turn of judgment, which is paid for (ADR 0131).
-    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let context = turn(&hq, t.lead);
     assert_eq!(context.task, Some(task));
     let run = hq.store().run(context.run).unwrap().unwrap();
@@ -250,7 +252,8 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
         .add_project(t.goal, "Upkeep", "", t.lead, Some(DOLLAR / 2))
         .unwrap();
     let task = task_in(&hq, t.goal, Some(p), t.lead, "Look at sonarr").unwrap();
-    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     hq.tick().unwrap();
     let first = hq.runner().started().pop().unwrap();
     hq.report_usage(first.run, 400_000).unwrap();
@@ -264,7 +267,8 @@ fn at_eighty_percent_the_owner_hears_once_a_month_and_nothing_is_blocked() {
     hq.runner().finish(first.run, true);
     hq.tick().unwrap();
     // Still at work, and told no second time this month.
-    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     let again = turn(&hq, t.lead);
     assert_ne!(again.run, first.run);
     hq.report_usage(again.run, 10_000).unwrap();
@@ -299,7 +303,8 @@ fn at_its_cap_a_project_pauses_its_cloud_turns_and_its_local_members_go_on() {
     );
     // The lead's decision needs Claude: it is kept, and waits for the month. The developer's
     // work on the house's model goes on.
-    hq.wake(t.lead, Some(task), WakeReason::Decide).unwrap();
+    hq.wake(t.lead, Some(task), WakeReason::ProposalDecided)
+        .unwrap();
     assert_eq!(last_wake(&hq).3, Receipt::Queued, "nothing is turned away");
     hq.tick().unwrap();
     let decision = hq
@@ -453,7 +458,8 @@ fn a_projects_tools_are_all_its_turns_are_given_besides_their_own_four() {
 
     let mut offered = offered_by_hq(&hq, &context);
     offered.sort();
-    assert_eq!(offered, ["claim", "my_turn", "post", "set_status"]);
+    // The task is the lead's: no `my_turn` or `claim` to spend moves on (D30).
+    assert_eq!(offered, ["post", "set_status"]);
     assert_eq!(
         hq.lab_tools_of(run.id).unwrap(),
         Some(vec![
@@ -582,6 +588,8 @@ fn an_empty_list_gives_nothing_of_the_nodes_and_no_list_changes_nothing() {
         .unwrap()
         .iter()
         .filter(|tool| tool["name"] != "consult")
+        // The task is the developer's: no protocol moves (D30).
+        .filter(|tool| tool["name"] != "my_turn" && tool["name"] != "claim")
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(

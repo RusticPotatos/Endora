@@ -74,6 +74,17 @@ fn gives_done_when(w: &mut Office, to: String, title: String, done: String) {
     w.owner_gives(&to, &title, &[Criterion::new(&done, false)]);
 }
 
+/// The owner's screen and API give criteria a line each, read by `Criterion::from_lines` as
+/// HQ's route reads them.
+#[when(regex = r#"^the owner gives (\w+) the work "([^"]+)" with (\d+) lines of what done means$"#)]
+fn gives_with_lines(w: &mut Office, to: String, title: String, count: usize) {
+    let lines: Vec<String> = (1..=count).map(|n| format!("requirement {n}")).collect();
+    match Criterion::from_lines(&lines) {
+        Ok(criteria) => w.owner_gives(&to, &title, &criteria),
+        Err(why) => w.refused = Some(why),
+    }
+}
+
 #[when(regex = r#"^(\w+) splits off the part "([^"]+)" of "([^"]+)", done when "([^"]+)"$"#)]
 fn splits_off_a_part(w: &mut Office, by: String, part: String, of: String, done: String) {
     w.splits_off_a_part(&by, &part, &of, &done);

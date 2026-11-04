@@ -1,10 +1,11 @@
 //! Which of the node's tools a turn is given or refused, when HQ narrows them: a project's own
-//! list, and the lab's acts on a task whose words leave the lab as it is.
+//! list, and the lab's acts on a task whose words leave the lab as it is. And which items'
+//! sandboxes the runner goes on keeping between their turns.
 
 use super::{Done, Engine};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
-use crate::domain::RunId;
 use crate::domain::lab_tools;
+use crate::domain::{RunId, TaskId};
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The node's tools a turn may use, when HQ narrows them: a turn on the work of a project
@@ -46,5 +47,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(self
             .project_tools_of_run(run)?
             .is_none_or(|(_, tools)| tools.iter().any(|t| t == crate::domain::projects::SHELL)))
+    }
+
+    /// Of the items whose sandboxes the runner keeps between their turns (ADR 0142, amended
+    /// 2026-11-01), those to go on keeping: the ones that exist and are open. A done, dropped
+    /// or blocked item's sandbox is let go, and so is one HQ has no task for.
+    pub fn sandboxes_to_keep(&self, items: &[TaskId]) -> Done<Vec<TaskId>> {
+        let mut keep = Vec::new();
+        for item in items {
+            if let Some(task) = self.store.task(*item)? {
+                if task.status.keeps_its_sandbox() {
+                    keep.push(*item);
+                }
+            }
+        }
+        Ok(keep)
     }
 }

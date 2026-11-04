@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::engine::{Author, Engine, STRANDED_AFTER_MS, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::application::desk_ports::DeskStore;
-use crate::domain::{MemberId, Priority, Receipt, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{MemberId, Priority, Receipt, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -31,8 +31,8 @@ fn stranded(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal(
             "Keep the home lab healthy",

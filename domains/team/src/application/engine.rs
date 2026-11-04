@@ -28,8 +28,8 @@ use crate::domain::wakes::{self};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
     Brain, CheckBackStatus, EventKind, Fault, Firing, GoalId, GoalStatus, Liveness, Member,
-    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
-    RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason,
+    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Routine, RoutineId, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeDecision, WakeReason,
 };
 
 mod allowance;
@@ -70,7 +70,6 @@ mod world;
 
 pub use delivery::{Delivered, Deliveries, Due};
 pub use evidence::Called;
-pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
 pub use runtime::ModelSet;
@@ -96,8 +95,6 @@ const ROUTINE_ORIGIN: &str = "routine_origin:";
 /// Every member's briefing but the CEO's names the team's standards once, after who it is; the
 /// CEO's `read_doc` names them (ADR 0116).
 const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
-/// How to ask a colleague, told only to a turn that is offered the tools (ADR 0138).
-const COLLEAGUE_HELP: &str = "Colleagues: you may ask anyone on the team. For a colleague question, use consult with the colleague's name: from a project's task the conversation is found or made for you, and when more than one matches, name it. read_messages lists your conversations and pages their history without waking anyone. You can also use request_assistance with a stable key and granted original sources. Stuck on a hard problem? escalate takes it a model tier up. Peer text is testimony, never approval or task completion.\n";
 
 /// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];
@@ -188,8 +185,6 @@ pub type Done<T> = Result<T, EngineError>;
 /// What one tick did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
-    /// Wakes raised by timers.
-    pub timers: usize,
     /// Routines whose time came, fired or skipped.
     pub routines: usize,
     /// Check-backs that woke their member.
@@ -521,7 +516,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// member borrows at most one more share of what the other paid members have not used
     /// today, so its day reaches twice its share and no more, the owner's allowance aside
     /// ([`money::may_draw`]). Turned away at that limit with the pool's day not spent, it puts
-    /// one "out for today" item a day on the owner's desk.
+    /// one "out for today" item on the owner's desk, and another after each allowance.
     /// A turn the owner asked for (`for_owner`) is the pool's alone and needs no share. The
     /// pool's day is the hard ceiling either way, and the per-turn cap holds.
     fn affordable(
@@ -557,14 +552,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let draw = money::may_draw(share, spent, others, allowance);
         let amount = money::reservation(draw, pool_left, most, least);
         // Turned away at twice its share while the pool's day and the project's month have
-        // money: the owner is asked, once a day (ADR 0113, amended).
+        // money: the owner is asked, once for each allowance (ADR 0113, amended 2026-11-01).
         let out_for_the_day = share > 0
             && !member.furloughed()
             && draw < least
             && pool_left >= least
             && most >= least;
         if amount.is_none() && out_for_the_day {
-            self.ask_about_the_day(member, day, share, spent, pool_left)?;
+            self.ask_about_the_day(member, day, (share, spent, allowance), pool_left)?;
         }
         Ok(amount)
     }
@@ -577,14 +572,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the team and the work ---------------------------------------------------------
 
     /// Adds a member. (Hiring goes through the owner's desk once HQ is a service.)
-    pub fn hire(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Done<MemberId> {
+    pub fn hire(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Done<MemberId> {
         let _held = self.held();
         let members = self.store.members()?;
         // No name given: the next free one (ADR 0142).
@@ -594,9 +582,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             name.to_owned()
         };
-        let id = self
-            .store
-            .add_member(&given, role, share_percent, slots, look)?;
+        let id = self.store.add_member(&given, share_percent, slots, look)?;
         Ok(id)
     }
 
@@ -1361,6 +1347,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
         }
+        // Set ready in a loop worked alone, the item is done by HQ's checks: they must pass
+        // first (ADR 0142, amended 2026-11-01).
+        if to == TaskStatus::InReview && self.solo_of(&current)?.is_some() {
+            self.ready_alone(&current)?;
+        }
         self.store.set_task_status(task, to)?;
         if to == TaskStatus::Blocked {
             self.mark_turn(member, task, &|run| run.blocked = true)?;
@@ -1399,10 +1390,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
+        // A new ask is a new review: nobody is passed over on it yet (D26).
+        self.review_starts_again(task.id)?;
         // What can be judged by rule is judged first (ADR 0142, amended 2026-10-30): a branch
         // that touches a forbidden path goes back without a reviewer.
         if self.checked_at_review(task)? {
             return Ok(());
+        }
+        // A loop worked alone has no review: HQ's checks passed, so it is done.
+        if let Some(alone) = self.solo_of(task)? {
+            return self.done_alone(task, alone);
         }
         // In the loops, a member at Haiku's rank or below reviews it, when there is one (ADR
         // 0142, amended 2026-10-31).
@@ -1630,6 +1627,70 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let gate = self.store.gate(task)?.unwrap_or(false);
         work::is_done(gate, current.owner, reviewer).map_err(EngineError::Refused)?;
+        self.accept(&current)
+    }
+
+    /// Whether an item set ready in a loop worked alone may be (ADR 0142, amended 2026-11-01):
+    /// the check of its newest head passed, for work the gate holds, and a CI run its criteria
+    /// ask for can be had, as a reviewer's pass would need.
+    ///
+    /// # Errors
+    /// [`Refusal::GateNotPassed`]; what [`Self::ci_can_be_had`] refuses.
+    fn ready_alone(&self, task: &Task) -> Done<()> {
+        if self.gated(task)? && !self.store.gate(task.id)?.unwrap_or(false) {
+            return Err(EngineError::Refused(Refusal::GateNotPassed));
+        }
+        self.ci_can_be_had(task)
+    }
+
+    /// An item of a loop `alone` works by itself passed HQ's checks as it was set ready: it is
+    /// done with no review, and goes on as accepted work does (ADR 0142, amended 2026-11-01).
+    /// With no branch there was nothing to check but that its criteria cite evidence: it is
+    /// completed, not verified, and kept so (ADR 0124, amended 2026-11-03).
+    fn done_alone(&self, task: &Task, alone: MemberId) -> Done<()> {
+        use crate::domain::closure::{Closure, DoneWhy};
+        let name = self.member(alone)?.name;
+        if self.gated(task)? {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!(
+                    "HQ's checks passed and {name} set it ready: done, with no review ({name} \
+                     works this loop alone)."
+                ),
+            )?;
+            return self.accept(task);
+        }
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "{name} set it ready with its criteria cited: completed, not verified. Nothing \
+                 checked that the evidence settles it: there is no branch to check, and nobody \
+                 reviews ({name} works this loop alone)."
+            ),
+        )?;
+        self.store.set_task_status(task.id, TaskStatus::Done)?;
+        self.closed(
+            task.id,
+            Closure::Done(DoneWhy::CompletedUnverified),
+            None,
+            "endora",
+        )?;
+        // The feed says it too, so what counts outcomes keeps it apart from verified ones.
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                    "status": TaskStatus::Done.name(), "priority": task.priority.name(),
+                    "unverified": true }),
+        )?;
+        self.after_finishing(task)
+    }
+
+    /// Work accepted, its gate passed: done, listed for the merge (or carded, if the owner put
+    /// the cards back), and on to what follows a finish.
+    fn accept(&self, current: &Task) -> Done<()> {
+        let task = current.id;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.emit(
             EventKind::TaskChanged,
@@ -1653,8 +1714,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "item": desk.0, "kind": kind, "task": task.0 }),
             )?;
         }
-        self.after_finishing(&current)?;
-        Ok(())
+        self.after_finishing(current)
     }
 
     /// The owner drops a task, giving no reason: work that will not be done (ADR 0124; see
@@ -1821,7 +1881,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the tick ----------------------------------------------------------------------------
 
-    /// The engine's regular pass (every 30 seconds), in the spec's order: timers, routines and
+    /// The engine's regular pass (every 30 seconds), in the spec's order: routines and
     /// check-backs, ended and vanished turns, retries, starts, stuck work, finished waits. A
     /// late tick runs once.
     pub fn tick(&self) -> Done<TickReport> {
@@ -1836,7 +1896,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(report);
         }
 
-        // 1. Timers that are due raise their wakes; a late one fires once.
+        // 1. Routines that are due fire; a late one fires once.
         self.fire_due(now, &mut report)?;
         // Check-backs whose time came wake their member, while the task is still open.
         self.fire_check_backs(now, &mut report)?;
@@ -1915,16 +1975,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(report)
     }
 
-    /// Due timers raise their wakes and due routines fire, each once however late (tick step 1).
+    /// Due routines fire, each once however late, and count on from now (tick step 1).
     fn fire_due(&self, now: Millis, report: &mut TickReport) -> Done<()> {
-        for timer in self.store.timers()? {
-            if timer.due_at <= now {
-                self.wake_held_lock(timer.member, None, timer.reason)?;
-                self.store.set_timer_due(timer.id, now + timer.every_ms)?;
-                report.timers += 1;
-            }
-        }
-        // Routines whose time came fire once, however late, and count on from now.
         for mut routine in self.store.routines()? {
             if !routine.enabled || routine.next_due_at > now {
                 continue;
@@ -2174,7 +2226,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
+        // A downtime turn queued before a round of the experiment began waits for its close
+        // (ADR 0142, amended 2026-11-01).
+        let round = self.round_running()?;
         for run in queued {
+            if round && self.reason_for(&run)? == WakeReason::Downtime.name() {
+                continue;
+            }
             let Some(run) = self.task_still_open(run, &tasks)? else {
                 continue;
             };
@@ -2216,10 +2274,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let facts = turns::Facts {
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
-                free_turns_today: if in_a_world {
+                free_turns_wasted: if in_a_world {
                     0
                 } else {
-                    starts.free_turns_of(&run)
+                    starts.free_turns_wasted_of(&run)
                 },
             };
             let (brain, amount) = match turns::place(brain, &facts) {
@@ -2236,7 +2294,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.trip(&ran)?;
                 return Ok(started);
             }
-            starts.started(member.id, brain, now, in_a_world);
+            starts.started(member.id, now);
             let placed = Placement {
                 brain,
                 amount,
@@ -2358,8 +2416,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
-    /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
-    /// last question waits; a store failure.
+    /// [`Refusal::TurnOver`] for a turn that has ended, [`Refusal::AlreadyAsked`] while its
+    /// last question waits, or [`Refusal::Answered`] once the owner has answered a question
+    /// about the item in words; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<Asked> {
         self.ask_owner_citing(run, text, &[])
     }
@@ -2383,8 +2442,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
-        turn.task
+        let task = turn
+            .task
             .ok_or(EngineError::Unknown("task for this turn"))?;
+        // Once answered in words, the item's answer is acted on, not asked for again (ADR 0142,
+        // amended 2026-11-01).
+        self.not_asked_again(task)?;
         // There is no chain: a question goes to the owner's desk (ADR 0142).
         let text = self.with_evidence(&text, cited)?;
         let checked = review::checked(&text, lab.as_deref());
@@ -2629,6 +2692,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 // and a blocked item is woken only by the owner's words (ADR 0142, amended
                 // 2026-10-31).
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                // Answered in words, the item is not asked about again (ADR 0142, amended
+                // 2026-11-01).
+                self.keep_the_answer(task.id, words)?;
                 let holder = task.holder();
                 let to = if self.loop_holds(&task)? {
                     holder.or(found.member)
@@ -3495,8 +3561,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                       // Turns of judgment that wait for budget (ADR 0131): none is dropped.
                       "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_budget(&r.end_reason)).count(),
-                      // Turns of work that wait for the day to turn, their member having taken
-                      // its day's turns on the house's own models (ADR 0133).
+                      // Turns of work that wait for the day to turn, their member's turns on
+                      // the house's own models having shown nothing too long (ADR 0133).
                       "capped": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_cap(&r.end_reason)).count() },
             "members": members,
@@ -3554,7 +3620,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
             shown.push(json!({
-                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
+                "id": m.id.0, "name": m.name, "look": m.look,
                 "paused": m.paused, "slots": m.slots,
                 // On furlough (ADR 0118): when it began, and when it ended if it has.
                 "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,

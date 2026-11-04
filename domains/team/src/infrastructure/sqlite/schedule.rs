@@ -1,62 +1,15 @@
-//! Timers, routines and check-backs in HQ's store.
+//! Routines and check-backs in HQ's store.
 
 use rusqlite::params;
 
 use super::{SqliteTeamStore, backend};
-use crate::application::ports::{NewRoutine, Stored, Timer};
+use crate::application::ports::{NewRoutine, Stored};
 use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::{
     CheckBack, CheckBackStatus, GoalId, MemberId, Millis, ProjectId, Routine, RoutineId, TaskId,
-    WakeReason,
 };
 
 impl ScheduleStore for SqliteTeamStore {
-    fn add_timer(
-        &self,
-        member: MemberId,
-        reason: WakeReason,
-        due_at: Millis,
-        every_ms: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO timers (member, reason, due_at, every_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![member.0, reason.name(), due_at, every_ms],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn timers(&self) -> Stored<Vec<Timer>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, member, reason, due_at, every_ms FROM timers ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                let reason: String = r.get(2)?;
-                Ok(Timer {
-                    id: r.get(0)?,
-                    member: MemberId(r.get(1)?),
-                    reason: WakeReason::from_name(&reason).unwrap_or(WakeReason::LeadReview),
-                    due_at: r.get(3)?,
-                    every_ms: r.get(4)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE timers SET due_at = ?2 WHERE id = ?1",
-                params![id, due_at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId> {
         let conn = self.conn()?;
         conn.execute(

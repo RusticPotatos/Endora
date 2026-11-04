@@ -141,6 +141,9 @@ pub struct Review {
 pub struct Finished {
     /// Tasks that reached done.
     pub done: usize,
+    /// Of those, how many HQ closed with nothing checked (a loop worked alone, no branch):
+    /// completed, not verified (ADR 0124, amended 2026-11-03).
+    pub unverified: usize,
     /// Everything ever spent on turns on those tasks.
     pub done_spent: Micros,
     /// Tasks that were dropped.
@@ -343,6 +346,7 @@ fn spent_on(runs: &[Run], task: TaskId) -> Micros {
 
 fn finished(record: &Record<'_>, window: &Window) -> Finished {
     let mut done = HashSet::new();
+    let mut unverified = HashSet::new();
     let mut dropped = HashSet::new();
     for event in record.events.iter().filter(|e| window.holds(e.at)) {
         let Some(task) = task_of(event) else {
@@ -351,6 +355,9 @@ fn finished(record: &Record<'_>, window: &Window) -> Finished {
         match status_of(event) {
             Some(TaskStatus::Done) => {
                 done.insert(task);
+                if event.data["unverified"] == true {
+                    unverified.insert(task);
+                }
             }
             Some(TaskStatus::Dropped) => {
                 dropped.insert(task);
@@ -360,6 +367,7 @@ fn finished(record: &Record<'_>, window: &Window) -> Finished {
     }
     Finished {
         done: done.len(),
+        unverified: unverified.len(),
         done_spent: done.iter().map(|t| spent_on(record.runs, *t)).sum(),
         dropped: dropped.len(),
         dropped_spent: dropped.iter().map(|t| spent_on(record.runs, *t)).sum(),
@@ -787,6 +795,7 @@ impl Scorecard {
             },
             "finished": {
                 "done": self.finished.done,
+                "unverified": self.finished.unverified,
                 "done_spent": self.finished.done_spent,
                 "per_done": self.finished.per_done(),
                 "dropped": self.finished.dropped,

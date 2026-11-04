@@ -254,18 +254,6 @@ fn ledger() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// What the bench paid Anthropic (blocking): counted after any renewal due, so it lands in the
-/// cycle it was spent in. The bench has no HQ turn to tell the owner through.
-pub(super) fn after_bench_charge(state: &AppState, micros: i64) {
-    let _held = ledger();
-    renew_if_due(state, state.clock.now().unix_millis());
-    if micros > 0 {
-        if let Err(e) = state.store.add_provider_spent("anthropic", micros) {
-            eprintln!("credits: could not count {micros} micros the bench paid Anthropic: {e}");
-        }
-    }
-}
-
 fn after_charge_at(state: &AppState, run: i64, model: &str, micros: i64, now: i64) {
     let provider = if model.starts_with("claude-") {
         "anthropic"
@@ -532,7 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn claudes_balance_is_the_owners_figure_less_what_the_relay_paid_and_warns_once() {
-        let (hq_url, to_hq) = hq_as(0, "developer");
+        let (hq_url, to_hq) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         // Before the owner enters a figure there is nothing to show or warn of.
         after_charge(&state, 7, "claude-haiku-5-5", 2_000_000);
@@ -572,7 +560,7 @@ mod tests {
         // Review of 30 Oct: an estimate entered before grants existed has no split; a grant set
         // over it without the bought figure would have turned bought credit into this month's
         // grant, and a false low warning would follow at renewal.
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         let now = 1_793_000_000_000;
         apply(
@@ -611,7 +599,7 @@ mod tests {
         // without an older estimate. The owner's own entry, bought $0, is taken.
         let now = 1_793_000_000_000;
         let first = |c: &Change| {
-            let (hq_url, _) = hq_as(0, "developer");
+            let (hq_url, _) = hq_as(0);
             let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
             apply(&state, c, now).map(|()| shown(&state, now))
         };
@@ -628,7 +616,7 @@ mod tests {
             ..Change::default()
         };
         assert!(first(&only_grant).is_err(), "asks for the bought figure");
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         apply(
             &state,
@@ -654,7 +642,7 @@ mod tests {
         assert_eq!(shown["claude"]["purchased_left"], 0, "{shown}");
         assert_eq!(shown["claude_renews_on"], 18, "{shown}");
         // Once a grant is kept, a later balance alone needs no bought figure.
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         apply(&state, &owners, now).unwrap();
         apply(
@@ -694,7 +682,7 @@ mod tests {
     fn a_renewal_seen_from_the_console_waits_for_the_ledger() {
         // Review of 31 Oct: the console's view renewed outside the lock, so a charge counted at
         // the same time could be erased or counted twice.
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         let now = 1_793_000_000_000;
         apply(
@@ -719,7 +707,7 @@ mod tests {
     fn deepseeks_balance_is_asked_before_the_ledger_is_taken() {
         // Review of 31 Oct: a slow DeepSeek held up every Claude charge behind the global lock.
         use endora_capabilities::model_lists::ModelListRepository as _;
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let (deepseek_url, asked) = fake(Arc::new(|_, _| {
             (
                 200,
@@ -756,7 +744,7 @@ mod tests {
     #[tokio::test]
     async fn the_owners_change_never_blocks_the_async_thread() {
         // Review of 31 Oct: `change` took the ledger, a std mutex, on the async thread.
-        let (hq_url, _) = hq_as(0, "developer");
+        let (hq_url, _) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         let (tx, rx) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
@@ -789,7 +777,7 @@ mod tests {
     #[test]
     fn a_monthly_grant_is_spent_first_and_whole_again_on_the_owners_renewal_day() {
         use credits::{DAY_MS, days_from_civil};
-        let (hq_url, to_hq) = hq_as(0, "developer");
+        let (hq_url, to_hq) = hq_as(0);
         // The owner is five hours behind UTC.
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9")
             .with_time_zone(endora_infrastructure::TimeZone::fixed(-300));
@@ -898,7 +886,7 @@ mod tests {
     #[test]
     fn hq_is_told_the_grant_left_and_the_next_renewal_and_never_bought_credit() {
         use credits::{DAY_MS, days_from_civil};
-        let (hq_url, to_hq) = hq_as(0, "developer");
+        let (hq_url, to_hq) = hq_as(0);
         let state = super::super::relay::tests::node(&hq_url, "http://127.0.0.1:9");
         let said = |seen: &super::super::relay::tests::Seen| {
             seen.lock()
@@ -939,7 +927,7 @@ mod tests {
     #[tokio::test]
     async fn deepseeks_balance_is_read_from_deepseek_and_warns_when_low() {
         use endora_capabilities::model_lists::ModelListRepository as _;
-        let (hq_url, to_hq) = hq_as(0, "developer");
+        let (hq_url, to_hq) = hq_as(0);
         let (deepseek_url, asked) = fake(Arc::new(|path, _| match path {
             "/user/balance" => (
                 200,

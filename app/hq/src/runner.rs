@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::ports::{StoreError, TeamStore as _};
-use endora_team::domain::{Exit, RunId};
+use endora_team::domain::{Exit, RunId, TaskId};
 use endora_team::infrastructure::RemoteRunner;
 
 use crate::api::{State, bearer, same};
@@ -29,6 +29,7 @@ pub(crate) fn routes(state: State) -> Router<State> {
         .route("/v1/runner/next", post(next))
         .route("/v1/runner/{run}/ended", post(ended))
         .route("/v1/runner/stops", get(stops))
+        .route("/v1/runner/sandboxes", post(sandboxes))
         .route_layer(middleware::from_fn_with_state(state, signed_by_the_runner))
 }
 
@@ -139,7 +140,6 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "lease": handed.lease,
             "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
-            "role": member.as_ref().map_or("", |m| m.role.name()),
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),
@@ -147,6 +147,14 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             "prompt_budget": endora_team::domain::handover::prompt_budget(
                 on.unwrap_or(endora_team::domain::Brain::Local)
             ),
+            // How the worker counts it: the conversation once, or every call summed.
+            "budget_counts": if endora_team::domain::handover::counts_conversation(
+                on.unwrap_or(endora_team::domain::Brain::Local)
+            ) {
+                "conversation"
+            } else {
+                "every_call"
+            },
             // How hard Claude tries: its model's own (the roles that named one are gone).
             "effort": serde_json::Value::Null,
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.
@@ -294,6 +302,39 @@ pub(crate) async fn check_done(
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Sandboxes {
+    /// The items whose sandboxes the runner keeps.
+    items: Vec<i64>,
+}
+
+/// The most items the runner may ask about at once.
+const SANDBOXES_AT_MOST: usize = 1000;
+
+/// Of the items whose sandboxes the runner keeps between their turns (ADR 0142, amended
+/// 2026-11-01), the ones to go on keeping: those open. The runner lets the rest go.
+async fn sandboxes(Extract(state): Extract<State>, Json(req): Json<Sandboxes>) -> Response {
+    if state.hq.runner().remote().is_none() {
+        return no_runner();
+    }
+    if req.items.len() > SANDBOXES_AT_MOST {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "too many items at once" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+    match tokio::task::spawn_blocking(move || hq.sandboxes_to_keep(&items)).await {
+        Ok(Ok(keep)) => {
+            let keep: Vec<i64> = keep.into_iter().map(|t| t.0).collect();
+            Json(json!({ "keep": keep })).into_response()
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

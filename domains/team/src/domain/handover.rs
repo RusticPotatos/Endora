@@ -41,6 +41,17 @@ pub const fn prompt_budget(brain: Brain) -> usize {
     }
 }
 
+/// Whether a turn on `brain` holds [`prompt_budget`] to its conversation, each byte counted once,
+/// rather than to every call's prompt summed (the owner, 1 Nov). Every call resends the
+/// conversation so far; Claude's and DeepSeek's providers cache the part a call repeats, so a
+/// resend costs little, and the sum counted Rae's 50 KB conversation on 955 as 238 KB. The
+/// house's own models on the NAS and the Mac read every resend again, slowly, so their turns
+/// still sum them.
+#[must_use]
+pub const fn counts_conversation(brain: Brain) -> bool {
+    !matches!(brain, Brain::Local | Brain::Mac)
+}
+
 /// About how many prompt tokens [`prompt_budget`] comes to.
 #[must_use]
 pub const fn prompt_budget_tokens(brain: Brain) -> i64 {
@@ -302,9 +313,14 @@ impl KeptWork {
         } else {
             "submitted"
         };
+        // D27 of round 3: an empty sandbox read as an offline one, and the item was blocked.
+        // Since round 4 the sandbox keeps the item's work between turns (ADR 0142, amended
+        // 2026-11-01); the kept branch is where the work is when it does not.
         format!(
-            "Its work so far is on {} at {at} ({what}): start with repo_checkout with branch {} \
-             and go on from it; do not start again.\n",
+            "Your sandbox keeps the item's work between turns; /work/repo is there if a turn \
+             checked it out. Its work so far is kept on {} at {at} ({what}) too: if /work/repo \
+             is not there, start with repo_checkout with branch {} and go on from it; do not \
+             start again.\n",
             self.branch, self.branch
         )
     }
@@ -470,6 +486,15 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_brain_counts_its_conversation_once_and_a_house_model_every_call() {
+        for brain in [Brain::Haiku, Brain::Sonnet, Brain::Opus, Brain::DeepSeek] {
+            assert!(counts_conversation(brain), "{brain:?}");
+        }
+        assert!(!counts_conversation(Brain::Local));
+        assert!(!counts_conversation(Brain::Mac));
+    }
+
+    #[test]
     fn only_a_worker_turn_that_read_near_its_budget_ran_out_of_room() {
         assert!(out_of_room(Brain::Local, false, 30_000));
         assert!(!out_of_room(Brain::Local, false, 29_999));
@@ -529,8 +554,15 @@ mod tests {
         for brain in [Brain::Local, Brain::Sonnet] {
             let told = compose(&h, chars_for(brain));
             let line = told.lines().nth(1).unwrap_or("");
+            // D27 of round 3: Bo met an empty sandbox, ran `git init`, and took the failures
+            // for an offline one. Since round 4 the sandbox keeps the item's work (ADR 0142,
+            // amended 2026-11-01): the line says so first, then where else the work is kept.
             assert!(
-                line.starts_with("Its work so far is on hq/task-7-gluetun at 3c1cc497e55d"),
+                line.starts_with(
+                    "Your sandbox keeps the item's work between turns; /work/repo is there if a \
+                     turn checked it out. Its work so far is kept on hq/task-7-gluetun at \
+                     3c1cc497e55d"
+                ),
                 "{told}"
             );
             assert!(

@@ -1,7 +1,7 @@
 //! HQ's model relay (ADR 0102, phase 4): the only way a team member's turn reaches a model.
 //! The worker presents its turn's token as its API key; the relay asks HQ whose turn that is,
-//! its member's role and what it may still spend. It passes on only a call it can meter, with
-//! a model the role may use; counts the prompt first (free) and takes its cost off; caps the
+//! its member's brain and what it may still spend. It passes on only a call it can meter, with
+//! a model the brain allows; counts the prompt first (free) and takes its cost off; caps the
 //! reply to what is left; adds the owner's Anthropic key (which never leaves the node); and
 //! tells HQ what the call cost. A turn's calls go one at a time, each after the one before was
 //! charged. A turn past its budget is stopped by HQ, and its token then opens nothing here
@@ -19,8 +19,8 @@ use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
     Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
-    betas_passed, cost, counted, for_claude_code, may_use_as, most_a_turn_as, price_of,
-    prompt_cost, send, send_local, send_metered, unmetered,
+    betas_passed, cost, counted, for_claude_code, may_use, most_a_turn, price_of, prompt_cost,
+    send, send_local, send_metered, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -79,11 +79,10 @@ pub(super) fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option
         .filter(|k| !k.is_empty())
 }
 
-/// Whose turn a token is: its run, its member's name and role, and what it may still spend.
+/// Whose turn a token is: its run, its member's name, and what it may still spend.
 pub(super) struct Turn {
     pub(super) run: i64,
     pub(super) member: String,
-    pub(super) role: String,
     pub(super) left: i64,
     /// The task the turn is on, as HQ says (ADR 0115): what the wing's branches are named by.
     pub(super) task: Option<i64>,
@@ -101,16 +100,20 @@ pub(super) struct Turn {
     /// nothing: Endora's worker.
     pub(super) claude_code: bool,
     /// Whether the member changes the lab, as HQ says (ADR 0120): only the engineering wing's
-    /// lead and developers are offered and run a branch's submission. An older HQ says nothing,
-    /// and its role alone decides, as before.
+    /// members are offered and run a branch's submission. An older HQ says nothing: the turn
+    /// may submit.
     pub(super) wing: Option<bool>,
     /// The node's tools the turn may use, when HQ narrows them (ADR 0115, amended: the check
-    /// after a deploy reads the lab's health, logs and metrics alone). `None`: what its role
-    /// and brain give it, as before.
+    /// after a deploy reads the lab's health, logs and metrics alone). `None`: every tool, as
+    /// its brain allows.
     pub(super) only: Option<Vec<String>>,
     /// The node's tools HQ refuses the turn whatever else it may use: `restart_container` on
     /// a task that says the lab is to be left as it is. Empty from an older HQ.
     pub(super) never: Vec<String>,
+    /// The repository outside the lab the turn's work is in, as HQ says (ADR 0115, amended
+    /// 2026-11-01): `repo_checkout` and `repo_submit` work in the node's mirror of it, not the
+    /// fork's. `None` from an older HQ, or for work in the lab.
+    pub(super) repo: Option<String>,
 }
 
 impl Turn {
@@ -266,7 +269,6 @@ pub(super) async fn turn_of(
         Ok(v) => Ok(Turn {
             run: v["run"].as_i64().unwrap_or(0),
             member: v["member"].as_str().unwrap_or("").to_owned(),
-            role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
             task: v["task"].as_i64(),
             token: presented,
@@ -285,6 +287,11 @@ pub(super) async fn turn_of(
                 .flatten()
                 .filter_map(|n| n.as_str().map(str::to_owned))
                 .collect(),
+            repo: v["repo"]
+                .as_str()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,
@@ -427,10 +434,6 @@ pub(super) async fn messages(
     body: Bytes,
 ) -> Response {
     let token = token_of(&headers);
-    // The bench's credential is no turn of HQ's (ADR 0123): its calls never reach HQ.
-    if let Some(bench) = super::bench::opened_by(&state, &token) {
-        return super::bench::messages(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -465,11 +468,11 @@ pub(super) async fn messages(
             &format!("{model} is not a model the team may use"),
         );
     };
-    if let Err(why) = may_use_as(&turn.role, &turn.brain, &model) {
+    if let Err(why) = may_use(&turn.brain, &model) {
         return refuse(StatusCode::FORBIDDEN, "permission_error", &why);
     }
-    // Never more than the role's turn may spend (ADR 0111), whatever HQ says is left.
-    let left = turn.left.min(most_a_turn_as(&turn.role, &turn.brain));
+    // Never more than a turn on its brain may spend (ADR 0111), whatever HQ says is left.
+    let left = turn.left.min(most_a_turn(&turn.brain));
     let spent = || {
         refuse(
             StatusCode::PAYMENT_REQUIRED,
@@ -678,9 +681,6 @@ pub(super) async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(bench) = super::bench::opened_by(&state, &token_of(&headers)) {
-        return super::bench::count_tokens(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -844,7 +844,7 @@ pub(super) async fn chat_completions(
                 &format!("{} is not a model the team may use", turn.brain),
             );
         };
-        let left = turn.left.min(most_a_turn_as(&turn.role, &turn.brain));
+        let left = turn.left.min(most_a_turn(&turn.brain));
         let most = affordable_output(price, left);
         if most == 0 {
             return refuse_openai(
@@ -1039,26 +1039,28 @@ pub(super) mod tests {
     /// HQ, knowing one turn (token `good`, run 7, a developer's thinking with Claude) with
     /// `left` micros to spend.
     fn hq(left: i64) -> (String, Seen) {
-        hq_thinking(left, "developer", true)
+        hq_thinking(left, true)
     }
 
-    /// HQ, knowing one turn (Linus's) of a member in `role`, on the house's model.
-    pub(in crate::api) fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
-        hq_thinking(left, role, false)
+    /// HQ, knowing one turn (Linus's), on the house's model.
+    pub(in crate::api) fn hq_as(left: i64) -> (String, Seen) {
+        hq_thinking(left, false)
     }
 
-    /// HQ, knowing one turn (Linus's) of a member in `role`, thinking with Claude when
-    /// `cloud`, as HQ says it (ADR 0109).
-    pub(in crate::api) fn hq_thinking(
-        left: i64,
-        role: &'static str,
-        cloud: bool,
-    ) -> (String, Seen) {
-        fake(Arc::new(move |path, body| match path {
+    /// HQ, knowing one turn (Linus's), thinking with Claude when `cloud`, as HQ says it
+    /// (ADR 0109).
+    pub(in crate::api) fn hq_thinking(left: i64, cloud: bool) -> (String, Seen) {
+        hq_on(left, cloud, "local")
+    }
+
+    /// HQ, knowing one turn (Linus's) of a member whose brain is `brain`.
+    pub(in crate::api) fn hq_on(left: i64, cloud: bool, brain: &'static str) -> (String, Seen) {
+        fake(Arc::new(move |path, body| {
+            match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": role, "left": left, "cloud": cloud })
+                json!({ "run": 7, "member": "Linus", "left": left, "cloud": cloud, "brain": brain })
                     .to_string(),
             ),
             "/v1/team/turn" => (
@@ -1067,6 +1069,7 @@ pub(super) mod tests {
                 r#"{"error":"no such turn"}"#.to_owned(),
             ),
             _ => (200, "application/json", r#"{"may_go_on":true}"#.to_owned()),
+        }
         }))
     }
 
@@ -1085,8 +1088,7 @@ pub(super) mod tests {
             (
                 200,
                 "application/json",
-                json!({ "run": 7, "role": "developer", "left": left.load(SeqCst), "cloud": true })
-                    .to_string(),
+                json!({ "run": 7, "left": left.load(SeqCst), "cloud": true }).to_string(),
             )
         }))
     }
@@ -1432,7 +1434,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn the_ceo_thinks_with_opus_a_dollar_a_turn_and_everyone_else_forty_cents() {
+    async fn the_member_who_thinks_with_opus_has_a_dollar_a_turn_and_everyone_else_forty_cents() {
         let (upstream, to_anthropic) = anthropic();
         let call = |model: &str| {
             ask(
@@ -1440,10 +1442,10 @@ pub(super) mod tests {
                 json!({ "model": model, "max_tokens": 200_000, "messages": [] }),
             )
         };
-        // HQ says two dollars are left: the CEO's call is held to one, the lead's to forty
-        // cents, each less its prompt (1k tokens in).
-        let (ceo, to_hq) = hq_thinking(2_000_000, "ceo", true);
-        let res = super::super::team_relay(node(&ceo, &upstream))
+        // HQ says two dollars are left: the Opus member's call is held to one, a Sonnet
+        // member's to forty cents, each less its prompt (1k tokens in).
+        let (opus, to_hq) = hq_on(2_000_000, true, "claude-opus-5-5");
+        let res = super::super::team_relay(node(&opus, &upstream))
             .oneshot(call("claude-opus-5-5"))
             .await
             .unwrap();
@@ -1458,13 +1460,13 @@ pub(super) mod tests {
             vec![6_000],
             "1k in at $4 and 100 out at $20 a million"
         );
-        let (lead, _) = hq_thinking(2_000_000, "lead", true);
-        let app = super::super::team_relay(node(&lead, &upstream));
+        let (sonnet, _) = hq_on(2_000_000, true, "claude-sonnet-5-5");
+        let app = super::super::team_relay(node(&sonnet, &upstream));
         let res = app.clone().oneshot(call("claude-opus-5-5")).await.unwrap();
         assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "Opus is the CEO's alone"
+            "Opus is the Opus member's alone"
         );
         let res = app.oneshot(call("claude-sonnet-5-5")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -1476,7 +1478,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn opus_is_the_ceos_alone_and_a_researcher_thinks_with_haiku() {
+    async fn opus_is_the_opus_members_alone_and_reaches_anthropic_for_no_one_else() {
         let (upstream, to_anthropic) = anthropic();
         let call = |model: &str| {
             ask(
@@ -1484,22 +1486,20 @@ pub(super) mod tests {
                 json!({ "model": model, "max_tokens": 10, "messages": [] }),
             )
         };
-        let (developer, _) = hq_thinking(400_000, "developer", true);
-        let res = super::super::team_relay(node(&developer, &upstream))
-            .oneshot(call("claude-opus-5-5"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
-        let (researcher, _) = hq_thinking(400_000, "researcher", true);
-        let app = super::super::team_relay(node(&researcher, &upstream));
-        let res = app
-            .clone()
-            .oneshot(call("claude-sonnet-5-5"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        for brain in ["claude-haiku-5-5", "claude-sonnet-5-5", "local"] {
+            let (hq_url, _) = hq_on(400_000, true, brain);
+            let res = super::super::team_relay(node(&hq_url, &upstream))
+                .oneshot(call("claude-opus-5-5"))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{brain}");
+        }
         assert!(to_anthropic.lock().unwrap().is_empty());
-        let res = app.oneshot(call("claude-haiku-5-5")).await.unwrap();
+        let (haiku, _) = hq_on(400_000, true, "claude-haiku-5-5");
+        let res = super::super::team_relay(node(&haiku, &upstream))
+            .oneshot(call("claude-haiku-5-5"))
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
 
@@ -1543,7 +1543,7 @@ pub(super) mod tests {
     async fn a_turn_on_the_houses_model_never_reaches_anthropic() {
         // HQ says the member thinks at home: what its turn has read (a log, a queue) may be
         // Confidential, so none of it goes to Claude, whatever the worker sends.
-        let (local, _) = hq_as(400_000, "lead");
+        let (local, _) = hq_as(400_000);
         let (upstream, to_anthropic) = anthropic();
         let app = super::super::team_relay(node(&local, &upstream));
         let call = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [] });
@@ -1591,7 +1591,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_cached_call_passes_with_its_effort_and_is_charged_at_the_cache_prices() {
-        let (hq_url, to_hq) = hq_thinking(1_000_000, "ceo", true);
+        let (hq_url, to_hq) = hq_on(1_000_000, true, "claude-opus-5-5");
         let (upstream, to_anthropic) = anthropic_caching(20_000, 2_000);
         let app = super::super::team_relay(node(&hq_url, &upstream));
         let call = json!({ "model": "claude-opus-5-5", "max_tokens": 4096,
@@ -1700,7 +1700,7 @@ pub(super) mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") || body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": left,
+                json!({ "run": 7, "member": "Rae", "left": left,
                         "cloud": true, "brain": "claude-haiku-5-5",
                         "runtime": if body.contains("\"cc\"") { "claude-code" } else { "worker" } })
                 .to_string(),
@@ -1812,7 +1812,7 @@ pub(super) mod tests {
         // As `endora-worker` sends a round on a cloud brain: its bearer token, the version,
         // its instructions as `system`, the team's tools in Anthropic's form, and a tool's
         // use and result in the conversation.
-        let (hq_url, to_hq) = hq_thinking(400_000, "lead", true);
+        let (hq_url, to_hq) = hq_thinking(400_000, true);
         let (upstream, to_anthropic) = anthropic();
         let app = super::super::team_relay(node(&hq_url, &upstream));
         let round = json!({
@@ -1942,7 +1942,7 @@ pub(super) mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Sol", "role": "developer", "left": left,
+                json!({ "run": 7, "member": "Sol", "left": left,
                         "cloud": true, "brain": "deepseek-flash" })
                 .to_string(),
             ),
@@ -2244,14 +2244,14 @@ pub(super) mod tests {
             "/v1/team/turn" if body.contains("\"mac-turn\"") => (
                 200,
                 "application/json",
-                json!({ "run": 8, "member": "Linus", "role": "developer", "left": 0,
+                json!({ "run": 8, "member": "Linus", "left": 0,
                         "cloud": false, "brain": "mac" })
                 .to_string(),
             ),
             "/v1/team/turn" if body.contains("\"home-turn\"") => (
                 200,
                 "application/json",
-                json!({ "run": 9, "member": "Rae", "role": "developer", "left": 0,
+                json!({ "run": 9, "member": "Rae", "left": 0,
                         "cloud": false, "brain": "local" })
                 .to_string(),
             ),

@@ -422,6 +422,72 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
+    /// The owner names the repository outside the lab a project's work is done in (ADR 0115,
+    /// amended 2026-11-01), or (`None`) takes it away. Only a public GitHub address is kept, in
+    /// its one plain form, which is returned.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a project there is not; any other address, as
+    /// [`crate::domain::Refusal::Scenario`] with why; a store failure.
+    pub fn set_project_repo(&self, id: ProjectId, url: Option<&str>) -> Done<Option<String>> {
+        let _held = self.held();
+        let project = self.project(id)?;
+        let kept = url
+            .map(endora_kernel::lab::outside_repo)
+            .transpose()
+            .map_err(|why| EngineError::Refused(crate::domain::Refusal::Scenario(why)))?;
+        self.store
+            .set_setting(&projects::repo_key(id), kept.as_deref().unwrap_or(""))?;
+        self.emit(
+            EventKind::ProjectChanged,
+            json!({ "project": id.0, "title": project.title, "by": "owner", "what": "repo",
+                    "repo": kept }),
+        )?;
+        Ok(kept)
+    }
+
+    /// The repository outside the lab a project's work is done in, if the owner named one.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn project_repo(&self, id: ProjectId) -> Done<Option<String>> {
+        Ok(self
+            .store
+            .setting(&projects::repo_key(id))?
+            .filter(|url| !url.is_empty()))
+    }
+
+    /// The repository outside the lab `task` is done in: its project's, or the nearest
+    /// project's above it (a part of a piece of work is done where the whole is).
+    pub(super) fn outside_repo_of_task(&self, task: TaskId) -> Done<Option<String>> {
+        let mut at = self.store.task(task)?;
+        for _ in 0..16 {
+            let Some(t) = at else {
+                return Ok(None);
+            };
+            if let Some(project) = t.project {
+                return self.project_repo(project);
+            }
+            let Some(parent) = t.parent else {
+                return Ok(None);
+            };
+            at = self.store.task(parent)?;
+        }
+        Ok(None)
+    }
+
+    /// The repository outside the lab a turn's work is done in, for the node: it mirrors that
+    /// one, and `repo_checkout` and `repo_submit` work in it instead of the fork.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn outside_repo_of_run(&self, run: RunId) -> Done<Option<String>> {
+        let Some(task) = self.store.run(run)?.and_then(|r| r.task) else {
+            return Ok(None);
+        };
+        self.outside_repo_of_task(task)
+    }
+
     /// The tools a project's work is given, if the owner narrowed them.
     pub fn project_tools(&self, id: ProjectId) -> Done<Option<Vec<String>>> {
         Ok(projects::tools_read(

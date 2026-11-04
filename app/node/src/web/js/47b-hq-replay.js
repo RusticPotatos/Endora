@@ -13,7 +13,12 @@ const REPLAY = {
   at: 0,               // which of them is shown
   error: "",
   given: false,        // whether what each turn was given opens unfolded (from a task's turn)
+  timer: null,         // the next read of a turn that is still live
 };
+
+// A turn still running is read again this often while its replay is open (ADR 0129, amended
+// 2026-11-01): the worker tells its conversation after every model round.
+const REPLAY_LIVE_EVERY = 4000;
 
 // A long excerpt or post is folded past this many characters: its start shows, the rest opens.
 const REPLAY_FOLD = 280, REPLAY_START = 160;
@@ -36,9 +41,28 @@ async function loadReplay(id) {
       if (!same) REPLAY.at = Math.max(0, REPLAY.runs.length - 1);
     }
   } catch (e) {
-    REPLAY.runs = [];
-    REPLAY.error = "HQ did not answer: " + String((e && e.message) || e);
+    // A live turn read again keeps what it shows: the next read tries again.
+    if (!same || !REPLAY.runs || !REPLAY.runs.length) {
+      REPLAY.runs = [];
+      REPLAY.error = "HQ did not answer: " + String((e && e.message) || e);
+    }
   }
+  replayWatch();
+}
+
+// While a turn shown is live, read it again in a few seconds, for as long as its replay is open;
+// once every turn shown has ended, stop.
+function replayWatch() {
+  clearTimeout(REPLAY.timer);
+  REPLAY.timer = null;
+  if (!(REPLAY.runs || []).some((r) => r && r.live)) return;
+  const id = `${REPLAY.kind}-${REPLAY.id}`;
+  REPLAY.timer = setTimeout(async () => {
+    REPLAY.timer = null;
+    if (NAV.v !== "replay" || NAV.id !== id) return;
+    await loadReplay(id);
+    if (NAV.v === "replay" && NAV.id === id) render();
+  }, REPLAY_LIVE_EVERY);
 }
 
 // Seconds as a turn's length reads: 45s, 3m 05s, 1h 02m.
@@ -147,15 +171,25 @@ function replayParts(text) {
   return parts.map((p) => ({ kind: p.kind, name: p.name, body: p.lines.join("\n").replace(/^\n+|\n+$/g, "") }));
 }
 
-// What the model and the calls said between them, in order: the turn's conversation.
+// What the model and the calls said between them, in order: the turn's conversation. What the
+// model thought before a step (ADR 0129, amended 2026-11-01) is folded under that step.
 function replayTalk(t, member) {
   const who = { user: "told", system: "rules", assistant: member ? member.name : "model", thinking: "thought", call: "call", result: "result", note: "note" };
   const tags = { user: "brief", system: "brief", assistant: "post", thinking: "note", call: "call", result: "call", note: "note" };
-  const parts = replayParts(t.text).filter((p) => p.kind !== "tools").map((p) => {
+  const steps = [];
+  let thought = "";
+  for (const p of replayParts(t.text).filter((q) => q.kind !== "tools")) {
+    if (p.kind === "thinking") { thought = thought ? `${thought}\n${p.body}` : p.body; continue; }
+    steps.push(Object.assign(p, { thought }));
+    thought = "";
+  }
+  if (thought) steps.push({ kind: "thinking", name: "", body: thought, thought: "" });
+  const parts = steps.map((p) => {
     const long = p.kind === "user" || p.kind === "system";
+    const fold = p.thought ? `<details class="hq-replay-thought"><summary>Thinking</summary><span class="hq-replay-said">${esc(p.thought)}</span></details>` : "";
     const body = long
-      ? `<details class="hq-replay-told"><summary>${esc(p.kind === "system" ? "The rules it was given" : "The briefing it was given")}</summary><pre>${esc(p.body)}</pre></details>`
-      : `${p.kind === "call" && p.name ? `<b>${esc(p.name)}</b><br>` : ""}${replayText(p.body)}`;
+      ? `<details class="hq-replay-told"><summary>${esc(p.kind === "system" ? "The rules it was given" : "The briefing it was given")}</summary><pre>${esc(p.body)}</pre></details>${fold}`
+      : `${p.kind === "call" && p.name ? `<b>${esc(p.name)}</b><br>` : ""}${replayText(p.body)}${fold}`;
     const label = p.kind === "call" ? "asked" : p.kind === "result" && p.name ? "refused" : (who[p.kind] || esc(p.kind));
     const tag = p.kind === "result" && p.name ? "bad" : (tags[p.kind] || "note");
     return `<li class="hq-replay-moment t-${tag}"><time></time><span class="hq-replay-tag">${esc(label)}</span><div class="hq-replay-body">${body}</div></li>`;
@@ -225,12 +259,13 @@ function replayGiven(r) {
 // A turn's header: who, why, what it came to, what it cost, how long.
 function replayHead(r) {
   const m = r.member, money = r.money || {}, tokens = r.tokens || {};
-  const who = m ? `${esc(m.name)} · ${esc(hqRole(m.role))}` : "someone no longer on the team";
+  const who = m ? esc(m.name) : "someone no longer on the team";
   const brain = m ? esc(m.brain_label || m.brain || "") : "";
   const ran = r.started_at ? replaySpan((r.ended_at || Date.now()) - r.started_at) : "";
   const cost = `${hqDollars(r.money && r.money.spent)} spent · ${hqDollars(money.reserved)} held · ${hqDollars(money.released)} released`;
   const input = (tokens.input || 0) + (tokens.cache_read || 0) + (tokens.cache_write || 0);
-  return `<div class="hq-replay-who">${replayFace(m)}<div><div class="hq-sel">R${Number(r.run)} · ${who}</div>
+  const live = r.live ? ` <span class="hq-tag hq-live" role="status">Live</span>` : "";
+  return `<div class="hq-replay-who">${replayFace(m)}<div><div class="hq-sel">R${Number(r.run)} · ${who}${live}</div>
     <div class="hq-who">${r.task ? hqKey(r.task) + " · " : ""}${esc(String(r.status || "").replace(/_/g, " "))}${r.label ? ` · <b>${esc(r.label)}</b>` : ""}${r.attempts > 1 ? ` · ${Number(r.attempts)} attempts` : ""}</div></div></div>
     <dl class="hq-kv">
       <dt>Woken</dt><dd>${esc(String(r.reason || "?").replace(/_/g, " "))}</dd>
@@ -244,7 +279,10 @@ function replayHead(r) {
 }
 
 function viewReplay() {
-  const back = `<div class="hq-row"><button class="hq-btn" data-act="go:hq">◀ Back to HQ</button></div>`;
+  // Opened from a line of Activity, it goes back to that place (the owner, 1 Nov).
+  const back = HQ.back
+    ? `<div class="hq-row"><button class="hq-btn" data-act="hq:back">◀ Back to Activity</button></div>`
+    : `<div class="hq-row"><button class="hq-btn" data-act="go:hq">◀ Back to HQ</button></div>`;
   const title = REPLAY.kind === "task" ? `Replay ${hqKey(REPLAY.id)}` : REPLAY.id ? `Replay R${REPLAY.id}` : "Replay";
   const head = `<div class="hq-bar"><h1>${esc(title)}</h1><span class="hq-grow"></span>${back}</div>`;
   const shell = (inner) => `<div class="hq hq-replay">${head}${inner}</div>`;
@@ -260,7 +298,7 @@ function viewReplay() {
   const moments = (r.moments || []).map((m) => replayMoment(m, r.member)).join("");
   const byTime = r.by_time ? `<p class="hq-note">This turn ran before HQ named each event's turn: what is marked "matched by time" was matched by its member, its task and when it happened.</p>` : "";
   return shell(`${task ? `<p class="hq-who">${hqKey(task.id)} · ${esc(task.title)}</p>` : ""}${steps}
-    <section class="hq-card">${replayHead(r)}</section>
+    <section class="hq-card">${replayHead(r)}${r.live ? `<p class="hq-note">This turn is still running: what it says is read again every few seconds until it ends.</p>` : ""}</section>
     ${replayGiven(r)}
     <section class="hq-card"><h2>What happened</h2>${byTime}<ol class="hq-replay-line">${moments || `<li class="hq-empty">Nothing recorded.</li>`}</ol></section>
     ${r.transcript ? replayTalk(r.transcript, r.member) : ""}

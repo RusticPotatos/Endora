@@ -12,7 +12,7 @@ use super::ports::{Clock, NewTask, Run, RunContext, TeamStore};
 use super::protocol::{call, tools};
 use crate::application::desk_ports::DeskStore;
 use crate::application::schedule_ports::ScheduleStore;
-use crate::domain::{Member, MemberId, Priority, Role, TaskId};
+use crate::domain::{Member, MemberId, Priority, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -36,9 +36,9 @@ fn started(clock: &Hands) -> (Hq<'_>, Setup, RunContext) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -103,6 +103,16 @@ fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
         .unwrap();
         let (_, thread) = reply.split_once("The thread, newest last:\n").unwrap();
         assert!(!thread.contains("Fixture post 000"));
+        // The post left out is said to be, and where it is: an owner's early word that falls
+        // out of the newest twelve was gone with no sign.
+        assert!(
+            thread.contains(&format!(
+                "Left out here, kept in the record: the thread's 1 older post (ask_record with \
+                 task {} finds it by its words).",
+                setup.task.0
+            )),
+            "{thread}"
+        );
         let positions: Vec<_> = (1..13)
             .map(|n| thread.find(&format!("Fixture post {n:03}")).unwrap())
             .collect();
@@ -138,13 +148,7 @@ fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
 #[test]
 fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
     const NEVER_BUILT: [&str; 2] = ["run_gate", "request_action"];
-    for role in [
-        Role::Ceo,
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
+    {
         let offered: Vec<String> = tools()
             .as_array()
             .unwrap()
@@ -154,7 +158,7 @@ fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
         for tool in NEVER_BUILT {
             assert!(
                 !offered.contains(&tool.to_owned()),
-                "{role:?} is offered {tool}"
+                "a member is offered {tool}"
             );
         }
     }
@@ -367,9 +371,9 @@ struct Tree {
 }
 
 fn tree(hq: &Hq<'_>) -> Tree {
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -548,15 +552,97 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
     }
 }
 
+// Set 4 and HQ's record before it (161 refusals in 116 turns): a member cites the document a
+// submit or a check wrote (`d241`), which is not evidence, and was told only "cite a receipt as
+// r12, a task as task 12", so it tried again, some turns several times, and some fell back to
+// citing the task itself. The refusal names the receipt that wrote the document: the submit's,
+// whose result names the document, or the check's. The rule of what counts is unchanged.
+#[test]
+fn a_document_cited_as_evidence_is_refused_naming_the_receipt_that_wrote_it() {
+    use crate::application::receipt_ports::ReceiptStore;
+    use crate::application::wing_ports::WingStore;
+    use crate::domain::{CallReceipt, Document};
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
+    let document = |title: &str| {
+        hq.store()
+            .add_document(&Document {
+                id: 0,
+                task: s.task,
+                run: Some(run.id),
+                title: title.to_owned(),
+                text: "the diff".to_owned(),
+                at: 1,
+            })
+            .unwrap()
+    };
+    let receipt = |tool: &str, args: &str, excerpt: &str| {
+        hq.store()
+            .add_call_receipt(&CallReceipt {
+                id: 0,
+                run: run.id,
+                member: me.id,
+                task: Some(s.task),
+                tool: tool.to_owned(),
+                args: args.to_owned(),
+                excerpt: excerpt.to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+                sandbox: false,
+                at: 1,
+            })
+            .unwrap()
+    };
+    let diff = document("branch hq/task-1-watches (1 file, +1 −1)");
+    // A document whose number begins another's is not that one's: d1 is not d12.
+    receipt(
+        "repo_checkout",
+        "branch: null",
+        &format!("checked out develop (document d{diff}0 is another task's)"),
+    );
+    let submit = receipt(
+        "repo_submit",
+        "branch: hq/task-1-watches",
+        &format!(
+            "Submitted hq/task-1-watches at a1b2c3d (1 file, +1 −1): document d{diff} on task"
+        ),
+    );
+    let check = receipt("check", "c7 hq/task-1-watches@a1b2c3d", "syntax ok");
+    let report = document("check c7: syntax ok");
+    let cite = |evidence: serde_json::Value| {
+        call(
+            &hq,
+            &run,
+            &me,
+            "post",
+            &json!({ "task": s.task.0, "text": "Done.", "evidence": evidence }),
+        )
+        .unwrap_err()
+    };
+
+    let why = cite(json!([format!("d{diff}")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    let why = cite(json!([[format!("r{submit}"), format!("d{report}")]]));
+    assert!(why.contains(&format!("cite r{check}")), "{why}");
+    let why = cite(json!([format!("the diff (document d{diff}) shows it")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    // A document no receipt names, or none at all, is still said to be a document.
+    let loose = document("notes");
+    for unnamed in [format!("d{loose}"), "d999".to_owned()] {
+        let why = cite(json!([unnamed]));
+        assert!(why.contains("is a document, not a receipt"), "{why}");
+    }
+    // Words with no id are refused as before.
+    assert!(cite(json!(["the list is there"])).contains("is not evidence"));
+}
+
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn measure_tool_descriptions() {
-    for role in [
-        Role::Developer,
-        Role::Lead,
-        Role::Reviewer,
-        Role::Researcher,
-    ] {
+    {
         let all = tools();
         let mut sizes: Vec<(usize, String)> = all
             .as_array()
@@ -567,7 +653,7 @@ fn measure_tool_descriptions() {
         sizes.sort_by(|a, b| b.cmp(a));
         let total: usize = sizes.iter().map(|s| s.0).sum();
         println!(
-            "{role:?}: {} tools, {total} chars; top: {:?}",
+            "{} tools, {total} chars; top: {:?}",
             sizes.len(),
             &sizes[..8]
         );
@@ -609,7 +695,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             &[
                 "in_review",
                 "a reading this turn",
-                "another member re-checks it",
+                "HQ's checks and the evidence decide it",
                 "close as done yourself",
                 "met_criteria",
                 "superseded",
@@ -624,7 +710,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
                 "only what the owner alone decides",
                 "money beyond the caps",
                 "ends your turn",
-                "a rank up on its own",
+                "HQ asks the owner itself",
             ][..],
         ),
         (
@@ -645,6 +731,15 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
         assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
         for rule in rules {
             assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+        }
+    }
+    // Roles, reviewers' re-checks, climbs and hand-offs to another member are retired (ADR
+    // 0142, amended 2026-11-02; every live loop is worked by one member alone): no tool's
+    // description promises one, or asks for one the engine refuses.
+    for name in ["my_turn", "set_status", "create_task", "ask_owner"] {
+        let text = tool(name).to_string();
+        for retired in ["your role", "re-checks", "rank up", "for another member"] {
+            assert!(!text.contains(retired), "{name} says {retired:?}: {text}");
         }
     }
 }

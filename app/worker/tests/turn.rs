@@ -140,6 +140,17 @@ fn hq_moving(stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
 
 /// The same, listing `listed` as the turn's tools.
 fn hq_listing(listed: Value, stopped: Option<&'static str>, moves: bool) -> (String, Seen) {
+    hq_listing_with(listed, Value::Null, stopped, moves)
+}
+
+/// As [`hq_listing`], with `meta` as the listing's own `_meta` when it is not null: HQ's mark
+/// on the node's tools a turn is offered up front (D27).
+fn hq_listing_with(
+    listed: Value,
+    meta: Value,
+    stopped: Option<&'static str>,
+    moves: bool,
+) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         let id = sent.body["id"].clone();
         let tool = sent.body["params"]["name"].as_str().unwrap_or("");
@@ -156,7 +167,8 @@ fn hq_listing(listed: Value, stopped: Option<&'static str>, moves: bool) -> (Str
                 "serverInfo": { "name": "endora-hq", "version": "0" },
             }),
             m if m.starts_with("notifications/") => return (202, String::new()),
-            "tools/list" => json!({ "tools": listed }),
+            "tools/list" if meta.is_null() => json!({ "tools": listed }),
+            "tools/list" => json!({ "tools": listed, "_meta": meta }),
             "tools/call" => {
                 let (text, refused) = match tool {
                     "my_turn" => (BRIEFING, false),
@@ -485,6 +497,60 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     assert!(!said(&out).contains(TOKEN), "and never printed");
 }
 
+/// The owner watches a turn as it works (ADR 0129, amended 2026-11-01): after every round that
+/// goes on, the worker tells the node the conversation so far, before the round's calls run,
+/// and what the model reasoned is in it; the model is never sent its reasoning back.
+#[test]
+fn a_turn_tells_its_conversation_after_every_round_with_what_the_model_reasoned() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let mut first = calls(&[("call_1", "homelab_status", "")]);
+    first["choices"][0]["message"]["reasoning_content"] = json!("The lab first, then decide.");
+    let mut last = says("All is well.");
+    last["choices"][0]["message"]["reasoning"] = json!("Nothing is stale.");
+    let (model_url, to_model) = model(vec![(200, first), (200, last)]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_node = to_node.lock().unwrap().clone();
+    let paths: Vec<&str> = to_node.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/team-relay/contracts",
+            "/team-relay/transcript",
+            "/team-relay/contracts/homelab_status",
+            "/team-relay/transcript",
+        ]
+    );
+    let told: Vec<&str> = to_node
+        .iter()
+        .filter(|s| s.path == "/team-relay/transcript")
+        .map(|s| s.body["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        told[0].contains(
+            "--- thinking ---\nThe lab first, then decide.\n--- assistant ---\n\
+             --- call: homelab_status ---\n"
+        ),
+        "{}",
+        told[0]
+    );
+    assert!(
+        !told[0].contains("--- result ---"),
+        "told before the call ran"
+    );
+    assert!(
+        told[1].contains("--- thinking ---\nNothing is stale.\n--- assistant ---\nAll is well."),
+        "{}",
+        told[1]
+    );
+    let to_model = to_model.lock().unwrap().clone();
+    let second = to_model[1].body.to_string();
+    assert!(!second.contains("The lab first"), "{second}");
+    assert!(!second.contains("reasoning"), "{second}");
+}
+
 #[test]
 fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
     let (hq_url, to_hq) = hq(None);
@@ -773,10 +839,11 @@ fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
         );
         // What HQ answered is in the turn's transcript, as every other call's is: live, the
         // turns that ended on set_status were kept with the call and no reply.
+        // The last tell is the whole conversation; one went before it, after the model's round.
         let told = to_node.lock().unwrap().clone();
         let transcript = told
             .iter()
-            .find(|s| s.path == "/team-relay/transcript")
+            .rfind(|s| s.path == "/team-relay/transcript")
             .expect("the transcript is told");
         let text = transcript.body["text"].as_str().unwrap();
         assert!(
@@ -913,6 +980,10 @@ fn an_action_put_on_the_owners_desk_for_approval_ends_the_turn_as_a_question_doe
     );
 }
 
+/// Live, run 5266 (#1050, Haiku) spent its 30th round on a tool call, ended "out of rounds", and
+/// the thread never said so: with no words said beside its calls there was no last word, and
+/// the line saying the rounds ran out went with it (4 of the 7 kept worker transcripts that end
+/// out of rounds have no such post). The line goes alone, as a turn out of room's does.
 #[test]
 fn the_rounds_run_out() {
     let (hq_url, to_hq) = hq(None);
@@ -928,9 +999,13 @@ fn the_rounds_run_out() {
         1,
         "the same claim asked again is answered from what the turn has"
     );
-    assert!(
-        !called.contains(&"tools/call post".to_owned()),
-        "no last word to post"
+    assert_eq!(called.last().unwrap(), "tools/call post");
+    let posted = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(
+        posted,
+        json!({ "task": 7, "last_word": true, "text": "The turn's 3 rounds ran out before it \
+            finished, with nothing said on the way. This turn made no tool calls." }),
+        "the rounds ran out, said with what it did, though it said nothing"
     );
 }
 
@@ -1017,6 +1092,50 @@ fn a_turn_whose_prompt_reaches_its_budget_ends_cleanly_and_says_it_continues() {
         text.contains("reached its budget") && text.contains("fresh turn"),
         "{text}"
     );
+}
+
+/// Live, 1 Nov (Rae on 955): a 50 KB conversation was counted as 238 KB, because every call
+/// resends the conversation so far and the budget summed every resend. On a brain whose
+/// provider caches the repeated part (`ENDORA_BUDGET_COUNTS=conversation`, Claude and DeepSeek)
+/// the budget holds the conversation itself, so each byte counts once: the turn goes on while
+/// what it sends fits, and still ends cleanly once the conversation would not.
+#[test]
+fn a_cached_brains_budget_counts_the_conversation_once() {
+    let saying = |text: &str, i: usize| {
+        let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+        let mut said = calls(&[("call_1", "post", &args)]);
+        said["choices"][0]["message"]["content"] = json!(text);
+        (200, said)
+    };
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(
+        (0..40)
+            .map(|i| saying(&format!("Step {i}: the log says the disk is full."), i))
+            .collect(),
+    );
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_PROMPT_BUDGET", "12000".to_owned()));
+    env.push(("ENDORA_BUDGET_COUNTS", "conversation".to_owned()));
+    env.push(("ENDORA_MOST_ROUNDS", "40".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    let largest = to_model
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.body.to_string().len())
+        .max()
+        .unwrap();
+    assert!(largest <= 12_000, "every call fits: {largest}");
+    let read = read_in_all(&to_model);
+    assert!(
+        read > 3 * 12_000,
+        "each byte counted once: {read} sent in all"
+    );
+    let last = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"].clone();
+    assert_eq!(last["continues"], json!(true), "{last}");
+    let text = last["text"].as_str().unwrap();
+    assert!(text.contains("conversation reached"), "{text}");
 }
 
 /// `git` in `dir`, which must succeed.
@@ -1114,6 +1233,162 @@ fn a_turn_out_of_room_keeps_its_work_in_progress_for_the_next() {
     assert_eq!(last["continues"], json!(true), "{last}");
     let text = last["text"].as_str().unwrap();
     assert!(!text.contains("hq/task-7-work"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 3 of HQ's experiment: 255 `repo_checkout` calls for nine tasks, each turn checking the
+/// fork out again into an empty sandbox (D27). The sandbox now keeps the item's work between
+/// turns (ADR 0142, amended 2026-11-01): a `repo_checkout` that finds the checkout there says
+/// so, keeps the work as it is (uncommitted changes and all) and asks the node for nothing.
+/// (The worker has no scenario suite; this end-to-end test stands for one.)
+#[test]
+fn a_checkout_kept_from_an_earlier_turn_is_said_to_be_there_and_not_made_again() {
+    let dir = std::env::temp_dir().join(format!("endora-kept-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    git_in(
+        &repo,
+        &["checkout", "-q", "-b", "hq/task-7-secret-defaults"],
+    );
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Kit) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    // What an earlier turn, Kit's, wrote and did not commit.
+    std::fs::write(repo.join("rule.py"), "class SecretDefault: ...\n").unwrap();
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        ),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }));
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[(
+                "call_1",
+                "repo_checkout",
+                r#"{"branch": "hq/task-7-secret-defaults", "why": "to go on"}"#,
+            )]),
+        ),
+        (200, says("Going on from it.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert!(
+        !to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path == "/team-relay/contracts/repo_checkout"),
+        "the node is not asked"
+    );
+    let told = to_model.lock().unwrap()[1].body.to_string();
+    assert!(
+        told.contains(
+            "Already checked out: your sandbox kept it from an earlier turn on this item."
+        ),
+        "{told}"
+    );
+    assert!(told.contains("with 1 uncommitted change"), "{told}");
+    assert!(told.contains("refresh: true"), "{told}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("rule.py")).unwrap(),
+        "class SecretDefault: ...\n",
+        "the work is as it was"
+    );
+    let noted = std::fs::read_to_string(dir.join("checkout.json")).unwrap();
+    assert!(
+        noted.contains("(Jane) for task #7"),
+        "the member's own trailer: {noted}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// D28 of round 3 (item 950): every head kept as work in progress added only Python's
+/// `__pycache__/*.pyc`, and the handover called it new work. A turn out of room whose sandbox
+/// holds nothing but byproducts sends nothing to keep. (The worker has no scenario suite; this
+/// end-to-end test stands for one.)
+#[test]
+fn a_turn_out_of_room_with_only_python_byproducts_keeps_nothing() {
+    let dir = std::env::temp_dir().join(format!("endora-pyc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join("tests").join("__pycache__")).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "nas.yml"]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Jane) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    // What running the tests left, and nothing else.
+    std::fs::write(
+        repo.join("tests/__pycache__/test_lint_rules.cpython-312.pyc"),
+        b"\x00",
+    )
+    .unwrap();
+    let (node_url, to_node) = fake(Box::new(|sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        ),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }));
+    let (hq_url, _) = hq(None);
+    let (model_url, _) = model(
+        (0..12)
+            .map(|i| {
+                let args = format!(r#"{{"task": 7, "text": "note {i}"}}"#);
+                (200, calls(&[("call_1", "post", &args)]))
+            })
+            .collect(),
+    );
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    env.push(("ENDORA_PROMPT_BUDGET", "16000".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert!(
+        !to_node
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.path == "/team-relay/contracts/repo_submit"),
+        "nothing is sent to keep"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1258,6 +1533,9 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
         paths,
         [
             "/team-relay/contracts",
+            // What the model said and called, told before its calls run (ADR 0129, amended
+            // 2026-11-01).
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
             "/team-relay/contracts/restart_container",
             "/team-relay/transcript",
@@ -1281,9 +1559,9 @@ fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
         assert!(text.contains(part), "{part:?} in\n{text}");
     }
     assert!(!text.contains(TOKEN), "the token is never in what it tells");
-    assert_eq!(to_node[1].body, json!({}));
+    assert_eq!(to_node[2].body, json!({}));
     assert_eq!(
-        to_node[2].body,
+        to_node[3].body,
         json!({ "container": "sonarr", "why": "it is unhealthy" })
     );
     for sent in &to_node {
@@ -1379,7 +1657,9 @@ fn the_same_call_again_with_nothing_new_is_answered_from_what_it_already_has() {
         paths,
         [
             "/team-relay/contracts",
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
+            "/team-relay/transcript",
             "/team-relay/contracts/restart_container",
             "/team-relay/contracts/homelab_status",
             "/team-relay/transcript",
@@ -1459,11 +1739,13 @@ fn the_shell_is_offered_only_in_the_workbench() {
     let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
     assert!(!system.contains("You cannot run commands"), "{system}");
     assert!(
-        system.contains("You have a real shell in a disposable sandbox"),
+        system.contains("You have a real shell in a sandbox"),
         "{system}"
     );
     assert!(
-        system.contains("Anything you leave in /work is gone when the turn ends"),
+        system.contains(
+            "Your sandbox keeps the item's work between turns; /work/repo is there if a turn checked it out."
+        ),
         "{system}"
     );
     assert!(
@@ -1568,6 +1850,77 @@ fn on_claude(hq: &str, relay: &str, node: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Measured before building (2 Nov): a turn's transcript did not say why the turn ended, nor
+/// why each reply stopped and how long it ran, so a reply cut at its token limit, a turn out of
+/// rounds and one that finished looked alike. The transcript now says both; the model is sent
+/// exactly what it was before.
+#[test]
+fn a_turns_transcript_says_why_each_reply_stopped_and_why_the_turn_ended() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let mut first = claude("Looking.", &[("toolu_1", "homelab_status", json!({}))]);
+    first["usage"]["output_tokens"] = json!(37);
+    let mut last = claude("All is well.", &[]);
+    last["usage"]["output_tokens"] = json!(12);
+    let (model_url, to_model) = model(vec![(200, first), (200, last)]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_node = to_node.lock().unwrap().clone();
+    let told = to_node
+        .iter()
+        .rev()
+        .find(|s| s.path == "/team-relay/transcript")
+        .expect("the transcript is told");
+    let text = told.body["text"].as_str().unwrap();
+    assert!(
+        text.contains("--- call: homelab_status ---\n{}\n--- reply ---\ntool_use, 37 tokens out\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("All is well.\n--- reply ---\nend_turn, 12 tokens out\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("--- ended ---\nanswered\n"), "{text}");
+    for sent in to_model.lock().unwrap().iter() {
+        let body = sent.body.to_string();
+        assert!(!body.contains("tokens out"), "{body}");
+        assert!(!body.contains("endora_reply"), "{body}");
+    }
+}
+
+/// A turn that fails says so at the end of its transcript, with why: the reply cut at its token
+/// limit is the failure measured on 2 Nov.
+#[test]
+fn a_turn_cut_at_its_reply_limit_ends_its_transcript_saying_so() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(json!([]), None);
+    let mut limited = claude(
+        "Partial",
+        &[("toolu_1", "post", json!({"task":7,"text":"Partial"}))],
+    );
+    limited["stop_reason"] = json!("max_tokens");
+    limited["usage"]["output_tokens"] = json!(4096);
+    let (model_url, _) = model(vec![(200, limited)]);
+    let out = worker(&on_claude(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    let to_node = to_node.lock().unwrap().clone();
+    let text = to_node
+        .iter()
+        .rev()
+        .find(|s| s.path == "/team-relay/transcript")
+        .and_then(|s| s.body["text"].as_str())
+        .expect("the transcript is told")
+        .to_owned();
+    assert!(
+        text.contains("--- reply ---\nmax_tokens, 4096 tokens out\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("--- ended ---\nfailed\nthe model reached its token limit; its incomplete reply cannot finish the turn or execute tool calls\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
     let (hq_url, to_hq) = hq(None);
@@ -1618,7 +1971,7 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
         "only what the relay meters, and no effort when HQ names none"
     );
     assert_eq!(body["model"], "claude-sonnet-5-5");
-    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["max_tokens"], 8192);
     // The system as one block, a cache breakpoint at its end (ADR 0142, amended 2026-10-31).
     assert!(
         body["system"][0]["text"]
@@ -1861,7 +2214,15 @@ fn a_cloud_turn_runs_out_of_rounds_as_a_local_one_does() {
     let out = worker(&env);
     assert_eq!(out.status.code(), Some(0), "{}", said(&out));
     assert_eq!(to_relay.lock().unwrap().len(), 2);
-    assert!(!methods(&to_hq).contains(&"tools/call post".to_owned()));
+    assert_eq!(methods(&to_hq).last().unwrap(), "tools/call post");
+    let posted = to_hq.lock().unwrap().last().unwrap().body["params"]["arguments"]["text"].clone();
+    assert!(
+        posted
+            .as_str()
+            .unwrap()
+            .starts_with("The turn's 2 rounds ran out before it finished, with nothing said"),
+        "{posted}"
+    );
 }
 
 /// The node's team listener as a cloud turn reaches it: the Anthropic relay and the contracts
@@ -1917,6 +2278,7 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
         [
             "/team-relay/contracts",
             "/team-relay/v1/messages",
+            "/team-relay/transcript",
             "/team-relay/contracts/homelab_status",
             "/team-relay/v1/messages",
             "/team-relay/transcript",
@@ -1934,9 +2296,8 @@ fn a_lead_on_claude_is_offered_the_home_lab_and_told_it_has_it_as_the_runner_sta
     assert!(
         system.contains(
             "The home lab tools are Endora's contracts, and this turn they are yours: \
-             homelab_status, container_logs, restart_container. Whatever your role, look with \
-             them yourself before you hand anything on, and never say you cannot read the home \
-             lab."
+             homelab_status, container_logs, restart_container. Look with them yourself \
+             before you move anything on, and never say you cannot read the home lab."
         ),
         "{system}"
     );
@@ -2127,6 +2488,47 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
         read("cwd").trim(),
         std::fs::canonicalize(&work).unwrap().display().to_string()
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// ADR 0142, amended 2026-11-01: the sandbox keeps the item's work between turns, and with it
+/// the ledger of an earlier Claude Code turn's calls. A turn reads only its own: an earlier
+/// turn's question to the owner and its calls are not this turn's.
+#[test]
+fn a_claude_code_turn_in_a_kept_sandbox_says_only_what_it_did_itself() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("kept-ledger");
+    let work = dir.join("work");
+    std::fs::create_dir_all(work.join(".endora")).unwrap();
+    std::fs::write(
+        work.join(".endora").join("did.json"),
+        json!({ "calls": [["restarted sonarr", false, "done"]], "asked": true, "over": null })
+            .to_string(),
+    )
+    .unwrap();
+    let result = json!({ "type": "result", "subtype": "success", "is_error": false,
+        "result": "Looked again.", "session_id": "s", "total_cost_usd": 0.001, "num_turns": 1 });
+    let claude = stand_in(&dir, &result);
+    let out = worker(&with_claude_code(
+        &hq_url,
+        "http://192.168.1.10:8788",
+        &node_url,
+        &work,
+        &claude,
+    ));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let posted = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|s| s.body["params"]["name"] == "post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone())
+        .expect("its last word");
+    let text = posted.as_str().unwrap();
+    assert!(text.contains("This turn made no tool calls."), "{text}");
+    assert!(!text.contains("sonarr"), "{text}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -2472,6 +2874,52 @@ fn a_local_turn_with_many_tools_starts_small_and_finds_the_rest() {
     );
 }
 
+/// D30 of round 3 (the house-model replay, 1 Nov): both models asked `find_tools` for tools
+/// already offered. `find_tools` says it is already theirs, by name or by what a search names,
+/// and such a round costs the turn none of its rounds (a few at most).
+#[test]
+fn find_tools_asked_for_a_tool_already_offered_says_so_at_no_cost_to_the_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(many_contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (200, calls(&[("c1", "find_tools", r#"{"names":["post"]}"#)])),
+        (
+            200,
+            calls(&[("c2", "find_tools", r#"{"query":"container logs"}"#)]),
+        ),
+        (200, says("Read the logs.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    env.push(("ENDORA_MOST_ROUNDS", "2".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let to_model = to_model.lock().unwrap().clone();
+    assert_eq!(
+        to_model.len(),
+        3,
+        "two rounds that cost nothing, then the answer"
+    );
+    let told = to_model[1].body["messages"].to_string();
+    assert!(
+        told.contains("Already yours: post. Call it directly."),
+        "{told}"
+    );
+    let told = to_model[2].body["messages"].to_string();
+    assert!(told.contains("Already yours: container_logs."), "{told}");
+    assert!(!told.contains("Nothing matched"), "{told}");
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone())
+        .expect("its last word");
+    assert!(
+        last.as_str().unwrap().starts_with("Read the logs."),
+        "answered, not out of rounds: {last}"
+    );
+}
+
 /// HQ's tools with `marked` carrying HQ's mark for a tool the turn is offered up front.
 fn tools_marking(marked: &str) -> Value {
     let mut listed = tools();
@@ -2524,6 +2972,78 @@ fn a_claude_turn_loads_what_hq_marks_for_its_kind() {
         .expect("consult is sent");
     assert!(consult.get("defer_loading").is_none(), "{consult}");
     assert!(!tools.to_string().contains("up_front"), "{tools}");
+}
+
+/// Many of the node's contracts, with the wing's git among them.
+fn many_contracts_and_the_fork() -> Value {
+    let mut all = many_contracts();
+    for (name, kind, what) in [
+        ("repo_checkout", "read", "Check out the fork."),
+        ("repo_submit", "act", "Submit a branch."),
+    ] {
+        all.as_array_mut()
+            .unwrap()
+            .push(json!({ "name": name, "kind": kind,
+            "description": what, "inputSchema": { "type": "object", "properties": {} } }));
+    }
+    all
+}
+
+/// HQ's mark on the fork's tools for a loop item that checks it out (D27).
+fn marks_the_fork() -> Value {
+    json!({ "endora/up_front": ["repo_checkout", "repo_submit"] })
+}
+
+/// Live, 1 Nov 2026 (D27): on the house model, Bo met a fresh, empty sandbox with
+/// `repo_checkout` and `repo_submit` held back beside weather and news tools; he ran `git
+/// init` with a made-up remote, took the failures for an offline sandbox, and blocked the item.
+/// What HQ marks of the node's tools for the turn is offered up front, on the house's model and
+/// on Claude, and the mark never reaches the model.
+#[test]
+fn a_loop_item_that_checks_out_the_fork_has_its_git_up_front_on_every_runtime() {
+    let dir = std::env::temp_dir().join(format!("endora-d27-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let workbench = |env: &mut Vec<(&'static str, String)>| {
+        env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+        env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+        env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    };
+    // The house's model.
+    let (hq_url, _) = hq_listing_with(tools(), marks_the_fork(), None, false);
+    let (node_url, _) = node(many_contracts_and_the_fork(), None);
+    let (model_url, to_model) = model(vec![(200, says("Checked."))]);
+    let mut env = with_node(&hq_url, &model_url, &node_url);
+    workbench(&mut env);
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let first = offered(&to_model);
+    for git in ["repo_checkout", "repo_submit"] {
+        assert!(first.iter().any(|n| n == git), "{git}: {first:?}");
+    }
+    assert!(!first.iter().any(|n| n == "ha_lights"), "{first:?}");
+    let sent = to_model.lock().unwrap()[0].body["tools"].to_string();
+    assert!(!sent.contains("up_front"), "{sent}");
+    // Claude.
+    let (hq_url, _) = hq_listing_with(tools(), marks_the_fork(), None, false);
+    let (node_url, _) = node(many_contracts_and_the_fork(), None);
+    let (relay_url, to_relay) = model(vec![(200, claude("Checked.", &[]))]);
+    let mut env = on_claude(&hq_url, &relay_url, &node_url);
+    workbench(&mut env);
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let tools = to_relay.lock().unwrap()[0].body["tools"].clone();
+    for git in ["repo_checkout", "repo_submit"] {
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == git)
+            .cloned()
+            .unwrap_or_else(|| panic!("{git} is sent: {tools}"));
+        assert!(tool.get("defer_loading").is_none(), "{tool}");
+    }
+    assert!(!tools.to_string().contains("up_front"), "{tools}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The guard under on-demand tools: `find_tools` brings in only what HQ and the node listed for
@@ -2805,7 +3325,7 @@ fn a_long_log_on_a_house_turn_is_read_through_a_checked_gist() {
     let kept = to_node.lock().unwrap().clone();
     let transcript = kept
         .iter()
-        .find(|s| s.path == "/team-relay/transcript")
+        .rfind(|s| s.path == "/team-relay/transcript")
         .expect("the conversation told");
     let text = transcript.body["text"].as_str().unwrap();
     assert!(
@@ -2814,7 +3334,8 @@ fn a_long_log_on_a_house_turn_is_read_through_a_checked_gist() {
     );
 }
 
-/// A gist call that fails leaves the turn reading the raw result, as before.
+/// A gist call that fails leaves the turn reading the raw result, held to size as every turn's
+/// lab result is (D20): its start and its end, and how to ask for less.
 #[test]
 fn a_gist_call_that_fails_leaves_the_raw_result() {
     let log = long_log();
@@ -2831,7 +3352,12 @@ fn a_gist_call_that_fails_leaves_the_raw_result() {
     let out = worker(&with_node(&hq_url, &model_url, &node_url));
     assert_eq!(out.status.code(), Some(0), "{}", said(&out));
     assert_eq!(to_model.lock().unwrap().len(), 3);
-    assert_eq!(tool_result_in(&to_model, 2), log);
+    let read = tool_result_in(&to_model, 2);
+    let first_line = log.lines().next().unwrap();
+    let last_line = log.lines().last().unwrap();
+    assert!(read.starts_with(first_line), "the start is kept");
+    assert!(read.trim_end().ends_with(last_line), "the end is kept");
+    assert!(read.contains("left out"), "{read}");
 }
 
 /// Asked for whole, a result is read whole, with no gist call, and the node is never sent the
@@ -2943,4 +3469,171 @@ fn a_claude_turn_makes_no_gist_call() {
         sent[1].body.to_string().contains("Show 119"),
         "the log whole"
     );
+}
+
+/// A bundle of `master` with about `size` bytes of noise in its history, which no compression
+/// shrinks, or of the real pyparsing mirror when `ENDORA_PYPARSING_MIRROR` names a copy of the
+/// node's: its bytes and the head.
+fn a_big_bundle(dir: &std::path::Path, size: usize) -> (Vec<u8>, String) {
+    let repo = std::env::var("ENDORA_PYPARSING_MIRROR").map_or_else(
+        |_| {
+            let repo = dir.join("big");
+            std::fs::create_dir_all(&repo).unwrap();
+            git_in(&repo, &["init", "-q", "-b", "master"]);
+            let mut noise = Vec::with_capacity(size);
+            let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+            while noise.len() < size {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                noise.extend_from_slice(&x.to_le_bytes());
+            }
+            std::fs::write(repo.join("noise.bin"), &noise).unwrap();
+            git_in(&repo, &["add", "."]);
+            git_in(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=John Doe",
+                    "-c",
+                    "user.email=john@example.com",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "noise",
+                ],
+            );
+            repo
+        },
+        std::path::PathBuf::from,
+    );
+    let file = dir.join("big.bundle");
+    git_in(
+        &repo,
+        &[
+            "bundle",
+            "create",
+            file.to_str().unwrap(),
+            "refs/heads/master",
+        ],
+    );
+    let head = git_in(&repo, &["rev-parse", "refs/heads/master"]);
+    (std::fs::read(&file).unwrap(), head)
+}
+
+/// A node that offers `repo_checkout` and answers it with `answer`, as its JSON body.
+fn node_handing(answer: String) -> (String, Seen) {
+    fake(Box::new(move |sent, _| match sent.path.as_str() {
+        "/team-relay/contracts" => (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+            ] })
+            .to_string(),
+        ),
+        "/team-relay/contracts/repo_checkout" => (200, answer.clone()),
+        _ => (404, json!({ "error": "no such contract" }).to_string()),
+    }))
+}
+
+/// A turn that checks out once, in an empty sandbox at `dir`, and stops: what the model was told.
+fn checking_out(dir: &std::path::Path, node_url: &str) -> String {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[("call_1", "repo_checkout", r#"{"why": "to start"}"#)]),
+        ),
+        (200, says("Started.")),
+    ]);
+    let mut env = with_node(&hq_url, &model_url, node_url);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push((
+        "ENDORA_WORKBENCH_DIR",
+        dir.join("work").display().to_string(),
+    ));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let asked = to_model.lock().unwrap()[1].body.clone();
+    asked["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .map(|m| m["content"].to_string())
+        .unwrap_or_default()
+}
+
+/// Set 3 of HQ's experiment (tasks 1051-1053): pyparsing's checkout came to the worker as a
+/// 14.3 MB bundle, about 19 MB of JSON, and the worker read every answer of the node's at most
+/// ureq's 10 MB, swallowed the error and told the model the checkout "could not be read as a
+/// bundle". An answer of that size is now read whole and unpacked. (The worker has no scenario
+/// suite; this end-to-end test stands for one.)
+#[test]
+fn a_checkout_the_size_of_pyparsings_is_read_whole_and_unpacked() {
+    use base64::Engine as _;
+    let dir = std::env::temp_dir().join(format!("endora-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (bundle, head) = a_big_bundle(&dir, 15 << 20);
+    let handed = json!({ "branch": "master", "head": head, "base": "master",
+                         "bundle": base64::engine::general_purpose::STANDARD.encode(&bundle) });
+    let answer = json!({ "text": format!("{handed} (receipt r41)") }).to_string();
+    assert!(
+        answer.len() > 16 << 20,
+        "as big as pyparsing's: {}",
+        answer.len()
+    );
+    let (node_url, _) = node_handing(answer);
+    let told = checking_out(&dir, &node_url);
+    assert!(!told.contains("could not be read"), "{told}");
+    assert_eq!(
+        git_in(&dir.join("work").join("repo"), &["rev-parse", "HEAD"]),
+        head
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An answer past the most one may be is said to be that, not that it was no bundle.
+#[test]
+fn a_node_answer_too_big_to_read_is_said_to_be_so() {
+    let dir = std::env::temp_dir().join(format!("endora-too-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let answer =
+        json!({ "text": "x".repeat(endora_protocol::team::CONTRACT_ANSWER_MOST) }).to_string();
+    let (node_url, _) = node_handing(answer);
+    let told = checking_out(&dir, &node_url);
+    assert!(
+        told.contains("the node's answer is more than the 48 MB"),
+        "{told}"
+    );
+    assert!(!told.contains("as a bundle"), "{told}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A node that cannot list its contracts (a 502 around a release) left the turn with HQ's tools
+/// alone, said only on the worker's stderr: the model met a task with no `repo_checkout` and no
+/// lab tools and was never told why, the shape of the loss #1051's turns took for "the sandbox
+/// has no source". The turn goes on, and its briefing now says what is missing and why.
+#[test]
+fn a_node_that_cannot_list_its_tools_is_said_to_the_model() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(json!([]), Some(502));
+    let (model_url, to_model) = model(vec![(200, says("Nothing to do without the node."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the turn goes on: {}",
+        said(&out)
+    );
+    let first = to_model.lock().unwrap()[0].body["messages"][1]["content"].clone();
+    let briefing = first.as_str().unwrap();
+    assert!(
+        briefing
+            .contains("The node's tools could not be listed for this turn (the node answered 502")
+            && briefing.contains("not gone from Endora"),
+        "{briefing}"
+    );
+    assert!(!briefing.contains(TOKEN), "{briefing}");
 }

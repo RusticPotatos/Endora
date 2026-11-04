@@ -12,7 +12,7 @@ use crate::application::run_ports::RunStore;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, TeamStore};
 use crate::domain::money::DOLLAR;
-use crate::domain::{Brain, GoalId, MemberId, Priority, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{Brain, GoalId, MemberId, Priority, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -82,8 +82,8 @@ fn a_member_is_its_model_whatever_woke_it() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let g = goal(&hq);
-    let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
-    let kit = hq.hire("Kit", Role::Developer, 10, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 10, 2, 0).unwrap();
+    let kit = hq.hire("Kit", 10, 2, 0).unwrap();
     assert_eq!(hq.set_model(bo, "local").unwrap().brain, Brain::Local);
     assert_eq!(hq.set_model(kit, "sonnet").unwrap().brain, Brain::Sonnet);
     let asked = task(&hq, g, "A question for Bo");
@@ -122,7 +122,7 @@ fn members_are_ranked_by_their_model() {
     assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let rae = hq.hire("Rae", Role::Developer, 10, 2, 0).unwrap();
+    let rae = hq.hire("Rae", 10, 2, 0).unwrap();
     hq.set_brain(rae, "mac").unwrap();
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["members"][0]["rank"], 5, "{}", snap["members"][0]);
@@ -133,7 +133,7 @@ fn members_are_ranked_by_their_model() {
 fn any_member_may_be_any_model() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let mara = hq.hire("Mara", Role::Developer, 10, 2, 0).unwrap();
+    let mara = hq.hire("Mara", 10, 2, 0).unwrap();
     assert_eq!(hq.set_model(mara, "opus").unwrap().brain, Brain::Opus);
     assert!(hq.set_model(mara, "gpt").is_err(), "not a model Endora has");
 }
@@ -168,7 +168,7 @@ fn names_are_the_eight_then_generated_and_never_shared() {
 fn a_member_hired_without_a_name_is_given_one() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
-    let first = hq.hire("", Role::Developer, 10, 2, 0).unwrap();
+    let first = hq.hire("", 10, 2, 0).unwrap();
     let names: Vec<String> = hq
         .store()
         .members()
@@ -191,16 +191,16 @@ struct Five {
 
 fn five(hq: &Hq<'_>) -> Five {
     let g = goal(hq);
-    let seat = |name: &str, model: &str, role: Role| {
-        let id = hq.hire(name, role, 10, 2, 0).unwrap();
+    let seat = |name: &str, model: &str| {
+        let id = hq.hire(name, 10, 2, 0).unwrap();
         hq.set_brain(id, model).unwrap();
         id
     };
-    let mara = seat("Mara", "opus", Role::Ceo);
-    seat("Kit", "sonnet", Role::Lead);
-    let ada = seat("Ada", "haiku", Role::Lead);
-    let rae = seat("Rae", "mac", Role::Developer);
-    let bo = seat("Bo", "local", Role::Developer);
+    let mara = seat("Mara", "opus");
+    seat("Kit", "sonnet");
+    let ada = seat("Ada", "haiku");
+    let rae = seat("Rae", "mac");
+    let bo = seat("Bo", "local");
     let loop_ = hq
         .add_project(g, "ansible-nas", "the fork's work", mara, None)
         .unwrap();
@@ -267,6 +267,32 @@ fn a_loop_gives_its_top_item_to_the_member_at_its_starting_rank_one_at_a_time() 
         .unwrap();
     hq.tick().unwrap();
     assert_eq!(assignee(&hq, later), Some(f.bo));
+}
+
+/// The owner names the member who works a loop alone, and may give the loop back to the team
+/// (ADR 0142, amended 2026-11-01); a loop that does not exist is refused.
+///
+/// Given a loop worked alone by Ada, when HQ ticks, then its item is Ada's though the loop
+/// starts at Bo's rank; set back to the team, the loop names nobody.
+#[test]
+fn the_owner_sets_a_loop_to_be_worked_alone_and_back() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    assert!(
+        hq.set_loop_solo(crate::domain::ProjectId(999), Some(f.ada))
+            .is_err(),
+        "no such loop"
+    );
+    hq.set_loop_solo(f.loop_, Some(f.ada)).unwrap();
+    assert_eq!(hq.loop_solo(f.loop_).unwrap(), Some(f.ada));
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    let tidy = item(&hq, &f, "Tidy the README", Priority::Normal);
+    hq.tick().unwrap();
+    assert_eq!(assignee(&hq, fix), Some(f.ada), "to Ada alone");
+    assert_eq!(assignee(&hq, tidy), None, "one at a time");
+    hq.set_loop_solo(f.loop_, None).unwrap();
+    assert_eq!(hq.loop_solo(f.loop_).unwrap(), None);
 }
 
 /// A loop may start higher, for hard work: its items go to the member at that rank.
@@ -878,15 +904,15 @@ fn three_failures_move_an_item_up_a_rank_and_the_top_rank_s_go_to_the_owner() {
 /// Today's team of eight, with roles, routines and work, as production has it.
 fn the_old_team(hq: &Hq<'_>) -> (GoalId, TaskId) {
     let g = goal(hq);
-    let hired = |name: &str, role: Role| hq.hire(name, role, 10, 2, 0).unwrap();
-    let mara = hired("Mara", Role::Ceo);
-    let kit = hired("Kit", Role::Lead);
-    let ada = hired("Ada", Role::Lead);
-    hired("Rae", Role::Developer);
-    hired("Bo", Role::Developer);
-    let cy = hired("Cy", Role::Researcher);
-    hired("Dee", Role::Reviewer);
-    hired("Zed", Role::Developer);
+    let hired = |name: &str| hq.hire(name, 10, 2, 0).unwrap();
+    let mara = hired("Mara");
+    let kit = hired("Kit");
+    let ada = hired("Ada");
+    hired("Rae");
+    hired("Bo");
+    let cy = hired("Cy");
+    hired("Dee");
+    hired("Zed");
     let routine = |title: &str, to: MemberId| {
         hq.add_routine(
             Author::Owner,
@@ -930,7 +956,6 @@ fn the_team_becomes_one_team_of_five_ranked_models() {
     ] {
         let m = by(name);
         assert_eq!(m.brain, brain, "{name}");
-        assert_eq!(m.role, Role::Developer, "{name}: no titles in the code");
         assert!(m.at_work(), "{name}");
     }
     for name in ["Cy", "Dee", "Zed"] {
@@ -985,9 +1010,11 @@ fn a_member_in_the_loops_is_offered_the_work_s_tools_alone() {
     ] {
         assert!(!offered.iter().any(|n| n == gone), "{gone} in {offered:?}");
     }
+    // The item is the member's: its briefing is read for it, so no protocol moves (D30).
+    for gone in ["my_turn", "claim"] {
+        assert!(!offered.iter().any(|n| n == gone), "{gone} in {offered:?}");
+    }
     for kept in [
-        "my_turn",
-        "claim",
         "post",
         "set_status",
         "create_task",
@@ -1172,7 +1199,7 @@ fn a_member_s_model_survives_a_restart() {
             &clock,
             Settings::default(),
         );
-        let bo = hq.hire("Bo", Role::Developer, 10, 2, 0).unwrap();
+        let bo = hq.hire("Bo", 10, 2, 0).unwrap();
         hq.set_brain(bo, "local").unwrap();
         bo
     };
@@ -1668,7 +1695,7 @@ fn work_kept_in_progress_is_handed_to_the_next_turn_unchecked() {
     let bo = turn_of(&hq, f.bo);
     let note = handover_in(&bo.told);
     assert!(
-        note.contains("Its work so far is on hq/task-1-gluetun at 3c1cc497e55d"),
+        note.contains("Its work so far is kept on hq/task-1-gluetun at 3c1cc497e55d"),
         "{note}"
     );
     assert!(
@@ -2072,6 +2099,42 @@ fn a_second_question_on_an_item_is_refused_while_the_first_waits() {
     assert_eq!(cards, 1);
 }
 
+/// D10 of round 3: only an answer in words is acted on instead of asked again; a question seen
+/// with no words leaves the member free to ask once more (ADR 0142, amended 2026-11-01).
+#[test]
+fn a_question_seen_with_no_words_does_not_stop_the_next() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let mem = item(&hq, &f, "Raise sonarr's memory", Priority::Normal);
+    let ask = |text: &str| {
+        let bo = turn_of(&hq, f.bo);
+        use_tool(
+            &hq,
+            &bo,
+            "ask_owner",
+            &serde_json::json!({ "text": text, "evidence": [format!("task {}", mem.0)] }),
+        )
+    };
+    ask("May sonarr have 2 GB?").unwrap();
+    let card = |hq: &Hq<'_>| {
+        hq.store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task == Some(mem) && d.status == "waiting")
+            .map(|d| d.id)
+    };
+    hq.decide(card(&hq).unwrap(), "seen").unwrap();
+    hq.tick().unwrap();
+    ask("May sonarr have 2 GB, or is 1 GB enough?").unwrap();
+    hq.answer(card(&hq).unwrap(), "  ").unwrap_err();
+    hq.answer(card(&hq).unwrap(), "1 GB is enough").unwrap();
+    hq.tick().unwrap();
+    let said = ask("Should it be 1 GB?").unwrap_err();
+    assert!(said.contains("\"1 GB is enough\""), "{said}");
+}
+
 /// A failure at the top rank, while a question on the item already waits, is told on that card
 /// rather than on a second one.
 #[test]
@@ -2244,4 +2307,184 @@ fn a_reviewers_turn_out_of_room_goes_on_in_a_fresh_review() {
             && d.text.contains("ran out of room 4 times")),
         "{desk:?}"
     );
+}
+
+/// D17 of round 3 (1 Nov): task 947 waited for its review, and each time it sat stranded HQ
+/// counted it a failure at its holder's rank and woke the holder, whose wake HQ refused because
+/// the work was in review: "Failure 1 of 3 at Mara's rank", "Failure 2 of 3", then it was
+/// blocked as failed at every rank. Work in review waits on its reviewer, not its holder: a
+/// stall there is no failure, does not climb, and asks the reviewer again.
+///
+/// Given Bo's item in review, and a reviewer whose turns end with no verdict,
+/// when it sits stranded again and again,
+/// then it has no failure, is still Bo's and in review, Bo was never woken (and so never
+/// refused), and its review was asked for again: of the next reviewer, since a review turn
+/// with neither verdict passes its reviewer over (D26).
+#[test]
+fn work_waiting_for_its_review_is_no_failure_of_its_holder() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let mara = assignee(&hq, fix).unwrap();
+    let bo = turn_of(&hq, mara);
+    use_tool(&hq, &bo, "claim", &serde_json::json!({ "task": fix.0 })).unwrap();
+    use_tool(
+        &hq,
+        &bo,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "The lint passes.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    assert_eq!(reviewer, f.ada, "Haiku reviews");
+    for _ in 0..8 {
+        hq.tick().unwrap();
+        for started in hq.runner().started() {
+            // The reviewer's turn reads the item, and ends with no verdict.
+            if let Ok(Some(_)) = hq.turn_of(&started.token) {
+                let _ = use_tool(&hq, &started, "my_turn", &serde_json::json!({}));
+            }
+            hq.runner().finish(started.run, true);
+        }
+        clock
+            .0
+            .fetch_add(super::engine::STRANDED_AFTER_MS + 60_000, Ordering::SeqCst);
+    }
+    assert_eq!(hq.loop_failures(fix).unwrap(), 0);
+    let now = hq.store().task(fix).unwrap().unwrap();
+    assert_eq!(now.status, TaskStatus::InReview);
+    assert_eq!(now.holder(), Some(mara));
+    let thread = hq.store().thread(fix).unwrap();
+    assert!(
+        thread.iter().all(|p| !p.text.contains("Failure")),
+        "{thread:?}"
+    );
+    let bo_after: Vec<_> = wakes_on(&hq, mara, fix)
+        .into_iter()
+        .filter(|w| w.reason != WakeReason::Assigned)
+        .collect();
+    assert!(bo_after.is_empty(), "the holder is not woken: {bo_after:?}");
+    let asked: Vec<_> = hq
+        .wakes()
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.task == Some(fix) && w.reason == WakeReason::ReviewRequested)
+        .collect();
+    assert!(asked.len() >= 2, "the review is asked for again: {asked:?}");
+    assert!(
+        asked.iter().any(|w| w.member != reviewer),
+        "the next reviewer is asked: {asked:?}"
+    );
+}
+
+/// The fork's tools HQ marks up front for one turn, by name.
+fn fork_up_front(hq: &Hq<'_>, context: &super::ports::RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::node_tools_up_front(hq, &run, &member)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// D27 of round 3 (1 Nov): on the house model, Bo met a fresh, empty sandbox with
+/// `repo_checkout` and `repo_submit` held back beside weather and news tools, and took his own
+/// `git init` failures for an offline sandbox. A turn on a loop's item marks the fork's tools
+/// up front: both for its holder, the checkout alone for its reviewer; none where the loop's
+/// own list of tools leaves the fork out.
+#[test]
+fn a_loop_item_marks_the_forks_tools_up_front_for_its_turn() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let holder = assignee(&hq, fix).expect("the item is handed out");
+    let working = turn_of(&hq, holder);
+    assert_eq!(
+        fork_up_front(&hq, &working),
+        ["repo_checkout", "repo_submit"]
+    );
+    use_tool(
+        &hq,
+        &working,
+        "claim",
+        &serde_json::json!({ "task": fix.0 }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &working,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Done.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(working.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    let review = turn_of(&hq, reviewer);
+    assert_eq!(fork_up_front(&hq, &review), ["repo_checkout"]);
+    // A loop whose list of tools leaves the fork out marks none.
+    hq.set_project_tools(f.loop_, Some(vec!["homelab_status".to_owned()]))
+        .unwrap();
+    assert!(fork_up_front(&hq, &review).is_empty());
+}
+
+/// The tools HQ lists for one turn, by name.
+fn listed_for(hq: &Hq<'_>, context: &super::ports::RunContext) -> Vec<String> {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// D30 of round 3 (1 Nov): the house-model replay and round 3's store show turns opening with
+/// `my_turn`, which repeats the briefing they already hold, and `claim`. A turn on the item its
+/// member holds is offered neither; HQ still answers both, for the worker that reads the
+/// briefing and claims before the first round. A reviewer, whose item it is not, keeps them.
+#[test]
+fn a_turn_on_its_own_item_is_offered_no_protocol_moves() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    hq.set_loop_rank(f.loop_, 1).unwrap();
+    let fix = item(&hq, &f, "Fix the lint", Priority::Normal);
+    hq.tick().unwrap();
+    let holder = assignee(&hq, fix).expect("the item is handed out");
+    let working = turn_of(&hq, holder);
+    let listed = listed_for(&hq, &working);
+    for gone in ["my_turn", "claim"] {
+        assert!(!listed.iter().any(|n| n == gone), "{gone} in {listed:?}");
+    }
+    assert!(listed.iter().any(|n| n == "post"), "{listed:?}");
+    let briefing = use_tool(&hq, &working, "my_turn", &serde_json::json!({})).unwrap();
+    assert!(briefing.contains("Fix the lint"), "{briefing}");
+    use_tool(
+        &hq,
+        &working,
+        "claim",
+        &serde_json::json!({ "task": fix.0 }),
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &working,
+        "set_status",
+        &serde_json::json!({ "task": fix.0, "status": "in_review", "reason": "Done.",
+                             "evidence": [format!("task {}", fix.0)] }),
+    )
+    .unwrap();
+    hq.runner().finish(working.run, true);
+    let reviewer = hq.wakes().unwrap().last().unwrap().member;
+    let review = turn_of(&hq, reviewer);
+    let listed = listed_for(&hq, &review);
+    assert!(listed.iter().any(|n| n == "my_turn"), "{listed:?}");
 }

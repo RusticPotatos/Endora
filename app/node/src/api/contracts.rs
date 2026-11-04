@@ -73,16 +73,11 @@ fn offered(switches: Switches) -> Vec<Contract> {
         .collect()
 }
 
-/// Whether a turn may be given what a contract returns: a Confidential one (a container's
-/// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
-/// (ADR 0109); and an act never to the CEO, which takes no step on the house (ADR 0111).
+/// Whether a turn is offered a contract: every one (ADR 0142, one team; no contract is
+/// Restricted), but a branch's submission to a member outside the engineering wing (ADR 0120),
+/// who reads a branch and submits none.
 fn may_see(contract: &Contract, turn: &Turn) -> bool {
-    // Changing the lab is the engineering wing's (ADR 0120): a lead outside it reads a branch
-    // and submits none, so nothing is kept for it.
-    if contract.name == REPO_SUBMIT && turn.wing == Some(false) {
-        return false;
-    }
-    contract.offered_to(&turn.role, turn.cloud)
+    !(contract.name == REPO_SUBMIT && turn.wing == Some(false))
 }
 
 /// The switches as the HQ screen shows them.
@@ -253,8 +248,13 @@ pub(super) async fn call(
 /// A contract's answer with the receipt's id after its text, or its error.
 async fn with_receipt(response: Response, receipt: &str) -> Response {
     let status = response.status();
-    let Ok(bytes) = axum::body::to_bytes(response.into_body(), 1 << 24).await else {
-        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed");
+    let most = endora_protocol::team::CONTRACT_ANSWER_MOST;
+    let Ok(bytes) = axum::body::to_bytes(response.into_body(), most).await else {
+        let why = format!(
+            "the contract's answer is more than the {} MB one may be",
+            most >> 20
+        );
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", &why);
     };
     let mut answer: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     for key in ["text", "error"] {
@@ -350,28 +350,11 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_SUBMIT && turn.wing == Some(false) && turn.role != "reviewer" {
-            "changing the lab is the engineering wing's: its lead and developers submit the \
-             branches. Ask for the change with propose_project, with its criteria and evidence; \
-             the CEO decides and the wing builds it. Read a branch with repo_checkout"
-                .to_owned()
-        } else if name == REPO_SUBMIT && turn.role == "reviewer" {
-            "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
-             lead or a developer submits one"
-                .to_owned()
-        } else if name == REPO_CHECKOUT || name == REPO_SUBMIT {
-            "the wing's git is a lead's or a developer's, and a tester may check a branch out: \
-             read the branch's document (read_document) and the check's receipt instead"
-                .to_owned()
-        } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
-            "the CEO reads the house and takes no step on it itself: direct the lead of the \
-             task's area with direct, who decides; or hand it to the lead"
-                .to_owned()
-        } else {
-            super::bridge::confidential(&name)
-        };
-        refused_for(&why);
-        return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
+        let why = "changing the lab is the engineering wing's: its members submit the branches. \
+                   Ask for the change with propose_project, with its criteria and evidence; the \
+                   wing builds it. Read a branch with repo_checkout";
+        refused_for(why);
+        return (refuse(StatusCode::FORBIDDEN, "", why), came(why, false));
     }
     let state2 = state.clone();
     let name2 = name.clone();
@@ -615,6 +598,12 @@ pub(crate) struct LabKnowledge {
     /// How the image registries are asked, for `image_tags`: the real ones, unless a test
     /// fakes them.
     registries: Box<dyn registry::Fetch>,
+    /// The mirrors of repositories outside the lab, by address (ADR 0115, amended 2026-11-01),
+    /// each made the first time a turn's work names it.
+    outside: std::sync::Mutex<std::collections::HashMap<String, Arc<Mirror>>>,
+    /// Where a test's outside repository is fetched from instead of GitHub: a local bare
+    /// repository, by the address it stands in for. Empty on a running node.
+    outside_from: std::collections::HashMap<String, String>,
 }
 
 impl LabKnowledge {
@@ -629,7 +618,46 @@ impl LabKnowledge {
             push_remote: None,
             push_key: None,
             registries: Box::new(registry::Web),
+            outside: std::sync::Mutex::new(std::collections::HashMap::new()),
+            outside_from: std::collections::HashMap::new(),
         }
+    }
+
+    /// With the outside repository `url` fetched from the local repository at `from`: a test's.
+    #[cfg(test)]
+    pub(crate) fn with_outside(mut self, url: &str, from: &str) -> Self {
+        self.outside_from.insert(url.to_owned(), from.to_owned());
+        self
+    }
+
+    /// The node's mirror of the repository outside the lab at `url` (ADR 0115, amended
+    /// 2026-11-01: round 4's F4), made the first time it is asked for, worked from the default
+    /// branch the repository names then. Only a public `https://github.com/<owner>/<name>` is
+    /// mirrored, whatever HQ said: the one rule is held here again. What is submitted to it is
+    /// kept in it and never pushed anywhere ([`Mirror::outside`]).
+    ///
+    /// # Errors
+    /// An address that is not allowed, or the repository not answering for its default branch.
+    pub(crate) fn outside_mirror(&self, url: &str) -> Result<Arc<Mirror>, String> {
+        let plain = repo::outside_repo(url)?;
+        let mut kept = self
+            .outside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mirror) = kept.get(&plain) {
+            return Ok(mirror.clone());
+        }
+        let from = self
+            .outside_from
+            .get(&plain)
+            .cloned()
+            .unwrap_or_else(|| plain.clone());
+        std::fs::create_dir_all(&self.repo_dir).map_err(|e| format!("no data folder: {e}"))?;
+        let base = repo::default_branch(&self.repo_dir, &from)
+            .map_err(|why| format!("{plain} did not say its default branch: {why}"))?;
+        let mirror = Arc::new(Mirror::outside(&self.repo_dir, &from, &base));
+        kept.insert(plain, mirror.clone());
+        Ok(mirror)
     }
 
     /// With the image registries asked through `fetch`: a test's fake.
@@ -722,6 +750,25 @@ impl LabKnowledge {
     }
 }
 
+/// The mirror a turn's git works in: the repository outside the lab its work names (ADR 0115,
+/// amended 2026-11-01), else the fork's. An address that is not allowed is refused, never
+/// fetched.
+fn mirror_for(state: &AppState, turn: &Turn, now: i64) -> Result<Arc<Mirror>, Refused> {
+    let Some(url) = turn.repo.as_deref() else {
+        return state
+            .lab
+            .mirror(now)
+            .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
+    };
+    if let Err(why) = repo::outside_repo(url) {
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    state
+        .lab
+        .outside_mirror(url)
+        .map_err(|why| (StatusCode::BAD_GATEWAY, why))
+}
+
 /// What the team is told when no fork is configured for the wing.
 const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node (ENDORA_ANSIBLE_NAS_REPO): there is nothing to check out";
 
@@ -733,9 +780,7 @@ const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node 
 /// recorded (see [`kept_checkout`]).
 fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
     let branch = args["branch"]
         .as_str()
         .map(str::trim)
@@ -891,9 +936,8 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
         ));
     };
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
+    let outside = mirror.is_outside();
     let wip = args["wip"] == true;
     let taken = mirror
         .submit(&bytes, branch, task, now)
@@ -911,7 +955,10 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "token": turn.token, "branch": taken.branch, "head": taken.head,
                 "base": taken.base, "files": taken.files, "plus": taken.plus,
                 "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
-                "can_push": state.lab.can_push(),
+                // A branch of a repository outside the lab is never pushed (ADR 0115, amended
+                // 2026-11-01): HQ is told so, and which repository it is.
+                "can_push": !outside && state.lab.can_push(),
+                "repo": turn.repo.as_deref().filter(|_| outside),
                 // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
                 "changed": taken.changed, "texts": taken.texts, "wip": wip,
                 // For the check of a CI criterion (ADR 0142, amended 2026-10-31).
@@ -939,6 +986,32 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
             said: format!(
                 "kept work in progress {} at {short} ({} files, +{} −{}) for task {task}: {why}",
                 taken.branch, taken.files, taken.plus, taken.minus
+            ),
+        });
+    }
+    if outside {
+        return Ok(Done {
+            text: format!(
+                "Submitted {} at {short} ({} file{}, +{} −{}) in {}: document d{} on task \
+                 #{task}. It is kept on the node for judging and never pushed anywhere; no check \
+                 of the lab's applies to it. Now submit the task for review with set_status \
+                 in_review, citing this receipt.",
+                taken.branch,
+                taken.files,
+                if taken.files == 1 { "" } else { "s" },
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or(""),
+                recorded["document"].as_i64().unwrap_or(0),
+            ),
+            said: format!(
+                "submitted branch {} at {short} ({} files, +{} −{}) in {} for task {task}, kept \
+                 on the node: {why}",
+                taken.branch,
+                taken.files,
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or("")
             ),
         });
     }
@@ -1030,7 +1103,7 @@ pub(super) async fn check_bundle(
                         named["branch"].as_str().unwrap_or("").to_owned(),
                     ),
                     // The default branch's head the submission sits on: what the job judges
-                    // the branch against ("no worse than develop").
+                    // the branch against ("no more findings than develop").
                     (
                         axum::http::HeaderName::from_static("x-endora-base"),
                         named["base"].as_str().unwrap_or("").to_owned(),
@@ -1313,6 +1386,10 @@ fn portainer(code: &str) -> Refused {
             StatusCode::BAD_GATEWAY,
             "Portainer refused Endora's key".to_owned(),
         ),
+        "too_large" => (
+            StatusCode::BAD_GATEWAY,
+            "Portainer's answer was over 2 MB, more than Endora reads".to_owned(),
+        ),
         other => (
             StatusCode::BAD_GATEWAY,
             format!("Portainer did not answer ({})", other.replace('_', " ")),
@@ -1391,13 +1468,25 @@ fn container_logs(
     let (lines, bytes) = contracts::log_size(!turn.cloud, asked);
     let log = contracts::newest_within(&scrubbed, lines, bytes);
     let shown = log.lines().count();
-    let left_out = scrubbed.lines().count() > shown;
+    let read = scrubbed.lines().count();
+    // The console reads at most the newest LOG_LINES: a read that long may have left older
+    // lines out, as a cut here does, and a turn is told either way (run 5316).
+    let left_out = read > shown || read >= contracts::LOG_LINES;
     let text = if log.trim().is_empty() {
         format!("{name}'s log is empty.")
-    } else if left_out && asked.is_none() && !turn.cloud {
+    } else if left_out {
+        let more = if shown < contracts::LOG_LINES {
+            format!(
+                "; ask with `lines`, up to {}, for more",
+                contracts::LOG_LINES
+            )
+        } else {
+            String::new()
+        };
         format!(
             "The newest {shown} lines of {name}'s log, with secrets replaced by [redacted] (older \
-             lines left out: ask with `lines`, up to {}, for more):\n{log}",
+             lines left out: this tool reads at most a log's newest {} lines, so it cannot show \
+             what came before the first line here{more}):\n{log}",
             contracts::LOG_LINES
         )
     } else {
@@ -1762,7 +1851,7 @@ mod tests {
     /// The node with HQ knowing one turn (token `good`, run 7, Linus's) and `lab` as its
     /// console. What HQ was sent is the second.
     fn with(lab: Arc<Lab>) -> (AppState, super::super::relay::tests::Seen) {
-        let (hq_url, seen) = hq_as(40_000, "developer");
+        let (hq_url, seen) = hq_as(40_000);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab;
         (state, seen)
@@ -1860,7 +1949,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Bo", "role": "developer", "left": 0, "cloud": false,
+                json!({ "run": 7, "member": "Bo", "left": 0, "cloud": false,
                         "brain": "local", "task": 9, "wing": true,
                         "never": ["restart_container"] })
                 .to_string(),
@@ -1897,7 +1986,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0, "cloud": false,
+                json!({ "run": 7, "member": "Ada", "left": 0, "cloud": false,
                         "brain": "local", "task": 9, "wing": false,
                         "only": ["homelab_status", "container_logs", "nas_status"] })
                 .to_string(),
@@ -2079,8 +2168,8 @@ mod tests {
     }
 
     /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.
-    fn on_claude(role: &'static str) -> AppState {
-        let (hq_url, _) = hq_thinking(40_000, role, true);
+    fn on_claude() -> AppState {
+        let (hq_url, _) = hq_thinking(40_000, true);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab();
         state
@@ -2097,42 +2186,33 @@ mod tests {
             .collect()
     }
 
+    /// Every member reads the lab and is offered its acts alike (ADR 0142, one team): the
+    /// CEO who read and never acted is gone, and a title no longer keeps a restart from a turn.
     #[tokio::test]
-    async fn the_cloud_ceo_reads_the_home_lab_as_the_lead_does_and_never_restarts_anything() {
-        // The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose system
-        // it is; acting on the lab is the areas' own.
-        let state = on_claude("ceo");
-        let offered = listed(&state).await;
-        for read in ["homelab_status", "container_logs", "homelab_map"] {
-            assert!(offered.contains(&read.to_owned()), "{read}: {offered:?}");
-        }
-        assert!(
-            !offered.contains(&"restart_container".to_owned()),
-            "{offered:?}"
-        );
-        let (status, said) = use_contract(
-            &state,
+    async fn a_cloud_turn_reads_the_home_lab_and_is_offered_its_restart() {
+        let offered = listed(&on_claude()).await;
+        for name in [
+            "homelab_status",
+            "container_logs",
+            "homelab_map",
             "restart_container",
-            json!({ "container": "sonarr", "why": "it is unhealthy" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-        assert!(
-            said["error"]
-                .as_str()
-                .unwrap()
-                .contains("direct the lead of the task's area"),
-            "{said}"
-        );
+        ] {
+            assert!(offered.contains(&name.to_owned()), "{name}: {offered:?}");
+        }
     }
 
-    /// The node with HQ knowing one turn of a lead (token `good`), as HQ says it (`turn`'s
-    /// fields beside its run, member and role), and a lab whose sonarr log is 150 lines long.
+    /// The node with HQ knowing one turn (token `good`), as HQ says it (`turn`'s fields beside
+    /// its run and member), and a lab whose sonarr log is 150 lines long.
     fn with_a_long_log(turn: serde_json::Value) -> AppState {
+        with_a_log(turn, 150)
+    }
+
+    /// [`with_a_long_log`], with a sonarr log `lines` long.
+    fn with_a_log(turn: serde_json::Value, lines: usize) -> AppState {
         use super::super::relay::tests::fake;
         let (hq_url, _) = fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => {
-                let mut said = json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0 });
+                let mut said = json!({ "run": 7, "member": "Ada", "left": 0 });
                 for (k, v) in turn.as_object().unwrap() {
                     said[k] = v.clone();
                 }
@@ -2142,7 +2222,7 @@ mod tests {
             _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
         }));
         let mut state = node(&hq_url, "http://127.0.0.1:9");
-        let long: Vec<String> = (0..150).map(|i| format!("10:00 line {i:03}")).collect();
+        let long: Vec<String> = (0..lines).map(|i| format!("10:00 line {i:03}")).collect();
         state.console = Arc::new(Lab {
             containers: lab().containers.clone(),
             log: long.join("\n"),
@@ -2198,20 +2278,59 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
     }
 
+    /// The lab's console reads at most a log's newest [`contracts::LOG_LINES`] lines, so a read
+    /// that comes back that long may have left older lines out, however the turn asked: a
+    /// Claude turn that asked for 100 of gluetun's lines read its last hour as "since its last
+    /// start" and was never told (run 5316, 3 Nov). A shorter log is whole, and says nothing.
     #[tokio::test]
-    async fn a_cloud_turn_reads_logs_whatever_its_role() {
-        // ADR 0141: Confidential is open to Claude; a log is read by any member on it.
-        for role in ["reviewer", "developer", "researcher"] {
-            let state = on_claude(role);
+    async fn a_log_read_to_the_consoles_most_says_older_lines_may_be_left_out() {
+        let read = |state: AppState, args: serde_json::Value| async move {
+            let (status, said) = use_contract(&state, "container_logs", args).await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+            said["text"].as_str().unwrap_or("").to_owned()
+        };
+        let claude = || json!({ "cloud": true, "brain": "claude-haiku-5-5" });
+        let house = || json!({ "cloud": false, "brain": "local" });
+        let asked = json!({ "container": "sonarr", "lines": 100 });
+        let unasked = json!({ "container": "sonarr" });
+        for (turn, args) in [
+            (claude(), asked.clone()),
+            (claude(), unasked.clone()),
+            (house(), asked.clone()),
+        ] {
+            let text = read(with_a_log(turn.clone(), contracts::LOG_LINES), args.clone()).await;
+            assert!(text.contains("line 000"), "{turn} {args}: {text}");
             assert!(
-                listed(&state).await.contains(&"container_logs".to_owned()),
-                "a cloud {role} is offered logs"
+                text.contains("older lines left out") && text.contains("at most"),
+                "{turn} {args}: {text}"
             );
-            let (status, said) =
-                use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
-            assert_eq!(status, StatusCode::OK, "{role}: {said}");
+            assert!(!text.contains("`lines`"), "nothing more to ask for: {text}");
         }
-        let state = on_claude("lead");
+        let five = read(
+            with_a_log(claude(), contracts::LOG_LINES),
+            json!({ "container": "sonarr", "lines": 5 }),
+        )
+        .await;
+        assert!(
+            five.contains("older lines left out") && five.contains("`lines`"),
+            "{five}"
+        );
+        for (turn, args) in [(claude(), asked), (house(), unasked)] {
+            let whole = read(with_a_log(turn.clone(), 30), args.clone()).await;
+            assert!(whole.contains("line 029"), "{whole}");
+            assert!(!whole.contains("left out"), "{turn} {args}: {whole}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cloud_turn_reads_logs() {
+        // ADR 0141: Confidential is open to Claude; a log is read by any member on it.
+        let state = on_claude();
+        assert!(listed(&state).await.contains(&"container_logs".to_owned()));
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let state = on_claude();
         let offered = listed(&state).await;
         assert!(
             offered.contains(&"container_logs".to_owned()),
@@ -2235,7 +2354,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": "developer", "left": 0,
+                json!({ "run": 7, "member": "Linus", "left": 0,
                         "cloud": false })
                 .to_string(),
             ),
@@ -2657,15 +2776,10 @@ mod tests {
         );
         let (status, _) = use_contract(&state, "ansible_nas_doc", json!({ "path": 7 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Every role on any brain is offered both (names and wiring, Internal).
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            let offered = listed(&on_claude(role)).await;
-            for name in ["homelab_map", "ansible_nas_doc"] {
-                assert!(
-                    offered.contains(&name.to_owned()),
-                    "{name} to a cloud {role}"
-                );
-            }
+        // Every member on any brain is offered both (names and wiring, Internal).
+        let offered = listed(&on_claude()).await;
+        for name in ["homelab_map", "ansible_nas_doc"] {
+            assert!(offered.contains(&name.to_owned()), "{name} to a cloud turn");
         }
     }
 
@@ -2837,17 +2951,17 @@ mod tests {
             match (path, body["token"].as_str().unwrap_or("")) {
                 ("/v1/team/turn", "rae") => said(
                     200,
-                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", "dee") => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", "zed") => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
@@ -3004,7 +3118,7 @@ mod tests {
         assert!(text.contains("work in progress"), "{text}");
         assert!(!text.contains("check c"), "nothing is checked: {text}");
         // 4. The check job fetches the branch's whole history with its token, and the base HQ
-        //    recorded rides in the header and is in that history: what "no worse than develop"
+        //    recorded rides in the header and is in that history: what "no more findings than develop"
         //    needs to run the same checks there.
         let job = "a-check-jobs-token-of-thirty-two-chars-x";
         let res = team_relay(state.clone())
@@ -3167,22 +3281,22 @@ mod tests {
                 "/v1/team/turn" if body["token"] == "good" => (
                     200,
                     "application/json",
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 3 })
                     .to_string(),
                 ),
                 "/v1/team/turn" if body["token"] == "dee" => (
                     200,
                     "application/json",
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 0,
-                            "cloud": false, "task": 3 })
+                    json!({ "run": 8, "member": "Dee", "left": 0,
+                            "cloud": false, "task": 3, "wing": false })
                     .to_string(),
                 ),
                 // The Ops lead: a lead, outside the engineering wing (ADR 0120).
                 "/v1/team/turn" if body["token"] == "ada" => (
                     200,
                     "application/json",
-                    json!({ "run": 10, "member": "Ada", "role": "lead", "left": 40_000,
+                    json!({ "run": 10, "member": "Ada", "left": 40_000,
                             "cloud": true, "task": 4, "wing": false })
                     .to_string(),
                 ),
@@ -3266,9 +3380,9 @@ mod tests {
             .collect();
         assert!(
             names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
-            "a tester is offered checkout, never submit: {names:?}"
+            "a member not at work is offered checkout, never submit: {names:?}"
         );
-        // Dee's refusal of a submission says the tester's rule, not the CEO's.
+        // Dee's refusal of a submission says the wing's rule.
         let (refused, why) = answer(
             &state,
             ask(
@@ -3284,7 +3398,7 @@ mod tests {
             why["error"]
                 .as_str()
                 .unwrap()
-                .contains("reads a branch by checking it out"),
+                .contains("Read a branch with repo_checkout"),
             "{why}"
         );
         // A lead outside the wing is offered no submission, and one she asks for is refused
@@ -3579,19 +3693,19 @@ mod tests {
                 // Kit leads task 7; Zed is a developer on task 9.
                 ("/v1/team/turn", Some("kit" | "late")) => said(
                     200,
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", Some("zed")) => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 // Dee, the tester, is on task 7 too, on Haiku: a turn of judgment.
                 ("/v1/team/turn", Some("dee")) => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
                 ("/v1/team/branch", _) => {
@@ -3926,8 +4040,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Kit", "role": "lead", "left": 0, "cloud": false })
-                    .to_string(),
+                json!({ "run": 7, "member": "Kit", "left": 0, "cloud": false }).to_string(),
             ),
             _ => (404, "application/json", "{}".to_owned()),
         }));
@@ -4042,5 +4155,310 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("you switched the team's restarts off"))
         );
+    }
+
+    /// Round 4's F4 (ADR 0115, amended 2026-11-01): an item whose project names a public
+    /// repository outside the lab is checked out from the node's mirror of that repository, and
+    /// what is submitted is kept there for judging; HQ is told it cannot be pushed, and delivery,
+    /// asked to push it all the same, puts it nowhere. A turn whose work names any other
+    /// address is refused before anything is fetched. GitHub is played by a local bare
+    /// repository standing in for the address.
+    #[tokio::test]
+    async fn an_outside_repository_is_checked_out_and_its_branch_kept_on_the_node_never_pushed() {
+        use super::super::relay::tests::fake;
+        const TINY: &str = "https://github.com/example/tiny";
+        let (root, fork) = a_fork_on("outside-fork", "develop", "---\n- hosts: all\n");
+        let (_, tiny) = a_fork_on("outside-tiny", "main", "print('tiny')\n");
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let told = recorded.clone();
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
+                            "cloud": true, "task": 940, "repo": TINY }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/tiny" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 0 }))
+                }
+                ("/v1/team/deliveries", _) => {
+                    // An HQ that, wrongly, says the branch is due: the node still pushes nothing.
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    said(
+                        200,
+                        json!({ "push": [{ "branch": 1, "task": 940, "name": branch["branch"],
+                                           "head": branch["head"], "base": branch["base"],
+                                           "scan": false }],
+                                "merge": [] }),
+                    )
+                }
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+                .with_repo(
+                    root.join("data"),
+                    fork.to_str().unwrap(),
+                    "develop",
+                    fork.to_str().unwrap(),
+                )
+                .with_push_key(root.join("fork.git").join("HEAD"))
+                .with_outside(TINY, tiny.to_str().unwrap()),
+        );
+        // 1. The checkout is of the outside repository's default branch, not the fork's.
+        let (status, said) = as_turn(&state, "rae", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (payload, _) = said["text"]
+            .as_str()
+            .unwrap()
+            .rsplit_once(" (receipt ")
+            .unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            (handed["branch"].as_str(), handed["head"].as_str()),
+            (
+                Some("main"),
+                Some(git_in(&tiny, &["rev-parse", "refs/heads/main"]).as_str())
+            )
+        );
+        // 2. A fix on the item's branch, HQ's own commit, submitted.
+        let file = root.join("tiny.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        git_in(&work, &["checkout", "-q", "-b", "hq/task-940-fix", "main"]);
+        std::fs::write(work.join("nas.yml"), "print('tiny, fixed')\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fix tiny\n\nMade-by: Endora HQ (Rae) for task #940",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-940-fix",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-940-fix", "why": "fixes tiny", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        assert!(text.contains("never pushed anywhere"), "{text}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (
+                told_hq["head"].as_str(),
+                told_hq["can_push"].clone(),
+                told_hq["repo"].clone()
+            ),
+            (Some(head.as_str()), json!(false), json!(TINY))
+        );
+        // Kept on the node, in the outside repository's own mirror; not in the fork's.
+        let mirror = state.lab.outside_mirror(TINY).unwrap();
+        assert_eq!(
+            git_in(
+                mirror.dir(),
+                &["rev-parse", "refs/submissions/hq/task-940-fix"]
+            ),
+            head
+        );
+        assert!(
+            state
+                .lab
+                .mirror(0)
+                .unwrap()
+                .head_of("hq/task-940-fix")
+                .is_err()
+        );
+        // 3. Delivery, told (wrongly) that it is due, pushes it nowhere.
+        super::super::delivery::deliver(&state, &[]);
+        for remote in [&tiny, &fork] {
+            assert_eq!(
+                git_in(remote, &["branch", "--list", "hq/task-940-fix"]),
+                "",
+                "{remote:?} has the branch"
+            );
+        }
+        let outcome = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/deliveries/1")
+            .map(|(_, _, b)| serde_json::from_str::<serde_json::Value>(b).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(outcome.len(), 1, "{outcome:?}");
+        assert_eq!(outcome[0]["ok"], false, "{outcome:?}");
+        // 4. Work naming an address that is not allowed is refused before anything is fetched.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository whose history is `size` bytes of noise, which no compression shrinks: a
+    /// checkout's bundle of it is about as big.
+    fn a_big_repository(name: &str, size: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (root, fork) = a_fork_on(name, "master", "print('big')\n");
+        let seed = root.join("seed");
+        let mut noise = Vec::with_capacity(size);
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        while noise.len() < size {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            noise.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(seed.join("noise.bin"), &noise).unwrap();
+        git_in(&seed, &["add", "."]);
+        git_in(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "noise",
+            ],
+        );
+        git_in(&seed, &["push", "-q", "origin", "HEAD:master"]);
+        (root, fork)
+    }
+
+    /// Set 3 of HQ's experiment (tasks 1051-1053): pyparsing's checkout is a 14.3 MB bundle,
+    /// about 19 MB as base64 in the answer's JSON, and the node read a contract's answer at
+    /// most 16 MiB to put its receipt after it: every checkout came back "the contract
+    /// failed". A checkout of that size now reaches the turn whole, with its receipt; the turn
+    /// still has only its own repository, and a stranger nothing. With
+    /// `ENDORA_PYPARSING_MIRROR` naming a copy of the node's pyparsing mirror, the real one is
+    /// checked out too.
+    #[tokio::test]
+    async fn a_checkout_the_size_of_pyparsings_reaches_the_turn_whole_and_only_its_own() {
+        use super::super::relay::tests::fake;
+        const BIG: &str = "https://github.com/example/big";
+        let (root, big) = a_big_repository("outside-big", 15 << 20);
+        let real = std::env::var("ENDORA_PYPARSING_MIRROR").ok();
+        let (hq_url, _) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
+                            "cloud": true, "task": 1051, "repo": BIG }),
+                ),
+                ("/v1/team/turn", "ann") => said(
+                    200,
+                    json!({ "run": 9, "member": "Ann", "left": 40_000, "cloud": true,
+                            "task": 1052, "repo": "https://github.com/pyparsing/pyparsing" }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/big" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let mut lab = LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+            .with_repo(
+                root.join("data"),
+                big.to_str().unwrap(),
+                "master",
+                big.to_str().unwrap(),
+            )
+            .with_outside(BIG, big.to_str().unwrap());
+        if let Some(real) = &real {
+            lab = lab.with_outside("https://github.com/pyparsing/pyparsing", real);
+        }
+        state.lab = Arc::new(lab);
+        let mut turns = vec![("rae", git_in(&big, &["rev-parse", "refs/heads/master"]))];
+        if let Some(real) = &real {
+            let real = std::path::Path::new(real);
+            turns.push(("ann", git_in(real, &["rev-parse", "refs/heads/master"])));
+        }
+        for (token, head) in turns {
+            let (status, said) =
+                as_turn(&state, token, REPO_CHECKOUT, json!({ "why": "start" })).await;
+            assert_eq!(status, StatusCode::OK, "{token}: {}", said["error"]);
+            let (payload, receipt) = said["text"]
+                .as_str()
+                .unwrap()
+                .rsplit_once(" (receipt ")
+                .unwrap();
+            assert_eq!(receipt, "r41)");
+            let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(handed["head"].as_str(), Some(head.as_str()), "{token}");
+            let bundle = repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap();
+            assert!(bundle.len() > 13 << 20, "{token}: {} bytes", bundle.len());
+            let file = root.join(format!("{token}.bundle"));
+            std::fs::write(&file, &bundle).unwrap();
+            let into = format!("{token}-work");
+            git_in(&root, &["clone", "-q", file.to_str().unwrap(), &into]);
+            assert_eq!(git_in(&root.join(&into), &["rev-parse", "HEAD"]), head);
+        }
+        // Only a public GitHub repository, and only the turn's own: a stranger has nothing.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        let (status, said) = as_turn(&state, "mallory", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{said}");
+        assert!(said["text"].is_null(), "{said}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

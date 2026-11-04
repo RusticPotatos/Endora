@@ -1,5 +1,11 @@
 //! The explicit team tool-contract boundary, independent of MCP transport dates.
 
+/// The most a node contract's answer may be, as the node writes it and the worker reads it: a
+/// checkout carries its bundle (at most 32 MiB) as base64 in the answer's JSON, 4/3 of it, with
+/// room for the rest. Set 3 of HQ's experiment found two smaller caps below pyparsing's 19 MB
+/// checkout (the node's 16 MiB, ureq's 10 MB), each failing it as something else.
+pub const CONTRACT_ANSWER_MOST: usize = 48 * 1024 * 1024;
+
 /// Validate the supported canonical team route without printing configured URLs.
 /// # Errors
 /// An old or unsupported endpoint, before any worker request.

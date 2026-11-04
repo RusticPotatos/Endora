@@ -13,7 +13,7 @@ use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools_in};
 use crate::application::receipt_ports::ReceiptStore;
-use crate::domain::{MemberId, ProjectId, Refusal, Role, TaskId, TaskStatus, WakeReason};
+use crate::domain::{MemberId, ProjectId, Refusal, TaskId, TaskStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -40,8 +40,8 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// A lead, a developer on the house's model, and a Holodeck project that gives its work the
 /// scenario tool alone.
 fn holodeck(hq: &Hq<'_>) -> (MemberId, ProjectId) {
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq.set_goal("Holodeck", "", Author::Owner).unwrap();
     let project = hq.add_project(goal, "Chess", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
@@ -101,7 +101,8 @@ fn a_match_is_played_through_its_tool_alone_and_no_word_closes_it() {
     offered.sort();
     assert_eq!(
         offered,
-        ["claim", "my_turn", "post", "scenario", "set_status"]
+        // The game is the member's: no protocol moves (D30).
+        ["post", "scenario", "set_status"]
     );
     assert!(!hq.may_use_a_shell(run.id).unwrap());
     use_tool(&hq, &w, "claim", &json!({ "task": game.0 })).unwrap();
@@ -189,8 +190,8 @@ fn a_scenario_starts_only_in_a_project_that_gives_it_the_tool_alone() {
 /// Three members on the house's models, and a Holodeck project for scenarios.
 fn crew(hq: &Hq<'_>) -> ([MemberId; 3], ProjectId) {
     let (dev, project) = holodeck(hq);
-    let zed = hq.hire("Zed", Role::Developer, 40, 2, 4).unwrap();
-    let rae = hq.hire("Rae", Role::Developer, 40, 2, 4).unwrap();
+    let zed = hq.hire("Zed", 40, 2, 4).unwrap();
+    let rae = hq.hire("Rae", 40, 2, 4).unwrap();
     ([dev, zed, rae], project)
 }
 
@@ -429,13 +430,6 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
     for c in &contexts {
         hq.runner().finish(c.run, true);
     }
-    let decided_before = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .iter()
-        .filter(|w| w.reason == WakeReason::Decide)
-        .count();
     for _ in 0..40 {
         clock.0.fetch_add(15 * 60 * 1000, Ordering::SeqCst);
         hq.tick().unwrap();
@@ -448,14 +442,6 @@ fn the_stuck_work_guards_leave_a_scenario_alone() {
         .map(|t| hq.store().task(*t).unwrap().unwrap().status)
         .collect();
     assert!(!statuses.contains(&TaskStatus::Blocked), "{statuses:?}");
-    let decided = hq
-        .store()
-        .wakes()
-        .unwrap()
-        .iter()
-        .filter(|w| w.reason == WakeReason::Decide)
-        .count();
-    assert_eq!(decided, decided_before, "no lead woken to decide it");
 }
 
 // A world that has ended with its tasks still open (as live, when its end came from a rule

@@ -1,10 +1,12 @@
-//! Caps on a runaway (ADR 0133), in the engine: a member's day of turns on the house's own
-//! models, which cost nothing and so are bounded by nothing else, and the tripwire that stops the
-//! team itself when it starts more turns in ten minutes than any real work does.
+//! Caps on a runaway (ADR 0133), in the engine: a member's waste of turns on the house's own
+//! models, which cost nothing and so are bounded by nothing else (ten in a row today that showed
+//! nothing; amended 2026-11-01, D15, in place of sixty turns a day whatever they did), and the
+//! tripwire that stops the team itself when it starts more turns in ten minutes than any real
+//! work does.
 //!
 //! The scripted demo ran 1,539 turns in 3 h 40 min, and until now only the owner could pull the
 //! kill switch: the plan's tripwires were never built. Both caps are on from the start, because a
-//! runaway is what they are for. The first loses nothing (a turn over its member's day waits for
+//! runaway is what they are for. The first loses nothing (a turn past its member's waste waits for
 //! the day to turn, like a turn waiting for budget or for the Mac); the second stops the team the
 //! way the owner's switch does, with one card on the desk saying who started how many, and the
 //! owner resumes it as ever. A scripted team (the demo) is exempt from both.
@@ -33,10 +35,9 @@ pub(super) const TRIPPED: &str = "stopped by the runaway tripwire";
 pub(super) struct Starts {
     /// Every turn started in the tripwire's window: who, and when.
     recent: Vec<(MemberId, Millis)>,
-    /// How many turns each member has started today on the house's own models.
-    free_today: HashMap<MemberId, usize>,
-    /// Today's first moment, and the first moment after it, by the owner's day.
-    today: (Millis, Millis),
+    /// How many of each member's turns today on the house's own models, newest back, showed
+    /// nothing: a turn that did something sets it back to none.
+    wasted_today: HashMap<MemberId, usize>,
     /// When the owner last resumed the team.
     since: Millis,
     /// The team is scripted (the demo): neither cap applies to it.
@@ -44,19 +45,14 @@ pub(super) struct Starts {
 }
 
 impl Starts {
-    /// How many turns `run`'s member has started today on the house's own models, the turn being
-    /// placed aside: one that started earlier today and is placed again (a retry) is counted
-    /// once, not against itself.
-    pub(super) fn free_turns_of(&self, run: &Run) -> usize {
+    /// How many of `run`'s member's turns today on the house's own models, newest back, showed
+    /// nothing (ADR 0133, amended 2026-11-01). A turn still to settle, or that never started,
+    /// says nothing either way and is passed over.
+    pub(super) fn free_turns_wasted_of(&self, run: &Run) -> usize {
         if self.exempt {
             return 0;
         }
-        let taken = self.free_today.get(&run.member).copied().unwrap_or(0);
-        let counted = run
-            .started_at
-            .is_some_and(|at| self.today.0 <= at && at < self.today.1)
-            && run.brain.is_some_and(Brain::house);
-        taken - usize::from(counted)
+        self.wasted_today.get(&run.member).copied().unwrap_or(0)
     }
 
     /// The runaway the team has come to, if starting one more turn would make one.
@@ -67,19 +63,10 @@ impl Starts {
         caps::runaway(&self.recent, now, self.since)
     }
 
-    /// A turn of `member`'s just started on `brain`; `in_a_world` when it plays a scenario, which
-    /// its world bounds and the day's cap does not count.
-    pub(super) fn started(
-        &mut self,
-        member: MemberId,
-        brain: Brain,
-        now: Millis,
-        in_a_world: bool,
-    ) {
+    /// A turn of `member`'s just started: the tripwire counts it. What it comes to is known only
+    /// once it ends, so the check on waste reads it then.
+    pub(super) fn started(&mut self, member: MemberId, now: Millis) {
         self.recent.push((member, now));
-        if brain.house() && !in_a_world {
-            *self.free_today.entry(member).or_insert(0) += 1;
-        }
     }
 }
 
@@ -99,15 +86,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .unwrap_or(Millis::MIN);
         let mut starts = Starts {
             recent: Vec::new(),
-            free_today: HashMap::new(),
-            today,
+            wasted_today: HashMap::new(),
             since,
             exempt: self.settings.scripted,
         };
         // A scenario's turns are bounded by its world (its move limit, its re-wakes), not by its
         // player's day: live, the league's black side waited for tomorrow mid-game (2026-10-26).
         let mut worlds: HashMap<crate::domain::TaskId, bool> = HashMap::new();
-        for run in self.store.runs()? {
+        let mut runs = self.store.runs()?;
+        runs.sort_by_key(|r| (r.started_at, r.id));
+        // A turn that kept new work on its item moved it (D12), whatever its label says.
+        let mut branches = self.store.branches()?;
+        branches.sort_by_key(|b| b.id);
+        for run in runs {
             let Some(at) = run.started_at else {
                 continue;
             };
@@ -128,8 +119,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 },
                 None => false,
             };
-            if !in_a_world {
-                *starts.free_today.entry(run.member).or_insert(0) += 1;
+            // Oldest first: a turn that showed nothing adds one, a turn that did something sets
+            // the member's run of waste back to none, and one not settled says nothing.
+            if in_a_world {
+                continue;
+            }
+            let kept = run.task.is_some_and(|task| {
+                let of_it: Vec<_> = branches
+                    .iter()
+                    .filter(|b| b.task == task)
+                    .cloned()
+                    .collect();
+                crate::domain::handover::kept_new_work(&of_it, run.id.0)
+            });
+            match run.label {
+                Some(label) if kept || label.productive() => {
+                    starts.wasted_today.insert(run.member, 0);
+                }
+                Some(_) => *starts.wasted_today.entry(run.member).or_insert(0) += 1,
+                None => {}
             }
         }
         Ok(starts)

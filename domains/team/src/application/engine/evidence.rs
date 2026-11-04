@@ -163,7 +163,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let waits = task.map(|t| t.waits_on.clone()).unwrap_or_default();
         if cited.iter().map(Vec::len).sum::<usize>() > evidence::MOST_REFS {
-            return Err(EngineError::Refused(Refusal::TooLong(evidence::MOST_REFS)));
+            return Err(EngineError::Refused(Refusal::TooMany {
+                most: evidence::MOST_REFS,
+                of: "references",
+            }));
         }
         let mut all = Vec::new();
         for group in cited {
@@ -293,7 +296,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reads "needs re-check" and does not count.
     ///
     /// # Errors
-    /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
+    /// [`Refusal::TooMany`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
     pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
         let _held = self.held();
         self.set_criteria_held_lock(task, criteria)
@@ -361,7 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// done means. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`] and what [`Engine::add_task`] refuses.
+    /// [`Refusal::NoCriteria`], [`Refusal::TooMany`] and what [`Engine::add_task`] refuses.
     pub fn create_task_in(
         &self,
         run: RunId,
@@ -397,7 +400,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// as it is.
     ///
     /// # Errors
-    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooLong`] past
+    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooMany`] past
     /// [`evidence::MOST_CRITERIA`]; and as [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
         let _held = self.held();
@@ -703,29 +706,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Who a briefing's turn on a task is, for the checking path: what the tester is told on
-    /// work submitted, and the lead on work to accept.
+    /// work submitted.
     pub(super) fn checking_said(&self, member: &Member, run: &Run, task: &Task) -> Done<String> {
         let reason = self.reason_for(run)?;
         let cloud = member.brain.cloud();
-        if reason == WakeReason::AcceptanceAsked.name() {
-            let tested = self.cited_said(task, TESTED, cloud)?;
-            let mut told = String::new();
-            if tested.is_empty() {
-                told.push_str("Nobody else tests this work: you accept it alone.\n");
-            } else {
-                told.push_str(&format!("The tester passed it on this evidence:\n{tested}"));
-            }
-            let submitted = self.cited_said(task, SUBMITTED, cloud)?;
-            if !submitted.is_empty() {
-                told.push_str(&format!("Its member submitted it on:\n{submitted}"));
-            }
-            told.push_str(
-                "Accept it against its criteria with accept (verdict accept, evidence one list \
-                 per criterion: receipts, the tester's among them, count as fresh), or send it \
-                 back with exactly what does not hold.\n",
-            );
-            return Ok(told);
-        }
         if reason == WakeReason::ReviewRequested.name() && !self.is_draft(task)? {
             let submitted = self.cited_said(task, SUBMITTED, cloud)?;
             if submitted.is_empty() {

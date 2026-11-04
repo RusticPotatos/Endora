@@ -4,6 +4,13 @@
 
 Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
 
+Amended 2026-11-04 by the owner (frontend only): the HQ screen draws a small research studio in place
+of the open floor: areas told apart by floors, glass stubs and steps; desks under the board lit only
+for a running turn; the owner's corner with the desk, the kill switch, the day's spend and the review
+table; the library alcove; the lounge with the chess table (`47f-hq-studio.js`; the place is in
+[where-things-go](../where-things-go.md)). The office's items, proposals and history stay as data and
+are no longer drawn. Nothing in the engine changed.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amends
 [0118](0118-elastic-staffing-and-notebooks.md) (downtime, and what a downtime turn may write in a
 notebook) and [0102](0102-endora-hq.md)'s office view (the walled wing and the four anonymous

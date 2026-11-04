@@ -42,8 +42,10 @@ const ASK_AT_MOST: usize = 1200;
 const NAMES_AT_MOST: usize = 12;
 
 /// The most a cloud model may say in one round. The relay lowers it to what the turn can
-/// still pay for; a round's answer is a few sentences and tool calls, far less than this.
-const MOST_A_REPLY: u32 = 4096;
+/// still pay for; a round's answer is a few sentences and tool calls, far less than this, but
+/// a whole file written in one call can pass 4,096 (1.5% of turns, 29 Oct to 2 Nov), and a
+/// reply cut there fails the turn.
+const MOST_A_REPLY: u32 = 8192;
 
 /// The most a house model may say in one round: it costs nothing, and a reasoning model
 /// thinking over a chess move overran the cloud's limit (8 of 441 house turns, 23-26 Oct, each
@@ -93,6 +95,12 @@ pub struct Setup {
     /// turn ends and goes on in a fresh one (ADR 0142, amended 2026-10-30). See
     /// [`prompt_budget_for`].
     pub prompt_budget: usize,
+    /// Whether [`Self::prompt_budget`] holds the conversation itself, each byte counted once,
+    /// rather than every call's prompt summed: on a brain whose provider caches the part a call
+    /// repeats (Claude, DeepSeek), a resend costs little, and the sum counted a 50 KB conversation
+    /// as 238 KB (Rae on 955, 1 Nov). A house model on the NAS or the Mac reads every resend
+    /// again, slowly, so its turns still sum them.
+    pub counts_conversation: bool,
     /// Where the workbench's shell runs, when the worker is in the workbench; `None` anywhere
     /// else, where it has no shell.
     pub workbench: Option<std::path::PathBuf>,
@@ -191,8 +199,8 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     // A contract named like a team tool is left out: the name goes to HQ, as it always did.
     // The wing's git (ADR 0115) is offered only in the workbench, where there is a git and a
     // /work to unpack the fork into: the bundles are the worker's to carry, never the model's.
-    let contracts: Vec<Value> = node
-        .list()?
+    let (listed_on_the_node, unlisted) = node.listing()?;
+    let contracts: Vec<Value> = listed_on_the_node
         .into_iter()
         .filter(|c| !offered.iter().any(|t| t["name"] == c["name"]))
         .filter(|c| setup.workbench.is_some() || !is_repo_tool(c["name"].as_str().unwrap_or("")))
@@ -213,6 +221,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         calls: Vec::new(),
     };
     offered.extend(contracts);
+    mark_up_front(&mut offered, &listed);
     // In the workbench, the sandbox's own shell: run here, never sent to HQ or the node, so a
     // tool of theirs named the same is left out.
     let shell = setup
@@ -248,6 +257,16 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             briefing.trim_end()
         );
     }
+    // A node that could not list its tools is said, never left for the model to guess at.
+    if let Some(why) = unlisted {
+        briefing = format!(
+            "{}\n\nThe node's tools could not be listed for this turn ({}), so none of them is \
+             offered: repo_checkout, repo_submit and the home lab's tools are missing from this \
+             turn, not gone from Endora. Say so in the task's thread rather than work around it.",
+            briefing.trim_end(),
+            at_most(&why, 200)
+        );
+    }
     let model = Model::new(setup);
     // The turn's task as a gist call is told it (ADR 0142, amended 2026-10-30).
     let task_told = crate::gist::task_of_turn(&briefing);
@@ -273,13 +292,30 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         // What the turn has read so far: every call's body, summed (ADR 0142, amended
         // 2026-10-30, after Ralph: every pass fits one fresh context window).
         let mut read = 0usize;
-        for round in 0..setup.most_rounds {
+        // The rounds counted against the turn's, and those spent only on asking find_tools for
+        // tools already offered, which cost the turn none (D30), up to [`FREE_ROUNDS`].
+        let (mut round, mut free) = (0u32, 0u32);
+        while round < setup.most_rounds {
+            let calls_made = round + free;
             let next = talk.body(&setup.model).to_string().len();
-            if !has_room(round, read, next, setup.prompt_budget) {
+            // Counting the conversation, what the turn has read is the conversation it last sent.
+            let so_far = if setup.counts_conversation { 0 } else { read };
+            if !has_room(calls_made, so_far, next, setup.prompt_budget) {
+                let reached = if setup.counts_conversation {
+                    format!(
+                        "The turn's conversation reached its budget ({next} bytes after \
+                         {calls_made} calls, of {})",
+                        setup.prompt_budget
+                    )
+                } else {
+                    format!(
+                        "The turn's prompt reached its budget ({read} bytes read over \
+                         {calls_made} calls, of {})",
+                        setup.prompt_budget
+                    )
+                };
                 let line = format!(
-                    "The turn's prompt reached its budget ({read} bytes read over {round} calls, \
-                     of {}): it ends here, and goes on in a fresh turn from HQ's handover. {}",
-                    setup.prompt_budget,
+                    "{reached}: it ends here, and goes on in a fresh turn from HQ's handover. {}",
                     did.line()
                 );
                 // What the sandbox holds is kept for the next turn (ADR 0142, amended
@@ -314,13 +350,19 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 last_word(&mut hq, task, said.text.trim(), &did.line())?;
                 return Ok(Taken::Answered);
             }
+            // The owner watches the turn as it works (ADR 0129, amended 2026-11-01): what it
+            // thought, said and called this round, told before its calls run.
+            node.tell_conversation("worker", &talk.as_text());
             if !said.text.trim().is_empty() {
                 on_the_way.push(said.text.trim().to_owned());
             }
             let mut replies = Vec::new();
+            // Whether every call this round only asked for tools the turn already has.
+            let mut only_already = true;
             for call in &said.calls {
                 if call.name == FIND_TOOLS {
                     let (found, mut reply) = find(&mut deferred, &talk.offered(), &call.arguments);
+                    only_already &= found.is_empty() && reply.text.starts_with(ALREADY_YOURS);
                     if let Some(rules) = rules_for_found(&found, &mut rules_later) {
                         reply.text = format!("{}\n\nThe rules for these tools:{rules}", reply.text);
                     }
@@ -328,6 +370,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                     replies.push((call.id.clone(), reply));
                     continue;
                 }
+                only_already = false;
                 let reply = match (&shell, setup.workbench.as_deref()) {
                     (Some(shell), _) if call.name == SHELL => in_the_shell(shell, &mut did, call),
                     (_, Some(dir)) if is_repo_tool(&call.name) => in_the_repo(
@@ -363,6 +406,13 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         talk.gist(&call.id, gist);
                     }
                 }
+                let mut reply = reply;
+                // A result the model asked for whole (`"raw": true`) is read whole, as it asked.
+                let asked_whole =
+                    arguments(&call.arguments).is_ok_and(|args| crate::gist::wants_raw(&args));
+                if !asked_whole {
+                    reply.text = for_the_model(setup.api, &call.name, &on_the_node, reply.text);
+                }
                 let ended = if reply.asked {
                     Some(Taken::AskedTheOwner)
                 } else if reply.moved_on {
@@ -378,6 +428,11 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 }
             }
             talk.answered(replies);
+            if only_already && free < FREE_ROUNDS {
+                free += 1;
+                continue;
+            }
+            round += 1;
         }
         // Out of rounds, what it found so far goes in the thread, said to be unfinished: else
         // the next turn starts again from the thread alone.
@@ -388,12 +443,34 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             did.line()
         );
         let room = POST_AT_MOST.saturating_sub(line.chars().count() + 2);
-        last_word(&mut hq, task, &newest(&on_the_way, room), &line)?;
+        let words = newest(&on_the_way, room);
+        if words.is_empty() {
+            // Nothing said beside its calls: the line goes alone, so the thread still says the
+            // rounds ran out and what the turn did (run 5266 ended so, and the thread never said).
+            let alone = format!(
+                "The turn's {} rounds ran out before it finished, with nothing said on the way. {}",
+                setup.most_rounds,
+                did.line()
+            );
+            said_last(&mut hq, task, &alone, false)?;
+        } else {
+            last_word(&mut hq, task, &words, &line)?;
+        }
         Ok(Taken::OutOfRounds)
     })();
-    // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended: the
-    // node scrubs it of secrets on the way.
-    node.tell_conversation("worker", &talk.as_text());
+    // What the turn said is kept by HQ for a while (ADR 0129), however the turn ended, and
+    // ends saying how (measured before building, 2 Nov): the node scrubs it of secrets on the way.
+    let (how, why) = match &taken {
+        Ok(Taken::Answered) => ("answered", String::new()),
+        Ok(Taken::MovedOn) => ("moved on", String::new()),
+        Ok(Taken::AskedTheOwner) => ("asked the owner", String::new()),
+        Ok(Taken::OutOfRounds) => ("out of rounds", String::new()),
+        Ok(Taken::OutOfRoom) => ("out of room", String::new()),
+        Err(Stopped::Over(why)) => ("over", quiet(why, &setup.token)),
+        Err(Stopped::Failed(why)) => ("failed", quiet(why, &setup.token)),
+    };
+    let text = talk.as_text() + &crate::transcript::ended(how, &why);
+    node.tell_conversation("worker", &text);
     taken
 }
 
@@ -512,6 +589,13 @@ const ON_A_TASK: [&str; 4] = [
 /// review turn's verdict, a match's tool. It grants nothing: HQ decides every call.
 const UP_FRONT: &str = "endora/up_front";
 
+/// How `find_tools` begins its answer when every tool asked for is already the turn's.
+const ALREADY_YOURS: &str = "Already yours";
+
+/// The most rounds of a turn that cost it nothing because they only asked `find_tools` for tools
+/// it already had (D30 of round 3): past these, such a round counts like any other.
+const FREE_ROUNDS: u32 = 2;
+
 /// The most tools one `find_tools` call brings in by name.
 const NAMED_AT_MOST: usize = 8;
 
@@ -563,6 +647,20 @@ fn rules_for_found(found: &[Value], rules_later: &mut Option<String>) -> Option<
         return None;
     }
     rules_later.take().filter(|r| !r.trim().is_empty())
+}
+
+/// HQ's mark on the node's tools a turn is offered up front (D27 of round 3), which it cannot
+/// put on a tool it does not list: the names in its listing's own `_meta`, put on each such
+/// tool as the mark HQ puts on its own. Only what is offered is marked; the mark grants nothing.
+pub(crate) fn mark_up_front(offered: &mut [Value], listed: &Value) {
+    let Some(names) = listed["_meta"][UP_FRONT].as_array() else {
+        return;
+    };
+    for tool in offered.iter_mut() {
+        if names.iter().any(|n| *n == tool["name"]) {
+            tool["_meta"] = json!({ UP_FRONT: true });
+        }
+    }
 }
 
 /// Whether a house turn is offered `tool` in its first call: HQ's core, what HQ marks for the
@@ -707,7 +805,20 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
             not_ours.push(name);
         }
     }
-    let (searched, mut text) = search(deferred, parsed["query"].as_str().unwrap_or(""));
+    let query = parsed["query"].as_str().unwrap_or("");
+    let (searched, mut text) = search(deferred, query);
+    // A search that finds nothing new but names a tool the turn already has says so (D30).
+    if searched.is_empty() {
+        let offered_matching = matching(offered, query);
+        if !offered_matching.is_empty() {
+            text = String::new();
+            for name in offered_matching {
+                if !already.contains(&name) {
+                    already.push(name);
+                }
+            }
+        }
+    }
     found.extend(searched);
     let line = |t: &Value| {
         let about = t["description"].as_str().unwrap_or("");
@@ -721,7 +832,10 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
         );
     }
     if !already.is_empty() {
-        text.push_str(&format!("\nAlready yours: {}.", already.join(", ")));
+        text.push_str(&format!(
+            "\n{ALREADY_YOURS}: {}. Call it directly.",
+            already.join(", ")
+        ));
     }
     if !not_ours.is_empty() {
         text.push_str(&format!(
@@ -738,6 +852,27 @@ fn find(deferred: &mut Vec<Value>, offered: &[String], given: &Value) -> (Vec<Va
             moved_on: false,
         },
     )
+}
+
+/// The names in `offered` that `query` names, every part of the name a word of it ("repo
+/// checkout" names `repo_checkout`): a search for a tool the turn already has.
+fn matching(offered: &[String], query: &str) -> Vec<String> {
+    let query = query.to_lowercase();
+    let words: Vec<&str> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    offered
+        .iter()
+        .filter(|name| *name != FIND_TOOLS)
+        .filter(|name| {
+            let name = name.to_lowercase();
+            name.split('_')
+                .filter(|part| !part.is_empty())
+                .all(|part| words.contains(&part))
+        })
+        .cloned()
+        .collect()
 }
 
 /// The deferred tools that best match `query`, taken out of `deferred`, and what the model is
@@ -800,8 +935,8 @@ fn lab_rules(on_the_node: &[String]) -> String {
         } else {
             told.push_str(&format!(
                 "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: \
-                 {}. Whatever your role, look with them yourself before you hand anything on, \
-                 and never say you cannot read the home lab.\n",
+                 {}. Look with them yourself before you move anything on, and never say you \
+                 cannot read the home lab.\n",
                 lab.join(", ")
             ));
         }
@@ -824,8 +959,8 @@ fn lab_rules(on_the_node: &[String]) -> String {
              serves none of them is refused, and never reaches the desk.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
              never try to work around a refusal.\n\
-             - A question about the home lab goes to the team's reviewer first, who checks every \
-             claim and container name against these tools: say only what you saw.\n\
+             - Say about the home lab only what these tools showed you, naming its containers as \
+             they name them.\n\
              - Report something as a problem only when a tool shows it causing harm: an item \
              stuck in a queue, a container down or unhealthy, a failure that repeats. Errors or \
              odd lines in a log are evidence to explain, not problems in themselves. Normal \
@@ -870,18 +1005,19 @@ pub(crate) fn instructions(
         "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
          from there.\n\
          3. End the turn with exactly one of these: move the task on with set_status and say \
-         why; create sub-tasks for members below you when the work needs them; or put a \
-         concrete plan or question with ask_owner, which goes to whoever your briefing says \
-         is above you (asking ends your turn, and you are woken when they answer).",
+         why; create sub-tasks of your own when the work needs them; or put a concrete plan or \
+         question to the owner with ask_owner (asking ends your turn, and you are woken when \
+         they answer).",
     );
     told.push_str(&lab_rules(on_the_node));
     if shell {
         told.push_str(
-            "\n\nYou have a real shell in a disposable sandbox: run commands, git and \
-             python there with the shell tool, and say why. The sandbox is offline: neither the \
-             internet nor the house's services are reachable from the shell, so use the house \
-             through the team's tools. Anything you leave in /work is gone when the \
-             turn ends: write durable findings in the task's thread",
+            "\n\nYou have a real shell in a sandbox: run commands, git and \
+             python there with the shell tool, and say why. The sandbox has no internet, and the \
+             house's services are not reachable from the shell, so use the house through the \
+             team's tools. Your sandbox keeps the item's work between turns; /work/repo is \
+             there if a turn checked it out. What the team must know still goes in the task's \
+             thread",
         );
         told.push_str(if lessons {
             ", or as a story with tell_story."
@@ -899,8 +1035,8 @@ pub(crate) fn instructions(
              in /work/repo, on top of its base, and you read it in the shell: git log, git diff \
              against the base, the files themselves. Cite that checkout's receipt (receipt r12) \
              as a reading of your own, with the check's, when you pass the work or send it back. \
-             You read; you submit and push nothing, and what you leave in /work is gone when \
-             the turn ends. Never cite or copy from group_vars/*.yml, host_vars or any \
+             You read; you submit and push nothing. Never cite or copy from group_vars/*.yml, \
+             host_vars or any \
              inventory: they hold the owner's own values.",
         );
     } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
@@ -938,8 +1074,9 @@ pub(crate) fn instructions(
          Each result of Endora's tools names its receipt (receipt r12): cite those ids in \
          `evidence`, one list per criterion, when you submit with set_status in_review or close \
          a routine's check as done; anything about the lab now needs a reading taken this turn, \
-         never memory or another member's word. The tester then re-checks it with her own \
-         readings, and the lead accepts it. A post that states a finding cites what it rests \
+         never memory or another member's word. HQ judges it from the record, its checks and \
+         the receipts you cite, never from what you say. A post that states a finding cites \
+         what it rests \
          on. Keep it short, and never say you did what you did not do. When your part is done, \
          stop calling tools and reply in one or two sentences.",
     );
@@ -1021,6 +1158,45 @@ fn said_of_the_branch(
          `git add -A && git commit -m \"what and why\"`, then repo_submit with that branch. \
          Never edit, cite or copy from group_vars/*.yml, host_vars or any inventory: they \
          hold the owner's own values, and a branch touching them is refused."
+    )
+}
+
+/// What the model reads when the checkout it asked for is already in its sandbox, kept from an
+/// earlier turn on the item (ADR 0142, amended 2026-11-01): where it stands, and how to have the
+/// node's latest or start over instead. Nothing was fetched.
+pub(crate) fn said_already_there(there: &repo::AlreadyThere, asked: Option<&str>) -> String {
+    let at = &there.head[..12.min(there.head.len())];
+    let (path, on) = (there.path.display(), &there.on);
+    let uncommitted = match there.uncommitted {
+        0 => String::new(),
+        1 => ", with 1 uncommitted change".to_owned(),
+        n => format!(", with {n} uncommitted changes"),
+    };
+    let other = match asked {
+        Some(branch) if branch != on => {
+            format!(" {branch} is a branch here: `cd {path} && git checkout {branch}`.")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "Already checked out: your sandbox kept it from an earlier turn on this item. {path} is \
+         on {on} at {at}{uncommitted}.{other} Go on from it; do not check out again. For the \
+         node's latest beside your work (as node/<branch>, nothing of yours changed), call \
+         repo_checkout with refresh: true; to start over, remove {path} in the shell first."
+    )
+}
+
+/// What the model reads after the node's latest was fetched into its kept checkout: the names
+/// fetched, beside its work, and how to take them.
+fn said_after_refresh(fetched: &[String], base: &str, receipt: &str) -> String {
+    format!(
+        "Fetched the node's latest into your checkout, beside your work{receipt}: {}. Nothing \
+         of yours changed. To build on it: `git rebase node/{base}`.",
+        if fetched.is_empty() {
+            "nothing new".to_owned()
+        } else {
+            fetched.join(", ")
+        }
     )
 }
 
@@ -1143,6 +1319,35 @@ pub(crate) fn in_the_repo(
             moved_on: false,
         });
     }
+    // The sandbox keeps the item's work between turns (ADR 0142, amended 2026-11-01): a checkout
+    // a member who may submit already has is not made again over it, unless it asks for the
+    // node's latest. A reviewer reads what was submitted, and has it from the node every time.
+    let asked = args["branch"]
+        .as_str()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    let refresh = args["refresh"] == true;
+    if can_submit && !refresh {
+        if let Some(there) = repo::already_there(dir, asked) {
+            if let Err(why) = repo::adopt(dir, member, task) {
+                did.note(&call.name, &args, Outcome::Failed);
+                return Ok(refused(format!(
+                    "the kept checkout could not be taken over: {why}"
+                )));
+            }
+            did.calls.push((
+                "found the fork checked out already".to_owned(),
+                true,
+                Outcome::Done,
+            ));
+            return Ok(Reply {
+                text: said_already_there(&there, asked),
+                refused: false,
+                asked: false,
+                moved_on: false,
+            });
+        }
+    }
     let sent = json!({ "branch": args["branch"], "why": args["why"] });
     let (said, outcome, _) = node.call(REPO_CHECKOUT, &sent)?;
     if outcome != Outcome::Done {
@@ -1162,6 +1367,25 @@ pub(crate) fn in_the_repo(
         bundle,
         receipt,
     } = handed;
+    if refresh && can_submit && repo::already_there(dir, None).is_some() {
+        return match repo::refresh(dir, &bundle) {
+            Ok(fetched) => {
+                did.note(&call.name, &args, Outcome::Done);
+                Ok(Reply {
+                    text: said_after_refresh(&fetched, &base, &receipt),
+                    refused: false,
+                    asked: false,
+                    moved_on: false,
+                })
+            }
+            Err(why) => {
+                did.note(&call.name, &args, Outcome::Failed);
+                Ok(refused(format!(
+                    "the node's latest could not be fetched: {why}"
+                )))
+            }
+        };
+    }
     match repo::checkout(dir, &bundle, &branch, &base, kept, member, task) {
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
@@ -1257,6 +1481,10 @@ struct Said {
     message: Value,
     /// The provider stopped at its output/context limit, so this proposal is incomplete.
     limit_reached: bool,
+    /// Why the provider says the reply stopped (`end_turn`, `tool_use`, `max_tokens`, `stop`,
+    /// `length`), and how many tokens it wrote: for the transcript alone.
+    stop: String,
+    tokens_out: Option<u64>,
 }
 
 /// What the worker answers one call with.
@@ -1294,6 +1522,12 @@ struct Talk {
     /// The tools it started with and those held back, by name, as the conversation HQ keeps
     /// begins (`transcript::tools`): what the model was given, for the owner's replay.
     given_tools: String,
+    /// What an OpenAI-shaped model reasoned before a reply, by the reply's place in
+    /// `messages`: kept for the owner's replay (ADR 0129, amended 2026-11-01), never sent back.
+    thoughts: std::collections::HashMap<usize, Value>,
+    /// Why each reply stopped and what it wrote, by the reply's place in `messages`: kept for
+    /// the transcript ([`crate::transcript::REPLY`]), never sent back.
+    replies: std::collections::HashMap<usize, Value>,
 }
 
 /// How many of its newest results a house turn reads whole (ADR 0142, amended 2026-10-30): the
@@ -1322,6 +1556,8 @@ impl Talk {
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
+                thoughts: std::collections::HashMap::new(),
+                replies: std::collections::HashMap::new(),
             },
             Api::Anthropic => Self {
                 api,
@@ -1333,6 +1569,8 @@ impl Talk {
                 cut: std::collections::HashMap::new(),
                 gists: std::collections::HashMap::new(),
                 given_tools: String::new(),
+                thoughts: std::collections::HashMap::new(),
+                replies: std::collections::HashMap::new(),
             },
         }
     }
@@ -1415,9 +1653,22 @@ impl Talk {
 
     /// The conversation so far as plain text (ADR 0129), in the shape of the API it was held in.
     fn as_text(&self) -> String {
+        let mut messages = self.messages.clone();
+        for (at, reply) in &self.replies {
+            if let Some(m) = messages.get_mut(*at) {
+                m[crate::transcript::REPLY] = reply.clone();
+            }
+        }
         let said = match self.api {
-            Api::OpenAi => crate::transcript::openai(&self.messages),
-            Api::Anthropic => crate::transcript::anthropic(&self.system, &self.messages),
+            Api::OpenAi => {
+                for (at, thought) in &self.thoughts {
+                    if let Some(m) = messages.get_mut(*at) {
+                        m[crate::transcript::THOUGHT] = thought.clone();
+                    }
+                }
+                crate::transcript::openai(&messages)
+            }
+            Api::Anthropic => crate::transcript::anthropic(&self.system, &messages),
         };
         format!("{}{said}", self.given_tools)
     }
@@ -1427,7 +1678,20 @@ impl Talk {
     /// calls cut, as the repeat guard knows them (`tool {args}`), so that one asked again is
     /// answered in full.
     fn said(&mut self, said: &Said) -> Vec<String> {
-        self.messages.push(said.message.clone());
+        let mut message = said.message.clone();
+        if let Some(thought) = message
+            .as_object_mut()
+            .and_then(|m| m.remove(crate::transcript::THOUGHT))
+        {
+            self.thoughts.insert(self.messages.len(), thought);
+        }
+        if !said.stop.is_empty() {
+            self.replies.insert(
+                self.messages.len(),
+                json!({ "stop": said.stop, "out": said.tokens_out }),
+            );
+        }
+        self.messages.push(message);
         let Some(keep) = self.keep_whole else {
             return Vec::new();
         };
@@ -1573,6 +1837,49 @@ fn stub(tool: &str, args: &Value, text: &str) -> String {
         at_most(&args.to_string(), STUB_SAYS_AT_MOST),
         text.chars().count(),
         at_most(gist, STUB_SAYS_AT_MOST)
+    )
+}
+
+/// The most one result of the lab's or the shell's adds to a turn, in bytes (D20 of round 3).
+/// On every API: DeepSeek's turns go the house's way and filled their budget the same way (Rae,
+/// 238 KB over 7 calls on 955, 1 Nov). A Claude turn reads every result whole, its prompt cached, and its budget sums every
+/// call's whole prompt: a 16 KB listing read at the second call was counted again on each call
+/// after it, and Ada's Haiku turns on 949 ended at the budget after 6 or 7 calls, every turn.
+pub(crate) const RESULT_AT_MOST: usize = 6 * 1024;
+
+/// Of a result cut to [`RESULT_AT_MOST`], how much of its end is kept: its last lines, where a
+/// command's exit, a log's newest lines and the receipt are.
+const RESULT_END_KEPT: usize = 1024;
+
+/// A result as the model reads it: one from the shell or the node's lab tools (`on_the_node`)
+/// past [`RESULT_AT_MOST`] keeps its start and its end, and says what was left out and how to
+/// ask for less, whichever API the turn is on. HQ's own results (a briefing, a document's part)
+/// are sized by HQ and read whole; on a house turn a long result's gist, when it has one, is what
+/// the model reads.
+pub(crate) fn for_the_model(_api: Api, tool: &str, on_the_node: &[String], text: String) -> String {
+    let the_labs = tool == SHELL || on_the_node.iter().any(|n| n == tool);
+    if !the_labs || text.len() <= RESULT_AT_MOST {
+        return text;
+    }
+    let start_at_most = RESULT_AT_MOST - RESULT_END_KEPT;
+    let mut start_end = start_at_most;
+    while !text.is_char_boundary(start_end) {
+        start_end -= 1;
+    }
+    let start_end = text[..start_end].rfind('\n').map_or(start_end, |at| at + 1);
+    let mut end_from = text.len() - RESULT_END_KEPT;
+    while !text.is_char_boundary(end_from) {
+        end_from += 1;
+    }
+    let end_from = text[end_from..]
+        .find('\n')
+        .map_or(end_from, |at| end_from + at + 1);
+    let left_out = end_from.saturating_sub(start_end);
+    format!(
+        "{}[{left_out} bytes of this result's middle left out, to keep the turn within its \
+         budget: ask for less (a path, grep, head, tail or sed -n, fewer lines).]\n{}",
+        &text[..start_end],
+        &text[end_from..]
     )
 }
 
@@ -1747,8 +2054,10 @@ fn shell_tool() -> Value {
         "name": SHELL,
         "description": "Run a command with bash in your sandbox, in /work, and read what it \
             printed (stdout and stderr together, its start and end when long) and its exit \
-            code. The sandbox is offline: neither the internet nor the house's services are \
-            reachable from it. Nothing you leave here outlives the turn.",
+            code. The sandbox has no internet, and the house's services are not reachable from \
+            it. Your sandbox keeps the item's work between turns; /work/repo is there if a turn \
+            checked it out. If it is not, the fork comes in with repo_checkout (git clone and \
+            fetch cannot reach it).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1842,12 +2151,25 @@ pub(crate) fn last_word(
     if answer.is_empty() {
         return Ok(());
     }
-    let text = beside(answer, line, POST_AT_MOST);
-    // Marked as the worker's last word: HQ posts it, but does not count it as progress.
-    let (said, refused) = hq.call(
-        "post",
-        &json!({ "task": task, "text": text, "last_word": true }),
-    )?;
+    said_last(hq, Some(task), &beside(answer, line, POST_AT_MOST), false)
+}
+
+/// Posts `text` as the worker's last word, which HQ posts but does not count as progress;
+/// `continues` marks a turn out of room, which HQ goes on with in a fresh turn.
+fn said_last(
+    hq: &mut Hq<'_>,
+    task: Option<i64>,
+    text: &str,
+    continues: bool,
+) -> Result<(), Stopped> {
+    let Some(task) = task else {
+        return Ok(());
+    };
+    let mut args = json!({ "task": task, "text": text, "last_word": true });
+    if continues {
+        args["continues"] = json!(true);
+    }
+    let (said, refused) = hq.call("post", &args)?;
     if refused {
         return Err(Stopped::Failed(format!(
             "HQ refused the last word for task {task}: {said}"
@@ -1865,24 +2187,12 @@ fn out_of_room(
     answer: &str,
     line: &str,
 ) -> Result<(), Stopped> {
-    let Some(task) = task else {
-        return Ok(());
-    };
     let text = if answer.is_empty() {
         line.to_owned()
     } else {
         beside(answer, line, POST_AT_MOST)
     };
-    let (said, refused) = hq.call(
-        "post",
-        &json!({ "task": task, "text": text, "last_word": true, "continues": true }),
-    )?;
-    if refused {
-        return Err(Stopped::Failed(format!(
-            "HQ refused the last word for task {task}: {said}"
-        )));
-    }
-    Ok(())
+    said_last(hq, task, &text, true)
 }
 
 /// A post's arguments without the worker's own marks (`last_word`, `continues`).
@@ -2093,12 +2403,22 @@ fn what_a_call_is(tool: &str, args: &Value) -> (String, String) {
     }
 }
 
+/// What ends words cut to make room, as HQ marks its own cuts.
+const CUT: &str = "…[cut]";
+
 /// `text`, then a blank line and `line`, within `most` characters: the text is cut to make
-/// room, never the line.
+/// room, never the line, and a cut text says so.
 pub(crate) fn beside(text: &str, line: &str, most: usize) -> String {
     let room = most.saturating_sub(line.chars().count() + 2);
-    let kept: String = text.trim().chars().take(room).collect();
-    format!("{}\n\n{line}", kept.trim_end())
+    let text = text.trim();
+    if text.chars().count() <= room {
+        return format!("{text}\n\n{line}");
+    }
+    let kept: String = text
+        .chars()
+        .take(room.saturating_sub(CUT.chars().count()))
+        .collect();
+    format!("{}{CUT}\n\n{line}", kept.trim_end())
 }
 
 /// The words said, a paragraph each, in at most `most` characters: the newest kept when they
@@ -2297,24 +2617,35 @@ impl<'a> Node<'a> {
     /// The contracts offered. A node that offers none, or cannot say, leaves the turn to the
     /// team's tools: only a 401 or a 402 ends it.
     pub(crate) fn list(&self) -> Result<Vec<Value>, Stopped> {
+        self.listing().map(|(tools, _)| tools)
+    }
+
+    /// The contracts offered, and, when the node could not say, why: for the turn to tell its
+    /// model, which otherwise meets a task with none of the node's tools and no word of it.
+    pub(crate) fn listing(&self) -> Result<(Vec<Value>, Option<String>), Stopped> {
         let sent = self
             .agent
             .get(self.url)
             .header("authorization", &format!("Bearer {}", self.token))
             .call();
         match read("the node", sent) {
-            Ok(listed) => Ok(listed["tools"].as_array().cloned().unwrap_or_default()),
+            Ok(listed) => Ok((
+                listed["tools"].as_array().cloned().unwrap_or_default(),
+                None,
+            )),
             Err(Stopped::Over(why)) => Err(Stopped::Over(why)),
             Err(Stopped::Failed(why)) => {
+                let why = quiet(&why, self.token);
                 eprintln!("worker: no contracts this turn: {why}");
-                Ok(Vec::new())
+                Ok((Vec::new(), Some(why)))
             }
         }
     }
 
     /// Tells the node what the turn said, for HQ to keep a while (ADR 0129): the conversation as
-    /// text, with the turn's token. It is the last thing a turn does and it never changes how
-    /// the turn ended: a node that cannot be reached, or refuses, is said on stderr and the turn
+    /// text, with the turn's token. Told after every round that goes on, each time whole, the
+    /// latest replacing the last (amended 2026-11-01), and as the last thing a turn does; it
+    /// never changes how the turn goes or ended: a node that cannot be reached, or refuses, is said on stderr and the turn
     /// goes on its way.
     pub(crate) fn tell_conversation(&self, runtime: &str, text: &str) {
         let sent = self
@@ -2359,12 +2690,29 @@ impl<'a> Node<'a> {
         if matches!(status, 401 | 402) {
             return Err(Stopped::Over(format!("the node answered {status}")));
         }
-        let body: Value = response
+        // A checkout carries its bundle in the answer: read up to the most one may be, and an
+        // answer past it is said to be that, not taken for an empty one.
+        let most = endora_protocol::team::CONTRACT_ANSWER_MOST;
+        let text = match response
             .body_mut()
+            .with_config()
+            .limit(most as u64)
             .read_to_string()
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or(Value::Null);
+        {
+            Ok(text) => text,
+            Err(ureq::Error::BodyExceedsLimit(_)) => {
+                let why = format!(
+                    "the node's answer is more than the {} MB one may be",
+                    most >> 20
+                );
+                return Ok((why, Outcome::Failed, false));
+            }
+            Err(e) => {
+                let why = format!("the node's answer could not be read: {e}");
+                return Ok((why, Outcome::Failed, false));
+            }
+        };
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
             return Ok((
                 body["text"].as_str().unwrap_or("").to_owned(),
@@ -2457,6 +2805,17 @@ impl<'a> Model<'a> {
                     .cloned()
                     .unwrap_or_default(),
             );
+            let mut kept = json!({ "role": "assistant", "content": message["content"],
+                                   "tool_calls": calls });
+            // Its reasoning, as llama.cpp, vLLM and DeepSeek (`reasoning_content`) or
+            // OpenRouter (`reasoning`) give it: for the replay alone (`Talk::said`).
+            if let Some(thought) = message["reasoning_content"]
+                .as_str()
+                .or_else(|| message["reasoning"].as_str())
+                .filter(|t| !t.trim().is_empty())
+            {
+                kept[crate::transcript::THOUGHT] = json!(thought);
+            }
             return Ok(Said {
                 text: message["content"].as_str().unwrap_or("").to_owned(),
                 calls: calls
@@ -2467,9 +2826,13 @@ impl<'a> Model<'a> {
                         arguments: c["function"]["arguments"].clone(),
                     })
                     .collect(),
-                message: json!({ "role": "assistant", "content": message["content"],
-                                 "tool_calls": calls }),
+                message: kept,
                 limit_reached: reply["choices"][0]["finish_reason"] == "length",
+                stop: reply["choices"][0]["finish_reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+                tokens_out: reply["usage"]["completion_tokens"].as_u64(),
             });
         }
         let Some(content) = reply["content"].as_array() else {
@@ -2494,6 +2857,8 @@ impl<'a> Model<'a> {
             calls,
             message: json!({ "role": "assistant", "content": content }),
             limit_reached: reply["stop_reason"] == "max_tokens",
+            stop: reply["stop_reason"].as_str().unwrap_or("").to_owned(),
+            tokens_out: reply["usage"]["output_tokens"].as_u64(),
         })
     }
 }
@@ -2531,7 +2896,7 @@ mod tests {
     use super::*;
 
     use endora_team::application::{Author, Clock, Engine, NewTask, Settings};
-    use endora_team::domain::{Priority, Role};
+    use endora_team::domain::Priority;
     use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
     struct Noon;
@@ -2732,7 +3097,7 @@ mod tests {
             Noon,
             Settings::default(),
         );
-        let dev = hq.hire("Jane", Role::Developer, 40, 2, 0).unwrap();
+        let dev = hq.hire("Jane", 40, 2, 0).unwrap();
         let goal = hq
             .set_goal("Ship the watch tracker", "asked for", Author::Owner)
             .unwrap();
@@ -2830,10 +3195,9 @@ mod tests {
                 .as_array()
                 .cloned()
                 .unwrap();
-        let role = member.role.name();
         let contracts: Vec<Value> = endora_capabilities::contracts::all()
             .iter()
-            .filter(|c| c.offered_to(role, false) && !is_repo_tool(c.name))
+            .filter(|c| !is_repo_tool(c.name))
             .map(endora_capabilities::contracts::Contract::as_tool)
             .chain(
                 [
@@ -2901,6 +3265,8 @@ mod tests {
                     "id": id, "type": "function",
                     "function": { "name": tool, "arguments": args.to_string() } }] }),
                 limit_reached: false,
+                stop: String::new(),
+                tokens_out: None,
             });
             let text = endora_team::application::protocol::call(hq, &run, &member, tool, args)
                 .unwrap_or_else(|e| e);
@@ -2933,8 +3299,8 @@ mod tests {
                 ..Settings::default()
             },
         );
-        let lead = hq.hire("Jane", Role::Lead, 25, 2, 0).unwrap();
-        let dev = hq.hire("John", Role::Developer, 40, 2, 4).unwrap();
+        let lead = hq.hire("Jane", 25, 2, 0).unwrap();
+        let dev = hq.hire("John", 40, 2, 4).unwrap();
         // A chess move: the developer's, in a game the lead opened.
         hq.store()
             .add_chess_game(lead, dev, Noon.now() - 1)
@@ -3211,14 +3577,14 @@ mod tests {
             Settings::default(),
         );
         let mut seats = Vec::new();
-        for (name, model, role) in [
-            ("Mara", "opus", Role::Ceo),
-            ("Kit", "sonnet", Role::Lead),
-            ("Ada", "haiku", Role::Lead),
-            ("Rae", "mac", Role::Developer),
-            ("Bo", "local", Role::Developer),
+        for (name, model) in [
+            ("Mara", "opus"),
+            ("Kit", "sonnet"),
+            ("Ada", "haiku"),
+            ("Rae", "mac"),
+            ("Bo", "local"),
         ] {
-            let id = hq.hire(name, role, 10, 2, 0).unwrap();
+            let id = hq.hire(name, 10, 2, 0).unwrap();
             hq.set_model(id, model).unwrap();
             seats.push(id);
         }
@@ -3631,15 +3997,71 @@ mod tests {
         .to_vec()
     }
 
+    /// Roles, testers, leads and the ranks above and below a member are retired (ADR 0142,
+    /// amended 2026-11-02), and every live loop is worked by one member alone, whose item closes
+    /// on HQ's checks with no review. The instructions told every turn that a tester re-checks
+    /// its work and the lead accepts it, that a lab question goes to the team's reviewer first,
+    /// and to hand sub-tasks to members below: a model told someone will re-check may lean on a
+    /// check that is not there, and one that hands work on is refused (`NotBelow`).
+    #[test]
+    fn the_instructions_name_no_check_or_member_that_is_not_there() {
+        let all = [REPO_CHECKOUT.to_owned(), REPO_SUBMIT.to_owned()]
+            .into_iter()
+            .chain(lab())
+            .collect::<Vec<_>>();
+        for (on_the_node, lessons, shell) in [
+            (all.clone(), false, true),
+            (all, true, true),
+            (lab(), false, false),
+            (Vec::new(), false, false),
+        ] {
+            let told = instructions(true, &on_the_node, lessons, shell);
+            for retired in [
+                "tester",
+                "reviewer",
+                "the lead",
+                "your role",
+                "below you",
+                "above you",
+            ] {
+                assert!(!told.contains(retired), "{retired}: {told}");
+            }
+            assert!(
+                told.contains(
+                    "HQ judges it from the record, its checks and the receipts you cite, never \
+                     from what you say."
+                ),
+                "{told}"
+            );
+            assert!(told.contains("create sub-tasks of your own"), "{told}");
+        }
+    }
+
+    /// The model's last word and its question to the owner go out with the line saying what the
+    /// turn did, within HQ's most: the words were cut from their end with no sign of it, so the
+    /// thread or the owner read a conclusion or a question that simply stopped.
+    #[test]
+    fn words_cut_to_make_room_for_the_line_say_they_were_cut() {
+        let line = "This turn read homelab_status.";
+        let fits = beside("sonarr is healthy.", line, 100);
+        assert_eq!(fits, format!("sonarr is healthy.\n\n{line}"));
+        let long = format!("{} so the fix is to restart it.", "x".repeat(200));
+        let cut = beside(&long, line, 100);
+        assert!(cut.chars().count() <= 100, "{cut}");
+        assert!(cut.ends_with(line), "{cut}");
+        assert!(cut.contains("…[cut]"), "the cut is said: {cut}");
+        assert!(cut.starts_with("xxx"), "{cut}");
+    }
+
     #[test]
     fn the_home_labs_tools_are_named_as_the_turns_own() {
         let told = instructions(true, &lab(), false, false);
         assert!(
             told.contains(
                 "The home lab tools are Endora's contracts, and this turn they are yours: \
-                 homelab_status, container_logs, restart_container. Whatever your role, look \
-                 with them yourself before you hand anything on, and never say you cannot read \
-                 the home lab.\n- homelab_status"
+                 homelab_status, container_logs, restart_container. Look with them yourself \
+                 before you move anything on, and never say you cannot read the home lab.\n\
+                 - homelab_status"
             ),
             "{told}"
         );
@@ -3712,7 +4134,13 @@ mod tests {
             ),
             "{told}"
         );
-        assert!(told.contains("goes to the team's reviewer first"), "{told}");
+        assert!(
+            told.contains(
+                "- Say about the home lab only what these tools showed you, naming its \
+                 containers as they name them."
+            ),
+            "{told}"
+        );
         assert!(told.contains("owner's approval"), "{told}");
         // A request for the owner's yes says which of the task's criteria it serves, or it is
         // refused and never reaches the desk (ADR 0124, amended).
@@ -3746,6 +4174,29 @@ mod tests {
         assert!(told.ends_with("That reply goes in your task's thread."));
     }
 
+    /// D27 of round 3: "The sandbox is offline" led the house model, meeting an empty sandbox,
+    /// to take its own `git init` failures for no network and give up. The shell says what the
+    /// sandbox lacks and how the fork comes in; and since round 4 (ADR 0142, amended
+    /// 2026-11-01), that the sandbox keeps the item's work between turns.
+    #[test]
+    fn the_shell_says_the_sandbox_keeps_the_items_work_and_how_the_fork_comes_in() {
+        let about = shell_tool()["description"].as_str().unwrap().to_owned();
+        assert!(!about.contains("offline"), "{about}");
+        assert!(about.contains("no internet"), "{about}");
+        assert!(
+            about.contains(
+                "Your sandbox keeps the item's work between turns; /work/repo is there if a \
+                 turn checked it out."
+            ),
+            "{about}"
+        );
+        assert!(!about.contains("starts empty"), "{about}");
+        assert!(about.contains("repo_checkout"), "{about}");
+        let told = instructions(true, &lab(), true, true);
+        assert!(!told.contains("offline"), "{told}");
+        assert!(!told.contains("gone when"), "{told}");
+    }
+
     #[test]
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
         let told = instructions(true, &lab(), true, true);
@@ -3760,16 +4211,17 @@ mod tests {
         );
         assert_eq!(
             parts[4],
-            "You have a real shell in a disposable sandbox: run commands, git and python there \
-             with the shell tool, and say why. The sandbox is offline: neither the internet nor \
-             the house's services are reachable from the shell, so use the house through the \
-             team's tools. Anything you leave in /work is gone when the turn ends: write \
-             durable findings in the task's thread, or as a story with tell_story."
+            "You have a real shell in a sandbox: run commands, git and python there with the \
+             shell tool, and say why. The sandbox has no internet, and the house's services are \
+             not reachable from the shell, so use the house through the team's tools. Your \
+             sandbox keeps the item's work between turns; /work/repo is there if a turn checked \
+             it out. What the team must know still goes in the task's thread, or as a story \
+             with tell_story."
         );
         assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
         let told = instructions(true, &[], false, true);
         assert!(
-            told.contains("durable findings in the task's thread.\n\n"),
+            told.contains("still goes in the task's thread.\n\n"),
             "no tell_story for a member without it: {told}"
         );
     }
@@ -3806,6 +4258,8 @@ mod tests {
                 "id": id, "type": "function",
                 "function": { "name": tool, "arguments": args.to_string() } }] }),
             limit_reached: false,
+            stop: String::new(),
+            tokens_out: None,
         });
         talk.answered(vec![(
             json!(id),
@@ -3967,6 +4421,39 @@ mod tests {
         assert!(talk.as_text().contains(&logs), "the raw log kept");
     }
 
+    /// Measured before building (2 Nov): why a reply stopped is kept for the transcript, and
+    /// what the model is sent stays byte for byte what it was, on either API.
+    #[test]
+    fn why_a_reply_stopped_is_in_the_transcript_and_never_in_what_the_model_is_sent() {
+        for api in [Api::OpenAi, Api::Anthropic] {
+            let reply = |stop: &str, out: Option<u64>| Said {
+                text: "Looking.".to_owned(),
+                calls: Vec::new(),
+                message: json!({ "role": "assistant",
+                                 "content": [{ "type": "text", "text": "Looking." }] }),
+                limit_reached: false,
+                stop: stop.to_owned(),
+                tokens_out: out,
+            };
+            let mut kept = Talk::new(api, "Rules.".into(), "Your turn.".into(), &[]);
+            kept.said(&reply("end_turn", Some(37)));
+            let mut plain = Talk::new(api, "Rules.".into(), "Your turn.".into(), &[]);
+            plain.said(&reply("", None));
+            assert_eq!(
+                kept.body("m").to_string(),
+                plain.body("m").to_string(),
+                "{api:?}"
+            );
+            assert!(
+                kept.as_text()
+                    .contains("--- reply ---\nend_turn, 37 tokens out\n"),
+                "{api:?}: {}",
+                kept.as_text()
+            );
+            assert!(!plain.as_text().contains("--- reply ---"), "{api:?}");
+        }
+    }
+
     #[test]
     fn a_result_the_model_has_not_replied_to_is_never_cut() {
         let mut talk = Talk::new(Api::OpenAi, "Rules.".into(), "Your turn.".into(), &[]);
@@ -3989,6 +4476,8 @@ mod tests {
             calls: Vec::new(),
             message: json!({ "role": "assistant", "content": null, "tool_calls": calls }),
             limit_reached: false,
+            stop: String::new(),
+            tokens_out: None,
         });
         talk.answered(
             (0..4)
@@ -4026,6 +4515,8 @@ mod tests {
                 message: json!({ "role": "assistant", "content": [{ "type": "tool_use",
                     "id": id, "name": "container_logs", "input": { "container": "sonarr" } }] }),
                 limit_reached: false,
+                stop: String::new(),
+                tokens_out: None,
             });
             assert!(cut.is_empty());
             talk.answered(vec![(
@@ -4053,5 +4544,208 @@ mod tests {
         answered.forget(&key);
         assert!(!answered.said.contains_key(&key));
         assert!(answered.last.is_none());
+    }
+
+    /// A Haiku turn on an ansible-nas item as its first call goes: HQ's tools, the node's and
+    /// the shell, the instructions and the briefing, on Claude.
+    fn a_haiku_opening() -> (Talk, Vec<String>) {
+        use endora_team::domain::Brain;
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(8),
+            Noon,
+            Settings::default(),
+        );
+        let mut seats = Vec::new();
+        for (name, model) in [
+            ("Mara", "opus"),
+            ("Kit", "sonnet"),
+            ("Ada", "haiku"),
+            ("Bo", "local"),
+        ] {
+            let id = hq.hire(name, 10, 2, 0).unwrap();
+            hq.set_model(id, model).unwrap();
+            seats.push(id);
+        }
+        let goal = hq.set_goal("Improve the lab", "", Author::Owner).unwrap();
+        let project = hq
+            .add_project(goal, "ansible-nas", "the fork's work", seats[0], None)
+            .unwrap();
+        hq.set_loop_rank(project, Brain::Haiku.rank()).unwrap();
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Pin the homepage and stats roles off the latest image tag".to_owned(),
+                description: "Each tag a release that exists on its registry.".to_owned(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+        let context = running_turn_of(&hq, seats[2]);
+        let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+        let mut offered: Vec<Value> =
+            endora_team::application::protocol::tools_in(&hq, &run, &member)
+                .as_array()
+                .cloned()
+                .unwrap();
+        let contracts: Vec<Value> = endora_capabilities::contracts::all()
+            .iter()
+            .map(endora_capabilities::contracts::Contract::as_tool)
+            .collect();
+        let on_the_node: Vec<String> = contracts
+            .iter()
+            .filter_map(|c| c["name"].as_str().map(str::to_owned))
+            .collect();
+        offered.extend(contracts);
+        offered.push(shell_tool());
+        let briefing =
+            endora_team::application::protocol::call(&hq, &run, &member, "my_turn", &json!({}))
+                .unwrap();
+        let Opening { talk, .. } = opening(
+            Api::Anthropic,
+            offered,
+            briefing,
+            &on_the_node,
+            true,
+            false,
+            true,
+        );
+        (talk, on_the_node)
+    }
+
+    /// A listing as the shell gives one at its most: 16 KB of `grep -rn` over the roles.
+    fn a_large_listing() -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while out.len() < crate::shell::OUTPUT_AT_MOST - 200 {
+            out.push_str(&format!(
+                "roles/role{i}/defaults/main.yml:3:role{i}_image: \"example/role{i}:latest\"\n"
+            ));
+            i += 1;
+        }
+        out + "exit 0 (receipt r412)"
+    }
+
+    /// The calls of a turn on task 3 (pin `homepage` and `stats`), in round 3's shape on 949:
+    /// the checkout, listings and files read with the shell, the registries asked with
+    /// `image_tags`, the lint, the commit and the submission.
+    fn the_949_turn() -> Vec<(&'static str, Value, String)> {
+        let tags = r#"{"image":"ghcr.io/gethomepage/homepage","tags_read":412,"all_read":true,"matching":30,"newest":["v1.10.0","v1.9.2","v1.9.1","v1.9.0","v1.8.4","v1.8.3","v1.8.2","v1.8.1","v1.8.0","v1.7.5","v1.7.4","v1.7.3","v1.7.2","v1.7.1","v1.7.0","v1.6.3","v1.6.2","v1.6.1","v1.6.0","v1.5.9","v1.5.8","v1.5.7","v1.5.6","v1.5.5","v1.5.4","v1.5.3","v1.5.2","v1.5.1","v1.5.0","v1.4.9"],"tag":"v1.10.0","exists":true} (receipt r410)"#;
+        let file = "    - name: Run the container\n      image: \"{{ image }}\"\n".repeat(80);
+        let shell = |cmd: &str| json!({ "command": cmd });
+        vec![
+            ("repo_checkout", json!({ "branch": "develop", "why": "to pin" }),
+             "Checked out develop at 0123456789ab into /work/repo (1412 files) (receipt r409). Your base is develop.".to_owned()),
+            (SHELL, shell("grep -rn image roles/"), a_large_listing()),
+            ("image_tags", json!({ "image": "ghcr.io/gethomepage/homepage" }), tags.to_owned()),
+            ("image_tags", json!({ "image": "example/stats" }), tags.replace("homepage", "stats")),
+            (SHELL, shell("cat roles/homepage/tasks/main.yml roles/stats/tasks/main.yml"), file.clone()),
+            (SHELL, shell("ls -R roles/homepage roles/stats"), a_large_listing()),
+            (SHELL, shell("ansible-lint nas.yml"), a_large_listing()),
+            ("image_tags", json!({ "image": "ghcr.io/gethomepage/homepage", "tag": "v1.10.0" }), tags.to_owned()),
+            (SHELL, shell("git diff develop"), file.clone()),
+            (SHELL, shell("git commit -am 'Pin homepage and stats'"), "1 file changed (receipt r415)".to_owned()),
+            ("repo_submit", json!({ "branch": "hq/task-949-pin", "why": "pinned" }), "Submitted (receipt r416)".to_owned()),
+        ]
+    }
+
+    /// How many of `calls` a turn makes from `opening` within `budget`, each result as the
+    /// model reads it (held to its size by [`for_the_model`]).
+    fn calls_of_a_claude_turn(
+        opening: &Talk,
+        on_the_node: &[String],
+        calls: &[(&str, Value, String)],
+        budget: usize,
+    ) -> usize {
+        let (mut talk, mut read) = (opening.clone(), 0);
+        for (i, (tool, args, text)) in calls.iter().enumerate() {
+            let next = talk.body("claude-haiku").to_string().len();
+            if !has_room(u32::try_from(i).unwrap(), read, next, budget) {
+                return i;
+            }
+            read += next;
+            let text = for_the_model(Api::Anthropic, tool, on_the_node, text.clone());
+            round(&mut talk, &format!("c{i}"), tool, args, &text);
+        }
+        calls.len()
+    }
+
+    /// D20 of round 3 (1 Nov): Ada's Haiku turns on 949 (pin homepage and stats) read 400 to
+    /// 460 KB over 6 or 7 calls, every turn, and after twelve continuations the item climbed to
+    /// Sonnet. `image_tags` was not the cause: it answers 30 tags at most, about a kilobyte. A
+    /// Claude turn reads every result whole, and its budget sums every call's whole prompt, so
+    /// a 16 KB listing read at the second call is counted again on every call after it. What
+    /// one result of the lab's or the shell's adds to a Claude turn is now held to
+    /// [`RESULT_AT_MOST`], its start and its end (the receipt) kept, with how to ask for less.
+    #[test]
+    fn a_large_listing_adds_at_most_a_capped_part_to_a_claude_turn() {
+        let on_the_node = vec!["image_tags".to_owned(), "container_logs".to_owned()];
+        let listing = a_large_listing();
+        let read = for_the_model(Api::Anthropic, SHELL, &on_the_node, listing.clone());
+        assert!(read.len() <= RESULT_AT_MOST + 400, "{}", read.len());
+        assert!(
+            read.starts_with("roles/role0/defaults/main.yml"),
+            "its start is kept"
+        );
+        assert!(
+            read.ends_with("exit 0 (receipt r412)"),
+            "its end and receipt are kept"
+        );
+        assert!(read.contains("left out"), "it says what was cut: {read}");
+        // The lab's results are held alike; a small one, HQ's own and a house turn's are not.
+        let logs = for_the_model(
+            Api::Anthropic,
+            "container_logs",
+            &on_the_node,
+            listing.clone(),
+        );
+        assert!(logs.len() < listing.len());
+        let small = "a short answer (receipt r1)".to_owned();
+        assert_eq!(
+            for_the_model(Api::Anthropic, SHELL, &on_the_node, small.clone()),
+            small
+        );
+        assert_eq!(
+            for_the_model(Api::Anthropic, "read_doc", &on_the_node, listing.clone()),
+            listing
+        );
+        // DeepSeek's turns go the house's way and filled their budget the same way (Rae, 238 KB
+        // over 7 calls on 955, 1 Nov): held to size on every API.
+        let deepseek = for_the_model(Api::OpenAi, SHELL, &on_the_node, listing.clone());
+        assert!(deepseek.len() <= RESULT_AT_MOST + 200, "{}", deepseek.len());
+        assert!(deepseek.contains("left out"), "{deepseek}");
+        // A turn of 949's shape: read whole, the budget ends it before its submission (9 of 11
+        // calls here; live, with the bridged tools and a longer thread, 6 or 7); held to size,
+        // it makes all of them.
+        let (opening, on_the_node) = a_haiku_opening();
+        let calls = the_949_turn();
+        let whole = {
+            let (mut talk, mut read, mut made) = (opening.clone(), 0, calls.len());
+            for (i, (tool, args, text)) in calls.iter().enumerate() {
+                let next = talk.body("claude-haiku").to_string().len();
+                if !has_room(u32::try_from(i).unwrap(), read, next, CLAUDE_PROMPT_BUDGET) {
+                    made = i;
+                    break;
+                }
+                read += next;
+                round(&mut talk, &format!("c{i}"), tool, args, text);
+            }
+            made
+        };
+        let held = calls_of_a_claude_turn(&opening, &on_the_node, &calls, CLAUDE_PROMPT_BUDGET);
+        eprintln!(
+            "949's turn: {whole} calls read whole, {held} held to size, of {}",
+            calls.len()
+        );
+        assert!(
+            whole < calls.len(),
+            "read whole, the budget ends it early: {whole}"
+        );
+        assert_eq!(held, calls.len(), "held to size, the turn does its work");
     }
 }

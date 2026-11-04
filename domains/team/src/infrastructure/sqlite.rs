@@ -11,7 +11,7 @@ use crate::domain::Document;
 use crate::domain::history::{InputOrigin, InputRef};
 use crate::domain::{
     Brain, Event, Evidence, Goal, GoalId, GoalStatus, Member, MemberId, Millis, Pause, Priority,
-    Project, ProjectId, ProjectStatus, Receipt, Refused, Role, RunId, RunStatus, Task, TaskId,
+    Project, ProjectId, ProjectStatus, Receipt, Refused, RunId, RunStatus, Task, TaskId,
     TaskStatus, WakeId, WakeReason,
 };
 
@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS wakes (
     task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
     refused TEXT, run INTEGER, at_ms INTEGER NOT NULL, by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+-- A task's held wakes, asked of every open task on every tick, without visiting the rest.
+CREATE INDEX IF NOT EXISTS wakes_held ON wakes(task,id) WHERE receipt = 'held';
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
     task INTEGER REFERENCES tasks(id), wake INTEGER NOT NULL REFERENCES wakes(id),
@@ -574,6 +576,10 @@ fn receipt_from(name: &str, refused: Option<&str>) -> Stored<Receipt> {
     })
 }
 
+/// A task's held wakes, oldest first, read by the `wakes_held` index.
+const HELD_WAKES_OF_TASK: &str = "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes \
+     WHERE task=?1 AND receipt='held' ORDER BY id";
+
 const WAKE_BY_ID: &str =
     "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes WHERE id=?1";
 
@@ -658,28 +664,16 @@ fn call_receipt_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::domain::C
 }
 
 impl TeamStore for SqliteTeamStore {
-    fn add_member(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Stored<MemberId> {
+    fn add_member(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Stored<MemberId> {
         let conn = self.conn()?;
         // A new member is the house's own model until the owner says otherwise. The work brain
-        // column of the members once split in two (ADR 0131) is kept in step, unread.
+        // column of the members once split in two (ADR 0131) is kept in step, unread; so is the
+        // role column, as the plain member every member is since one team (ADR 0142), so a
+        // build from before roles were retired reads it the same.
         conn.execute(
             "INSERT INTO members (name, role, share_percent, slots, look, brain, work_brain)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![
-                name,
-                role.name(),
-                share_percent,
-                slots,
-                look,
-                Brain::default().name()
-            ],
+             VALUES (?1, 'developer', ?2, ?3, ?4, ?5, ?5)",
+            params![name, share_percent, slots, look, Brain::default().name()],
         )
         .map_err(backend)?;
         Ok(MemberId(conn.last_insert_rowid()))
@@ -689,28 +683,25 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, \
+                "SELECT id, name, share_percent, slots, paused, look, brain, \
                  furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
-                let role: String = r.get(2)?;
-                let role = Role::from_name(&role).unwrap_or(Role::Developer);
                 // A member is its model (ADR 0142): the brain stored, whichever it is. One the
                 // store does not know is the house's own model.
-                let brain = Brain::from_name(&r.get::<_, String>(7)?).unwrap_or_default();
+                let brain = Brain::from_name(&r.get::<_, String>(6)?).unwrap_or_default();
                 Ok(Member {
                     id: MemberId(r.get(0)?),
                     name: r.get(1)?,
-                    role,
-                    share_percent: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(0),
-                    slots: u8::try_from(r.get::<_, i64>(4)?).unwrap_or(1),
-                    paused: r.get::<_, i64>(5)? != 0,
-                    look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
+                    share_percent: u8::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+                    slots: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(1),
+                    paused: r.get::<_, i64>(4)? != 0,
+                    look: u8::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
                     brain,
-                    furloughed_at: r.get(8)?,
-                    recalled_at: r.get(9)?,
+                    furloughed_at: r.get(7)?,
+                    recalled_at: r.get(8)?,
                 })
             })
             .map_err(backend)?;
@@ -769,16 +760,6 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET runtime = ?2 WHERE id = ?1",
                 params![member.0, runtime.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_role(&self, member: MemberId, role: Role) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET role = ?2 WHERE id = ?1",
-                params![member.0, role.name()],
             )
             .map_err(backend)?;
         Ok(())
@@ -1253,11 +1234,19 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>> {
-        Ok(self
-            .wakes()?
-            .into_iter()
-            .filter(|w| w.task == Some(task) && w.receipt == Receipt::Held)
-            .collect())
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(HELD_WAKES_OF_TASK).map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], wake_from)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|(mut wake, receipt, refused)| {
+                wake.receipt = receipt_from(&receipt, refused.as_deref())?;
+                Ok(wake)
+            })
+            .collect()
     }
 
     fn wakes(&self) -> Stored<Vec<Wake>> {
@@ -1519,10 +1508,8 @@ CREATE TABLE IF NOT EXISTS check_backs (
     #[test]
     fn a_task_is_claimed_by_exactly_one_member() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
-        let b = store
-            .add_member("Linus", Role::Developer, 40, 2, 0)
-            .unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
+        let b = store.add_member("Linus", 40, 2, 0).unwrap();
         let goal = store
             .add_goal("Ship it", "", GoalStatus::Active, None)
             .unwrap();
@@ -1562,7 +1549,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        let a = store.add_member("Ada", Role::Lead, 25, 2, 0).unwrap();
+        let a = store.add_member("Ada", 25, 2, 0).unwrap();
         store
             .add_desk("question", None, None, Some(a), "Ada asks: when?", 6)
             .unwrap();
@@ -2151,9 +2138,9 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn the_live_turns_are_read_without_the_ended_ones() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let mut ids = Vec::new();
         for status in [
@@ -2176,7 +2163,7 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn a_tasks_turns_are_read_without_the_others() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let goal = store
             .add_goal("Ship it", "", GoalStatus::Active, None)
             .unwrap();
@@ -2193,7 +2180,7 @@ CREATE TABLE IF NOT EXISTS projects (
         let mine = store.add_task(&task("Mine"), 0).unwrap();
         let other = store.add_task(&task("Other"), 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let first = store.add_run(a, Some(mine), wake, 0).unwrap();
         store.add_run(a, Some(other), wake, 0).unwrap();
@@ -2267,9 +2254,9 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn the_ledger_is_append_only() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 1, 400_000, 0).unwrap();
@@ -2281,9 +2268,9 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn settling_charges_use_and_frees_the_reservation_on_the_day_it_was_made() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 10, 400_000, 0).unwrap();
@@ -2371,7 +2358,7 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn a_new_member_is_the_houses_model_until_the_owner_sets_its_model() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let ada = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let ada = store.add_member("Jane Doe", 25, 2, 0).unwrap();
         let brain = |store: &SqliteTeamStore| store.members().unwrap()[0].brain;
         assert_eq!(brain(&store), Brain::Local);
         store.set_brain(ada, Brain::Sonnet).unwrap();
@@ -2383,9 +2370,16 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn a_turn_remembers_the_brain_it_ran_on() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let a = store.add_member("Jane Doe", 25, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::Decide, Receipt::Queued, None, 0)
+            .add_wake(
+                a,
+                None,
+                WakeReason::ProposalDecided,
+                Receipt::Queued,
+                None,
+                0,
+            )
             .unwrap();
         let id = store.add_run(a, None, wake, 0).unwrap();
         let mut run = store.run(id).unwrap().unwrap();

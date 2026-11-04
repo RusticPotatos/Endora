@@ -87,6 +87,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// turn, free), open tasks or not, at most every [`CHESS_PACE_MS`]. Before, a move waited for
     /// downtime, which a member holding any open task never has.
     fn chess_picked_up(&self, now: Millis) -> Done<()> {
+        // No downtime while a round of the experiment runs (ADR 0142, amended 2026-11-01): the
+        // games wait for its close.
+        if self.round_running()? {
+            return Ok(());
+        }
         let games = self.store.chess_games()?;
         if !games.iter().any(Game::live) {
             return Ok(());
