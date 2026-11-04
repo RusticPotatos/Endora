@@ -53,12 +53,23 @@ class Docker:
     def __init__(self, prefix):
         self.prefix = shlex.split(prefix)
 
+    def argv(self, *args):
+        """ssh hands the remote shell one string, which splits it again: so after an ssh
+        destination the docker command goes as one quoted string (round 16's live failure)."""
+        if self.prefix and self.prefix[0] == "ssh":
+            at = self.prefix.index("docker") if "docker" in self.prefix else len(self.prefix)
+            return self.prefix[:at] + [shlex.join(self.prefix[at:] + list(args))]
+        return self.prefix + list(args)
+
     def __call__(self, *args, timeout=30):
-        p = subprocess.run(self.prefix + list(args), capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(self.argv(*args), capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
 
     def ps(self):
-        _, out, _ = self("ps", "--no-trunc", "--format", "{{.ID}}\t{{.Labels}}")
+        """Lines of `docker ps`; raises when docker itself fails, so a broken watch is never silent."""
+        code, out, err = self("ps", "--no-trunc", "--format", "{{.ID}}\t{{.Labels}}")
+        if code != 0:
+            raise RuntimeError(err.strip() or f"docker ps exited {code}")
         return out.splitlines()
 
     def read(self, cid, path):
@@ -76,8 +87,20 @@ def watch(docker, task, rel, milestone, timeout, poll=0.25, repo="/work/repo"):
     record = {"task": task, "file": rel, "milestone": milestone, "started": time.time(), "changes": []}
     deadline = time.time() + timeout
     last = None
+    failures = 0
     while time.time() < deadline:
-        (turn, keeper) = pick(docker.ps(), task)
+        try:
+            lines = docker.ps()
+            failures = 0
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            failures += 1
+            record["docker_error"] = str(e)
+            if failures >= 5:
+                record["outcome"] = "docker_failed"
+                return record
+            time.sleep(poll)
+            continue
+        (turn, keeper) = pick(lines, task)
         if not turn:
             time.sleep(poll)
             continue
@@ -122,6 +145,8 @@ def main(argv=None):
     record = watch(Docker(a.docker), a.task, a.file, json.loads(a.milestone), a.timeout)
     (out / "interrupt.json").write_text(json.dumps(record, indent=1))
     print(json.dumps({k: record.get(k) for k in ("outcome", "stop_sent", "stopped_state")}))
+    if record["outcome"] == "docker_failed":
+        print("interrupt_live: docker keeps failing:", record.get("docker_error"), file=sys.stderr)
     return 0 if record["outcome"] == "interrupted" else 3
 
 

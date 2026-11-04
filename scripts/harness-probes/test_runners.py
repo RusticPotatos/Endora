@@ -7,6 +7,7 @@ worker and HQ, which needs the built binaries; see the round's report.)
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,31 @@ class LiveInterruptTargetTests(unittest.TestCase):
         self.assertEqual(interrupt_live.pick(lines, 42), (("t1", "901"), "k1"))
         self.assertEqual(interrupt_live.pick(lines, 7), (("t9", "900"), None))
         self.assertEqual(interrupt_live.pick(lines, 4), (None, None))
+
+
+class LiveInterruptTransportTests(unittest.TestCase):
+    """Round 16's live failure: over ssh the remote shell split `--format {{.ID}}\\t{{.Labels}}`,
+    every `docker ps` failed, and the adapter waited out its time in silence."""
+
+    def test_arguments_survive_an_ssh_prefix(self):
+        import interrupt_live
+        d = interrupt_live.Docker("ssh -o BatchMode=yes runner.example.com docker")
+        argv = d.argv("ps", "--format", "{{.ID}}\t{{.Labels}}")
+        self.assertEqual(argv[:4], ["ssh", "-o", "BatchMode=yes", "runner.example.com"])
+        self.assertEqual(shlex.split(argv[4]), ["docker", "ps", "--format", "{{.ID}}\t{{.Labels}}"])
+        local = interrupt_live.Docker("docker")
+        self.assertEqual(local.argv("ps", "--format", "{{.ID}}"), ["docker", "ps", "--format", "{{.ID}}"])
+
+    def test_a_docker_that_keeps_failing_ends_the_watch_loudly(self):
+        import interrupt_live
+
+        class Broken(interrupt_live.Docker):
+            def __call__(self, *args, timeout=30):
+                return 1, "", "docker: 'docker ps' accepts no arguments"
+        rec = interrupt_live.watch(Broken("docker"), 42, "m.py", {"class": "A", "field": "f", "type": "int",
+                                                                   "default": "1"}, timeout=30, poll=0.01)
+        self.assertEqual(rec["outcome"], "docker_failed")
+        self.assertIn("accepts no arguments", rec["docker_error"])
 
 
 if __name__ == "__main__":
