@@ -274,8 +274,9 @@ function hqDrawRoom(g, scene) {
   const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = HQ_FONT_8B, step = big ? 9 : 8;
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
   // The open count in plain ink; only its stuck part is red, to match the red folders. 8px: at 7px
-  // an 8 read as an S ("18" as "1S", council round 9).
-  g.font = HQ_FONT_8; g.textAlign = "right";
+  // an 8 read as an S ("18" as "1S", council round 9), and Pixelify's 8 still did at 8px (round 10),
+  // so the count is in Silkscreen, the headings' font, whose 8 is plainly an 8.
+  g.font = HQ_SIGN_FONT; g.textAlign = "right";
   if (board.stuck) { g.fillStyle = "#c0392b"; g.fillText(board.parts[1], x0 + bw, 10); g.fillStyle = "#6b6577"; g.fillText(board.parts[0], x0 + bw - g.measureText(board.parts[1]).width, 10); }
   else { g.fillStyle = "#6b6577"; g.fillText(board.count, x0 + bw, 10); }
   g.textAlign = "left";
