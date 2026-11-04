@@ -748,8 +748,8 @@ if (failures.length) {
     for (const m of HQ.snap.members || []) HQ.roster[m.id] = true;`, context);
   const office = runInContext("viewHQ()", context);
   runInContext("HQ.more = {};", context);
-  for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · in 19000 / out 100 · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
-    "R7 Bo retry waiting: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
+  for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent", "Woke Ada: mentioned (EL-7)",
+    "R7 Bo waits to retry: the turn was over: exit 3: worker: the turn is over: HQ answered 401 (&lt;token&gt;)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
     "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now judges with claude-sonnet-5-5", "Ada now works with the owner&#39;s Mac",
     "Mara joined the team", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB.",
@@ -1127,7 +1127,7 @@ if (failures.length) {
   if (!office.includes("Haiku · on furlough</small>")) fail("hq: the roster does not say who is on furlough");
   // The Office card (ADR 0119, 0142): the office's games; the floor became the studio (the owner,
   // 4 Nov), so there is nothing to veto, undo or reset, and its chess table is in the lounge.
-  for (const said of ["<h2>Office</h2>", "The chess table stands in the studio's lounge"]) {
+  for (const said of ["<h2>Office", "The chess table stands in the studio's lounge"]) {
     if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
   }
   if (/hq:office:(veto|undo|reset)/.test(office)) fail("hq: the Office card still offers a landlord's veto, undo or reset");
@@ -1139,7 +1139,7 @@ if (failures.length) {
     const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo];
       o.proposals = []; o.can_undo = false;
       const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
-    if (!none.includes("<h2>Office</h2>")) fail("hq: the Office card is gone with nothing open");
+    if (!none.includes("<h2>Office")) fail("hq: the Office card is gone with nothing open");
     // And the activity log and Replay say what the team did to the office, escaped like the rest.
     runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);
       hqTell({ id: 71, at: 0, kind: "office.changed", data: { proposal: 3, via: "votes", text: "The office changed: add a fish tank in the commons (Dee's idea; carried 2 to 0)" } }, false);`, context);
@@ -1235,8 +1235,8 @@ if (failures.length) {
   // posts that cite nothing marked, and the rounds the owner's.
   for (const said of ["What done means", "&lt;b&gt;sonarr&lt;/b&gt; is running", "live: a reading the same turn", "submitted, Bo", "r12 · homelab_status",
     "&lt;img src=e onerror=alert(7)&gt; sonarr: running", "the tester passed it, ", "Tester's pass: given.", "No evidence yet.",
-    '<span class="hq-unsupported">unsupported</span>: Probably fine.', "EL-7 · Bo talk only · R2", "EL-7 · Bo checked · R1",
-    "R10 Bo finished · talk only", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
+    '<span class="hq-unsupported">unsupported</span>: Probably fine.', 'EL-7 · Bo talk only <span class="hq-turn-id">· R2', 'EL-7 · Bo checked <span class="hq-turn-id">· R1',
+    "R10 Bo finished, talk only", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
     // Read as words: a name in a line of Activity is a link (the owner, 1 Nov).
     if (!office.replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1").includes(said)) fail(`hq: the evidence does not show ${said}`);
   }
@@ -1410,15 +1410,15 @@ if (failures.length) {
   // The turns on a task read oldest first, as its thread does, the last five unless all are asked.
   {
     const card = runInContext("hqSelected()", context);
-    if (!(card.indexOf(" · R1<") < card.indexOf(" · R2<"))) fail("hq: a task's turns are not oldest first");
+    if (!(card.indexOf(">· R1<") < card.indexOf(">· R2<"))) fail("hq: a task's turns are not oldest first");
     if (card.includes("hq:turns:task-7:toggle")) fail("hq: two turns were offered a show-all");
     const many = runInContext(`(() => { const kept = HQ.snap.recent_runs;
       HQ.snap.recent_runs = [7, 6, 5, 4, 3, 2, 1].map((id) => ({ id, member: 2, task: 7, status: "succeeded", label: "checked" }));
       const five = hqSelected(); hqDispatch("hq", "turns", "task-7", "toggle"); const all = hqSelected();
       HQ.allTurns = {}; HQ.snap.recent_runs = kept; return [five, all]; })()`, context);
-    if (many[0].includes(" · R2<") || !many[0].includes(" · R3<") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
-    if (!(many[0].indexOf(" · R3<") < many[0].indexOf(" · R7<"))) fail("hq: the last five turns are not oldest first");
-    if (!many[1].includes(" · R1<") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
+    if (many[0].includes(">· R2<") || !many[0].includes(">· R3<") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
+    if (!(many[0].indexOf(">· R3<") < many[0].indexOf(">· R7<"))) fail("hq: the last five turns are not oldest first");
+    if (!many[1].includes(">· R1<") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
   }
   // Finding a task: every EL- number on the screen opens its task, and the Work tab finds one by
   // its number or a few words of its title (the board alone made a task hard to find).
@@ -2095,6 +2095,14 @@ if (failures.length) {
     const turns = runInContext(`(() => { const keep = HQ.snap.recent_runs; HQ.snap.recent_runs = Array.from({ length: 7 }, (_, i) => ({ id: 5000 + i, member: 2, task: 7, status: "failed", label: "empty" }));
       const h = hqTurns((r) => r.status === "failed", "failed"); HQ.snap.recent_runs = keep; return [h.indexOf("<ul"), h.indexOf("Show all"), /gave nothing back/.test(h)]; })()`, context);
     if (!(turns[0] >= 0 && turns[1] > turns[0]) || !turns[2]) fail(`hq: failed turns put Show all first, or speak engine words: ${turns}`);
+  }
+  // Tabs climb round 2: a turn's end in Activity is plain words with no token counts; an open
+  // fold whose body has a heading puts its fold control in that heading, with no card of its own.
+  {
+    const ended = runInContext(`hqLogEntry({ id: 2, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "timed_out", label: "empty", spent: 10000, input: 118711, output: 2143, cached: 87 } }).text`, context);
+    if (/118711|cached|timed out|empty/.test(ended) || !/ran out of time, gave nothing back/.test(ended)) fail(`hq: a turn's end in Activity is engine words: ${ended}`);
+    const open = runInContext(`(() => { HQ.more.foldprobe2 = true; const h = hqFold("foldprobe2", "Title", "m", "<section class='hq-card'><h2>Title</h2><p>b</p></section>"); HQ.more.foldprobe2 = false; return h; })()`, context);
+    if (open.includes("hq-fold\"") || !/<h2>Title<\/h2><button[^>]*hq:more:foldprobe2:toggle/.test(open)) fail(`hq: an open fold draws its own card besides its body: ${open.slice(0, 160)}`);
   }
   // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
   // phone its counters and legend are the Health tab's (2026-10-30).

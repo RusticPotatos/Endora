@@ -430,7 +430,15 @@
   .hq-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
   .hq-note { color: var(--hq-muted); font-size: 12px; max-width: 80ch; margin: 8px 0 0; }
   /* Replay: a turn read back as a timeline, phone first; a task's turns stepped through. */
-  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; text-decoration: none; }
+  .hq .hq-thread .hq-link:hover, .hq .hq-thread .hq-link:focus-visible { text-decoration: underline; }
+  .hq-turn-id { white-space: nowrap; opacity: .75; }
+  .hq-foldset > .hq-card { position: relative; }
+  .hq .hq-fold-x { position: absolute; top: 10px; right: 14px; font: 11px var(--hq-mono); letter-spacing: 0; }
+  .hq pre.hq-doc { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .hq details > summary { cursor: pointer; }
+  .hq details > summary::after { content: " ›"; opacity: .6; }
+  @media (max-width: 480px) { .hq-wide-card .hq-lines li small { display: block; } }
   .hq-replay-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .hq-replay-progress { font: 11px var(--hq-pixel); color: var(--hq-muted); }
   .hq .hq-btn[disabled] { opacity: .45; cursor: default; }

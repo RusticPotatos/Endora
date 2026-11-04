@@ -174,6 +174,10 @@ function hqFold(key, title, meta, body) {
   const open = !!HQ.more[key];
   // One grid item, heading and body together: apart, an opened body landed in the other column
   // (tabs climb, round 0).
+  // Open, a body with a heading carries the fold control in it, so the title shows once and no
+  // second card is spent on the fold (tabs climb, round 2).
+  const fold = `<button class="hq-link hq-fold-x" aria-expanded="true" data-act="hq:more:${key}:toggle">fold</button>`;
+  if (open && /<\/h2>/.test(body)) return `<div class="hq-foldset">${body.replace(/<\/h2>/, `</h2>${fold}`)}</div>`;
   return `<div class="hq-foldset"><section class="hq-card hq-fold"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${open ? "tap to fold" : meta}</small></button></section>${open ? body : ""}</div>`;
 }
 
@@ -320,6 +324,13 @@ function hqEvidence(t) {
 // The turns that ended last on a task, or of a member, with what each came to (ADR 0114): in
 // reading order, oldest first like the thread below them, the last five unless the owner asks
 // for all. `key` names the card, so "show all" is remembered for it alone.
+// How a turn ended, then what it left (its label), in plain words; "" for a plain finish.
+const HQ_TURN_ENDED = { failed: "failed", timed_out: "ran out of time", timeout: "ran out of time", cancelled: "was stopped", retry_waiting: "waits to retry", succeeded: "" };
+const HQ_TURN_LEFT = { empty: "gave nothing back", advanced: "made progress", nothing: "showed nothing", checked: "checked", talk_only: "talk only" };
+function hqTurnSaid(status, label) {
+  const words = (map, v) => (v in map ? map[v] : String(v || "").replace(/_/g, " "));
+  return [status ? words(HQ_TURN_ENDED, status) : "", label ? words(HQ_TURN_LEFT, label) : ""].filter(Boolean).join(", ");
+}
 function hqTurns(match, key) {
   const all = ((HQ.snap && HQ.snap.recent_runs) || []).filter(match).reverse();
   if (!all.length) return "";
@@ -330,12 +341,7 @@ function hqTurns(match, key) {
   const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
   // The task leads and the outcome is in plain words; the turn's number is the link's last word,
   // and Show all sits under the list (tabs climb, round 1).
-  // How the turn ended first, then what it left (its label), both in plain words.
-  const ended = { failed: "failed", timed_out: "ran out of time", timeout: "ran out of time", cancelled: "was stopped", retry_waiting: "waits to retry", succeeded: "" };
-  const left = { empty: "gave nothing back", advanced: "made progress", nothing: "showed nothing", checked: "checked", talk_only: "talk only" };
-  const words = (map, v) => map[v] || String(v || "").replace(/_/g, " ");
-  const said = (r) => [r.status && r.status in ended ? ended[r.status] : words(ended, r.status), r.label ? words(left, r.label) : ""].filter(Boolean).join(", ");
-  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} ${esc(said(r))} · R${r.id}`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
+  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} ${esc(hqTurnSaid(r.status, r.label))} <span class="hq-turn-id">· R${r.id}</span>`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
@@ -406,8 +412,10 @@ function hqLogEntry(e) {
     "wake.held": ["wake", `${name} waits: ${key} is being worked (${reason})`],
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
+    // How the turn ended and what it left, in the same plain words as What failed; its tokens and
+    // cache share are the replay's, not the log line's (tabs climb, round 2).
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
-      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.result !== "succeeded" && d.why ? `: ${d.why}` : ""}${d.label ? " · " + d.label : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.input != null ? ` · in ${d.input} / out ${d.output || 0}` : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
+      `R${d.run} ${name} ${d.result === "succeeded" ? ["finished", hqTurnSaid("", d.label)].filter(Boolean).join(", ") : hqTurnSaid(d.result, d.label)}${d.result !== "succeeded" && d.why && !/^(timed_out|timeout)$/.test(d.result) ? `: ${d.why}` : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
     "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : "a member"} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
