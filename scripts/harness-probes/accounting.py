@@ -427,7 +427,35 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
                                   "num_turns", "total_cost_usd")}
         meta["stream_result"]["result_events"] = results_seen
         meta["reconciliation"] = reconcile_stream(usage_list, stream_result.get("usage"))
+        helpers = helper_calls(usage_list, stream_result.get("modelUsage"))
+        usage_list.extend(helpers)
+        meta["helper_calls_from_model_usage"] = len(helpers)
     return attempt
+
+
+def helper_calls(usage_list, model_usage):
+    """Model calls Claude Code made but never wrote to its transcript (a helper on a small
+    model): what its result's `modelUsage` counts beyond the summed messages, per model, as one
+    usage record each, attributed `helper`. Cache figures beyond the messages' go with them."""
+    if not isinstance(model_usage, dict):
+        return []
+    keys = {"input_uncached": "inputTokens", "cache_read": "cacheReadInputTokens",
+            "cache_write": "cacheCreationInputTokens", "output": "outputTokens"}
+    out = []
+    for model, seen in model_usage.items():
+        if not isinstance(seen, dict):
+            continue
+        summed = {f: sum(u[f] for u in usage_list if u.get("model") == model and is_int(u.get(f)))
+                  for f in keys}
+        extra = {f: (seen.get(k) - summed[f]) if is_int(seen.get(k)) else None
+                 for f, k in keys.items()}
+        if not any(is_int(v) and v > 0 for v in extra.values()):
+            continue
+        extra = {f: max(0, v) if is_int(v) else v for f, v in extra.items()}
+        out.append(make_usage(f"helper:{model}", "helper", model, extra["input_uncached"],
+                              extra["cache_read"], extra["cache_write"], extra["output"],
+                              status="from_model_usage"))
+    return out
 
 
 def is_number(v):

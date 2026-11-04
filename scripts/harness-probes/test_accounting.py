@@ -257,6 +257,35 @@ class StreamJsonTests(unittest.TestCase):
         self.assertTrue(m["reconciliation_ok"])
         self.assertEqual(a["meta"]["stream_result"]["num_turns"], 2)
 
+    def test_a_helper_call_seen_only_in_model_usage_is_counted(self):
+        # Live, round 3: Claude Code's result `modelUsage` held 1,331 input and 20 output tokens
+        # more than its transcript's messages: a helper call (Haiku) the session never records.
+        # It is a model call, so it counts, as one more usage record, attributed as a helper.
+        with tempfile.TemporaryDirectory() as d:
+            stream = Path(d) / "s.jsonl"
+            msg = {"id": "m1", "model": "claude-haiku-5-5", "role": "assistant",
+                   "stop_reason": "end_turn", "content": [{"type": "text", "text": "RESULT: done"}],
+                   "usage": {"input_tokens": 8, "cache_creation_input_tokens": 100,
+                             "cache_read_input_tokens": 1000, "output_tokens": 50}}
+            write_jsonl(stream, [
+                {"type": "system", "subtype": "init", "session_id": "s1"},
+                {"type": "assistant", "message": msg, "session_id": "s1"},
+                {"type": "result", "subtype": "success", "is_error": False, "result": "RESULT: done",
+                 "total_cost_usd": 0.01, "duration_ms": 1000, "num_turns": 1,
+                 "usage": {"input_tokens": 8, "cache_creation_input_tokens": 100,
+                           "cache_read_input_tokens": 1000, "output_tokens": 50},
+                 "modelUsage": {"claude-haiku-5-5": {
+                     "inputTokens": 1339, "outputTokens": 70, "cacheReadInputTokens": 1000,
+                     "cacheCreationInputTokens": 100, "costUSD": 0.01}}}])
+            a = acc.parse_cc([], stream_json=stream, family="f", seed=0)
+        helpers = [u for u in a["usage"] if u["agent"] == "helper"]
+        self.assertEqual([(u["input_uncached"], u["cache_read"], u["cache_write"], u["output"])
+                          for u in helpers], [(1331, 0, 0, 20)])
+        m = metrics_of(a)
+        self.assertEqual(m["tokens"]["input_uncached"], 1339)
+        self.assertEqual(m["tokens"]["output"], 70)
+        self.assertEqual(m["tokens"]["calls"], 2)
+
     def test_stream_alone_builds_the_attempt_and_takes_elapsed_from_result(self):
         with tempfile.TemporaryDirectory() as d:
             empty = Path(d) / "e.jsonl"

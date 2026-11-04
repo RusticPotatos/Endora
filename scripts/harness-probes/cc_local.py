@@ -77,9 +77,14 @@ def run(args):
     env["PROBE_PUBLISH_URL"] = publish.url
     base = [args.claude_bin, "-p", None, "--output-format", "stream-json", "--verbose",
             "--model", args.model, "--permission-mode", "bypassPermissions"]
+    if args.effort:
+        base += ["--effort", args.effort]
+    for extra in args.cc_arg:
+        base.append(extra)
     interrupt = task.get("interrupt_after")
     steps = [(task["words"], None)]
     summary = {"family": args.family, "seed": args.seed, "model": args.model,
+               "effort": args.effort, "command": [c for c in base if c is not None],
                "dispatched_at": time.time(), "invocations": []}
     deadline = summary["dispatched_at"] + args.timeout
     session = None
@@ -142,6 +147,9 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--model", default="claude-sonnet-5-5")
     p.add_argument("--claude-bin", default="claude")
+    p.add_argument("--effort", help="Claude Code's effort, to match the other arm's (none: its default)")
+    p.add_argument("--cc-arg", action="append", default=[],
+                   help="one more argument for claude, as is (repeatable), e.g. --cc-arg=--strict-mcp-config")
     p.add_argument("--claude-home", default=str(Path.home() / ".claude"))
     p.add_argument("--probe-dir", help="a probe generated already (copied, not generated)")
     p.add_argument("--timeout", type=float, default=600)
