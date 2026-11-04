@@ -107,7 +107,7 @@ def call(url, path, body=None, token=NODE_TOKEN, timeout=10):
 class Hq:
     """A disposable HQ: its own store in `folder`, on a free loopback port."""
 
-    def __init__(self, binary, folder):
+    def __init__(self, binary, folder, tick_seconds=1):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self.port = free_port()
@@ -118,7 +118,7 @@ class Hq:
             "HQ_ADDR": f"127.0.0.1:{self.port}",
             "HQ_TOKEN": NODE_TOKEN,
             "HQ_RUNNER_TOKEN": RUNNER_TOKEN,
-            "HQ_TICK_SECONDS": "1",
+            "HQ_TICK_SECONDS": str(tick_seconds),
         }
         self.log = open(self.folder / "hq.log", "w")
         self.proc = subprocess.Popen([str(binary)], env=env, stdout=self.log, stderr=subprocess.STDOUT)
