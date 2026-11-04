@@ -305,7 +305,8 @@
   .hq-side[hidden] { display: none; }
   /* The status chips under the title, and the give-work form. */
   .hq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .hq .hq-chip { border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); color: var(--hq-muted); background: var(--hq-panel); }
+  /* line-height after the font shorthand, which would reset it: every chip's text on one centre line. */
+  .hq .hq-chip { display: inline-block; min-height: 32px; box-sizing: border-box; border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); line-height: 24px; color: var(--hq-muted); background: var(--hq-panel); }
   .hq .hq-chip-go { cursor: pointer; min-height: 32px; color: var(--hq-fg); }
   .hq button.hq-chip { cursor: pointer; }
   .hq .hq-chip.low { border-color: var(--hq-red); color: var(--hq-red); font-weight: 600; }

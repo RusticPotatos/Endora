@@ -151,7 +151,9 @@ function hqStudioScene(mode = hqStudioMode()) {
   desks.forEach((d, i) => {
     const who = atDesk[i] || null;
     scene.desks.push({ x: d.x, y: d.y, who, lamp: !!(who && who.kind === "work"), screen: !!(who && who.kind === "work") });
-    if (who) scene.people.push({ m: who.m, t: who.t, kind: who.kind, x: d.x + 16, y: d.y + 12, dir: "up", seat: "desk" });
+    // A worker waiting to retry has turned from the dark screen toward the hourglass: the figure says
+    // "waiting", not only the props (council round 13).
+    if (who) scene.people.push({ m: who.m, t: who.t, kind: who.kind, x: d.x + 16, y: d.y + 12, dir: who.kind === "wait" ? "right" : "up", seat: "desk" });
     scene.important.push({ x: d.x + 16, y: d.y - 6, w: 16, h: 22, what: "screen" });
   });
   // Everyone else, in a seat: chess players at the board, the stuck at the review table in the owner's
@@ -385,10 +387,12 @@ function hqDrawPlaces(g, scene) {
     // in hard amber pixels, the board's retry colour, so waiting differs from working at a glance and
     // not only by its sign (a soft amber glow vanished on the wood, council round 12).
     if (d.who && d.who.kind === "wait") {
-      const px = d.x - 6, py = d.y - 8, pw = 60, ph = 50, a = "rgba(255,170,60,.85)";
+      const px = d.x - 6, py = d.y - 8, pw = 60, ph = 50, a = "#ffaa3c", k = 6;
       hqR(g, px, py, pw, ph, "rgba(40,30,60,.22)");
-      for (let i = 0; i < pw; i += 4) { hqR(g, px + i, py, 2, 1, a); hqR(g, px + i, py + ph - 1, 2, 1, a); }
-      for (let j = 0; j < ph; j += 4) { hqR(g, px, py + j, 1, 2, a); hqR(g, px + pw - 1, py + j, 1, 2, a); }
+      // Solid pixel corners, not a dashed box (which read as a selection).
+      for (const [cx, cy, sx, sy] of [[px, py, 1, 1], [px + pw - 1, py, -1, 1], [px, py + ph - 1, 1, -1], [px + pw - 1, py + ph - 1, -1, -1]]) {
+        hqR(g, sx > 0 ? cx : cx - k + 1, cy, k, 1, a); hqR(g, cx, sy > 0 ? cy : cy - k + 1, 1, k, a);
+      }
     }
     if (d.lamp) {
       const glow = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 40);
