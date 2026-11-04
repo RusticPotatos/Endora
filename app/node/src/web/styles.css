@@ -412,7 +412,8 @@
   /* The team board (the owner's notes of 31 Oct): one line a member, however narrow. The name
      and the money keep their place; what the member is doing gives way, cut short. */
   /* Open tasks: the title on one line, its status and owner on a steady second (council round 3). */
-  .hq .hq-open .hq-line b { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Titles get two lines before they are cut (round 6). */
+  .hq .hq-open .hq-line b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-width: 100%; white-space: normal; overflow: hidden; }
   .hq .hq-open .hq-line small { display: block; color: var(--hq-muted); }
   .hq .hq-open .hq-line { position: relative; padding-right: 16px; }
   .hq .hq-open .hq-line::after { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); }
@@ -437,7 +438,10 @@
   /* Manage's folds stack in one grid cell, so short folded cards leave no holes beside tall ones. */
   .hq-foldstack { display: grid; gap: 14px; align-content: start; min-width: 0; }
   .hq .hq-accepted li { display: block; padding: 6px 0; border-bottom: 1px solid var(--hq-line); }
-  .hq .hq-accepted li b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hq .hq-accepted li b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow: hidden; }
+  .hq .hq-thread li { padding: 4px 0; }
+  .hq .hq-thread .hq-turn-title { display: block; color: var(--hq-fg); font-weight: 600; }
+  .hq .hq-thread small { display: block; }
   .hq .hq-accepted li small { display: block; color: var(--hq-muted); }
   .hq-times { color: var(--hq-muted); }
   .hq .hq-fold-x { position: absolute; top: 10px; right: 14px; font: 11px var(--hq-mono); letter-spacing: 0; }

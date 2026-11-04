@@ -794,7 +794,7 @@ if (failures.length) {
     '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 pushed<span class="hq-wide"> this week</span><span class="hq-narrow">/7d</span></span>']) {
     if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
   }
-  if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h3>The team's turns</h3>")) fail("hq: the outcomes do not head the card");
+  if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h2>The team's turns</h2>")) fail("hq: the outcomes do not head the card");
   if (office.includes("$0.00 each")) fail("hq: nothing landed is shown as costing nothing");
   {
     const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
@@ -1235,7 +1235,7 @@ if (failures.length) {
   // posts that cite nothing marked, and the rounds the owner's.
   for (const said of ["What done means", "&lt;b&gt;sonarr&lt;/b&gt; is running", "live: a reading the same turn", "submitted, Bo", "r12 · homelab_status",
     "&lt;img src=e onerror=alert(7)&gt; sonarr: running", "the tester passed it, ", "Tester's pass: given.", "No evidence yet.",
-    '<span class="hq-unsupported">unsupported</span>: Probably fine.', 'EL-7 · Bo <span class="hq-turn-id">R2</span> talk only', 'EL-7 · Bo <span class="hq-turn-id">R1</span> checked',
+    '<span class="hq-unsupported">unsupported</span>: Probably fine.', 'Bo <span class="hq-turn-id">R2</span> talk only', 'Bo <span class="hq-turn-id">R1</span> checked',
     "R10 Bo finished, talk only", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
     // Read as words: a name in a line of Activity is a link (the owner, 1 Nov).
     if (!office.replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1").includes(said)) fail(`hq: the evidence does not show ${said}`);
@@ -2121,6 +2121,17 @@ if (failures.length) {
     if ((twice.match(/<li>/g) || []).length !== 1 || !twice.includes("×2")) fail(`hq: identical lines in one minute are told twice: ${twice}`);
     const manage = runInContext(`(() => { hqSetTab("manage"); const h = viewHQ(); HQ.tab = null; return h; })()`, context);
     if (!/<div class="hq-foldstack">[\s\S]*hq:more:accepted:toggle/.test(manage)) fail("hq: Manage's folds are not stacked as one grid item");
+  }
+  // Tabs climb round 6: a failed turn's row leads with its task's title, the member, outcome and
+  // turn number on a muted line under it, and repeats of one task and outcome are one row "×N"; an
+  // engine post is hidden beside a line only when that line records the same action.
+  {
+    const rows = runInContext(`(() => { const keep = HQ.snap.recent_runs; const t = (HQ.snap.tasks || []).find((x) => x.title);
+      HQ.snap.recent_runs = [1, 2, 3].map((i) => ({ id: 6000 + i, member: 2, task: t.id, status: "failed", label: "empty" }));
+      const h = hqTurns((r) => r.status === "failed", "failed"); HQ.snap.recent_runs = keep; return [h.includes(esc(t.title).slice(0, 12)), (h.match(/<li>/g) || []).length, h.includes("×3")]; })()`, context);
+    if (!rows[0] || rows[1] !== 1 || !rows[2]) fail(`hq: failed turns do not lead with their task, or repeat a row: ${rows}`);
+    const kept = runInContext(`hqLogLines([{ key: "c1", at: "06:54", kind: "you", text: "You pushed hq/task-9-x to the fork", refs: {} }, { key: "c2", at: "06:54", kind: "run", text: "endora: Submitted branch hq/task-9-x for judging", refs: {} }])`, context);
+    if (!kept.includes("Submitted branch")) fail("hq: an engine post recording a different action was hidden");
   }
   // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
   // phone its counters and legend are the Health tab's (2026-10-30).

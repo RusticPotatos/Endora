@@ -341,7 +341,16 @@ function hqTurns(match, key) {
   const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
   // The task leads and the outcome is in plain words; the turn's number is the link's last word,
   // and Show all sits under the list (tabs climb, round 1).
-  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} <span class="hq-turn-id">R${r.id}</span> ${esc(hqTurnSaid(r.status, r.label))}`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
+  // Each row leads with its task's title, the member, outcome and turn number muted under it; the
+  // same task and outcome turn after turn is one row "×N", its link the latest turn (round 6).
+  const rows = [];
+  for (const r of runs) {
+    const last = rows[rows.length - 1], said = hqTurnSaid(r.status, r.label);
+    if (!key.startsWith("task-") && last && last.r.task && last.r.task === r.task && last.said === said && last.r.member === r.member) { last.n += 1; last.r = r; continue; }
+    rows.push({ r, said, n: 1 });
+  }
+  const title = (r) => { const t = r.task && ((HQ.snap && HQ.snap.tasks) || []).find((x) => x.id === r.task); return r.task ? `${hqKey(r.task)}${t && t.title ? " " + esc(t.title) : ""}` : "No task"; };
+  return `<ul class="hq-thread">${rows.map(({ r, said, n }) => `<li>${replayRunLink(r.id, `<b class="hq-turn-title">${title(r)}</b> <small>${esc(hqName(r.member))} <span class="hq-turn-id">R${r.id}</span> ${esc(said)}${n > 1 ? ` · ×${n}` : ""}</small>`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
@@ -362,7 +371,10 @@ const HQ_ENGINE_LINE = 90;
 const hqEnginePost = (t) => /^endora: /i.test(String(t || ""));
 function hqLogLines(lines) {
   const branch = (t) => (String(t).match(/\bhq\/task-\d+[\w-]*/) || [""])[0];
-  const repeats = (l, i) => hqEnginePost(l.text) && branch(l.text) && [lines[i - 1], lines[i + 1]].some((n) => n && !hqEnginePost(n.text) && n.at === l.at && branch(n.text) === branch(l.text));
+  // The same action too (its verb: "pushed", "submitted"), not only the same branch and minute,
+  // so a different record is never hidden (round 6).
+  const verb = (t) => (String(t).replace(/^endora: /i, "").match(/^\w+/) || [""])[0].toLowerCase();
+  const repeats = (l, i) => hqEnginePost(l.text) && branch(l.text) && verb(l.text) && [lines[i - 1], lines[i + 1]].some((n) => n && !hqEnginePost(n.text) && n.at === l.at && branch(n.text) === branch(l.text) && new RegExp(`\\b${verb(l.text)}\\b`, "i").test(n.text));
   // The same words in the same minute, line after line, are one line ending "×N" (round 4).
   const kept = [];
   for (const [i, l] of lines.entries()) {
@@ -773,6 +785,13 @@ function hqTabs(s) {
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
 }
 
+// Health on a wide screen: the outcomes, What failed beside them, then the team's turns, so the two
+// columns end near each other (round 6); a phone reads them in that order.
+function hqHealthCards(s) {
+  const card = hqScorecard(s), cut = card.indexOf("<h3>The team's turns</h3>");
+  if (cut < 0) return card + hqFailures();
+  return `${card.slice(0, cut)}</section>${hqFailures()}<section class="hq-card"><h2>The team's turns</h2>${card.slice(cut + "<h3>The team's turns</h3>".length)}`;
+}
 function hqPanel(id, html) {
   return `<div class="hq-side" role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"${hqTab() === id ? "" : " hidden"}>${html}</div>`;
 }
@@ -1007,9 +1026,7 @@ function viewHQ() {
         ${hqOffice(s) ? hqFold("office", "Office", "its games", hqOffice(s)) : ""}
         <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section></div>
         ${hqContracts(s.contracts)}`)}
-      ${hqPanel("health", `
-        ${hqScorecard(s)}
-        ${hqFailures()}`)}
+      ${hqPanel("health", hqHealthCards(s))}
       ${hqPanel("activity", hqActivity())}
       ${hqPanel("chess", hqChessTab(s))}
     </div>
@@ -1536,7 +1553,7 @@ function hqAccepted(s) {
     const bundle = (r.status === "accepted" && !r.can_push) || r.status === "kept_blocked"
       ? ` <button class="hq-link" data-act="hq:bundle:${Number(r.task)}:${esc(slug)}">bundle</button>` : "";
     // The branch is a tooltip: its name repeated the title in engine words.
-    return `<li title="${esc(r.branch)}"><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why && r.why !== shared ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
+    return `<li title="${esc(`${hqKey(r.task)} ${r.title} · ${r.branch}`)}"><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why && r.why !== shared ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
   });
   const list = hqMore("acceptedlist", lines, 8);
   const body = `<section class="hq-card"><h2>Accepted, waiting to merge <span class="hq-count">${rows.length}</span></h2>
