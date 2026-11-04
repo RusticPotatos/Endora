@@ -15,7 +15,7 @@ const HQ_SAY_SECONDS = 4;
 const HQ_SAY_MOST = 30;
 const HQ_DONE_KINDS = { met_criteria: true, completed_unverified: false };
 const HQ_WEEK_DAYS = 7;
-const HQ_FONT_8B = '600 8px "Pixelify Sans", monospace', HQ_FONT_7 = '7px "Pixelify Sans", monospace', HQ_FONT_7S = '600 7px "Pixelify Sans", monospace';
+const HQ_FONT_8 = '8px "Pixelify Sans", monospace', HQ_FONT_8B = '600 8px "Pixelify Sans", monospace', HQ_FONT_7 = '7px "Pixelify Sans", monospace', HQ_FONT_7S = '600 7px "Pixelify Sans", monospace';
 const HQ_FONT_6 = '6px "Pixelify Sans", monospace', HQ_FONT_6B = '600 6px "Pixelify Sans", monospace', HQ_FONT_7B = '600 7px "Pixelify Sans", monospace';
 const HQ_SIGN_FONT = "8px Silkscreen, monospace";
 const HQ_STUDIO = {
@@ -37,12 +37,13 @@ const HQ_STUDIO = {
     bookcase: { x: 112, y: 148, w: 104 }, sofas: [{ x: 120, y: 162 }, { x: 164, y: 162 }],
     chess: { x: 262, y: 158 }, counter: { x: 336, y: 116, w: 60 }, stools: [{ x: 340, y: 146 }, { x: 366, y: 146 }],
     door: { x: 0, y: 140 }, window: { x: 286, y: 6 }, sign: true,
-    plants: [["PLANT", 8, 174], ["LARGE_PLANT", 292, 158]],
+    // Decor stands for nothing: never a sign of state (council round 6, after the owner's old office).
+    decor: [["PLANT", 8, 174], ["LARGE_PLANT", 292, 158], ["CACTUS", 58, 170], ["BIN", 32, 190], ["PLANT_2", 378, 62], ["HANGING_PLANT", 60, 0]],
   },
   phone: {
-    W: 192, H: 300, wallH: 32, board: { x: 4, w: 184 },
+    W: 192, H: 304, wallH: 36, board: { x: 4, w: 184 }, boardFont: 8,
     zones: {
-      work: { x: 0, y: 32, w: 192, h: 84, floor: "plank" },
+      work: { x: 0, y: 36, w: 192, h: 80, floor: "plank" },
       owner: { x: 0, y: 116, w: 100, h: 84, floor: "tile", raised: true },
       alcove: { x: 100, y: 116, w: 92, h: 84, floor: "parquet" },
       lounge: { x: 0, y: 200, w: 136, h: 100, floor: "terra", sunken: true },
@@ -56,7 +57,7 @@ const HQ_STUDIO = {
     bookcase: { x: 10, y: 222, w: 84 }, sofas: [{ x: 18, y: 236 }, { x: 58, y: 236 }],
     chess: { x: 104, y: 256 }, counter: { x: 140, y: 206, w: 48 }, stools: [{ x: 144, y: 232 }, { x: 168, y: 232 }],
     door: null, window: null, sign: false,
-    plants: [["PLANT", 4, 268], ["PLANT", 170, 268]],
+    decor: [["PLANT", 4, 268], ["PLANT", 170, 268], ["CACTUS", 166, 164]],
   },
 };
 
@@ -174,7 +175,7 @@ function hqStudioScene(mode = hqStudioMode()) {
   }
   // The things a person, a bubble or a tap card must never cover.
   const B = L.board, S = L.shelf;
-  scene.important.push({ x: B.x - 2, y: 0, w: B.w + 4, h: 30, what: "board" }, { x: S.x - 2, y: S.y - 2, w: S.w + 4, h: S.rows * S.pitch + 5, what: "shelf" },
+  scene.important.push({ x: B.x - 2, y: 0, w: B.w + 4, h: L.wallH - 2, what: "board" }, { x: S.x - 2, y: S.y - 2, w: S.w + 4, h: S.rows * S.pitch + 5, what: "shelf" },
     { x: L.ownerDesk.x, y: L.ownerDesk.y, w: 48, h: 20, what: "owner desk" }, { x: L.review.x, y: L.review.y, w: 32, h: 16, what: "review table" },
     { x: L.chess.x, y: L.chess.y, w: 16, h: 16, what: "chess" }, { x: L.rack.x, y: L.rack.y, w: 14, h: 30, what: "rack" });
   // What a tap falls on.
@@ -264,7 +265,8 @@ function hqDrawRoom(g, scene) {
   // The board: the one place of words.
   const B = L.board, board = hqBoard(), x0 = B.x + 4, bw = B.w - 8;
   // Larger type on the whole wall (council round 1: the board's words were too small to read).
-  hqR(g, B.x - 2, 1, B.w + 4, 30, "#b9a888"); hqR(g, B.x, 2, B.w, 27, "#fbfbf8");
+  hqR(g, B.x - 2, 1, B.w + 4, L.wallH - 2, "#b9a888"); hqR(g, B.x, 2, B.w, L.wallH - 5, "#fbfbf8");
+  const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = big ? HQ_FONT_8B : HQ_FONT_7S, step = big ? 9 : 8;
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
   // The open count in plain ink; only its stuck part is red, to match the red folders.
   g.font = HQ_FONT_7; g.textAlign = "right";
@@ -273,14 +275,14 @@ function hqDrawRoom(g, scene) {
   g.textAlign = "left";
   const lines = board.stopped ? [{ who: "", text: "The kill switch is pulled: nobody starts work.", red: true }] : board.lines.slice(0, 2);
   lines.forEach((l, i) => {
-    const y = 19 + i * 8;
-    if (l.amber) hqR(g, x0 - 2, y - 6, bw + 4, 8, "rgba(255,179,71,.28)");
-    g.font = HQ_FONT_7S; g.fillStyle = "#3a3242";
+    const y = 19 + (big ? 1 : 0) + i * step;
+    if (l.amber) hqR(g, x0 - 2, y - 6, bw + 4, step, "rgba(255,179,71,.28)");
+    g.font = whoFont; g.fillStyle = "#3a3242";
     const lw = l.who ? Math.ceil(g.measureText(l.who + " ").width) : 0;
     if (l.who) g.fillText(l.who + " ", x0, y);
-    g.font = HQ_FONT_7; g.fillStyle = l.red ? "#c0392b" : l.amber ? "#8a4f00" : "#4b4557"; g.fillText(hqFit(g, l.text, bw - lw), x0 + lw, y);
+    g.font = lineFont; g.fillStyle = l.red ? "#c0392b" : l.amber ? "#8a4f00" : "#4b4557"; g.fillText(hqFit(g, l.text, bw - lw), x0 + lw, y);
   });
-  if (!board.stopped && board.lines.length > 2) { g.textAlign = "right"; g.fillStyle = "#6b6577"; g.fillText(`+${board.lines.length - 2}`, x0 + bw, 27); g.textAlign = "left"; }
+  if (!board.stopped && board.lines.length > 2) { g.textAlign = "right"; g.fillStyle = "#6b6577"; g.fillText(`+${board.lines.length - 2}`, x0 + bw, 19 + (big ? 1 : 0) + step); g.textAlign = "left"; }
 }
 function hqFloor(g, z, W) {
   const { x, y, w, h } = z;
@@ -363,7 +365,7 @@ function hqDrawPlaces(g, scene) {
   for (const sx of [ch.x - 12, ch.x + 20]) { hqR(g, sx, ch.y + 12, 8, 3, "#8a5a34"); hqR(g, sx + 3, ch.y + 15, 2, 5, "#6d5434"); }
   const ct = L.counter; hqR(g, ct.x, ct.y + 8, ct.w, 14, "#8a6d48"); hqR(g, ct.x, ct.y + 8, ct.w, 2, "#b8905f"); hqImg(g, "COFFEE", ct.x + ct.w - 18, ct.y - 4);
   for (const s of L.stools) { hqR(g, s.x + 3, s.y + 12, 10, 3, "#8a5a34"); hqR(g, s.x + 7, s.y + 15, 2, 6, "#6d5434"); }
-  for (const [k, x, y] of L.plants) hqImg(g, k, x, y);
+  for (const [k, x, y] of L.decor) hqImg(g, k, x, y);
   // Nobody working: the work floor a step dimmer, so idle and busy differ even at a thumbnail.
   if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.24)"); }
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.

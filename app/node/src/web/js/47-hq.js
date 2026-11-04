@@ -41,9 +41,9 @@ const HQ = {
 
 const HQ_C = { neon: "#ff4fa3", lamp: "#ffb347", red: "#ef5a5f", green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", text: "#1f1d29" };
 // The furniture the studio draws (Pixel Agents, MIT): desks and their screens, chairs, the sofas,
-// the review table, the coffee machine and two plants.
+// the review table, the coffee machine, and decor that stands for nothing (plants, a cactus, a bin).
 const HQ_ART = ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "CUSHIONED_CHAIR_BACK",
-  "SOFA_FRONT", "PLANT", "LARGE_PLANT", "COFFEE", "SMALL_TABLE_FRONT"];
+  "SOFA_FRONT", "PLANT", "PLANT_2", "LARGE_PLANT", "HANGING_PLANT", "CACTUS", "BIN", "COFFEE", "SMALL_TABLE_FRONT"];
 const HQ_IMG = {};
 let HQ_ART_READY = null;
 
