@@ -791,7 +791,7 @@ if (failures.length) {
     "3 interrupts (3 a day) · 4 in the digest", "19 interrupts (2.7 a day) · 22 in the digest",
     "1 reinvented · 5 asks of the record · 2 consults (1 answered, 1 from the record)",
     "2 waiting for budget · 1 for the Mac · the oldest has waited 9 min",
-    '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 landed this week</span>']) {
+    '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 pushed this week</span>']) {
     if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
   }
   if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h3>The team's turns</h3>")) fail("hq: the outcomes do not head the card");
@@ -799,11 +799,11 @@ if (failures.length) {
   {
     const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
       const html = hqChips(HQ.snap); o.week.landed = kept; return html; })()`, context);
-    if (!landed.includes(">3 landed this week</span>")) fail("hq: the top bar does not count what landed this week");
+    if (!landed.includes(">3 pushed this week</span>")) fail("hq: the top bar does not count what was pushed this week");
     // An HQ that does not serve outcomes yet shows neither the section nor the chip.
     const none = runInContext(`(() => { const c = HQ.snap.scorecard, kept = c.outcomes; delete c.outcomes;
       const html = hqScorecard(HQ.snap) + hqChips(HQ.snap); c.outcomes = kept; return html; })()`, context);
-    if (none.includes("Outcomes") || none.includes("landed this week")) fail("hq: outcomes are shown that HQ did not serve");
+    if (none.includes("Outcomes") || none.includes("pushed this week")) fail("hq: outcomes are shown that HQ did not serve");
     // Nothing waiting is said so; a landed change that cost nothing is $0.00 (it was free), not "none".
     const calm = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = [o.waiting, o.day.per_landed, o.day.spent];
       o.waiting = { budget: 0, mac: 0, oldest_ms: null }; o.day.per_landed = 0; o.day.spent = 0;
@@ -1479,6 +1479,13 @@ if (failures.length) {
         const b = hqBoard(); HQ.snap.tasks.forEach((t, i) => { t.closure = was[i]; }); HQ.snap.members.forEach((m, i) => { m.running = keep[i]; });
         return b.lines.map((l) => l.text).join(" / "); })()`, context);
       if (!/not verified/.test(week)) fail(`hq: the board's week counts unverified closings as done: ${week}`);
+      // The board's week counts tasks closed, and the chip counts changes pushed: two words for two
+      // things (council round 1: "40 landed" beside "118 closed" read as a contradiction).
+      if (!/\d+ tasks closed this week/.test(week)) fail(`hq: the board's week does not say it counts tasks closed: ${week}`);
+      // Who waits to retry is told in amber on the board, apart from who works.
+      const amber = runInContext(`(() => { HQ.snap.runs.push({ id: 92, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
+        const b = hqBoard(); HQ.snap.runs.pop(); return b.lines.filter((l) => l.amber).length; })()`, context);
+      if (amber !== 1) fail(`hq: the board does not mark who waits to retry: ${amber}`);
       // Nobody sits on anybody, nor on the board, the shelves, your desk, the review table, the chess
       // board or the rack, on a screen or a phone.
       for (const m of ["wide", "phone"]) {

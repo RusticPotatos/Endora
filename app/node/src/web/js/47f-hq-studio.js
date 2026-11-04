@@ -15,6 +15,7 @@ const HQ_SAY_SECONDS = 4;
 const HQ_SAY_MOST = 30;
 const HQ_DONE_KINDS = { met_criteria: true, completed_unverified: false };
 const HQ_WEEK_DAYS = 7;
+const HQ_FONT_8B = '600 8px "Pixelify Sans", monospace', HQ_FONT_7 = '7px "Pixelify Sans", monospace', HQ_FONT_7S = '600 7px "Pixelify Sans", monospace';
 const HQ_FONT_6 = '6px "Pixelify Sans", monospace', HQ_FONT_6B = '600 6px "Pixelify Sans", monospace', HQ_FONT_7B = '600 7px "Pixelify Sans", monospace';
 const HQ_SIGN_FONT = "8px Silkscreen, monospace";
 const HQ_STUDIO = {
@@ -97,7 +98,6 @@ function hqGoalNow(snap = HQ.snap || {}) {
   const openOf = (g) => open.filter((t) => t.goal === g.id).length;
   return (snap.goals || []).filter((g) => g.status === "active").sort((a, b) => working(b) - working(a) || last(b) - last(a) || openOf(b) - openOf(a) || a.id - b.id)[0] || null;
 }
-function hqAgo(ms) { const m = Math.max(0, Math.round(ms / 60000)); return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; }
 // The board's words, short: the goal, how much is open and stuck, and who is on what by subject.
 // Full titles wait behind a tap.
 function hqBoard(snap = HQ.snap || {}) {
@@ -110,13 +110,13 @@ function hqBoard(snap = HQ.snap || {}) {
   }
   for (const r of (snap.runs || []).filter((x) => x.status === "retry_waiting")) {
     const m = (snap.members || []).find((x) => x.id === r.member);
-    if (m && !m.furloughed && !lines.some((l) => l.who === m.name)) lines.push({ who: m.name, text: "waits to retry", mine: false });
+    if (m && !m.furloughed && !lines.some((l) => l.who === m.name)) lines.push({ who: m.name, text: "waits to retry", mine: false, amber: true });
   }
   lines.sort((a, b) => b.mine - a.mine);
   if (!lines.length) {
-    const week = hqWeekDone(), last = week[week.length - 1], unverified = week.filter((t) => !HQ_DONE_KINDS[t.closure.why]).length;
+    const week = hqWeekDone(), unverified = week.filter((t) => !HQ_DONE_KINDS[t.closure.why]).length;
     lines.push({ who: "", text: "Nobody is working now." });
-    if (last) lines.push({ who: "", text: `${week.length} closed this week${unverified ? `, ${unverified} not verified` : ""}; the last ${hqAgo(hqWeekNow() - last.closure.at)}.` });
+    if (week.length) lines.push({ who: "", text: `${week.length} tasks closed this week${unverified ? `, ${unverified} not verified` : ""}.` });
   }
   return { title: g ? g.title : "No goal yet", count: g ? `${open.length} open${stuck ? `, ${stuck} stuck` : ""}` : "", stuck: stuck > 0, lines, stopped: !!snap.stopped };
 }
@@ -256,18 +256,20 @@ function hqDrawRoom(g, scene) {
   if (L.sign) { g.font = HQ_SIGN_FONT; g.fillStyle = HQ_C.neon; g.shadowColor = HQ_C.neon; g.shadowBlur = hqCalm() ? 0 : 4; g.fillText("ENDORA", 8, 19); g.shadowBlur = 0; }
   // The board: the one place of words.
   const B = L.board, board = hqBoard(), x0 = B.x + 4, bw = B.w - 8;
-  hqR(g, B.x - 2, 2, B.w + 4, 28, "#b9a888"); hqR(g, B.x, 4, B.w, 24, "#fbfbf8");
-  g.font = HQ_FONT_7B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 56), x0, 12);
-  g.font = HQ_FONT_6; g.textAlign = "right"; g.fillStyle = board.stuck ? "#c0392b" : "#6b6577"; g.fillText(board.count, x0 + bw, 12); g.textAlign = "left";
+  // Larger type on the whole wall (council round 1: the board's words were too small to read).
+  hqR(g, B.x - 2, 1, B.w + 4, 30, "#b9a888"); hqR(g, B.x, 2, B.w, 27, "#fbfbf8");
+  g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
+  g.font = HQ_FONT_7; g.textAlign = "right"; g.fillStyle = board.stuck ? "#c0392b" : "#6b6577"; g.fillText(board.count, x0 + bw, 10); g.textAlign = "left";
   const lines = board.stopped ? [{ who: "", text: "The kill switch is pulled: nobody starts work.", red: true }] : board.lines.slice(0, 2);
   lines.forEach((l, i) => {
-    const y = 19 + i * 6.5;
-    g.font = HQ_FONT_6B; g.fillStyle = "#3a3242";
+    const y = 19 + i * 8;
+    if (l.amber) hqR(g, x0 - 2, y - 6, bw + 4, 8, "rgba(255,179,71,.28)");
+    g.font = HQ_FONT_7S; g.fillStyle = "#3a3242";
     const lw = l.who ? Math.ceil(g.measureText(l.who + " ").width) : 0;
     if (l.who) g.fillText(l.who + " ", x0, y);
-    g.font = HQ_FONT_6; g.fillStyle = l.red ? "#c0392b" : "#4b4557"; g.fillText(hqFit(g, l.text, bw - lw), x0 + lw, y);
+    g.font = HQ_FONT_7; g.fillStyle = l.red ? "#c0392b" : l.amber ? "#8a4f00" : "#4b4557"; g.fillText(hqFit(g, l.text, bw - lw), x0 + lw, y);
   });
-  if (!board.stopped && board.lines.length > 2) { g.textAlign = "right"; g.fillStyle = "#6b6577"; g.fillText(`+${board.lines.length - 2}`, x0 + bw, 25.5); g.textAlign = "left"; }
+  if (!board.stopped && board.lines.length > 2) { g.textAlign = "right"; g.fillStyle = "#6b6577"; g.fillText(`+${board.lines.length - 2}`, x0 + bw, 27); g.textAlign = "left"; }
 }
 function hqFloor(g, z, W) {
   const { x, y, w, h } = z;
@@ -353,6 +355,7 @@ function hqDrawPlaces(g, scene) {
     hqImg(g, "DESK_FRONT", d.x, d.y);
     hqImg(g, d.screen ? "PC_FRONT_ON_" + (calm ? 1 : 1 + (Math.floor(HQ.t * 4) % 3)) : "PC_FRONT_OFF", d.x + 16, d.y - 6);
     hqR(g, d.x + 4, d.y + 2, 3, 6, "#6d5434"); hqR(g, d.x + 2, d.y, 7, 3, d.lamp ? "#ffd27a" : "#8a7a60");
+    if (d.who && d.who.kind === "wait") hqHourglass(g, d.x + 21, d.y - 3, 1);
     if (!d.who) hqImg(g, "CUSHIONED_CHAIR_BACK", d.x + 16, d.y + 24);
   }
   const sel = HQ.selected;
@@ -402,9 +405,18 @@ function hqSign(g, kind, x, y) {
   hqR(g, x + 1, y + 1, 7, 7, "rgba(0,0,0,.25)");
   if (kind === "blocked") { hqR(g, x, y, 7, 7, HQ_C.red); hqR(g, x + 3, y + 1, 1, 3, "#fff"); hqR(g, x + 3, y + 5, 1, 1, "#fff"); return; }
   if (kind === "check") { hqR(g, x, y, 7, 7, "#2b2f3a"); for (let i = 0; i < 5; i++) { hqR(g, x + 1 + i, y + 1 + i, 1, 1, HQ_C.red); hqR(g, x + 5 - i, y + 1 + i, 1, 1, HQ_C.red); } return; }
-  if (kind === "wait") { hqR(g, x, y, 7, 8, HQ_C.lamp); hqR(g, x + 1, y + 1, 5, 1, "#7a4a10"); hqR(g, x + 2, y + 2, 3, 2, "#fff"); hqR(g, x + 3, y + 4, 1, 1, "#7a4a10"); hqR(g, x + 2, y + 5, 3, 1, "#fff"); hqR(g, x + 1, y + 6, 5, 1, "#7a4a10"); return; }
+  // Waiting to retry is the one state with no lamp to tell it, so its sign is twice the size.
+  if (kind === "wait") { hqR(g, x + 1, y - 3, 11, 13, "rgba(0,0,0,.25)"); hqR(g, x, y - 4, 11, 13, HQ_C.lamp); hqHourglass(g, x + 2, y - 2, 1); return; }
   hqR(g, x, y, 7, 7, HQ_C.green);
   for (const [dx, dy] of [[1, 3], [2, 4], [3, 3], [4, 2], [5, 1]]) hqR(g, x + dx, y + dy, 1, 1, "#fff");
+}
+
+// An hourglass seven pixels wide and nine tall: frame, sand above draining to sand below.
+function hqHourglass(g, x, y, s) {
+  const r = (dx, dy, w, h, c) => hqR(g, x + dx * s, y + dy * s, w * s, h * s, c);
+  r(0, 0, 7, 1, "#5a3408"); r(0, 8, 7, 1, "#5a3408");
+  r(1, 1, 5, 1, "#fff6e0"); r(2, 2, 3, 1, "#fff6e0"); r(3, 3, 1, 2, "#fff6e0"); r(2, 5, 3, 1, "#e0a040"); r(1, 6, 5, 2, "#e0a040");
+  r(1, 2, 1, 1, "#5a3408"); r(5, 2, 1, 1, "#5a3408"); r(1, 6, 1, 0, "#5a3408");
 }
 
 // ---- taps ---------------------------------------------------------------------------------------
