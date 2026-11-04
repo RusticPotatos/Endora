@@ -99,6 +99,8 @@ function hqChessRound(l) {
 function hqChessAll() {
   const c = HQ.chessGames;
   const d = c && c.data;
+  // A failed load says so in the card, with a way to try again, rather than "Loading…" for ever.
+  if (!d && c && c.error) return `<section class="hq-card"><h2>All games</h2><p class="hq-empty">Couldn't load the league's games (${esc(c.error)}).</p><div class="hq-row"><button class="hq-btn" data-act="hq:holo:page:1">Try again</button></div></section>`;
   if (!d) return `<section class="hq-card"><h2>All games</h2><p class="hq-empty">Loading…</p></section>`;
   const games = d.games || [];
   if (!games.length) return `<section class="hq-card"><h2>All games</h2><p class="hq-empty">No league game has finished yet.</p></section>`;
@@ -133,8 +135,8 @@ async function hqChessLoad(page, seen) {
   c.busy = true;
   try {
     c.data = await api("GET", `/v1/hq/league/games?page=${Math.max(1, Number(page) || 1)}`);
-    c.page = Number(c.data.page) || 1;
-  } catch (e) { flash("Couldn't load the league's games: " + e.message, "err"); }
+    c.page = Number(c.data.page) || 1; c.error = "";
+  } catch (e) { c.error = String((e && e.message) || e); }
   c.busy = false;
   render();
 }

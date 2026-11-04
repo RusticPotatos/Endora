@@ -172,7 +172,9 @@ function hqOpenRow(key, title, meta, body) {
 // redraws in `HQ.more`; `key` has no colon.
 function hqFold(key, title, meta, body) {
   const open = !!HQ.more[key];
-  return `<section class="hq-card hq-fold"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${open ? "tap to fold" : meta}</small></button></section>${open ? body : ""}`;
+  // One grid item, heading and body together: apart, an opened body landed in the other column
+  // (tabs climb, round 0).
+  return `<div class="hq-foldset"><section class="hq-card hq-fold"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${open ? "tap to fold" : meta}</small></button></section>${open ? body : ""}</div>`;
 }
 
 // A form inside a card that is used now and then (a new project, a routine, a hire): a button
@@ -764,11 +766,14 @@ document.body.addEventListener("input", (ev) => {
 
 // One card of the desk or of the digest: what it says and is about, what its choices do, and the
 // choices. Every word goes through esc: they are a member's.
-function hqNeed(s, d) {
+function hqNeed(s, d, help = true) {
   const choices = hqDeskChoices(d);
-  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, d.text)}
+  // The task's own title leads, so a branch name or engine words are not the first thing read.
+  const t = d.task ? ((s.tasks || []).find((x) => x.id === d.task) || null) : null;
+  const title = t && t.title ? `<strong class="hq-need-title">${hqKey(t.id)} ${esc(t.title)}</strong>` : "";
+  return `<div class="hq-need ${esc(d.kind)}">${title}${hqClamp(`need${d.id}`, d.text)}
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}</p>
-      ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
+      ${help && HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
@@ -788,7 +793,9 @@ function hqDesk(s) {
   // The team stopped by HQ itself is always whole: nothing goes on until the owner answers it.
   const isWhole = (d, i) => i < HQ_DESK_WHOLE || d.kind === "tripwire";
   const items = s.desk || [];
-  const whole = items.filter(isWhole).map((d) => hqNeed(s, d)).join("");
+  // A kind's help is said on its first card only: the same lines on every card were noise.
+  const told = new Set(), firstOfKind = (d) => !told.has(d.kind) && told.add(d.kind);
+  const whole = items.filter(isWhole).map((d) => hqNeed(s, d, firstOfKind(d))).join("");
   const rows = items.filter((d, i) => !isWhole(d, i)).map((d) => hqOpenRow(`desk${d.id}`, esc(String(d.kind).replace(/_/g, " ")), esc(short(d.text)), hqNeed(s, d))).join("");
   return whole + (rows ? `<ul class="hq-team">${rows}</ul>` : "");
 }
@@ -1139,6 +1146,7 @@ function hqProjectTitle(id) {
 // spend against its cap, amber from 80% and red once spent. The owner, who is the board, makes
 // them, caps them, hands them work, pauses, resumes, drops and reopens them. Every word a
 // member wrote (a proposal's title, its reason) is escaped.
+const HQ_PROJECTS_SHOWN = 4;
 function hqProjects(s) {
   const projects = s.projects || [];
   const goals = (s.goals || []).filter((g) => g.status === "active" || projects.some((p) => p.goal === g.id));
@@ -1180,9 +1188,10 @@ function hqProjects(s) {
   const showOff = !!HQ.more.routinesoff;
   const routinesOf = (goal) => routines.filter((r) => r.goal === goal && (r.enabled || showOff)).map(hqRoutineRow).join("");
   const groups = goals.map((g) => {
-    const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b));
-    const live = mine.filter((p) => !finished(p)).length;
-    const list = hqMore(`projects${g.id}`, mine.map(row), Math.max(live, 1));
+    // A few per goal at rest, those with open work first (tabs climb, round 0: 28 live rows read as
+    // a wall); the rest behind "Show all".
+    const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b) || (b.open_tasks || 0) - (a.open_tasks || 0));
+    const list = hqMore(`projects${g.id}`, mine.map(row), HQ_PROJECTS_SHOWN);
     const rows = list.shown + routinesOf(g.id);
     return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${rows || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
   }).join("");

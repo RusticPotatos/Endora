@@ -2068,6 +2068,21 @@ if (failures.length) {
     if (runInContext(`hqClamp("check2", "a short line")`, context).includes("Read all")) fail("hq: a short line offers Read all");
     runInContext("HQ.more = {};", context);
   }
+  // Tabs climb round 0 (council): an opened fold is one grid item, its heading and its body
+  // together; Projects shows a bounded few per goal; Chess says when its games failed to load;
+  // a desk card leads with the task's title, and a kind's help is said once, not on every card.
+  {
+    const fold = runInContext(`(() => { HQ.more.foldprobe = true; const h = hqFold("foldprobe", "T", "m", "<section class='hq-card'>b</section>"); HQ.more.foldprobe = false; return h; })()`, context);
+    if (!fold.startsWith('<div class="hq-foldset">') || !fold.endsWith("</div>") || !fold.includes("<section class='hq-card'>b</section>")) fail(`hq: an opened fold is not one grid item: ${fold.slice(0, 80)}`);
+    const proj = runInContext(`(() => { const ps = Array.from({ length: 10 }, (_, i) => ({ id: 900 + i, goal: 77, title: "P" + i, status: "active", lead: 1, spent: 0, open_tasks: i % 3 }));
+      const h = hqProjects({ goals: [{ id: 77, title: "G", status: "active" }], projects: ps, routines: [] }); return [(h.match(/hq:more:proj9\d\d:toggle/g) || []).length, h.includes("Show all 10")]; })()`, context);
+    if (proj[0] > 4 || !proj[1]) fail(`hq: projects are not cut to a few per goal behind Show all: ${proj}`);
+    const chess = runInContext(`(() => { const keep = HQ.chessGames; HQ.chessGames = { data: null, error: "HTTP 404", page: 1 }; const h = hqChessAll(); HQ.chessGames = keep; return h; })()`, context);
+    if (/Loading/.test(chess) || !/Couldn&#39;t load|Couldn't load/.test(chess)) fail(`hq: the games card claims to be loading after a failure: ${chess}`);
+    const desk = runInContext(`(() => { const t = (HQ.snap.tasks || []).find((x) => x.title); if (!t) return null; const d = { id: 991, kind: "notice", text: "hq/task-1-x needs something", task: t.id };
+      const one = hqNeed(HQ.snap, d), two = hqDesk(Object.assign({}, HQ.snap, { desk: [d, Object.assign({}, d, { id: 992 })] })); return [one.indexOf("hq-need-title"), one.indexOf("hq/task-1-x"), (two.match(/class="hq-help"/g) || []).length]; })()`, context);
+    if (desk && (desk[0] < 0 || desk[0] > desk[1] || desk[2] !== 1)) fail(`hq: a desk card does not lead with its task, or repeats its help: ${desk}`);
+  }
   // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
   // phone its counters and legend are the Health tab's (2026-10-30).
   {
