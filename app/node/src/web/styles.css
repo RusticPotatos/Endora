@@ -434,6 +434,12 @@
   .hq .hq-thread .hq-link:hover, .hq .hq-thread .hq-link:focus-visible { text-decoration: underline; }
   .hq-turn-id { white-space: nowrap; opacity: .75; }
   .hq-foldset > .hq-card { position: relative; }
+  /* Manage's folds stack in one grid cell, so short folded cards leave no holes beside tall ones. */
+  .hq-foldstack { display: grid; gap: 14px; align-content: start; min-width: 0; }
+  .hq .hq-accepted li { display: block; padding: 6px 0; border-bottom: 1px solid var(--hq-line); }
+  .hq .hq-accepted li b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hq .hq-accepted li small { display: block; color: var(--hq-muted); }
+  .hq-times { color: var(--hq-muted); }
   .hq .hq-fold-x { position: absolute; top: 10px; right: 14px; font: 11px var(--hq-mono); letter-spacing: 0; }
   /* The heading of an open fold leaves room for its control, so the two never overlap. */
   .hq-foldset > .hq-card > h2 { padding-right: 52px; }

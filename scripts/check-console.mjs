@@ -785,7 +785,7 @@ if (failures.length) {
   // that landed nothing said plainly ("none landed", never $0), and the number landed in the top
   // bar. The activity table stays below them.
   // Each is a one-line row with its day's headline; opened, the day and the week in full.
-  for (const said of ["<h3>Outcomes</h3>", "<b>Landed</b> <small>1 landed</small>", "<span>1 day: 1 landed",
+  for (const said of ["<h3>Outcomes</h3>", "<b>Changes</b> <small>1 landed</small>", "<span>1 day: 1 landed",
     "1 landed · 2 submitted · 2 checks passed", "0 landed · 6 submitted · 5 checks passed",
     "$0.88 each", "none landed", "12 : 1 turns · 40 posts : 6 acts", "not measured yet",
     "3 interrupts (3 a day) · 4 in the digest", "19 interrupts (2.7 a day) · 22 in the digest",
@@ -1235,7 +1235,7 @@ if (failures.length) {
   // posts that cite nothing marked, and the rounds the owner's.
   for (const said of ["What done means", "&lt;b&gt;sonarr&lt;/b&gt; is running", "live: a reading the same turn", "submitted, Bo", "r12 · homelab_status",
     "&lt;img src=e onerror=alert(7)&gt; sonarr: running", "the tester passed it, ", "Tester's pass: given.", "No evidence yet.",
-    '<span class="hq-unsupported">unsupported</span>: Probably fine.', 'EL-7 · Bo talk only <span class="hq-turn-id">· R2', 'EL-7 · Bo checked <span class="hq-turn-id">· R1',
+    '<span class="hq-unsupported">unsupported</span>: Probably fine.', 'EL-7 · Bo <span class="hq-turn-id">R2</span> talk only', 'EL-7 · Bo <span class="hq-turn-id">R1</span> checked',
     "R10 Bo finished, talk only", 'data-act="hq:decide:21:accept"', 'data-act="hq:decide:21:send_back"']) {
     // Read as words: a name in a line of Activity is a link (the owner, 1 Nov).
     if (!office.replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1").includes(said)) fail(`hq: the evidence does not show ${said}`);
@@ -1410,15 +1410,15 @@ if (failures.length) {
   // The turns on a task read oldest first, as its thread does, the last five unless all are asked.
   {
     const card = runInContext("hqSelected()", context);
-    if (!(card.indexOf(">· R1<") < card.indexOf(">· R2<"))) fail("hq: a task's turns are not oldest first");
+    if (!(card.indexOf(">R1<") < card.indexOf(">R2<"))) fail("hq: a task's turns are not oldest first");
     if (card.includes("hq:turns:task-7:toggle")) fail("hq: two turns were offered a show-all");
     const many = runInContext(`(() => { const kept = HQ.snap.recent_runs;
       HQ.snap.recent_runs = [7, 6, 5, 4, 3, 2, 1].map((id) => ({ id, member: 2, task: 7, status: "succeeded", label: "checked" }));
       const five = hqSelected(); hqDispatch("hq", "turns", "task-7", "toggle"); const all = hqSelected();
       HQ.allTurns = {}; HQ.snap.recent_runs = kept; return [five, all]; })()`, context);
-    if (many[0].includes(">· R2<") || !many[0].includes(">· R3<") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
-    if (!(many[0].indexOf(">· R3<") < many[0].indexOf(">· R7<"))) fail("hq: the last five turns are not oldest first");
-    if (!many[1].includes(">· R1<") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
+    if (many[0].includes(">R2<") || !many[0].includes(">R3<") || !many[0].includes("Show all 7")) fail("hq: a task's turns are not cut to the last five");
+    if (!(many[0].indexOf(">R3<") < many[0].indexOf(">R7<"))) fail("hq: the last five turns are not oldest first");
+    if (!many[1].includes(">R1<") || !many[1].includes("Show the last 5")) fail("hq: show all does not show every turn");
   }
   // Finding a task: every EL- number on the screen opens its task, and the Work tab finds one by
   // its number or a few words of its title (the board alone made a task hard to find).
@@ -2113,6 +2113,14 @@ if (failures.length) {
       return hqLogLines(ls); })()`, context);
     if (lines.includes("ca152b9") || !lines.includes("You pushed hq/task-9-x")) fail(`hq: an engine post repeating its neighbour is told twice: ${lines.slice(0, 200)}`);
     if (lines.includes("never pushed anywhere") || !lines.includes("hq:logmore:a3:toggle")) fail("hq: an engine post is not cut to a short line with more");
+  }
+  // Tabs climb round 4: identical lines in the same minute are one line with "×2"; Manage's folds
+  // stack as one grid item beside Projects.
+  {
+    const twice = runInContext(`hqLogLines([{ key: "b1", at: "06:53", kind: "run", text: "Sol submitted a branch on EL-7", refs: {} }, { key: "b2", at: "06:53", kind: "run", text: "Sol submitted a branch on EL-7", refs: {} }])`, context);
+    if ((twice.match(/<li>/g) || []).length !== 1 || !twice.includes("×2")) fail(`hq: identical lines in one minute are told twice: ${twice}`);
+    const manage = runInContext(`(() => { hqSetTab("manage"); const h = viewHQ(); HQ.tab = null; return h; })()`, context);
+    if (!/<div class="hq-foldstack">[\s\S]*hq:more:accepted:toggle/.test(manage)) fail("hq: Manage's folds are not stacked as one grid item");
   }
   // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
   // phone its counters and legend are the Health tab's (2026-10-30).

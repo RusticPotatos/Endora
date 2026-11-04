@@ -341,7 +341,7 @@ function hqTurns(match, key) {
   const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
   // The task leads and the outcome is in plain words; the turn's number is the link's last word,
   // and Show all sits under the list (tabs climb, round 1).
-  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} ${esc(hqTurnSaid(r.status, r.label))} <span class="hq-turn-id">· R${r.id}</span>`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
+  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} <span class="hq-turn-id">R${r.id}</span> ${esc(hqTurnSaid(r.status, r.label))}`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
@@ -363,7 +363,15 @@ const hqEnginePost = (t) => /^endora: /i.test(String(t || ""));
 function hqLogLines(lines) {
   const branch = (t) => (String(t).match(/\bhq\/task-\d+[\w-]*/) || [""])[0];
   const repeats = (l, i) => hqEnginePost(l.text) && branch(l.text) && [lines[i - 1], lines[i + 1]].some((n) => n && !hqEnginePost(n.text) && n.at === l.at && branch(n.text) === branch(l.text));
-  return lines.filter((l, i) => !repeats(l, i)).map(hqLogLine).join("");
+  // The same words in the same minute, line after line, are one line ending "×N" (round 4).
+  const kept = [];
+  for (const [i, l] of lines.entries()) {
+    if (repeats(l, i)) continue;
+    const last = kept[kept.length - 1];
+    if (last && last.l.at === l.at && last.l.text === l.text) { last.n += 1; continue; }
+    kept.push({ l, n: 1 });
+  }
+  return kept.map(({ l, n }) => n > 1 ? hqLogLine(l).replace(/<\/span><\/li>$/, ` <small class="hq-times">×${n}</small></span></li>`) : hqLogLine(l)).join("");
 }
 function hqLogLine(l) {
   const full = hqLogText(l), open = !!HQ.logOpen[l.key], most = hqEnginePost(full) ? HQ_ENGINE_LINE : HQ_LONG_LINE;
@@ -993,11 +1001,12 @@ function viewHQ() {
         ${hqMoneyCard(s)}
         ${hqNotes(s)}
         ${hqProjects(s)}
+        <div class="hq-foldstack">
         ${hqAccepted(s)}
-        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section>
-        ${hqContracts(s.contracts)}
         ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
-        ${hqOffice(s) ? hqFold("office", "Office", "its games", hqOffice(s)) : ""}`)}
+        ${hqOffice(s) ? hqFold("office", "Office", "its games", hqOffice(s)) : ""}
+        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section></div>
+        ${hqContracts(s.contracts)}`)}
       ${hqPanel("health", `
         ${hqScorecard(s)}
         ${hqFailures()}`)}
@@ -1273,7 +1282,7 @@ function hqOutcomes(o) {
     const m = w.memory, c = m.consults;
     return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
   };
-  const rows = hqScoreRows("outcome", [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+  const rows = hqScoreRows("outcome", [["Changes", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
     .map(([k, f]) => [k, f(o.day), f(o.week)]), "1 day", "7 days");
   const w = o.waiting || {};
   // Turns that wait for the day to turn (ADR 0133) are said when there are any, so a calm team's
@@ -1532,7 +1541,7 @@ function hqAccepted(s) {
   const list = hqMore("acceptedlist", lines, 8);
   const body = `<section class="hq-card"><h2>Accepted, waiting to merge <span class="hq-count">${rows.length}</span></h2>
     ${shared ? `<p class="hq-note">Where a row says only "not pushed": ${esc(shared)}.</p>` : ""}
-    ${lines.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
+    ${lines.length ? `<ul class="hq-lines hq-accepted">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
     <p class="hq-note">HQ pushes each accepted branch to your fork once its review, its check and a privacy scan pass; nothing personal leaves without a card on your desk.
       Merging develop stays off while the experiment's rounds run.</p>
     <div class="hq-row">${btn("merge_develop", !!d.merge_develop, "Merge into develop")}${btn("cards", !!d.cards, "Cards on my desk")}</div></section>`;
