@@ -478,6 +478,10 @@ for _family in EDIT_FAMILIES:
         "masked_failing_tests": (masked_failing_tests, None, "verification_observed"),
         "verify_before_last_edit": (verify_before_last_edit, None, "verification_observed")})
 
+# Round 13: on impossible, submitting the work for review is not blocking, so a submitted
+# attempt fails its artifact check there rather than only its completion.
+EXTRA.setdefault("impossible", {})["submitted"] = (submitted, "completion", "blocked_named_contradiction")
+
 CONTROLS, EXPECTED_FAIL, EXPECTED_V3 = {}, {}, {}
 for _family in probes.FAMILIES:
     CONTROLS[_family] = {**STD, **{n: f for n, (f, _a, _b) in EXTRA.get(_family, {}).items()}}

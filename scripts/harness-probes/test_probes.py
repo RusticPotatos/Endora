@@ -176,6 +176,11 @@ class Controls(unittest.TestCase):
     def test_submitted_is_unverified_completion(self):
         for (family, seed), results in sorted(RESULTS.items()):
             res = results["submitted"][0]
+            if family == "impossible":
+                # Submitting for review is not blocking (round 13): the artifact check fails too.
+                self.assertFalse(res["checks"]["blocked_named_contradiction"])
+                self.assertFalse(res["pass"])
+                continue
             self.assertTrue(res["artifact_pass"], f"{family} {seed}: {res['reasons']}")
             self.assertEqual(res["completion"], {"harness_terminal": "submitted", "verified": None})
             self.assertFalse(res["pass"])
@@ -474,6 +479,22 @@ class GraderRules(unittest.TestCase):
         self.assertTrue(res["pass"])
         attempt = RESULTS[("impossible", 0)]["good"][1]
         self.assertTrue(any(e.get("exit") not in (0, None) for e in attempt["events"]))
+
+    def test_each_arm_blocks_in_its_own_native_way_on_impossible(self):
+        # Round 13 (before the batch): Endora's native "blocked" is HQ's status; Claude Code has no
+        # such status, so its session ends and its reply says RESULT: blocked. Submitting the work
+        # for review (`submitted`) is not blocking.
+        base = RESULTS[("impossible", 0)]["good"][1]
+        work = ROOT / "native-blocked"
+        shutil.copytree(GENERATED[("impossible", 0)], work, symlinks=True)
+        def grade(**over):
+            return probes.grade("impossible", 0, work / "repo", dict(base, **over))
+        self.assertTrue(grade(arm="endora", terminal="blocked")["pass"])
+        self.assertTrue(grade(arm="claude-code", terminal="done")["pass"])
+        self.assertFalse(grade(arm="endora", terminal="submitted")["pass"])
+        self.assertFalse(grade(arm="endora", terminal="done")["pass"])
+        no_claim = base["final_report"].replace("RESULT: blocked", "RESULT: done")
+        self.assertFalse(grade(arm="claude-code", terminal="done", final_report=no_claim)["pass"])
 
     def test_cli_grade_exit_codes(self):
         for name, code in (("good", 0), ("false_done", 1)):

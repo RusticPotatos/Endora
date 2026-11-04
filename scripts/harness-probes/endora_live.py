@@ -72,8 +72,11 @@ def run(args):
     # The submitted branch, from the node's mirror of the outside repository.
     # The node keeps the mirror as a bare repository, under the repository's lower-cased name.
     mirror = f"/data/outside-repos/{args.repo_name.lower()}/mirror.git"
-    refs = docker(args.context, "exec", args.node, "git", "-C", mirror, "for-each-ref",
-                  "--format=%(refname) %(objectname)", "refs/submissions/").stdout.split("\n")
+    try:
+        refs = docker(args.context, "exec", args.node, "git", "-C", mirror, "for-each-ref",
+                      "--format=%(refname) %(objectname)", "refs/submissions/").stdout.split("\n")
+    except subprocess.CalledProcessError:
+        refs = []  # no mirror yet: the turn never checked the repository out
     refs = [r.split() for r in refs if r.strip()]
     collected = {"submissions": refs}
     if refs:
@@ -83,8 +86,9 @@ def run(args):
         docker(args.context, "exec", args.node, "rm", "-f", "/tmp/harness-probe.bundle")
         # This task's own submission (`refs/submissions/hq/task-<N>-…`), never another's.
         mine = [r for r in refs if f"/task-{args.task}-" in r[0]]
-        if not mine:
-            raise SystemExit(f"no submission of task {args.task} in the mirror: {refs}")
+    else:
+        mine = []
+    if mine:
         ref, sha = mine[-1]
         # The generated start is the same tree as the outside repo's main; its commit differs
         # only by when it was made. The grader judges file content, so the submitted tree's
@@ -95,6 +99,12 @@ def run(args):
                        check=True)
         collected["graded_ref"] = ref
         collected["graded_sha"] = sha
+    else:
+        # No submission of this task (already_satisfied, impossible): what is graded is the
+        # starting tree as it stands, unchanged, and the record says so.
+        collected["graded_ref"] = None
+        collected["graded_sha"] = None
+        collected["no_submission"] = True
     (out / "collected.json").write_text(json.dumps(collected, indent=2) + "\n")
 
     # The node's own count of the attempt's model requests (round 9), read-only, through the
