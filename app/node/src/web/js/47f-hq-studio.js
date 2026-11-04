@@ -40,23 +40,23 @@ const HQ_STUDIO = {
     plants: [["PLANT", 8, 174], ["LARGE_PLANT", 292, 158]],
   },
   phone: {
-    W: 192, H: 316, wallH: 32, board: { x: 4, w: 184 },
+    W: 192, H: 300, wallH: 32, board: { x: 4, w: 184 },
     zones: {
       work: { x: 0, y: 32, w: 192, h: 84, floor: "plank" },
       owner: { x: 0, y: 116, w: 100, h: 84, floor: "tile", raised: true },
       alcove: { x: 100, y: 116, w: 92, h: 84, floor: "parquet" },
-      lounge: { x: 0, y: 200, w: 136, h: 116, floor: "terra", sunken: true },
-      kitchen: { x: 136, y: 200, w: 56, h: 116, floor: "check" },
+      lounge: { x: 0, y: 200, w: 136, h: 100, floor: "terra", sunken: true },
+      kitchen: { x: 136, y: 200, w: 56, h: 100, floor: "check" },
     },
     walls: [["v", 100, 116, 150], ["h", 0, 116, 34], ["h", 66, 116, 100], ["half", 136, 200, 244]],
     desks: [{ x: 8, y: 42 }, { x: 72, y: 56 }, { x: 136, y: 42 }],
     shelf: { x: 106, y: 120, w: 80, rows: 4, pitch: 9 }, bench: { x: 114, y: 176, w: 44 },
     ownerDesk: { x: 6, y: 124 }, lever: { x: 44, y: 120 }, rack: { x: 62, y: 124 },
     review: { x: 40, y: 160 }, chairs: [{ x: 22, y: 166, dir: "right" }],
-    bookcase: { x: 10, y: 236, w: 84 }, sofas: [{ x: 18, y: 250 }, { x: 58, y: 250 }],
-    chess: { x: 104, y: 270 }, counter: { x: 140, y: 206, w: 48 }, stools: [{ x: 144, y: 236 }, { x: 168, y: 236 }],
+    bookcase: { x: 10, y: 222, w: 84 }, sofas: [{ x: 18, y: 236 }, { x: 58, y: 236 }],
+    chess: { x: 104, y: 256 }, counter: { x: 140, y: 206, w: 48 }, stools: [{ x: 144, y: 232 }, { x: 168, y: 232 }],
     door: null, window: null, sign: false,
-    plants: [["PLANT", 4, 282], ["PLANT", 170, 282]],
+    plants: [["PLANT", 4, 268], ["PLANT", 170, 268]],
   },
 };
 
@@ -115,7 +115,8 @@ function hqBoard(snap = HQ.snap || {}) {
   lines.sort((a, b) => b.mine - a.mine);
   if (!lines.length) {
     const week = hqWeekDone(), unverified = week.filter((t) => !HQ_DONE_KINDS[t.closure.why]).length;
-    lines.push({ who: "", text: "Nobody is working now." });
+    const blocked = open.filter((t) => t.status === "blocked"), who = [...new Set(blocked.filter((t) => t.owner).map((t) => hqName(t.owner)))];
+    lines.push({ who: "", text: blocked.length ? `Nobody is working; ${blocked.length} stuck${who.length ? ` with ${who.join(", ")}` : ""}` : "Nobody is working now." });
     if (week.length) lines.push({ who: "", text: `${week.length} tasks closed this week${unverified ? `, ${unverified} not verified` : ""}.` });
   }
   const parts = g ? [`${open.length} open`, ...(stuck ? [`, ${stuck} stuck`] : [])] : [];
@@ -362,6 +363,8 @@ function hqDrawPlaces(g, scene) {
   const ct = L.counter; hqR(g, ct.x, ct.y + 8, ct.w, 14, "#8a6d48"); hqR(g, ct.x, ct.y + 8, ct.w, 2, "#b8905f"); hqImg(g, "COFFEE", ct.x + ct.w - 18, ct.y - 4);
   for (const s of L.stools) { hqR(g, s.x + 3, s.y + 12, 10, 3, "#8a5a34"); hqR(g, s.x + 7, s.y + 15, 2, 6, "#6d5434"); }
   for (const [k, x, y] of L.plants) hqImg(g, k, x, y);
+  // Nobody working: the work floor a step dimmer, so idle and busy differ even at a thumbnail.
+  if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.14)"); }
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.
   for (const d of scene.desks) {
     if (d.lamp) {

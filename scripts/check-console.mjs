@@ -1484,6 +1484,10 @@ if (failures.length) {
       // Only the stuck part of the board's count is red: the open backlog is not an alarm.
       const parts = runInContext(`(() => { const b = hqBoard(); return b.stuck ? [b.parts.length, b.parts.join("") === b.count] : [2, true]; })()`, context);
       if (parts.join() !== "2,true") fail(`hq: the board's count is not split into open and stuck: ${parts}`);
+      // Idle, the board names whose work is stuck (council round 4: a red count with no name).
+      const idleStuck = runInContext(`(() => { const keep = HQ.snap.members.map((m) => m.running); HQ.snap.members.forEach((m) => { m.running = []; });
+        const b = hqBoard(); HQ.snap.members.forEach((m, i) => { m.running = keep[i]; }); return [b.stuck, b.lines[0].text]; })()`, context);
+      if (idleStuck[0] && !/^Nobody is working; \d+ stuck with \S/.test(idleStuck[1])) fail(`hq: the idle board does not name whose work is stuck: ${idleStuck}`);
       if (!/\d+ tasks closed this week/.test(week)) fail(`hq: the board's week does not say it counts tasks closed: ${week}`);
       // Who waits to retry is told in amber on the board, apart from who works.
       const amber = runInContext(`(() => { HQ.snap.runs.push({ id: 92, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
