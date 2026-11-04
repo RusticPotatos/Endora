@@ -1488,6 +1488,15 @@ if (failures.length) {
       const idleStuck = runInContext(`(() => { const keep = HQ.snap.members.map((m) => m.running); HQ.snap.members.forEach((m) => { m.running = []; });
         const b = hqBoard(); HQ.snap.members.forEach((m, i) => { m.running = keep[i]; }); return [b.stuck, b.lines[0].text]; })()`, context);
       if (idleStuck[0] && !/^Nobody is working; \d+ stuck with \S/.test(idleStuck[1])) fail(`hq: the idle board does not name whose work is stuck: ${idleStuck}`);
+      // Working, a member's line also says how much of their work on the goal is stuck.
+      // One of a working member's items on the goal is made blocked for the check, then put back.
+      const busyStuck = runInContext(`(() => { const g = hqGoalNow(), m = HQ.snap.members.find((x) => !x.furloughed && (x.running || []).length);
+        const t = g && m && HQ.snap.tasks.find((x) => x.goal === g.id && x.status !== "blocked" && HQ_OPEN.includes(x.status));
+        if (!t) return null; const was = [t.status, t.owner]; t.status = "blocked"; t.owner = m.id;
+        const n = HQ.snap.tasks.filter((x) => x.goal === g.id && x.status === "blocked" && x.owner === m.id).length;
+        const line = hqBoard().lines.find((l) => l.who === m.name); [t.status, t.owner] = was; return [line && line.text, n]; })()`, context);
+      if (!busyStuck) fail("hq: the fixture has no working member and open item to check stuck work with");
+      else if (!String(busyStuck[0]).endsWith(`; ${busyStuck[1]} stuck`)) fail(`hq: a working member's line does not say their stuck work: ${busyStuck}`);
       if (!/\d+ tasks closed this week/.test(week)) fail(`hq: the board's week does not say it counts tasks closed: ${week}`);
       // Who waits to retry is told in amber on the board, apart from who works.
       const amber = runInContext(`(() => { HQ.snap.runs.push({ id: 92, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
@@ -1739,6 +1748,7 @@ if (failures.length) {
     const work = panelOf(tabs, "work");
     // What waits on the owner is the first chip, so a phone's scrolling row always shows it.
     if (!/<div class="hq-chips"><button class="hq-chip hq-chip-go/.test(tabs)) fail("hq: what waits on you is not the first chip");
+    if (/Pool /.test(tabs) && !/<span class="hq-spent">/.test(tabs)) fail("hq: the pool chip cannot drop its spent part on a phone");
     if (!work.includes('class="hq-lines hq-open"')) fail("hq: open tasks are not laid out as title and status lines");
     if (work.indexOf("Your desk") > work.indexOf("<h2>Open tasks")) fail("hq: Work does not put the desk before the open tasks");
     // Open tasks lead with what needs eyes: blocked, then doing, then in review, then untouched todos
@@ -1806,7 +1816,7 @@ if (failures.length) {
     // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac chip: the Mac's
     // state is a word where a member's brain is named, and its card is in Settings → AI.
     if (!tabs.includes(`data-act="hq:tab:work:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Work");
-    if (!tabs.includes("Pool $0.00 spent · $1.93 left")) fail("hq: no chip for today's pool");
+    if (!tabs.includes('Pool <span class="hq-spent">$0.00 spent · </span>$1.93 left')) fail("hq: no chip for today's pool");
     for (const mac of [{ why: "on battery" }, { why: "owner active" }, { why: "not heard from" }, { why: "on battery", busy: true }]) {
       runInContext(`HQ.mac = Object.assign({ ready: false, busy: false }, ${JSON.stringify(mac)});`, context);
       if (/class="hq-chip[^"]*"[^>]*>Mac /.test(shown())) fail(`hq: a Mac chip on HQ (${mac.why})`);

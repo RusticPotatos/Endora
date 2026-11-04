@@ -106,7 +106,8 @@ function hqBoard(snap = HQ.snap || {}) {
   const lines = [];
   for (const m of (snap.members || []).filter((x) => !x.furloughed)) for (const r of m.running || []) {
     const t = r.task ? tasks.find((x) => x.id === r.task) : null;
-    lines.push({ who: m.name, text: t ? `on ${hqSubjectOf(t) || "an item"}` : "looking round", mine: !!(t && g && t.goal === g.id) });
+    const blocked = open.filter((x) => x.status === "blocked" && x.owner === m.id).length;
+    lines.push({ who: m.name, text: `${t ? `on ${hqSubjectOf(t) || "an item"}` : "looking round"}${blocked ? `; ${blocked} stuck` : ""}`, mine: !!(t && g && t.goal === g.id) });
   }
   for (const r of (snap.runs || []).filter((x) => x.status === "retry_waiting")) {
     const m = (snap.members || []).find((x) => x.id === r.member);
@@ -364,7 +365,7 @@ function hqDrawPlaces(g, scene) {
   for (const s of L.stools) { hqR(g, s.x + 3, s.y + 12, 10, 3, "#8a5a34"); hqR(g, s.x + 7, s.y + 15, 2, 6, "#6d5434"); }
   for (const [k, x, y] of L.plants) hqImg(g, k, x, y);
   // Nobody working: the work floor a step dimmer, so idle and busy differ even at a thumbnail.
-  if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.14)"); }
+  if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.24)"); }
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.
   for (const d of scene.desks) {
     if (d.lamp) {
@@ -395,6 +396,10 @@ function hqDrawPeople(g, scene) {
     const img = HQ_IMG["char" + ((p.m.look || 0) % 6)];
     const row = p.dir === "up" ? 1 : p.dir === "down" ? 0 : 2;
     const frame = p.kind === "work" ? 3 + (calm ? 0 : Math.floor(HQ.t * 6) % 2) : p.seat === "desk" ? 1 : 0;
+    // Seen from behind at a desk, a dark outline keeps pale hair from melting into the monitor: the
+    // sprite's silhouette, made once and kept, drawn a pixel to each side under it.
+    const sil = p.seat === "desk" ? hqSilhouette(img) : null;
+    if (sil) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1]]) g.drawImage(sil, frame * 16, row * 32, 16, 32, p.x + dx, p.y + dy, 16, 32);
     if (img) {
       if (p.dir === "left") { g.save(); g.translate(p.x + 16, 0); g.scale(-1, 1); g.drawImage(img, frame * 16, row * 32, 16, 32, 0, p.y, 16, 32); g.restore(); }
       else g.drawImage(img, frame * 16, row * 32, 16, 32, p.x, p.y, 16, 32);
@@ -418,6 +423,21 @@ function hqDrawPeople(g, scene) {
     else hqR(g, b.x > p.x ? b.x - 2 : b.x + b.w, b.y + 3, 2, 2, "#ffffff");
     g.font = HQ_FONT_6; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, b.text, b.w - 6), b.x + 3, b.y + 7);
   }
+}
+const HQ_SILHOUETTES = new Map();
+function hqSilhouette(img) {
+  if (!img) return null;
+  if (HQ_SILHOUETTES.has(img)) return HQ_SILHOUETTES.get(img);
+  let made = null;
+  try {
+    const c = document.createElement("canvas"), x = c.getContext && c.getContext("2d");
+    if (x && img.width) {
+      c.width = img.width; c.height = img.height; x.drawImage(img, 0, 0);
+      x.globalCompositeOperation = "source-in"; x.fillStyle = "rgba(20,16,28,.6)"; x.fillRect(0, 0, c.width, c.height); made = c;
+    }
+  } catch (_) { /* no outline, the sprite still draws */ }
+  if (made || img.complete) HQ_SILHOUETTES.set(img, made);
+  return made;
 }
 // A sign seven pixels square: a red "!" stuck, a red cross a failed check, a green tick recovered, an
 // amber hourglass waiting to retry.
