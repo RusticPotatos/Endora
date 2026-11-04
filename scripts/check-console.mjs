@@ -791,7 +791,7 @@ if (failures.length) {
     "3 interrupts (3 a day) · 4 in the digest", "19 interrupts (2.7 a day) · 22 in the digest",
     "1 reinvented · 5 asks of the record · 2 consults (1 answered, 1 from the record)",
     "2 waiting for budget · 1 for the Mac · the oldest has waited 9 min",
-    '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 pushed<span class="hq-wide"> this week</span></span>']) {
+    '<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">0 pushed<span class="hq-wide"> this week</span><span class="hq-narrow">/7d</span></span>']) {
     if (!office.includes(said)) fail(`hq: the outcomes do not say ${said}`);
   }
   if (office.indexOf("<h3>Outcomes</h3>") < 0 || office.indexOf("<h3>Outcomes</h3>") > office.indexOf("<h3>The team's turns</h3>")) fail("hq: the outcomes do not head the card");
@@ -799,7 +799,7 @@ if (failures.length) {
   {
     const landed = runInContext(`(() => { const o = HQ.snap.scorecard.outcomes, kept = o.week.landed; o.week.landed = 3;
       const html = hqChips(HQ.snap); o.week.landed = kept; return html; })()`, context);
-    if (!landed.includes('>3 pushed<span class="hq-wide"> this week</span></span>')) fail("hq: the top bar does not count what was pushed this week");
+    if (!landed.includes('>3 pushed<span class="hq-wide"> this week</span><span class="hq-narrow">/7d</span></span>')) fail("hq: the top bar does not count what was pushed this week");
     // An HQ that does not serve outcomes yet shows neither the section nor the chip.
     const none = runInContext(`(() => { const c = HQ.snap.scorecard, kept = c.outcomes; delete c.outcomes;
       const html = hqScorecard(HQ.snap) + hqChips(HQ.snap); c.outcomes = kept; return html; })()`, context);

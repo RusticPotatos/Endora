@@ -317,6 +317,7 @@
   .hq-card { padding: 12px 14px; }
   .hq canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; border-radius: 3px; }
   .hq-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hq-narrow { display: none; }
   .hq > *, .hq-bar > *, .hq-chips > * { min-width: 0; max-width: 100%; }
   /* The counters and the legend are the Health tab's on every size (council round 0). */
   .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend { display: none; }
@@ -527,8 +528,8 @@
     .hq-chips::-webkit-scrollbar { display: none; }
     .hq-chips > * { flex: 0 0 auto; white-space: nowrap; }
     .hq-spent, .hq-chips .hq-wide { display: none; }
+    .hq-chips .hq-narrow { display: inline; }
     .hq-chips .hq-chip { padding-left: 8px; padding-right: 8px; }
-    .hq-chips { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
   }
   /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
   @media (pointer: coarse) {

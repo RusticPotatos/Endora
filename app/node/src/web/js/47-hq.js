@@ -725,7 +725,7 @@ function hqChips(s) {
   chips.push(...hqCreditChips());
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
-  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed<span class="hq-wide"> this week</span></span>`);
+  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed<span class="hq-wide"> this week</span><span class="hq-narrow">/7d</span></span>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 

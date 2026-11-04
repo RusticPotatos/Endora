@@ -35,7 +35,7 @@ const HQ_STUDIO = {
     ownerDesk: { x: 6, y: 40 }, lever: { x: 44, y: 36 }, rack: { x: 62, y: 38 },
     review: { x: 40, y: 76 }, chairs: [{ x: 20, y: 84, dir: "right" }, { x: 74, y: 84, dir: "left" }],
     bookcase: { x: 112, y: 148, w: 104 }, sofas: [{ x: 120, y: 162 }, { x: 164, y: 162 }],
-    chess: { x: 262, y: 158 }, counter: { x: 336, y: 116, w: 60 }, stools: [{ x: 340, y: 146 }, { x: 366, y: 146 }],
+    rug: { x: 110, y: 160, w: 182, h: 40 }, chess: { x: 262, y: 158 }, counter: { x: 336, y: 116, w: 60 }, stools: [{ x: 340, y: 146 }, { x: 366, y: 146 }],
     door: { x: 0, y: 140 }, window: { x: 286, y: 6 }, sign: true,
     // Decor stands for nothing: never a sign of state (council round 6, after the owner's old office).
     decor: [["PLANT", 8, 174], ["LARGE_PLANT", 204, 158], ["CACTUS", 58, 118], ["BIN", 32, 190], ["PLANT_2", 378, 62], ["HANGING_PLANT", 60, 0]],
@@ -270,7 +270,8 @@ function hqDrawRoom(g, scene) {
   const B = L.board, board = hqBoard(), x0 = B.x + 4, bw = B.w - 8;
   // Larger type on the whole wall (council round 1: the board's words were too small to read).
   hqR(g, B.x - 2, 1, B.w + 4, L.wallH - 2, "#b9a888"); hqR(g, B.x, 2, B.w, L.wallH - 5, "#fbfbf8");
-  const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = big ? HQ_FONT_8B : HQ_FONT_7S, step = big ? 9 : 8;
+  // Names in the 8px bold on every size: at 7px a bold B reads as an 8 ("Bo" as "8o", council round 8).
+  const big = L.boardFont === 8, lineFont = big ? HQ_FONT_8 : HQ_FONT_7, whoFont = HQ_FONT_8B, step = big ? 9 : 8;
   g.font = HQ_FONT_8B; g.fillStyle = "#3a3242"; g.fillText(hqFit(g, board.title, bw - 60), x0, 10);
   // The open count in plain ink; only its stuck part is red, to match the red folders.
   g.font = HQ_FONT_7; g.textAlign = "right";
@@ -361,6 +362,8 @@ function hqDrawPlaces(g, scene) {
   const stage = { canon: "#4f8f6f", insight: "#6f9bdf", observation: "#c0b65e" }, world = snap.world || {};
   (world.sections || []).map((s) => stage[s.stage] || "#9f9fc8").concat((snap.map_lines || []).map(() => "#c98fd6")).slice(0, Math.floor((bc.w - 6) / 3))
     .forEach((c, i) => hqR(g, bc.x + 4 + i * 3, bc.y + 3 + (i % 4 ? 1 : 0), 2, 8 - (i % 4 ? 1 : 0), c));
+  // A rug under the sofas and the chess table: decor, standing for nothing.
+  if (L.rug) { const r = L.rug; hqR(g, r.x, r.y, r.w, r.h, "#8f4a3a"); hqR(g, r.x + 2, r.y + 2, r.w - 4, r.h - 4, "#a95a44"); hqR(g, r.x + 4, r.y + 4, r.w - 8, 1, "rgba(255,220,180,.25)"); hqR(g, r.x + 4, r.y + r.h - 5, r.w - 8, 1, "rgba(255,220,180,.25)"); }
   for (const s of L.sofas) hqImg(g, "SOFA_FRONT", s.x, s.y);
   const ch = L.chess, game = (((snap.games || {}).chess || {}).games || []).find((x) => x.status === "in_progress");
   hqR(g, ch.x - 1, ch.y + 16, 18, 2, "rgba(60,40,20,.2)"); hqR(g, ch.x + 6, ch.y + 16, 4, 5, "#6d5434"); hqR(g, ch.x, ch.y, 16, 16, "#e9dcc0");
@@ -417,7 +420,8 @@ function hqDrawPeople(g, scene) {
   // Signs beside the head, only where something needs attention.
   for (const p of people) {
     const sign = p.kind === "wait" ? "wait" : (() => { const b = hqTrouble(p.m.id); return b ? b.kind : ""; })();
-    if (sign) hqSign(g, sign, p.x + (sign === "wait" ? 15 : 13), p.y + (sign === "wait" ? -3 : 1));
+    // The hourglass sits right of the monitor, never on it, so it reads as a sign and not a screen.
+    if (sign) hqSign(g, sign, p.x + (sign === "wait" ? 18 : 13), p.y + (sign === "wait" ? 6 : 1));
   }
   for (const p of people) if (p.bubble) {
     const b = p.bubble;
