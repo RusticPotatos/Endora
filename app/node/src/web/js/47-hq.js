@@ -328,7 +328,14 @@ function hqTurns(match, key) {
     ? `<div class="hq-row"><button class="hq-btn" aria-expanded="${every ? "true" : "false"}" data-act="hq:turns:${key}:toggle">${every ? "Show the last 5" : `Show all ${all.length}`}</button></div>` : "";
   // On a task, each turn also opens what it was given (the owner's notes of 31 Oct).
   const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
-  return `${toggle}<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}${given(r)}</li>`).join("")}</ul>`;
+  // The task leads and the outcome is in plain words; the turn's number is the link's last word,
+  // and Show all sits under the list (tabs climb, round 1).
+  // How the turn ended first, then what it left (its label), both in plain words.
+  const ended = { failed: "failed", timed_out: "ran out of time", timeout: "ran out of time", cancelled: "was stopped", retry_waiting: "waits to retry", succeeded: "" };
+  const left = { empty: "gave nothing back", advanced: "made progress", nothing: "showed nothing", checked: "checked", talk_only: "talk only" };
+  const words = (map, v) => map[v] || String(v || "").replace(/_/g, " ");
+  const said = (r) => [r.status && r.status in ended ? ended[r.status] : words(ended, r.status), r.label ? words(left, r.label) : ""].filter(Boolean).join(", ");
+  return `<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `${r.task ? hqKey(r.task) + " · " : ""}${esc(hqName(r.member))} ${esc(said(r))} · R${r.id}`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
@@ -444,7 +451,8 @@ function hqLogEntry(e) {
     "project.changed": [d.status === "paused" || d.status === "dropped" ? "warn" : "you", `Project ${d.title} is ${d.status}: ${d.what || ""}${d.by && d.by !== "owner" ? ", by " + d.by : ""}`],
     "project.budget": [d.level === "spent" ? "bad" : "warn", `Project ${d.title} ${d.said || ""}`],
     // The engineering wing (ADR 0115): branches, their checks and the owner's pushes.
-    "branch.submitted": ["run", `${name} submitted ${d.name} (${d.files} files) on ${key}: check c${d.check} queued`],
+    // The check clause only when there is a check: it read "check cundefined" (tabs climb, round 1).
+    "branch.submitted": ["run", `${name} submitted ${d.name}${d.files != null ? ` (${d.files} files)` : ""} on ${key}${typeof d.check === "number" ? `: check c${d.check} queued` : ""}`],
     "check.done": [d.ok ? "done" : "bad", `Check c${d.check} on ${d.branch}: ${d.summary || (d.ok ? "passed" : "failed")}`],
     // Elastic staffing (ADR 0118): nobody is fired; they are put on furlough and recalled.
     "member.furloughed": ["you", `${d.name} is on furlough`],
@@ -1282,7 +1290,7 @@ function hqScorecard(s) {
   };
   // HQ keeps the tokens, not the brains' prices, so the share is shown and not the dollars.
   const cache = (w) => (w.cache.share == null ? "no paid input" : `${w.cache.share}% of paid input read from cache`);
-  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
+  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk cards", desk], ["Cache", cache]]
     .map(([k, f]) => [k, f(card.today), f(card.week)]);
   const members = (w) => (w.turns.members || []).map((m) => `<li>${esc(hqName(m.member))}: ${m.turns} turns · ${m.nothing} showed nothing${m.unlabelled ? ` · ${m.unlabelled} unlabelled` : ""} · ${hqDollars(m.spent)}</li>`).join("")
     || `<li class="hq-empty">No turns.</li>`;
@@ -1291,7 +1299,7 @@ function hqScorecard(s) {
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
-  if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
+  if (pl) measures.push(["Pool", `${hqDollars(pl.base)} base${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
   return `<section class="hq-card"><h2>How the team is doing</h2>
     ${hqOutcomes(card.outcomes)}
     <h3>The team's turns</h3>
@@ -1490,15 +1498,23 @@ function hqAccepted(s) {
   const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
     data-act="hq:delivery:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
   const when = (at) => at ? `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${hqClock(at)}` : "";
+  // A reason most rows share is said once in the card, not on every row (tabs climb, round 1).
+  const whys = rows.map((r) => r.why).filter(Boolean), tally = new Map();
+  for (const w of whys) tally.set(w, (tally.get(w) || 0) + 1);
+  const common = [...tally].sort((a, b) => b[1] - a[1])[0];
+  const shared = common && common[1] > 2 ? common[0] : "";
   const lines = rows.map((r) => {
     const slug = String(r.branch || "").replace(/^hq\//, "");
     // A blocked item's kept submission (D22) is never pushed: its bundle is how it is reached.
     const bundle = (r.status === "accepted" && !r.can_push) || r.status === "kept_blocked"
       ? ` <button class="hq-link" data-act="hq:bundle:${Number(r.task)}:${esc(slug)}">bundle</button>` : "";
-    return `<li><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(r.branch)} · ${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
+    // The branch is a tooltip: its name repeated the title in engine words.
+    return `<li title="${esc(r.branch)}"><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why && r.why !== shared ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
   });
+  const list = hqMore("acceptedlist", lines, 8);
   const body = `<section class="hq-card"><h2>Accepted, waiting to merge <span class="hq-count">${rows.length}</span></h2>
-    ${lines.length ? `<ul class="hq-lines">${lines.join("")}</ul>` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
+    ${shared ? `<p class="hq-note">Where a row says only "not pushed": ${esc(shared)}.</p>` : ""}
+    ${lines.length ? `<ul class="hq-lines">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
     <p class="hq-note">HQ pushes each accepted branch to your fork once its review, its check and a privacy scan pass; nothing personal leaves without a card on your desk.
       Merging develop stays off while the experiment's rounds run.</p>
     <div class="hq-row">${btn("merge_develop", !!d.merge_develop, "Merge into develop")}${btn("cards", !!d.cards, "Cards on my desk")}</div></section>`;

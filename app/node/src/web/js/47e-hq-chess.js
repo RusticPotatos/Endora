@@ -87,7 +87,7 @@ function hqChessRound(l) {
   }).join("")}</tr>`).join("");
   const standings = (l.table || []).map((r, i) => `<li>${i + 1}. ${esc(r.label)} ${hqSpark(r.history, r.label)} <small>${hqChessPoints(r)} · ${Number(r.rating)} · ${Number(r.won)} won, ${Number(r.drawn)} drawn, ${Number(r.lost)} lost</small></li>`).join("");
   const left = Number(l.pairs_left || 0);
-  return `<section class="hq-card"><h2>This round</h2>
+  return `<section class="hq-card hq-wide-card"><h2>This round</h2>
     <p>Round ${number}, ${since}.</p>
     <p class="hq-note">The league is a round robin: every pair of brains plays once a round, and a round runs until the league is reset. ${left ? `${left} pair${left === 1 ? "" : "s"} still to meet.` : "Every pair has met."}</p>
     <div class="hq-scroll" role="region" aria-label="Who has played whom this round: each row's result against each column" tabindex="0"><table class="hq-cross"><thead><tr><th scope="col"></th>${head}</tr></thead><tbody>${rows}</tbody></table></div>

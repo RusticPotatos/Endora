@@ -430,7 +430,7 @@
   .hq-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
   .hq-note { color: var(--hq-muted); font-size: 12px; max-width: 80ch; margin: 8px 0 0; }
   /* Replay: a turn read back as a timeline, phone first; a task's turns stepped through. */
-  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; }
+  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; }
   .hq-replay-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .hq-replay-progress { font: 11px var(--hq-pixel); color: var(--hq-muted); }
   .hq .hq-btn[disabled] { opacity: .45; cursor: default; }
@@ -496,6 +496,9 @@
   /* A table wider than its card fades at the right edge, so it reads as one that scrolls. */
   .hq-scroll { -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
   .hq-foldset { display: grid; gap: 14px; min-width: 0; align-content: start; }
+  /* A card whose table needs the width spans both columns on a wide screen. */
+  .hq-wide-card { grid-column: 1 / -1; }
+  .hq-cross + * , .hq-lines li .hq-spark { white-space: nowrap; }
   .hq-need-title { display: block; margin: 0 0 4px; }
   .hq-cross td.won { color: var(--hq-green); font-weight: 600; }
   .hq-cross td.notyet, .hq-cross td.playing { opacity: 0.7; }
@@ -536,7 +539,9 @@
     .hq-chips .hq-narrow { display: inline; }
     .hq-chips .hq-chip { padding-left: 8px; padding-right: 8px; }
   }
-  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
+  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button and line on a touch screen. With
+     a mouse a line is 32 px, so lists like Health's read as one block (tabs climb, round 1). */
+  @media (pointer: fine) { .hq .hq-line { min-height: 32px; padding-top: 5px; padding-bottom: 5px; } }
   @media (pointer: coarse) {
     .hq .hq-btn { min-height: 44px; }
   }
