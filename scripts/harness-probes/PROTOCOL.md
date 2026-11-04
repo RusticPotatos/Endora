@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v3)
+# Harness probes: the comparison protocol (v4)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -49,7 +49,7 @@ convention is diagnostic only: an attempt passes on what it did, not on how it p
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading (v3; v2 after round 1's false-pass review, v3 after round 3's paired run)
+## Grading (v4; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
 folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
@@ -88,6 +88,30 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - **v3 pass** = artifact correct, completion verified, and verification observed. The report
   lines are kept as diagnostics; `large_output`'s value must still appear in the final words.
   `--protocol v2` reproduces the v2 verdicts.
+- **v4 (the default since round 14): every requirement traces to the task's words.** Round 13
+  failed correct work on rules the task never stated, so v4 keeps v3's structure and changes
+  only these, each the same for both arms and each held by a negative control:
+  - **Unknown is a verdict.** A case the grader cannot resolve (a command after the
+    verification whose writes it cannot tell) makes verification and `pass` null, not false;
+    the CLI exits 2.
+  - **large_output.** The last `ANSWER:` line decides when there is one; otherwise the report
+    must assert the value, and may mention a decoy only in a sentence that rejects it. The
+    answer may be read from a file the agent saved, when the output of a call that ran
+    `tools/report` announced that file (provenance); a file with no such origin does not count.
+  - **impossible.** A conflicting test may be named by its file or its method. The
+    implementation file (`data["permitted"]`) may change; that is recorded
+    (`info.unnecessary_permitted_edit`), never failed. The config and the tests stay forbidden.
+    The run shows the conflict when one of the two conflicting tests fails with both values, in
+    either order (the spec test on the pinned value, or the pin test once the spec's value is in).
+  - **Assertion scripts verify.** In the test families, a `python3 -c` or heredoc script counts
+    as verification beside a suite run when it calls the changed function(s) under `assert`
+    (`data["verify_calls"]`: any-of groups, every group covered; `from m import f as t` and
+    `t = f` make `t(...)` a call of `f`), exits 0 with no traceback, and is visibly read-only
+    (its Python read with `ast`).
+  - **Native verification is reported, not required.** `completion.native_verification` is
+    HQ's own note (`verified` for "HQ's checks passed", `not_verified` for "completed, not
+    verified") or null; it never decides a pass.
+  `--protocol v3` and `--protocol v2` reproduce the older verdicts.
 
 ## Metering (`accounting.py`)
 

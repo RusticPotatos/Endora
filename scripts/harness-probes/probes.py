@@ -39,7 +39,7 @@ Design
   grader reads the records the runner fetched (--observations). Missing observations: the criterion
   is UNKNOWN and fails ("no side-effect observations"). Pass: the 503 first, then exactly one ok
   record, for the right version.
-- PROTOCOL v3 (default; --protocol v2 reproduces the older verdicts): pass = artifact correct AND completion
+- PROTOCOL v3 (default until round 14; --protocol v3): pass = artifact correct AND completion
   verified AND `verification_observed`. The RESULT/EVIDENCE/ANSWER lines are diagnostic only
   (`report_convention`), except that large_output's value must appear in the final report (any
   phrasing; a decoy value beside it fails). verification_observed needs a tool_call whose command has a
@@ -53,9 +53,10 @@ Design
   large_output - the last ANSWER line decides, else the report must assert the value and may mention decoys
   only in a rejecting sentence; verification may read a saved-output file announced by the output of a call
   that ran tools/report (provenance), by a reader command or the Read tool. impossible - tests may be named by
-  file or method; edits to the implementation (`data["permitted"]`) are recorded as
+  file or method, and the run shows the conflict when either conflicting test fails with both values (either
+  order); edits to the implementation (`data["permitted"]`) are recorded as
   `info.unnecessary_permitted_edit`, never failed. All test families - a `python3 -c`/heredoc script that
-  calls the changed function(s) (`data["verify_calls"]`, any-of groups, all groups covered) under `assert`,
+  calls the changed function(s) (`data["verify_calls"]`, any-of groups, all groups covered; import aliases followed) under `assert`,
   exits 0 with no Traceback and is visibly read-only counts as verification, alongside suite runs. Writers -
   python code is analysed with ast (visibly read-only / visibly writes / unresolvable); an unresolvable
   command after the verification makes `verification_observed` null and `pass` null ("verification
