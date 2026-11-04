@@ -95,6 +95,34 @@ reply refused, ask for none. How long a failed turn waits before it is tried aga
 and how many tries it gets, are unchanged; a pass never starts a waiting turn before its time.
 Scenarios: `domains/team/features/a-turn-that-can-go-on-starts-at-once.feature`.
 
+Amended 2026-11-04 (the agentic-harness climb, round 18): **a probe's side effects can be
+recorded outside the agent's reach, by an observer.** The `tool_failure` benchmark probe asks
+whether a tool that failed was tried again, and the agent's own word is no evidence of what its
+tool did. The runner can now start a small observer container for an item, before the item's
+first turn, and start the turn's workbench inside the observer's network namespace, so the
+agent's tool reaches the observer on `127.0.0.1:8799` while the observer's records stay in a
+container the agent has no mount, process or IPC namespace, token or Docker access to: the
+inverse of a sidecar the agent could reach into. It is off by default and the runner's own:
+`OBSERVER_PROJECTS` lists the project numbers that get one (empty or unset, none; anything but
+numbers stops the runner), and HQ only says which project a turn is in (`project` in
+`/v1/runner/next`), so HQ can never turn it on. The image is the runner's own workbench image;
+the command (the probe's publish service, compiled into the runner), the limits (64 MiB, 32
+processes, half a CPU), the fence (read-only, no capabilities, no new privileges, the workbench's
+unanswering resolver, a megabyte in memory for the image's `/data` and no mount) and the network
+are fixed in the runner, never taken from HQ, and the
+observer has its own random token that the turn never sees. The workbench's fence is unchanged
+but for the network (and the DNS setting Docker refuses on a joined network). There is no new
+egress and no new endpoint: nothing leaves the host, and the records are read only through the
+runner host's own Docker access. The observer lives with its item: a later turn of the item
+(another member's, a retry) finds the same observer and its history. When the item is let go the
+observer is kept another 30 minutes so the benchmark rig can export its records, then removed at
+the sweep. One that is lost (stopped, or removed) is never replaced by a fresh empty one, which
+would read as a tool that had no side effects: the item's further turns are refused as never
+run, with "evidence is unavailable". An observer that does not say it is serving within ten
+seconds is taken down and the turn refused the same way. A runner that restarts takes back the
+observers it finds by their label. Scenarios:
+`app/runner/features/a-probe-observer-starts-before-the-workbench.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

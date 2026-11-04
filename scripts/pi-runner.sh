@@ -2,7 +2,10 @@
 # Starts (or restarts) Endora's runner on the dev node, the Raspberry Pi (ADR 0110). Runs ON the
 # Pi, sent there by `make deploy-pi`:
 #
-#   ssh <the Pi, as endora> sh -s -- <nas address> [token folder] < scripts/pi-runner.sh
+#   ssh <the Pi, as endora> sh -s -- <nas address> [token folder] [observed projects] < scripts/pi-runner.sh
+#
+# Observed projects (ADR 0102, amended 2026-11-04, round 18) are project numbers, comma-separated,
+# whose items get a side-effect observer; empty, the default, is none.
 #
 # The runner asks HQ for turns through the NAS's team gateway and starts each turn's sandbox on
 # the endora_sandbox network, whose only way out is that gateway (the endora_dev_node Ansible
@@ -15,6 +18,14 @@
 set -eu
 nas="${1:-}"
 tokens="${2:-/etc/endora/runner-token}"
+observers="${3:-}"
+# Checked here too: a runner told anything but numbers refuses to start, and the old one is gone.
+case "$observers" in
+    *[!0-9,]*)
+        echo "pi-runner: observed projects are numbers separated by commas, not '$observers'" >&2
+        exit 2
+        ;;
+esac
 
 case "$nas" in
     "" | *[!0-9.]*)
@@ -49,6 +60,7 @@ docker run -d --name endora-runner --restart unless-stopped \
     -e HQ_URL="$gateway/team-gateway" \
     -e HQ_RUNNER_TOKEN_FILE=/runner-token/token \
     -e TEAM_NETWORK=endora_sandbox \
+    -e OBSERVER_PROJECTS="$observers" \
     -e WORKER_HQ_MCP="$gateway/team-gateway/v2/mcp" \
     -e WORKER_MODEL_URL="$gateway/team-relay/local/v1" \
     -e WORKER_CLOUD_URL="$gateway/team-relay/v1" \

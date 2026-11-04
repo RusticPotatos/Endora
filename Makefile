@@ -236,6 +236,9 @@ ENDORA_NAS_ADDR ?=
 ENDORA_PI_BUILD_CONTEXT ?= $(or $(ENDORA_BUILD_CONTEXT),desktop-linux)
 # Where the runner's token lives on the Pi (the endora_dev_node role makes the folder).
 ENDORA_PI_TOKEN_DIR ?= /etc/endora/runner-token
+# Project numbers whose items get a side-effect observer on the Pi (ADR 0102, amended 2026-11-04,
+# round 18), comma-separated; empty, the default, is none.
+ENDORA_PI_OBSERVER_PROJECTS ?=
 
 .DEFAULT_GOAL := help
 
@@ -399,7 +402,7 @@ deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm6
 	echo "starting the runner"; \
 	$(HQ_DRAIN) drain; \
 	rc=0; \
-	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" < scripts/pi-runner.sh || rc=$$?; \
+	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" "$(ENDORA_PI_OBSERVER_PROJECTS)" < scripts/pi-runner.sh || rc=$$?; \
 	$(HQ_DRAIN) resume; \
 	exit $$rc
 

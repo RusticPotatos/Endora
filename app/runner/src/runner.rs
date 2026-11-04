@@ -8,12 +8,14 @@
 //! amended 2026-11-01); HQ's word picks only which item's, by the task it already names.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use endora_kernel::exit_code::{NEVER_STARTED_EXIT, UNREADABLE_EXIT};
 use serde_json::{Value, json};
 
 use crate::docker::{
-    CHECK_LABEL, Docker, ITEM_LABEL, LEASE_LABEL, RUN_LABEL, State, WATCHTOWER_LABEL,
+    CHECK_LABEL, Docker, ITEM_LABEL, LEASE_LABEL, OBSERVER_LABEL, RUN_LABEL, State,
+    WATCHTOWER_LABEL,
 };
 use crate::hq::{Ending, Hq, HqError};
 
@@ -262,6 +264,87 @@ pub fn keeper_spec(work: &Work, task: u64) -> Value {
     })
 }
 
+/// The program of a side-effect observer: the benchmark probe's publish service, run as a
+/// script of its own (`SIDEFX_TOKEN` in its environment, `--port`), which prints `serving <url>`
+/// when it is ready. Compiled in: the observer runs nothing HQ names.
+const OBSERVER_PROGRAM: &str = include_str!("../../../scripts/harness-probes/sidefx.py");
+
+/// The port an observer serves on, loopback, in the network namespace its turn shares.
+const OBSERVER_PORT: u16 = 8799;
+
+/// What an observer prints, at the start of a line, when it serves.
+const OBSERVER_READY: &str = "serving http://127.0.0.1:8799";
+
+/// How long an observer is kept after its item is let go, in seconds, so the benchmark rig can
+/// still read its records: half an hour.
+pub const OBSERVER_KEEP: u64 = 30 * 60;
+
+/// How long a fresh observer has to say it is serving.
+const OBSERVER_READY_WITHIN: Duration = Duration::from_secs(10);
+
+/// How often a fresh observer's log is read while waiting for it.
+const OBSERVER_READY_POLL: Duration = Duration::from_millis(150);
+
+/// Why a turn on an item whose observer was lost is refused: a new one would be empty, and an
+/// empty record would read as a tool that never had a side effect.
+const OBSERVER_LOST: &str = "the item's observer is gone: its evidence is unavailable";
+
+/// A fresh secret for an observer: 24 random bytes from the system, as 48 hex characters.
+fn fresh_token() -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = [0u8; 24];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|e| format!("no random token for the observer: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The body of `POST /containers/create` for an item's side-effect observer: the workbench
+/// image running the compiled-in program, on the turn's network with the same fence and a
+/// smaller allowance, and nothing shared with any turn: no mount, no volume, no process or
+/// IPC namespace. Its only input is its own `token`, which the records need and the turn never
+/// has. The turn's workbench joins this container's network, never the other way round.
+pub fn observer_spec(work: &Work, item: u64, token: &str) -> Value {
+    json!({
+        "Image": work.image,
+        "Entrypoint": [
+            "python3", "-c", OBSERVER_PROGRAM, "--port", OBSERVER_PORT.to_string(),
+        ],
+        "Env": [format!("SIDEFX_TOKEN={token}")],
+        "User": "65534:65534",
+        "Labels": { OBSERVER_LABEL: item.to_string(), WATCHTOWER_LABEL: "false" },
+        "HostConfig": {
+            "NetworkMode": work.network,
+            // The workbench's own DNS fence: the turn that joins this network has none to set.
+            "Dns": [NO_RESOLVER],
+            "Memory": 64 * 1024 * 1024,
+            "PidsLimit": 32,
+            "NanoCpus": 500_000_000_i64,
+            "ReadonlyRootfs": true,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges:true"],
+            // The image declares a `/data` volume, which would otherwise be an unbounded
+            // writable disk: a megabyte in memory instead, as the keeper has, shared with no one.
+            "Tmpfs": { "/data": "size=1m" },
+        },
+    })
+}
+
+/// A turn's `spec` changed to join `observer`'s network, where its tool reaches the observer
+/// on loopback. Docker refuses a DNS setting on a joined network, so the turn has none: the
+/// observer's is the namespace's.
+fn observed(spec: &mut Value, observer: &str) {
+    spec["HostConfig"]["NetworkMode"] = json!(format!("container:{observer}"));
+    if let Some(host) = spec["HostConfig"].as_object_mut() {
+        host.remove("Dns");
+    }
+    if let Some(env) = spec["Env"].as_array_mut() {
+        env.push(json!(format!(
+            "PROBE_PUBLISH_URL=http://127.0.0.1:{OBSERVER_PORT}"
+        )));
+    }
+}
+
 /// A turn HQ handed out, once checked. Not `Debug`: it holds the turn's token.
 pub struct Turn {
     run: u64,
@@ -269,6 +352,9 @@ pub struct Turn {
     token: String,
     member: String,
     task: Option<u64>,
+    /// The project of that task, if HQ says it is in one: only a number, which the runner
+    /// checks against its own list of projects to observe. An older HQ says nothing.
+    project: Option<u64>,
     /// The Claude model the member thinks with, or `None` for the house's own.
     cloud: Option<String>,
     /// How hard Claude tries this turn, as HQ decided, or `None` for the model's own.
@@ -383,6 +469,7 @@ impl Turn {
             token: token.to_owned(),
             member: text("member"),
             task: handed["task"].as_u64(),
+            project: handed["project"].as_u64(),
             cloud,
             effort,
             claude_code,
@@ -501,6 +588,16 @@ struct Checking {
     since: u64,
 }
 
+/// An item's side-effect observer the runner holds.
+struct Observer {
+    id: String,
+    /// When a turn last started on its item (or, for one taken back, when it was made), in
+    /// seconds since the Unix epoch.
+    last: u64,
+    /// When its item was let go, if it has been: it is removed [`OBSERVER_KEEP`] later.
+    let_go: Option<u64>,
+}
+
 /// The runner: HQ on one side, Docker on the other.
 pub struct Runner<D> {
     docker: D,
@@ -523,6 +620,17 @@ pub struct Runner<D> {
     volumes_left: BTreeSet<u64>,
     /// When HQ was last asked which items' sandboxes to keep.
     swept: u64,
+    /// The projects whose items have a side-effect observer: the runner's own list, never
+    /// HQ's. Empty: none does.
+    observer_projects: BTreeSet<u64>,
+    /// The observers, by item, kept like the keepers but for [`OBSERVER_KEEP`] after the item
+    /// is let go.
+    observers: BTreeMap<u64, Observer>,
+    /// The items whose observer was lost: their turns are refused, never given an empty one.
+    lost: BTreeSet<u64>,
+    /// How long a fresh observer has to say it is serving, and how often it is asked.
+    ready_within: Duration,
+    ready_poll: Duration,
 }
 
 impl<D: Docker> Runner<D> {
@@ -540,7 +648,20 @@ impl<D: Docker> Runner<D> {
             used: BTreeMap::new(),
             volumes_left: BTreeSet::new(),
             swept: 0,
+            observer_projects: BTreeSet::new(),
+            observers: BTreeMap::new(),
+            lost: BTreeSet::new(),
+            ready_within: OBSERVER_READY_WITHIN,
+            ready_poll: OBSERVER_READY_POLL,
         }
+    }
+
+    /// The same runner, giving the items of `projects` a side-effect observer. Off (none) unless
+    /// the runner's own setup says so.
+    #[must_use]
+    pub fn observing(mut self, projects: BTreeSet<u64>) -> Self {
+        self.observer_projects = projects;
+        self
     }
 
     /// Takes back the turns' containers an earlier runner left, to report and remove like
@@ -582,6 +703,40 @@ impl<D: Docker> Runner<D> {
             });
         }
         self.take_back_keepers();
+        self.take_back_observers();
+    }
+
+    /// Takes back the observers an earlier runner left, so their records stay readable and the
+    /// items' next turns find them; a second observer of one item is removed. Whether one still
+    /// runs is seen when its item's next turn starts.
+    fn take_back_observers(&mut self) {
+        let observers = match self.docker.observers() {
+            Ok(observers) => observers,
+            Err(e) => {
+                eprintln!("runner: could not look for the items' observers: {e}");
+                return;
+            }
+        };
+        for observer in observers {
+            let Ok(item) = observer.item.parse::<u64>() else {
+                continue;
+            };
+            if self.observers.contains_key(&item) {
+                if let Err(e) = self.docker.remove(&observer.id) {
+                    eprintln!("runner: could not remove item {item}'s second observer: {e}");
+                }
+                continue;
+            }
+            println!("runner: item {item}'s observer was left by an earlier runner; taken back");
+            self.observers.insert(
+                item,
+                Observer {
+                    id: observer.id,
+                    last: observer.created,
+                    let_go: None,
+                },
+            );
+        }
     }
 
     /// Takes back the items' keepers an earlier runner left, so their sandboxes go on being
@@ -679,7 +834,7 @@ impl<D: Docker> Runner<D> {
     /// HQ says is closed (done, dropped or blocked), or one with no turn started on it for
     /// [`LONGEST_IDLE`]; never one a running turn has. Its keeper is removed, then its volume.
     fn sweep(&mut self, now: u64) {
-        if self.keepers.is_empty() && self.volumes_left.is_empty() {
+        if self.keepers.is_empty() && self.volumes_left.is_empty() && self.observers.is_empty() {
             return;
         }
         if now.saturating_sub(self.swept) < SWEEP_EVERY {
@@ -724,7 +879,13 @@ impl<D: Docker> Runner<D> {
             println!("runner: item {item}'s sandbox is let go: {why}");
             self.used.remove(&item);
             self.volumes_left.insert(item);
+            // Its observer is kept a while longer for its records; a lost one is forgotten.
+            self.lost.remove(&item);
+            if let Some(observer) = self.observers.get_mut(&item) {
+                observer.let_go = Some(now);
+            }
         }
+        self.sweep_observers(now);
         for item in std::mem::take(&mut self.volumes_left) {
             if self.in_use(item) || self.keepers.contains_key(&item) {
                 continue;
@@ -733,6 +894,34 @@ impl<D: Docker> Runner<D> {
                 eprintln!("runner: could not remove item {item}'s sandbox yet: {e}");
                 self.volumes_left.insert(item);
             }
+        }
+    }
+
+    /// Removes each observer whose item has been let go for [`OBSERVER_KEEP`], and one with no
+    /// keeper (its item's was never made, or an earlier runner's was lost) that long after its
+    /// item's last turn started; never while a turn has the item's sandbox.
+    fn sweep_observers(&mut self, now: u64) {
+        for item in self.observers.keys().copied().collect::<Vec<_>>() {
+            if self.in_use(item) {
+                continue;
+            }
+            let Some(observer) = self.observers.get(&item) else {
+                continue;
+            };
+            let since = match observer.let_go {
+                Some(since) => since,
+                None if self.keepers.contains_key(&item) => continue,
+                None => observer.last,
+            };
+            if now.saturating_sub(since) < OBSERVER_KEEP {
+                continue;
+            }
+            if let Err(e) = self.docker.remove(&observer.id) {
+                eprintln!("runner: could not remove item {item}'s observer: {e}");
+                continue;
+            }
+            println!("runner: item {item}'s observer is removed: its records are no longer kept");
+            self.observers.remove(&item);
         }
     }
 
@@ -995,8 +1184,21 @@ impl<D: Docker> Runner<D> {
 
     /// Starts a turn in a fresh container, or reports it failed.
     fn start(&mut self, turn: &Turn, now: u64) {
+        // The observer first, if the turn is to have one: its tool's side effects are recorded
+        // from its first call, and a turn that cannot be observed does not run unobserved.
+        let observer = match self.observer_for(turn, now) {
+            Ok(observer) => observer,
+            Err(e) => {
+                eprintln!("runner: run {} is not started: {e}", turn.run);
+                return self.never_ran(turn.run, turn.lease, &e);
+            }
+        };
         let item = self.sandbox_for(turn, now);
-        let container = match self.docker.create(&spec(&self.work, turn, item)) {
+        let mut body = spec(&self.work, turn, item);
+        if let Some(observer) = &observer {
+            observed(&mut body, observer);
+        }
+        let container = match self.docker.create(&body) {
             Ok(container) => container,
             Err(e) => {
                 eprintln!("runner: could not make run {}'s container: {e}", turn.run);
@@ -1024,6 +1226,101 @@ impl<D: Docker> Runner<D> {
             since: now,
             item,
         });
+    }
+
+    /// The observer `turn` is to share a network with (a side-effect observer, ADR 0102 amended
+    /// 2026-11-04): for a workbench turn with a shell, on an item, in a project on the runner's
+    /// own list. The item's own, still running, with its history; a new one for an item that has
+    /// none; never a new one for an item whose observer was lost, which is refused (a fresh one
+    /// would be empty, and read as no side effects). `None` for any other turn.
+    ///
+    /// # Errors
+    /// Why the turn is not to run: the observer is lost, could not be made, or never served.
+    fn observer_for(&mut self, turn: &Turn, now: u64) -> Result<Option<String>, String> {
+        let Some(item) = turn.task else {
+            return Ok(None);
+        };
+        let watched = turn
+            .project
+            .is_some_and(|p| self.observer_projects.contains(&p));
+        if !watched || !self.work.workbench || !turn.shell {
+            return Ok(None);
+        }
+        if self.lost.contains(&item) {
+            return Err(OBSERVER_LOST.to_owned());
+        }
+        let Some(held) = self.observers.get_mut(&item) else {
+            return self.observe(item, now).map(Some);
+        };
+        let id = held.id.clone();
+        match self.docker.inspect(&id) {
+            Ok(Some(State::Running)) => {
+                held.last = now;
+                held.let_go = None;
+                Ok(Some(id))
+            }
+            Ok(_) => {
+                eprintln!("runner: item {item}'s observer is gone; its evidence is unavailable");
+                self.observers.remove(&item);
+                self.lost.insert(item);
+                if let Err(e) = self.docker.remove(&id) {
+                    eprintln!("runner: could not remove item {item}'s dead observer: {e}");
+                }
+                Err(OBSERVER_LOST.to_owned())
+            }
+            Err(e) => Err(format!("the item's observer cannot be looked at: {e}")),
+        }
+    }
+
+    /// Makes `item`'s observer and waits for it to serve: its id, recorded. One that does not
+    /// serve in time, or ends, is killed and removed.
+    fn observe(&mut self, item: u64, now: u64) -> Result<String, String> {
+        let token = fresh_token()?;
+        let id = self
+            .docker
+            .create(&observer_spec(&self.work, item, &token))?;
+        let served = self
+            .docker
+            .start(&id)
+            .and_then(|()| self.wait_until_serving(&id));
+        if let Err(e) = served {
+            eprintln!("runner: item {item}'s observer is not serving: {e}");
+            if let Err(e) = self.docker.kill(&id) {
+                eprintln!("runner: could not kill item {item}'s observer: {e}");
+            }
+            if let Err(e) = self.docker.remove(&id) {
+                eprintln!("runner: could not remove item {item}'s observer: {e}");
+            }
+            return Err(format!("the observer did not become ready: {e}"));
+        }
+        self.observers.insert(
+            item,
+            Observer {
+                id: id.clone(),
+                last: now,
+                let_go: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Waits, reading the observer's stdout, until a line says it is serving, or it ends, or
+    /// [`Runner::ready_within`] is up.
+    fn wait_until_serving(&self, id: &str) -> Result<(), String> {
+        let deadline = Instant::now() + self.ready_within;
+        loop {
+            let said = self.docker.stdout_tail(id, STDERR_LINES)?;
+            if said.lines().any(|l| l.starts_with(OBSERVER_READY)) {
+                return Ok(());
+            }
+            if self.docker.inspect(id)? != Some(State::Running) {
+                return Err("it ended".to_owned());
+            }
+            if Instant::now() >= deadline {
+                return Err("it said nothing in time".to_owned());
+            }
+            std::thread::sleep(self.ready_poll);
+        }
     }
 
     /// Refuses a turn HQ handed out, saying why, and reports it as one that never ran.
@@ -1071,6 +1368,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::{Read as _, Write as _};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const RUNNER_TOKEN: &str = "a-runner-token-of-at-least-thirty-two-characters";
 
@@ -1281,6 +1579,14 @@ mod tests {
         no_log: BTreeSet<String>,
         /// Each container made with an item's label, and the item.
         items: BTreeMap<String, String>,
+        /// Each container made with an observer's label, and the item.
+        observed: BTreeMap<String, String>,
+        /// What each container's program wrote to stdout.
+        stdout: BTreeMap<String, String>,
+        /// The spec each container was made from.
+        made_from: BTreeMap<String, Value>,
+        /// An observer that starts but never says it is serving.
+        silent_observer: bool,
     }
 
     /// Docker, pretending; a clone sees the same containers.
@@ -1334,6 +1640,10 @@ mod tests {
             if let Some(item) = spec["Labels"][ITEM_LABEL].as_str() {
                 docker.items.insert(id.clone(), item.to_owned());
             }
+            if let Some(item) = spec["Labels"][OBSERVER_LABEL].as_str() {
+                docker.observed.insert(id.clone(), item.to_owned());
+            }
+            docker.made_from.insert(id.clone(), spec.clone());
             docker
                 .containers
                 .insert(id.clone(), State::Exited(NEVER_STARTED_EXIT));
@@ -1344,6 +1654,12 @@ mod tests {
             let mut docker = self.0.lock().unwrap();
             docker.containers.insert(id.to_owned(), State::Running);
             docker.calls.push(format!("start {id}"));
+            let is_observer = docker.observed.contains_key(id);
+            if is_observer && !docker.silent_observer {
+                docker
+                    .stdout
+                    .insert(id.to_owned(), "serving http://127.0.0.1:8799\n".to_owned());
+            }
             Ok(())
         }
         fn inspect(&self, id: &str) -> Result<Option<State>, String> {
@@ -1374,6 +1690,16 @@ mod tests {
             let kept: Vec<&str> = all.lines().rev().take(lines).collect();
             Ok(kept.into_iter().rev().map(|l| format!("{l}\n")).collect())
         }
+        fn stdout_tail(&self, id: &str, lines: usize) -> Result<String, String> {
+            let mut docker = self.0.lock().unwrap();
+            docker.calls.push(format!("stdout {id}"));
+            if !docker.containers.contains_key(id) {
+                return Err("Docker would not give its log (404)".to_owned());
+            }
+            let all = docker.stdout.get(id).cloned().unwrap_or_default();
+            let kept: Vec<&str> = all.lines().rev().take(lines).collect();
+            Ok(kept.into_iter().rev().map(|l| format!("{l}\n")).collect())
+        }
         fn remove(&self, id: &str) -> Result<(), String> {
             let mut docker = self.0.lock().unwrap();
             docker.containers.remove(id);
@@ -1392,6 +1718,19 @@ mod tests {
                 .map(|(id, item)| crate::docker::Keeper {
                     id: id.clone(),
                     item: item.clone(),
+                })
+                .collect())
+        }
+        fn observers(&self) -> Result<Vec<crate::docker::Watcher>, String> {
+            let docker = self.0.lock().unwrap();
+            Ok(docker
+                .observed
+                .iter()
+                .filter(|(id, _)| docker.containers.contains_key(*id))
+                .map(|(id, item)| crate::docker::Watcher {
+                    id: id.clone(),
+                    item: item.clone(),
+                    created: T0,
                 })
                 .collect())
         }
@@ -2520,5 +2859,298 @@ mod tests {
             calls.contains(&"remove volume endora-item-5".to_owned()),
             "{calls:?}"
         );
+    }
+
+    /// A runner that watches `projects` for side effects, and waits only a moment for an
+    /// observer that never says it is serving.
+    fn observing_runner(
+        name: &str,
+        hq: &FakeHq,
+        docker: &FakeDocker,
+        projects: &[u64],
+    ) -> Runner<FakeDocker> {
+        let mut runner = Runner::new(
+            docker.clone(),
+            Hq::new(&hq.url, token_file(name)).unwrap(),
+            pi_work(1),
+        )
+        .observing(projects.iter().copied().collect());
+        runner.ready_within = Duration::from_millis(60);
+        runner.ready_poll = Duration::from_millis(5);
+        runner
+    }
+
+    /// A turn on item 4, in project `project`.
+    fn turn_in(run: u64, project: u64) -> Value {
+        let mut handed = turn_on(run, Some(4));
+        handed["project"] = json!(project);
+        handed
+    }
+
+    /// What Docker was asked to make or start, in order, without the log reads.
+    fn making(docker: &FakeDocker) -> Vec<String> {
+        docker
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("create") || c.starts_with("start"))
+            .collect()
+    }
+
+    /// The why of each run HQ was told never ran.
+    fn whys(hq: &FakeHq) -> Vec<(u64, String)> {
+        hq.endings()
+            .into_iter()
+            .map(|(run, b)| (run, b["why"].as_str().unwrap_or("").to_owned()))
+            .collect()
+    }
+
+    /// Scenario: Nothing is observed unless the runner was told to.
+    #[test]
+    fn nothing_is_observed_unless_the_runner_was_told_to() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-off", &hq, &docker, &[]);
+        runner.step(T0);
+        assert_eq!(
+            making(&docker),
+            ["create c1", "start c1", "create c2", "start c2"]
+        );
+        let handed = Turn::from_hq(&turn_in(12, 57)).unwrap();
+        assert_eq!(
+            docker.specs()[1],
+            spec(&pi_work(1), &handed, Some(4)),
+            "the turn is made exactly as before"
+        );
+        assert!(!docker.specs()[1].to_string().contains("PROBE_PUBLISH_URL"));
+    }
+
+    /// Scenario: A project the runner does not watch has no observer.
+    #[test]
+    fn a_project_the_runner_does_not_watch_has_no_observer() {
+        let hq = FakeHq::new(vec![turn_in(12, 99), turn_on(13, Some(5))]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-other", &hq, &docker, &[57, 58]);
+        runner.work.capacity = 2;
+        runner.step(T0);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 4, "a keeper and a turn each: {specs:?}");
+        assert!(
+            specs
+                .iter()
+                .all(|s| s["Labels"].get("endora.observer").is_none()),
+            "{specs:?}"
+        );
+        assert!(
+            !specs.iter().any(|s| s["HostConfig"]["NetworkMode"]
+                .as_str()
+                .is_some_and(|n| n.starts_with("container:"))),
+            "{specs:?}"
+        );
+    }
+
+    /// Scenario: A watched project's observer starts before its workbench and holds the fence.
+    #[test]
+    fn a_watched_projects_observer_starts_before_its_workbench_and_holds_the_fence() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-fence", &hq, &docker, &[57]);
+        runner.step(T0);
+        assert_eq!(
+            making(&docker),
+            [
+                "create c1",
+                "start c1",
+                "create c2",
+                "start c2",
+                "create c3",
+                "start c3"
+            ],
+            "the observer, the item's keeper, then the turn"
+        );
+        let specs = docker.specs();
+        let observer = &specs[0];
+        assert_eq!(observer["Image"], "endora-workbench:latest");
+        let entry = observer["Entrypoint"].as_array().unwrap();
+        assert_eq!(entry[0], "python3");
+        assert_eq!(entry[1], "-c");
+        assert!(entry[2].as_str().unwrap().contains("SIDEFX_TOKEN"));
+        assert_eq!(entry[3], "--port");
+        assert_eq!(entry[4], "8799");
+        let env = observer["Env"].as_array().unwrap();
+        assert_eq!(env.len(), 1, "{env:?}");
+        let token = env[0]
+            .as_str()
+            .unwrap()
+            .strip_prefix("SIDEFX_TOKEN=")
+            .unwrap();
+        assert!(token.len() >= 48, "{token}");
+        assert!(
+            !observer.to_string().contains(&self::token(12)),
+            "never the turn's token"
+        );
+        assert_eq!(observer["User"], "65534:65534");
+        assert_eq!(
+            observer["Labels"],
+            json!({ "endora.observer": "4", "com.centurylinklabs.watchtower.enable": "false" })
+        );
+        let host = &observer["HostConfig"];
+        assert_eq!(host["NetworkMode"], "endora_sandbox");
+        assert_eq!(host["Dns"], json!(["192.0.2.1"]));
+        assert_eq!(host["Memory"], 64 * 1024 * 1024);
+        assert_eq!(host["PidsLimit"], 32);
+        assert_eq!(host["NanoCpus"], 500_000_000);
+        assert_eq!(host["ReadonlyRootfs"], true);
+        assert_eq!(host["CapDrop"], json!(["ALL"]));
+        assert_eq!(host["SecurityOpt"], json!(["no-new-privileges:true"]));
+        // Its only writable place: the image's `/data` as a megabyte in memory, nobody else's.
+        assert_eq!(host["Tmpfs"], json!({ "/data": "size=1m" }), "{host}");
+        for absent in [
+            "Mounts",
+            "Binds",
+            "Privileged",
+            "PidMode",
+            "IpcMode",
+            "VolumesFrom",
+        ] {
+            assert!(host.get(absent).is_none(), "{absent}: {host}");
+        }
+        assert!(observer.get("Volumes").is_none());
+
+        let turn = &specs[2];
+        let host = &turn["HostConfig"];
+        assert_eq!(host["NetworkMode"], "container:c1");
+        assert!(host.get("Dns").is_none(), "the observer carries it: {host}");
+        assert!(
+            turn["Env"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("PROBE_PUBLISH_URL=http://127.0.0.1:8799"))
+        );
+        assert_eq!(host["ReadonlyRootfs"], true);
+        assert_eq!(host["CapDrop"], json!(["ALL"]));
+        assert_eq!(host["SecurityOpt"], json!(["no-new-privileges:true"]));
+        assert_eq!(item_at_work(turn).as_deref(), Some("endora-item-4"));
+        assert!(!turn.to_string().contains("SIDEFX_TOKEN"), "{turn}");
+    }
+
+    /// Scenario: An observer that never says it is serving is taken down and the turn never runs.
+    #[test]
+    fn an_observer_that_never_serves_is_taken_down_and_the_turn_never_runs() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        docker.0.lock().unwrap().silent_observer = true;
+        let mut runner = observing_runner("observer-silent", &hq, &docker, &[57]);
+        runner.step(T0);
+        assert_eq!(making(&docker), ["create c1", "start c1"], "no workbench");
+        let calls = docker.calls();
+        assert!(calls.contains(&"kill c1".to_owned()), "{calls:?}");
+        assert!(calls.contains(&"remove c1".to_owned()), "{calls:?}");
+        assert_eq!(hq.told(), [(12, false)]);
+        let why = &whys(&hq)[0].1;
+        assert!(why.contains("the observer did not become ready"), "{why}");
+    }
+
+    /// Scenario: The item's next turn finds the same observer, and its history with it.
+    #[test]
+    fn the_items_next_turn_finds_the_same_observer() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-reuse", &hq, &docker, &[57]);
+        runner.step(T0);
+        docker.exits("c3", 0);
+        hq.turns.lock().unwrap().push_back(turn_in(13, 57));
+        runner.step(T0 + 10);
+        let specs = docker.specs();
+        assert_eq!(
+            specs.len(),
+            4,
+            "one observer, one keeper, two turns: {specs:?}"
+        );
+        assert_eq!(specs[3]["HostConfig"]["NetworkMode"], "container:c1");
+        let observers = specs
+            .iter()
+            .filter(|s| s["Labels"].get("endora.observer").is_some())
+            .count();
+        assert_eq!(observers, 1);
+        assert!(!docker.calls().contains(&"remove c1".to_owned()));
+    }
+
+    /// Scenario: An observer that is gone is never replaced by an empty one.
+    #[test]
+    fn an_observer_that_is_gone_is_never_replaced_by_an_empty_one() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-lost", &hq, &docker, &[57]);
+        runner.step(T0);
+        docker.exits("c3", 0);
+        docker.exits("c1", 137);
+        hq.turns.lock().unwrap().push_back(turn_in(13, 57));
+        runner.step(T0 + 10);
+        hq.turns.lock().unwrap().push_back(turn_in(14, 57));
+        runner.step(T0 + 20);
+        assert_eq!(docker.specs().len(), 3, "no new observer, no workbench");
+        let told = whys(&hq);
+        assert_eq!(told.len(), 3, "{told:?}");
+        for (run, why) in &told[1..] {
+            assert!(why.contains("evidence is unavailable"), "{run}: {why}");
+        }
+    }
+
+    /// Scenario: A let-go item's observer is kept half an hour for its records, then removed.
+    #[test]
+    fn a_let_go_items_observer_is_kept_half_an_hour_then_removed() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-let-go", &hq, &docker, &[57]);
+        runner.step(T0);
+        docker.exits("c3", 0);
+        hq.closed.lock().unwrap().push(4);
+        let let_go = T0 + SWEEP_EVERY + 1;
+        runner.step(let_go);
+        let calls = docker.calls();
+        assert!(
+            calls.contains(&"remove c2".to_owned()),
+            "the keeper goes: {calls:?}"
+        );
+        assert!(
+            !calls.contains(&"remove c1".to_owned()),
+            "the observer stays: {calls:?}"
+        );
+        runner.step(let_go + OBSERVER_KEEP - SWEEP_EVERY);
+        assert!(!docker.calls().contains(&"remove c1".to_owned()));
+        runner.step(let_go + OBSERVER_KEEP + SWEEP_EVERY);
+        assert!(docker.calls().contains(&"remove c1".to_owned()));
+    }
+
+    /// Scenario: A turn with no shell has no observer.
+    #[test]
+    fn a_turn_with_no_shell_has_no_observer() {
+        let mut handed = turn_in(12, 57);
+        handed["shell"] = json!(false);
+        let hq = FakeHq::new(vec![handed]);
+        let docker = FakeDocker::default();
+        let mut runner = observing_runner("observer-shell", &hq, &docker, &[57]);
+        runner.step(T0);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 1, "{specs:?}");
+        assert!(specs[0]["Labels"].get("endora.observer").is_none());
+        assert_ne!(specs[0]["HostConfig"]["NetworkMode"], "container:c1");
+    }
+
+    /// An observer an earlier runner left, still running, is taken back and reused.
+    #[test]
+    fn an_observer_an_earlier_runner_left_is_taken_back() {
+        let hq = FakeHq::new(vec![turn_in(12, 57)]);
+        let docker = FakeDocker::default();
+        let mut first = observing_runner("observer-before", &hq, &docker, &[57]);
+        first.step(T0);
+        docker.exits("c3", 0);
+        let mut again = observing_runner("observer-after", &hq, &docker, &[57]);
+        again.take_back();
+        hq.turns.lock().unwrap().push_back(turn_in(13, 57));
+        again.step(T0 + 10);
+        let specs = docker.specs();
+        assert_eq!(specs.len(), 4, "{specs:?}");
+        assert_eq!(specs[3]["HostConfig"]["NetworkMode"], "container:c1");
     }
 }

@@ -2832,6 +2832,48 @@ mod tests {
         }
     }
 
+    /// The runner is told the turn's project, so a runner that was set up to watch some
+    /// projects' side effects can tell whether this turn is one of theirs. Its word is only a
+    /// project's number: what the runner does about it is the runner's own.
+    #[tokio::test]
+    async fn the_runner_is_told_the_project_of_the_turns_task() {
+        let st = state(false);
+        let dev = st.hq.hire("John Doe", 40, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the lab tidy", "a test", Author::Owner)
+            .unwrap();
+        let project = st.hq.add_project(goal, "Cables", "", dev, None).unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Sort the cables".to_owned(),
+                    description: String::new(),
+                    assignee: Some(dev),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(st.hq.tick().unwrap().started, 1);
+        let res = app(st)
+            .oneshot(call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                &json!({ "free": 1 }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let turn = json_of(res).await;
+        assert_eq!(turn["project"], project.0);
+    }
+
     #[tokio::test]
     async fn the_runner_is_handed_a_started_turn_once_and_its_end_ends_the_run() {
         let st = state(false);
@@ -2868,6 +2910,7 @@ mod tests {
             turn["shell"], true,
             "a turn has a shell where the runner gives one"
         );
+        assert_eq!(turn["project"], json!(null), "a task in no project says so");
         let token = turn["token"].as_str().unwrap();
         assert_eq!(
             st.hq.turn_of(token).unwrap().unwrap().0.id,

@@ -23,6 +23,10 @@ pub const CHECK_LABEL: &str = "endora.check";
 /// sandbox it keeps between turns.
 pub const ITEM_LABEL: &str = "endora.item";
 
+/// The label a side-effect observer carries (ADR 0102, amended 2026-11-04): the item (its task)
+/// whose tool's side effects it records.
+pub const OBSERVER_LABEL: &str = "endora.observer";
+
 /// The label that keeps a container out of Watchtower, which every container the runner starts
 /// carries, set to `"false"`: Endora's image is built, not pulled, and a check or a turn
 /// recreated at night would be cut (D11).
@@ -66,6 +70,17 @@ pub struct Keeper {
     pub item: String,
 }
 
+/// An item's side-effect observer, as Docker lists it: what a runner that restarts takes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watcher {
+    /// The container.
+    pub id: String,
+    /// Its observer label, as it is written: the item.
+    pub item: String,
+    /// When it was made, in seconds since the Unix epoch.
+    pub created: u64,
+}
+
 /// What the runner asks of Docker, and nothing else.
 pub trait Docker {
     /// Whether Docker answers.
@@ -99,6 +114,12 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String>;
+    /// The last `lines` lines a container wrote to stdout, as one text: how an observer says it
+    /// is serving.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn stdout_tail(&self, id: &str, lines: usize) -> Result<String, String>;
     /// Removes a container and the anonymous volumes it was given. One gone is no failure.
     ///
     /// # Errors
@@ -114,6 +135,11 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn keepers(&self) -> Result<Vec<Keeper>, String>;
+    /// Every container labelled as an item's side-effect observer, running or not.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn observers(&self) -> Result<Vec<Watcher>, String>;
     /// Removes a named volume. One gone is no failure.
     ///
     /// # Errors
@@ -263,6 +289,15 @@ impl Docker for Engine {
         Ok(demuxed(&answer.body))
     }
 
+    fn stdout_tail(&self, id: &str, lines: usize) -> Result<String, String> {
+        let path = format!("/containers/{}/logs?stdout=1&tail={lines}", checked(id)?);
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("give its log", &answer));
+        }
+        Ok(demuxed(&answer.body))
+    }
+
     fn remove(&self, id: &str) -> Result<(), String> {
         // The worker image declares a volume, so each container is given an anonymous one:
         // `v` removes it with the container, or every turn would leave one behind.
@@ -334,6 +369,31 @@ impl Docker for Engine {
                 Some(Keeper {
                     id: c["Id"].as_str()?.to_owned(),
                     item: c["Labels"][ITEM_LABEL].as_str()?.to_owned(),
+                })
+            })
+            .collect())
+    }
+
+    fn observers(&self) -> Result<Vec<Watcher>, String> {
+        // `filters={"label":["endora.observer"]}`, written for a URL.
+        let path = format!(
+            "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{OBSERVER_LABEL}%22%5D%7D"
+        );
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("list them", &answer));
+        }
+        Ok(answer
+            .json()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(Watcher {
+                    id: c["Id"].as_str()?.to_owned(),
+                    item: c["Labels"][OBSERVER_LABEL].as_str()?.to_owned(),
+                    // Unknown is as old as can be.
+                    created: c["Created"].as_u64().unwrap_or(0),
                 })
             })
             .collect())
@@ -457,6 +517,11 @@ mod tests {
                 "200 OK",
                 "\u{2}\0\0\0\0\0\0\u{15}worker: round 1 done\n\u{2}\0\0\0\0\0\0\u{1a}worker: the model said no\n",
             ),
+            // One frame of stdout (stream 1): how an observer says it is serving.
+            "GET /containers/c0ffee/logs?stdout=1&tail=8 HTTP/1.1" => whole(
+                "200 OK",
+                "\u{1}\0\0\0\0\0\0\u{1e}serving http://127.0.0.1:8799\n",
+            ),
             "GET /containers/tty/logs?stderr=1&tail=8 HTTP/1.1" => {
                 whole("200 OK", "plain words from a tty\n")
             }
@@ -498,6 +563,11 @@ mod tests {
             engine.stderr_tail("tty", 8).unwrap(),
             "plain words from a tty\n",
             "a tty container's log is not framed"
+        );
+        assert_eq!(
+            engine.stdout_tail("c0ffee", 8).unwrap(),
+            "serving http://127.0.0.1:8799\n",
+            "stdout, not stderr"
         );
         engine.remove("c0ffee").unwrap();
         assert_eq!(

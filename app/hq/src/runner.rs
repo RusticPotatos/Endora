@@ -130,12 +130,18 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // A shell where the runner has one, but not for the check after a deploy, which
             // reads the lab through the node and nothing else (ADR 0115, amended).
             let shell = hq.may_use_a_shell(handed.turn.run).unwrap_or(false);
-            (handed, member, runtime, on, shell)
+            let project = handed
+                .turn
+                .task
+                .and_then(|t| hq.store().task(t).ok().flatten())
+                .and_then(|t| t.project)
+                .map(|p| p.0);
+            (handed, member, runtime, on, shell, project)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((handed, member, runtime, on, shell)))) => Json(json!({
+        Ok(Ok(Some((handed, member, runtime, on, shell, project)))) => Json(json!({
             "run": handed.turn.run.0,
             "lease": handed.lease,
             "token": handed.turn.token,
@@ -143,6 +149,9 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),
+            // The project of that task, if it is in one: only a number, which a runner set up
+            // to watch some projects' side effects checks against its own list.
+            "project": project,
             // What the turn may read in all, by its brain: the figure HQ judges it by.
             "prompt_budget": endora_team::domain::handover::prompt_budget(
                 on.unwrap_or(endora_team::domain::Brain::Local)
