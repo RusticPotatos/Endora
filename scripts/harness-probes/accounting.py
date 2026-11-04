@@ -1180,17 +1180,23 @@ def attempt_metrics(a, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
     # alone makes an attempt contaminated. The world's waiting is never agent-active time,
     # even inside a worker process or a model call.
     waits = [e for e in events if e.get("kind") == "wait"]
-    harness = union_length([(e.get("t_start"), e.get("t_end")) for e in waits
-                            if e.get("wait_kind") in HARNESS_WAITS], lo, hi)
+    harness_spans = [(e.get("t_start"), e.get("t_end")) for e in waits
+                     if e.get("wait_kind") in HARNESS_WAITS]
+    harness = union_length(harness_spans, lo, hi)
     external = [(e.get("t_start"), e.get("t_end")) for e in waits
                 if e.get("wait_kind") not in HARNESS_WAITS]
     wait = union_length(external, lo, hi)
+    # Waiting of either kind is never agent-active time: a span HQ reports as one model call
+    # can cover its own queue (round 18), and the parts must not overlap.
     active = union_length_less([(e.get("t_start"), e.get("t_end")) for e in events
                                 if e.get("kind") in ("model_call", "tool_call", "worker_active")],
-                               external, lo, hi)
+                               external + harness_spans, lo, hi)
     frac = (wait / elapsed) if elapsed else None
+    parts = [active, harness, wait]
+    unaccounted = (max(0.0, elapsed - sum(parts))
+                   if elapsed is not None and all(is_number(x) for x in parts) else None)
     time = {"elapsed_s": elapsed, "elapsed_source": source, "agent_active_s": active,
-            "harness_wait_s": harness,
+            "harness_wait_s": harness, "unaccounted_s": unaccounted,
             "external_wait_s": wait, "wait_fraction": frac, "wait_threshold": threshold,
             "contaminated": None if frac is None else frac > threshold}
 

@@ -286,6 +286,23 @@ class StreamJsonTests(unittest.TestCase):
         self.assertEqual(m["tokens"]["output"], 70)
         self.assertEqual(m["tokens"]["calls"], 2)
 
+    def test_time_parts_never_overlap_and_add_up_to_elapsed(self):
+        # Round 18: HQ's model-call interval spans its queue waits, so the same seconds were
+        # counted as agent-active and as harness waiting (27.32 + 0.85 > 27.34 elapsed).
+        a = {"arm": "endora", "family": "f", "seed": 0, "dispatched_at": 0.0, "ended_at": 27.34,
+             "terminal": "done", "final_report": "", "usage": [], "meta": {},
+             "events": [{"kind": "wait", "wait_kind": "queue", "t_start": 0.0, "t_end": 0.4},
+                        {"kind": "model_call", "t_start": 0.0, "t_end": 28.9},
+                        {"kind": "wait", "wait_kind": "queue", "t_start": 0.4, "t_end": 0.85},
+                        {"kind": "wait", "wait_kind": "external", "t_start": 10.0, "t_end": 11.0}]}
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.85)
+        self.assertAlmostEqual(t["external_wait_s"], 1.0)
+        self.assertAlmostEqual(t["agent_active_s"], 27.34 - 0.85 - 1.0)
+        self.assertAlmostEqual(t["agent_active_s"] + t["harness_wait_s"] + t["external_wait_s"]
+                               + t["unaccounted_s"], t["elapsed_s"])
+        self.assertGreaterEqual(t["unaccounted_s"], 0.0)
+
     def test_a_killed_invocations_stream_keeps_what_its_session_never_saved(self):
         # Round 16: Claude Code was stopped mid-attempt; its first stream held a completed Edit
         # (call and result) that the session file never saved, and only the last stream was read.
