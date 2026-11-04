@@ -38,7 +38,7 @@ const HQ_STUDIO = {
     chess: { x: 262, y: 158 }, counter: { x: 336, y: 116, w: 60 }, stools: [{ x: 340, y: 146 }, { x: 366, y: 146 }],
     door: { x: 0, y: 140 }, window: { x: 286, y: 6 }, sign: true,
     // Decor stands for nothing: never a sign of state (council round 6, after the owner's old office).
-    decor: [["PLANT", 8, 174], ["LARGE_PLANT", 292, 158], ["CACTUS", 58, 170], ["BIN", 32, 190], ["PLANT_2", 378, 62], ["HANGING_PLANT", 60, 0]],
+    decor: [["PLANT", 8, 174], ["LARGE_PLANT", 204, 158], ["CACTUS", 58, 118], ["BIN", 32, 190], ["PLANT_2", 378, 62], ["HANGING_PLANT", 60, 0]],
   },
   phone: {
     W: 192, H: 304, wallH: 36, board: { x: 4, w: 184 }, boardFont: 8,
@@ -157,10 +157,14 @@ function hqStudioScene(mode = hqStudioMode()) {
   // Everyone else, in a seat: chess players at the board, the stuck at the review table in the owner's
   // corner, then the sofas, the alcove's bench and the counter's stools.
   const game = (((snap.games || {}).chess || {}).games || []).find((x) => x.status === "in_progress");
+  // The fourth to rest takes a stool at the counter rather than the last sofa seat, so a full lounge
+  // also fills the kitchenette (council round 7): still only resting, never pretend work.
+  const sofa = L.sofas.flatMap((s) => [{ x: s.x, y: s.y - 14, dir: "down", seat: "sofa" }, { x: s.x + 16, y: s.y - 14, dir: "down", seat: "sofa" }]);
+  const stools = L.stools.map((s) => ({ x: s.x, y: s.y - 14, dir: "down", seat: "stool" }));
   const seats = [
-    ...L.sofas.flatMap((s) => [{ x: s.x, y: s.y - 14, dir: "down", seat: "sofa" }, { x: s.x + 16, y: s.y - 14, dir: "down", seat: "sofa" }]),
+    ...sofa.slice(0, 3), ...stools.slice(0, 1), ...sofa.slice(3),
     { x: L.bench.x + 4, y: L.bench.y - 12, dir: "down", seat: "bench" }, { x: L.bench.x + L.bench.w - 20, y: L.bench.y - 12, dir: "down", seat: "bench" },
-    ...L.stools.map((s) => ({ x: s.x, y: s.y - 14, dir: "down", seat: "stool" })),
+    ...stools.slice(1),
   ];
   const chairs = L.chairs.map((c) => ({ x: c.x, y: c.y - 14, dir: c.dir, seat: "chair" }));
   for (const m of (snap.members || []).filter((x) => !x.furloughed)) {
@@ -181,7 +185,7 @@ function hqStudioScene(mode = hqStudioMode()) {
   // What a tap falls on.
   for (const p of scene.people) scene.taps.push({ x: p.x, y: p.y, w: 16, h: 32, sel: { type: "member", id: p.m.id } });
   scene.taps.push({ x: L.lever.x - 2, y: L.lever.y - 2, w: 12, h: 18, act: snap.stopped ? "hq:resume" : "hq:stop" },
-    { x: B.x - 2, y: 0, w: B.w + 4, h: 30, sel: { type: "goal", id: 0 } },
+    { x: B.x - 2, y: 0, w: B.w + 4, h: L.wallH - 2, sel: { type: "goal", id: 0 } },
     { x: S.x - 2, y: S.y - 2, w: S.w + 4, h: S.rows * S.pitch + 5, sel: { type: "shelf", id: 0 } },
     { x: L.bookcase.x, y: L.bookcase.y, w: L.bookcase.w, h: 14, sel: { type: "knowing", id: 0 } },
     { x: L.chess.x - 14, y: L.chess.y - 4, w: 46, h: 26, sel: { type: "chess", id: 0 } },

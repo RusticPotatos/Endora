@@ -716,7 +716,7 @@ function hqChips(s) {
   const chips = [`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`];
   if (pool.per_day != null) {
     const left = Math.max(0, pool.per_day - (pool.committed || 0));
-    chips.push(`<span class="hq-chip" title="Today's money for the whole team">Pool <span class="hq-spent">${hqDollars(pool.spent)} spent · </span>${hqDollars(left)} left</span>`);
+    chips.push(`<span class="hq-chip" title="Today's money for the whole team"><span class="hq-wide">Pool </span><span class="hq-spent">${hqDollars(pool.spent)} spent · </span>${hqDollars(left)} left</span>`);
   }
   // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
@@ -725,7 +725,7 @@ function hqChips(s) {
   chips.push(...hqCreditChips());
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
-  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed this week</span>`);
+  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed<span class="hq-wide"> this week</span></span>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
