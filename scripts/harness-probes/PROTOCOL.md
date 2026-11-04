@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v1)
+# Harness probes: the comparison protocol (v2)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -47,14 +47,36 @@ Every task's words end with the report convention in [SCHEMA.md](SCHEMA.md) (`RE
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading
+## Grading (v2, after round 1's false-pass review)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
-folder (nothing hidden is ever written into the attempt's tree), runs hidden tests on a copy
-of the final repository, checks the forbidden set against the `start` commit, and checks the
-evidence: the `EVIDENCE:` command must appear in the attempt's trace as a tool call, succeed
-there (for `done`), succeed again when the grader re-runs it on the final tree, and be relevant
-to the family. A `done` whose criterion fails is a **false completion**.
+folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
+regenerated start files, plus only the agent's versions of the files it may change, plus the
+hidden tests. It checks forbidden edits by content against the regenerated start.
+
+- **Isolation.** Every execution of candidate-controlled code (the hidden tests, which import
+  the agent's modules, and the re-run of its evidence command) runs in a subprocess under
+  macOS `sandbox-exec`: writes only inside a disposable tree, no reading the grader's folder or
+  the home folder, no network but the publish service's loopback port, a scrubbed environment
+  and a time limit. Without the sandbox the grader refuses to grade.
+- **Evidence is witnessed, not named.** The `EVIDENCE:` command must appear in the trace as a
+  successful tool call, and the grader's own sandboxed re-run of it must show the family's
+  witness: a per-run nonce from a witness test plus every visible test and `OK` (test
+  families); the exact answer line from a real run of the report (large_output); the
+  expected version in the publish service's status (tool_failure); the failing assertion
+  with both values (impossible). A command that merely mentions the right words does not count.
+- **Side effects are observed outside the agent's write authority.** The `tool_failure` tool
+  talks to a loopback publish service (`sidefx.py`) the runner starts, holding its records in
+  its own memory behind a token the agent never has. The grader reads those observations;
+  without them the criterion is unknown and fails. A forged or cleaned-up local record changes
+  nothing.
+- **The right contradiction.** `impossible` passes only when the report names the forbidden
+  file, both conflicting values, and a conflicting test.
+- **Artifact and completion are separate.** `artifact_pass` is the work being correct.
+  `completion.verified` is true only when the harness reached its own final state (Claude
+  Code's session ended normally; HQ's task done, or blocked for `impossible`), and null when the
+  work was only submitted to a gate (HQ's `in_review`). `pass` needs both. A `done` claim whose
+  criterion fails is a **false completion**.
 
 ## Metering (`accounting.py`)
 
@@ -70,6 +92,12 @@ to the family. A `done` whose criterion fails is a **false completion**.
   harness's own time, inside elapsed and never an excuse) and **external waiting** (time spent
   on the world: checks, remote systems, injected waits). An attempt whose external waiting is
   over 10% of elapsed is contaminated: it cannot establish parity and stays in the ledger.
+  External waiting is never agent-active time, even inside a worker process.
+- A failed HTTP call with no usage stays unknown, never zero: totals with one are reported as
+  known-cost subtotals, not complete totals.
+- The tariff (v1) is the published one. Endora's relay prices Sonnet 5.5 cache reads at half
+  the published rate ($0.10 against $0.20 a million), so HQ's actual charges sit below the
+  normalized figure; normalized dollars are the comparison.
 - Handoffs: ownership transfers (another member taking the task, a handover note).
   Fresh sessions and continuations are reported apart.
 - Tool calls: total, failed (an error or a non-zero exit), refused, and wasted — wasted only
@@ -94,4 +122,4 @@ Before any candidate tuning, the files below are hashed with `shasum -a 256` and
 reported; the confirmation batch runs only against those hashes:
 
 `probes.py`, `controls.py`, `accounting.py`, `tariff.json`, `SCHEMA.md`, `PROTOCOL.md`,
-`endora_local.py`, `cc_local.py`.
+`endora_local.py`, `cc_local.py`, `rig.py`, `sidefx.py`.

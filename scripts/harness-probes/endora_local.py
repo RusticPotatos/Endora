@@ -22,8 +22,8 @@ What is real and what stands in:
 Writes into DIR: `probe/` (the generated repo and task.json), `hq/hq.db` and `hq/hq.log`,
 `relay-log.jsonl` (one line per model call, with the usage the script gave it),
 `relay-raw.jsonl` (every request and reply body the relay saw, whole), `runner-log.jsonl`
-(each turn handed out, the worker's exit and stderr), `attempt.json` (the attempt record,
-from accounting.py), `grade.json` (probes.py's verdict) and `run.json` (a summary).
+(each turn handed out, the worker's exit and stderr), `observations.json` (what the publish
+service saw, sidefx.py), `attempt.json` (the attempt record, from accounting.py), `grade.json` (probes.py's verdict) and `run.json` (a summary).
 
 For `interrupted`, the worker is stopped at its first change to `interrupt_after` (reported to
 HQ as a container killed from outside, 137) and the family's resume words are posted in the
@@ -350,6 +350,7 @@ def run(args):
     script = json.loads(Path(args.script).read_text())
 
     hq = Hq(args.hq_bin, out / "hq")
+    publish = rig.side_effects()
     relay = ScriptedRelay(hq, script, out)
     runner_log = open(out / "runner-log.jsonl", "w")
     summary = {"family": args.family, "seed": args.seed, "attempts": []}
@@ -399,7 +400,7 @@ def run(args):
                 env["ENDORA_WORKBENCH_DIR"] = str(probe / "repo")
             (out / "home").mkdir(exist_ok=True)
             started = time.time()
-            env["PROBE_LEDGER"] = str(probe / "ledger.jsonl")
+            env["PROBE_PUBLISH_URL"] = publish.url
             code, how, stderr = rig.run_watched(
                 [str(args.worker_bin)], cwd=probe / "repo", env=env,
                 timeout=max(1.0, deadline - time.time()),
@@ -446,7 +447,9 @@ def run(args):
     attempt["ended_at"] = summary["ended_at"]
     attempt_path = out / "attempt.json"
     attempt_path.write_text(json.dumps(attempt, indent=2) + "\n")
-    verdict = rig.grade(args.family, args.seed, probe, attempt_path)
+    observations = rig.keep_observations(publish, out / "observations.json")
+    verdict = rig.grade(args.family, args.seed, probe, attempt_path, observations, publish.url)
+    publish.close()
     (out / "grade.json").write_text(json.dumps(verdict, indent=2) + "\n")
     summary["pass"] = verdict.get("pass")
     (out / "run.json").write_text(json.dumps(summary, indent=2) + "\n")

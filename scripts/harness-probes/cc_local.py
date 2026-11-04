@@ -15,8 +15,8 @@ tools, and nothing added. For `interrupted`, the attempt is stopped at its first
 `interrupt_after` and resumed with `claude -p <resume_words> --resume <session>`.
 
 Writes into DIR: `probe/`, `stream-N.jsonl` (each invocation's stream, whole), `sessions/`
-(copies of the session transcripts and their subagents), `attempt.json`, `grade.json` and
-`run.json`.
+(copies of the session transcripts and their subagents), `observations.json` (what the
+publish service saw, from sidefx.py), `attempt.json`, `grade.json` and `run.json`.
 """
 
 import argparse
@@ -73,7 +73,8 @@ def run(args):
     task = rig.make_probe(args.family, args.seed, probe, args.probe_dir)
     repo = probe / "repo"
     env = dict(os.environ)
-    env["PROBE_LEDGER"] = str(probe / "ledger.jsonl")
+    publish = rig.side_effects()
+    env["PROBE_PUBLISH_URL"] = publish.url
     base = [args.claude_bin, "-p", None, "--output-format", "stream-json", "--verbose",
             "--model", args.model, "--permission-mode", "bypassPermissions"]
     interrupt = task.get("interrupt_after")
@@ -122,7 +123,9 @@ def run(args):
     attempt["ended_at"] = summary["ended_at"]
     attempt_path = out / "attempt.json"
     attempt_path.write_text(json.dumps(attempt, indent=2) + "\n")
-    verdict = rig.grade(args.family, args.seed, probe, attempt_path)
+    observations = rig.keep_observations(publish, out / "observations.json")
+    verdict = rig.grade(args.family, args.seed, probe, attempt_path, observations, publish.url)
+    publish.close()
     (out / "grade.json").write_text(json.dumps(verdict, indent=2) + "\n")
     summary["session"] = session
     summary["session_found"] = bool(main)

@@ -13,7 +13,7 @@ fixture (use `Jane Doe`, `example.com`, `192.168.1.10`).
   "final_report": "the agent's last message, verbatim",
   "dispatched_at": 1730700000.0,
   "ended_at": 1730700100.0,
-  "terminal": "done" | "blocked" | "failed" | "timeout" | "asked_owner",
+  "terminal": "done" | "submitted" | "blocked" | "failed" | "timeout" | "asked_owner",
   "events": [
     {
       "kind": "model_call" | "tool_call" | "wait" | "question" | "handoff" | "session_start",
@@ -51,6 +51,10 @@ Rules every producer keeps:
 - Each model call appears once in `usage`, however many trace lines repeat it.
 - Times are seconds since the epoch, floats. Missing times are `null`.
 - `command` is the exact text the agent ran; `exit` its exit code when known.
+- `terminal` is the harness's own end state: `done` when the harness reached its final state
+  (Claude Code's session ended normally; HQ's task done), `submitted` when the work was put
+  to a gate whose outcome is not known (HQ's `in_review`). The agent's own claim is its
+  `RESULT:` line, kept apart.
 
 ## The report convention (identical words in both arms)
 

@@ -560,8 +560,11 @@ moved on
         m = metrics_of(self.build(attempts=2))
         self.assertEqual((m["fresh_sessions"], m["continuations"], m["handoffs"]), (1, 1, 0))
 
-    def test_in_review_is_a_claimed_done(self):
-        self.assertEqual(self.build("in_review")["terminal"], "done")
+    def test_in_review_is_submitted_for_judgment_not_done(self):
+        # The researcher, round 1: `in_review` is the member's work put to HQ's gate; the gate's
+        # outcome is unknown, so it is never silently a completion.
+        self.assertEqual(self.build("in_review")["terminal"], "submitted")
+        self.assertEqual(self.build("done")["terminal"], "done")
 
     def test_final_report_is_the_members_words_not_hqs_post(self):
         report = self.build()["final_report"]

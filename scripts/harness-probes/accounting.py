@@ -773,9 +773,12 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
     ended_all = [_ms(r["ended_at"]) for r in runs if r["ended_at"] is not None]
     last = runs[-1] if runs else None
     status = root["status"]
-    # in_review is the member's claim of done, put to HQ's gate (set_status in_review).
-    if status in ("done", "in_review"):
+    # in_review is the member's work put to HQ's gate (set_status in_review): submitted for
+    # judgment, never silently a completion (the researcher, round 1).
+    if status == "done":
         terminal = "done"
+    elif status == "in_review":
+        terminal = "submitted"
     elif status == "blocked":
         terminal = "blocked"
     elif last and last["status"] == "timed_out":

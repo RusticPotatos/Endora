@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 
 def make_probe(family, seed, probe, copy_from=None):
@@ -53,14 +54,29 @@ def run_watched(command, *, cwd, env, timeout, interrupt_file=None, stdout=None,
     return proc.returncode, "exited", err
 
 
-def grade(family, seed, probe, attempt_path):
+def side_effects():
+    """The publish service for the attempt (sidefx.Service), started by the runner: its
+    address goes to the agent in PROBE_PUBLISH_URL, its records stay with the runner."""
+    import sidefx
+    return sidefx.Service()
+
+
+def keep_observations(service, path):
+    """What the service saw, written where the grader reads it, after the attempt."""
+    Path(path).write_text(json.dumps(service.records(), indent=2) + "\n")
+    return path
+
+
+def grade(family, seed, probe, attempt_path, observations=None, publish_url=None):
     """The grader's verdict on an attempt, as JSON."""
-    done = subprocess.run(
-        [sys.executable, str(HERE / "probes.py"), "grade", "--family", family,
-         "--seed", str(seed), "--repo", str(Path(probe) / "repo"),
-         "--attempt", str(attempt_path), "--ledger", str(Path(probe) / "ledger.jsonl")],
-        capture_output=True, text=True,
-    )
+    command = [sys.executable, str(HERE / "probes.py"), "grade", "--family", family,
+               "--seed", str(seed), "--repo", str(Path(probe) / "repo"),
+               "--attempt", str(attempt_path)]
+    if observations:
+        command += ["--observations", str(observations)]
+    if publish_url:
+        command += ["--publish-url", publish_url]
+    done = subprocess.run(command, capture_output=True, text=True)
     try:
         return json.loads(done.stdout)
     except ValueError:
