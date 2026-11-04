@@ -61,7 +61,7 @@ def is_int(v):
 
 
 def make_usage(call_id, agent, model, uncached, read, write, output,
-               write_1h=None, retry=False, status=None):
+               write_1h=None, retry=False, status=None, ttl_known=True):
     vals = [uncached, read, write, output]
     known = all(is_int(v) for v in vals)
     u = {"call_id": call_id, "agent": agent, "model": model,
@@ -69,7 +69,7 @@ def make_usage(call_id, agent, model, uncached, read, write, output,
          "cache_read": read if is_int(read) else None,
          "cache_write": write if is_int(write) else None,
          "output": output if is_int(output) else None,
-         "known": known, "retry": bool(retry)}
+         "known": known, "retry": bool(retry), "ttl_known": bool(ttl_known)}
     if is_int(write_1h):
         u["cache_write_1h"] = write_1h
     if status is not None:
@@ -380,7 +380,8 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
         events.append({"kind": "tool_call", "t_start": tu["ts"], "t_end": t_end,
                        "agent": tu["agent"], "tool": tu["name"], "command": command,
                        "path": path, "exit": exit_code, "is_error": is_error,
-                       "refused": refused, "wait_kind": None, "call_id": tid})
+                       "refused": refused, "wait_kind": None, "call_id": tid,
+                       "output": kept_output(res["text"]) if res else None})
         if tu["name"] == "AskUserQuestion":
             events.append({"kind": "question", "t_start": tu["ts"], "t_end": tu["ts"],
                            "agent": tu["agent"]})
@@ -516,6 +517,10 @@ def _ms(v):
     return None if v is None else v / 1000.0
 
 
+def _split_kinds(body):
+    return [kind for kind, _ in _split_transcript(body or "")]
+
+
 def _split_transcript(body):
     """[(kind, text)] from the worker's `--- kind ---` divided text."""
     parts, kind, buf = [], None, []
@@ -578,20 +583,77 @@ def transcript_tool_calls(body, agent):
         command, path = tool_fields(name, args)
         if command is None and isinstance(args, dict) and isinstance(args.get("cmd"), str):
             command = args["cmd"]
-        exit_code, refused, is_error = None, False, None
+        exit_code, refused, is_error, output = None, False, None, None
         if item["result"] is False:
             is_error = True  # cut off: the attempt ended before the call answered
         if item["result"]:
             rkind, rtext = item["result"]
             refused = rkind == "result: refused"
             is_error = refused
+            output = kept_output(rtext)
             mt = EXIT_CODE.search(rtext)
             if mt:
                 exit_code = int(mt.group(1))
         events.append({"kind": "tool_call", "t_start": None, "t_end": None, "agent": agent,
                        "tool": name, "command": command, "path": path, "exit": exit_code,
-                       "is_error": is_error, "refused": refused, "wait_kind": None})
+                       "is_error": is_error, "refused": refused, "wait_kind": None,
+                       "output": output})
     return events
+
+
+# How much of a tool's output an attempt record keeps: enough for a test run's summary.
+OUTPUT_KEPT = 8000
+
+
+def kept_output(text):
+    """A tool result's text for the record: whole when short, else its head and tail."""
+    text = text if isinstance(text, str) else str(text or "")
+    if len(text) <= OUTPUT_KEPT:
+        return text
+    half = OUTPUT_KEPT // 2
+    return text[:half] + f"\n[… {len(text) - OUTPUT_KEPT} chars not kept …]\n" + text[-half:]
+
+
+TIMELINE_KINDS = ("task.created", "wake.queued", "run.started", "task.claimed",
+                  "receipt.recorded", "branch.submitted", "task.changed", "run.ended")
+
+
+def hq_timeline(db, task, tree, run_ids):
+    """[(label, epoch seconds)] from HQ's event log, for the task's tree and its runs, in order;
+    empty for a store without one. The root task's first move to done, blocked or dropped is
+    also given as `terminal`: the harness's own end, which a worker's process may outlive."""
+    con = sqlite3.connect(db)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone():
+            return []
+        rows = con.execute("SELECT at_ms, kind, data FROM events WHERE kind IN (%s) ORDER BY id"
+                           % ",".join("?" * len(TIMELINE_KINDS)), TIMELINE_KINDS).fetchall()
+    finally:
+        con.close()
+    tasks, runs = set(tree), set(run_ids)
+    out, terminal = [], None
+    for at, kind, data in rows:
+        try:
+            d = json.loads(data)
+        except ValueError:
+            continue
+        if d.get("task") not in tasks and d.get("run") not in runs:
+            continue
+        label = kind
+        if kind == "receipt.recorded" and d.get("tool"):
+            label = f"receipt.{d['tool']}"
+        out.append((label, at / 1000.0))
+        if (kind == "task.changed" and d.get("task") == task and terminal is None
+                and d.get("status") in ("done", "blocked", "dropped")):
+            terminal = at / 1000.0
+    if terminal is not None:
+        out.append(("terminal", terminal))
+        out.sort(key=lambda x: x[1])
+    return out
+
+
+def event_time(timeline, label, fallback):
+    return next((t for l, t in timeline if l == label), fallback)
 
 
 def with_runner_attempts(events, runs, runner_log, who):
@@ -752,7 +814,7 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
                 status = c.get("status")
                 u = make_usage(f"relay:{r['id']}:{i}", agent, c.get("model") or model,
                                c.get("input_uncached"), c.get("cache_read"), c.get("cache_write"),
-                               c.get("output"), retry=not _relay_ok(status),
+                               c.get("output"), retry=not _relay_ok(status), ttl_known=False,
                                status=status)
                 usage_list.append(u)
                 # A wait the rig injected before the call answered: the world's time, not
@@ -788,7 +850,8 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
             reconciliation["mismatches"].append({"run": r["id"], "reason": "runs table has tokens, relay log has no call"})
         if not any(t for t in toks):
             toks = [None] * 4  # the store cannot tell "no tokens" from "never reported"
-        usage_list.append(make_usage(f"run:{r['id']}", agent, model, *toks, status=r["status"]))
+        usage_list.append(make_usage(f"run:{r['id']}", agent, model, *toks, status=r["status"],
+                                     ttl_known=False))
         events.append({"kind": "model_call", "t_start": started, "t_end": ended, "agent": agent,
                        "run": r["id"], "is_error": r["status"] in ("failed", "timed_out")})
 
@@ -817,13 +880,26 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None):
         terminal = "timeout"
     if runner_log:
         events = with_runner_attempts(events, runs, runner_log, who)
+    timeline = hq_timeline(db, task, tree, run_ids)
+    for (a_label, a_t), (b_label, b_t) in zip(timeline, timeline[1:]):
+        # HQ's dispatch (the item made -> its turn queued) and the runner's pickup (queued ->
+        # started): the harness's own waiting.
+        if (a_label, b_label) in (("task.created", "wake.queued"), ("wake.queued", "run.started")):
+            events.append({"kind": "wait", "t_start": a_t, "t_end": b_t, "agent": "hq",
+                           "wait_kind": "queue", "source": "events"})
     events.sort(key=lambda e: (e.get("t_start") is None, e.get("t_start") or 0))
     attempt = {"arm": "endora", "family": family, "seed": seed,
                "final_report": final_report_of(posts, runs, transcripts, members),
-               "dispatched_at": min(queued_all) if queued_all else None,
-               "ended_at": max(ended_all) if ended_all else None,
+               "dispatched_at": event_time(timeline, "task.created",
+                                           min(queued_all) if queued_all else None),
+               "ended_at": event_time(timeline, "terminal",
+                                      max(ended_all) if ended_all else None),
                "terminal": terminal, "events": events, "usage": usage_list,
                "meta": {"task": task, "tasks_in_tree": tree, "runs": run_ids,
+                        "timeline": [{"label": l, "t": t} for l, t in timeline],
+                        "model_calls_observed": sum(
+                            _split_kinds(t["body"]).count("reply") for t in transcripts.values()
+                            if t["run"] in set(run_ids)),
                         "run_statuses": {r["id"]: r["status"] for r in runs},
                         "reconciliation": reconciliation}}
     if charged:
@@ -876,7 +952,11 @@ def attempt_metrics(a, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
     total = None if any(v is None for v in sums.values()) else sum(sums.values())
     if total is None and any(v is not None for v in sums.values()):
         total = sum(v for v in sums.values() if v is not None)  # known part only; complete=false
-    tokens = dict(sums, total=total, calls=len(usage),
+    # A usage record is not a model call: live HQ keeps one total a run. The model calls are
+    # what the trace observed (the transcript's replies; Claude Code's messages and helpers).
+    observed = (a.get("meta") or {}).get("model_calls_observed")
+    tokens = dict(sums, total=total, calls=len(usage), usage_records=len(usage),
+                  model_calls=observed if is_int(observed) else len(usage),
                   unknown_calls=sum(1 for u in usage if not u.get("known")),
                   retry_calls=sum(1 for u in usage if u.get("retry")), complete=complete)
 
@@ -884,6 +964,15 @@ def attempt_metrics(a, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
     norm = sum(p for p in priced if p is not None) if any(p is not None for p in priced) else None
     cash = {"normalized_usd": norm, "normalized_complete": bool(usage) and all(p is not None for p in priced),
             "actual_usd": a.get("actual_charge_usd"), "tariff_version": tariff.get("version")}
+    # Cache writes whose TTL the trace does not say (HQ's) are priced both ways: a range.
+    unknown_ttl = [u for u in usage if not u.get("ttl_known", True) and is_int(u.get("cache_write"))]
+    cash["ttl_unknown_write_tokens"] = sum(u["cache_write"] for u in unknown_ttl)
+    if norm is not None and unknown_ttl:
+        as_1h = [dict(u, cache_write_1h=u["cache_write"]) if u in unknown_ttl else u for u in usage]
+        high = [price_call(u, tariff) for u in as_1h]
+        cash["normalized_range_usd"] = [norm, sum(p for p in high if p is not None)]
+    elif norm is not None:
+        cash["normalized_range_usd"] = [norm, norm]
 
     events = a.get("events") or []
     lo, hi = a.get("dispatched_at"), a.get("ended_at")

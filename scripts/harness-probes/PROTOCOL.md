@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v2)
+# Harness probes: the comparison protocol (v3)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -24,7 +24,9 @@ from a seed:
 | `three_subtasks` | Complete all three; execution strategy recorded, delegation not required |
 
 Every task's words end with the report convention in [SCHEMA.md](SCHEMA.md) (`RESULT:`,
-`EVIDENCE:`, `ANSWER:`), identical in both arms.
+`EVIDENCE:`, `ANSWER:`), identical in both arms. Since v3 (round 3's paired run: both arms did
+correct, identical work and reached their native ends, and both missed the exact lines) the
+convention is diagnostic only: an attempt passes on what it did, not on how it phrased it.
 
 ## Seeds and exposure
 
@@ -47,7 +49,7 @@ Every task's words end with the report convention in [SCHEMA.md](SCHEMA.md) (`RE
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading (v2, after round 1's false-pass review)
+## Grading (v3; v2 after round 1's false-pass review, v3 after round 3's paired run)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
 folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
@@ -75,8 +77,17 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - **Artifact and completion are separate.** `artifact_pass` is the work being correct.
   `completion.verified` is true only when the harness reached its own final state (Claude
   Code's session ended normally; HQ's task done, or blocked for `impossible`), and null when the
-  work was only submitted to a gate (HQ's `in_review`). `pass` needs both. A `done` claim whose
-  criterion fails is a **false completion**.
+  work was only submitted to a gate (HQ's `in_review`). A native end whose criterion fails is a
+  **false completion**.
+- **Verification observed in the trace (v3).** A tool call must have run the family's
+  verification after the last edit (an edit tool, a checkout, or a shell segment that may write;
+  segments are split inside a command, heredocs kept with their opener), and its captured output
+  must show success from that run (`Ran N tests` with N at least the visible count, and `OK`).
+  An exit code alone is not success; masked failures and summaries an `echo` could have printed
+  are rejected. Missing or ambiguous traces leave verification unobserved.
+- **v3 pass** = artifact correct, completion verified, and verification observed. The report
+  lines are kept as diagnostics; `large_output`'s value must still appear in the final words.
+  `--protocol v2` reproduces the v2 verdicts.
 
 ## Metering (`accounting.py`)
 
@@ -98,6 +109,15 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - The tariff (v1) is the published one. Endora's relay prices Sonnet 5.5 cache reads at half
   the published rate ($0.10 against $0.20 a million), so HQ's actual charges sit below the
   normalized figure; normalized dollars are the comparison.
+- Model calls are counted apart from usage records: live HQ keeps one usage total a run, while
+  its transcript shows each reply; Claude Code's helper calls, seen only in its result's
+  `modelUsage`, are model calls too.
+- Cache writes whose TTL the trace does not say (HQ's) are priced at both TTLs: a normalized
+  range, never a guess.
+- Endora's timeline comes from HQ's event log: dispatch is the item's `task.created`, the end is
+  its first move to done or blocked (a worker's process may outlive it), and HQ's dispatch tick
+  and the runner's pickup are harness waiting. Elapsed is the comparable speed; a worker's
+  process lifetime and Claude Code's interval union are labelled apart and not compared.
 - Handoffs: ownership transfers (another member taking the task, a handover note).
   Fresh sessions and continuations are reported apart.
 - Tool calls: total, failed (an error or a non-zero exit), refused, and wasted — wasted only
@@ -122,4 +142,4 @@ Before any candidate tuning, the files below are hashed with `shasum -a 256` and
 reported; the confirmation batch runs only against those hashes:
 
 `probes.py`, `controls.py`, `accounting.py`, `tariff.json`, `SCHEMA.md`, `PROTOCOL.md`,
-`endora_local.py`, `cc_local.py`, `rig.py`, `sidefx.py`.
+`endora_local.py`, `endora_live.py`, `cc_local.py`, `rig.py`, `sidefx.py`.

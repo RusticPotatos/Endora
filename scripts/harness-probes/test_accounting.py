@@ -501,7 +501,8 @@ done
 class RealTraceRegressionTests(unittest.TestCase):
     """Shapes seen in the first run of the real worker against a disposable HQ (endora_local)."""
 
-    def build(self, task_status="in_review", injected_wait=None, attempts=1, runner=None):
+    def build(self, task_status="in_review", injected_wait=None, attempts=1, runner=None,
+              events=None):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         db = Path(d.name) / "hq.db"
@@ -529,6 +530,8 @@ rules
 Looking.
 --- call: shell ---
 {"command":"grep x out.txt","why":"find it"}
+--- reply ---
+tool_use, 50 tokens out
 --- result ---
 exit 0
 x
@@ -536,11 +539,17 @@ x
 ANSWER: x
 --- call: set_status ---
 {"status":"in_review","task":1,"reason":"RESULT: done"}
+--- reply ---
+tool_use, 30 tokens out
 --- result ---
 Task 1 is in_review.
 --- ended ---
 moved on
 """,))
+        if events is not None:
+            con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, at_ms INTEGER, kind TEXT, data TEXT)")
+            con.executemany("INSERT INTO events (at_ms, kind, data) VALUES (?,?,?)",
+                            [(at, kind, json.dumps(data)) for at, kind, data in events])
         con.commit()
         con.close()
         relay = Path(d.name) / "relay.jsonl"
@@ -631,6 +640,49 @@ exit 0
         calls = acc.transcript_tool_calls(body, "member:Jane")
         self.assertEqual([(c["command"][:9], c["exit"]) for c in calls],
                          [("printf x ", None), ("printf y ", 0), ("python3 -", 0)])
+
+    def test_an_unknown_cache_write_ttl_gives_a_cost_range_not_a_guess(self):
+        # HQ does not say whether a turn's cache writes were 5-minute or 1-hour ones.
+        a = self.build()
+        self.assertTrue(all(u["ttl_known"] is False for u in a["usage"]))
+        cash = metrics_of(a)["cash"]
+        low, high = cash["normalized_range_usd"]
+        writes = 500 + 50  # tokens written, at Sonnet 5.5's 2.50 (5m) or 4.00 (1h) a million
+        self.assertAlmostEqual(high - low, writes * (4.00 - 2.50) / 1e6, places=12)
+        self.assertEqual(cash["ttl_unknown_write_tokens"], writes)
+
+    def test_hqs_event_log_dates_dispatch_terminal_and_its_own_waiting(self):
+        # Live, round 3: the task was created at +3.1 s, queued at +11.8, its run started at
+        # +12.2, the task was done at +36.9, and the worker's process ended at +41.4.
+        a = self.build(task_status="done", events=[
+            (3100, "task.created", {"task": 1, "status": "todo"}),
+            (11780, "wake.queued", {"task": 1, "member": 1}),
+            (12180, "run.started", {"task": 1, "run": 1}),
+            (22010, "receipt.recorded", {"task": 1, "run": 1, "tool": "repo_checkout"}),
+            (36920, "task.changed", {"task": 1, "status": "done"}),
+            (41430, "run.ended", {"task": 1, "run": 1}),
+            (50000, "task.changed", {"task": 2, "status": "done"})])
+        self.assertEqual((a["dispatched_at"], a["ended_at"]), (3.1, 36.92))
+        labels = [t["label"] for t in a["meta"]["timeline"]]
+        self.assertEqual(labels[:3], ["task.created", "wake.queued", "run.started"])
+        waits = sorted((e["wait_kind"], e["t_start"], e["t_end"])
+                       for e in a["events"] if e["kind"] == "wait")
+        # HQ's dispatch (created -> queued) and the runner's pickup (queued -> started) are the
+        # harness's own waiting.
+        self.assertIn(("queue", 3.1, 11.78), waits)
+        self.assertIn(("queue", 11.78, 12.18), waits)
+
+    def test_tool_calls_keep_their_output_for_the_grader(self):
+        shell = [e for e in self.build()["events"] if e.get("tool") == "shell"]
+        self.assertIn("exit 0", shell[0]["output"])
+
+    def test_model_calls_are_counted_apart_from_usage_records(self):
+        # Live HQ keeps one usage total a run; the transcript shows each reply.
+        a = self.build()
+        m = metrics_of(a)
+        self.assertEqual(a["meta"]["model_calls_observed"], 2)
+        self.assertEqual(m["tokens"]["usage_records"], 2)
+        self.assertEqual(m["tokens"]["model_calls"], 2)
 
     def test_a_claude_code_bash_without_error_exited_0(self):
         lines = [

@@ -94,7 +94,11 @@ def run(args):
     (out / "collected.json").write_text(json.dumps(collected, indent=2) + "\n")
 
     attempt = accounting.parse_endora(out / "hq.db", args.task, family=args.family, seed=args.seed)
-    attempt["dispatched_at"] = args.dispatched_at
+    # HQ's event log dates the item's creation and its terminal move; the rig's own clock is
+    # the fallback for a store without one (it stamps the request a few seconds early).
+    attempt["meta"]["rig_dispatched_at"] = args.dispatched_at
+    if attempt.get("dispatched_at") is None:
+        attempt["dispatched_at"] = args.dispatched_at
     if attempt.get("ended_at") is None:
         attempt["ended_at"] = time.time()
     attempt_path = out / "attempt.json"
