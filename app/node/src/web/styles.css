@@ -241,7 +241,7 @@
     --hq-pixel: "Silkscreen", "Courier New", monospace;
     --hq-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
     color-scheme: light; background: var(--hq-bg); color: var(--hq-fg);
-    font: 13.5px/1.5 var(--hq-mono); display: grid; gap: 14px;
+    font: 13.5px/1.5 var(--hq-mono); display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px;
     margin: -4px -4px 0; padding: 14px 12px 24px; border-radius: 8px;
   }
   .hq h1 { font: 400 22px var(--hq-pixel); margin: 0; letter-spacing: .02em; }
@@ -317,6 +317,9 @@
   .hq-card { padding: 12px 14px; }
   .hq canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; border-radius: 3px; }
   .hq-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hq > *, .hq-bar > *, .hq-chips > * { min-width: 0; max-width: 100%; }
+  /* The counters and the legend are the Health tab's on every size (council round 0). */
+  .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend { display: none; }
   .hq-stat { border: 1px solid var(--hq-line); border-radius: 4px; padding: 4px 9px; font-size: 12px; color: var(--hq-muted); font-variant-numeric: tabular-nums; }
   .hq-stat b { color: var(--hq-fg); font-weight: 600; }
   .hq-side { display: grid; gap: 12px; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }

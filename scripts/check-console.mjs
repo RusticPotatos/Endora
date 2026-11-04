@@ -766,6 +766,9 @@ if (failures.length) {
   for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Today <b>$0.00 spent · $0.40 held · $2.33 a day</b>", "$0.00 spent · $0.00 held of $1.36 a day", "Open tasks <b>4</b>"]) {
     if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
   }
+  // A turn waiting to retry and work held by the budget are two counts, never one "Waiting"
+  // (council round 0: an hourglass beside "Waiting 0").
+  if (!/Retrying <b>\d+<\/b>/.test(office) || !/Held <b>\d+<\/b>/.test(office) || /Waiting <b>/.test(office)) fail("hq: the office does not count retrying and held apart");
   if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
   // How the team is doing: each number as the engine computed it, the empty week said plainly,
   // the record's start told, and a member's name never markup.
@@ -1465,6 +1468,17 @@ if (failures.length) {
         HQ.selected = { type: "member", id: 4 }; const panel = hqSelected(); HQ.snap.runs.pop(); HQ.selected = null;
         return [!!d, d && d.lamp, d && d.screen, p.kind, p.seat, panel.includes("waits to retry"), !/retrying/i.test(panel)]; })()`, context);
       if (waiting.join("|") !== "true|false|false|wait|desk|true|true") fail(`hq: a turn waiting to retry is lit, or has no desk: ${waiting}`);
+      // The board names who waits to retry, as it names who works.
+      const waitBoard = runInContext(`(() => { HQ.snap.runs.push({ id: 91, member: 4, task: 9, status: "retry_waiting", why: "interrupted" });
+        const b = hqBoard(); HQ.snap.runs.pop(); return b.lines.map((l) => l.who + "|" + l.text); })()`, context);
+      if (!waitBoard.some((l) => /\|waits to retry$/.test(l))) fail(`hq: the board does not name who waits to retry: ${waitBoard}`);
+      // The week's done work never counts an unverified closing as plainly done.
+      const week = runInContext(`(() => { const keep = HQ.snap.members.map((m) => m.running); HQ.snap.members.forEach((m) => { m.running = []; });
+        const was = HQ.snap.tasks.map((t) => t.closure); const now = hqWeekNow();
+        HQ.snap.tasks.slice(0, 3).forEach((t, i) => { t.closure = { why: i ? "met_criteria" : "completed_unverified", at: now - 3600000 * (i + 1) }; });
+        const b = hqBoard(); HQ.snap.tasks.forEach((t, i) => { t.closure = was[i]; }); HQ.snap.members.forEach((m, i) => { m.running = keep[i]; });
+        return b.lines.map((l) => l.text).join(" / "); })()`, context);
+      if (!/not verified/.test(week)) fail(`hq: the board's week counts unverified closings as done: ${week}`);
       // Nobody sits on anybody, nor on the board, the shelves, your desk, the review table, the chess
       // board or the rack, on a screen or a phone.
       for (const m of ["wide", "phone"]) {
@@ -2023,7 +2037,11 @@ if (failures.length) {
     const phone = css.split("@media (max-width: 767px)").map((part) => part.split("\n  }\n")[0]).slice(1).join("\n");
     if (!/\.hq-tabs \{ order: -2;/.test(phone)) fail("hq: the tabs do not sit first on a phone");
     if (/\.hq-stage \{[^}]*display: none/.test(phone) || /canvas-wrap \{ height: 120px/.test(phone)) fail("hq: the office is hidden or cut to a strip on a phone");
-    if (!/:not\(\[data-tab="health"\]\) \.hq-stats/.test(phone)) fail("hq: the office's counters are not the Health tab's on a phone");
+    // On every size the counters and legend are the Health tab's (council round 0: a developer
+    // strip under the office), and the page never grows wider than a phone (every phone shot clipped).
+    // Top-level rules sit two spaces in; a media query's sit four.
+    if (!/\n  \.hq:not\(\[data-tab="health"\]\) \.hq-stats/.test(css)) fail("hq: the office's counters are not the Health tab's on every size");
+    if (!/\n  \.hq \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)) fail("hq: the HQ column can grow past a phone's width");
     for (const tab of ["work", "manage", "health", "activity"]) {
       runInContext(`hqSetTab(${JSON.stringify(tab)})`, context);
       const html = runInContext("viewHQ()", context);

@@ -108,11 +108,15 @@ function hqBoard(snap = HQ.snap || {}) {
     const t = r.task ? tasks.find((x) => x.id === r.task) : null;
     lines.push({ who: m.name, text: t ? `on ${hqSubjectOf(t) || "an item"}` : "looking round", mine: !!(t && g && t.goal === g.id) });
   }
+  for (const r of (snap.runs || []).filter((x) => x.status === "retry_waiting")) {
+    const m = (snap.members || []).find((x) => x.id === r.member);
+    if (m && !m.furloughed && !lines.some((l) => l.who === m.name)) lines.push({ who: m.name, text: "waits to retry", mine: false });
+  }
   lines.sort((a, b) => b.mine - a.mine);
   if (!lines.length) {
-    const week = hqWeekDone(), last = week[week.length - 1];
+    const week = hqWeekDone(), last = week[week.length - 1], unverified = week.filter((t) => !HQ_DONE_KINDS[t.closure.why]).length;
     lines.push({ who: "", text: "Nobody is working now." });
-    if (last) lines.push({ who: "", text: `${week.length} done this week; the last ${hqAgo(hqWeekNow() - last.closure.at)}.` });
+    if (last) lines.push({ who: "", text: `${week.length} closed this week${unverified ? `, ${unverified} not verified` : ""}; the last ${hqAgo(hqWeekNow() - last.closure.at)}.` });
   }
   return { title: g ? g.title : "No goal yet", count: g ? `${open.length} open${stuck ? `, ${stuck} stuck` : ""}` : "", stuck: stuck > 0, lines, stopped: !!snap.stopped };
 }
