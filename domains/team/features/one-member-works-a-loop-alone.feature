@@ -57,6 +57,18 @@ Feature: One member works a loop alone
     Then the refusal names the receipt of the check of "Document the media role" to cite
     And the task "Document the media role" is doing
 
+  Scenario: A receipt cited with a line saying what it shows is read as the receipt
+    HQ's record to 3 Nov has 48 calls refused whole for a line written beside a good id in one
+    criterion's list ("r4031", "the :ro statement is in the thread"). The line is let go; a
+    criterion of words alone is still refused.
+    Given the loop "solo arm" has the item "Document the media role": "Write roles/media/README.md from the role's defaults."
+    And a tick passes
+    When Sol takes "Document the media role" and reads media's logs: "media: listening on 8096, ready"
+    And Sol submits the branch "hq/document-the-media-role", changing "roles/media/README.md"
+    And the check passes: "syntax ok, ansible-lint ok, yamllint ok"
+    And Sol sets "Document the media role" ready, citing the check's receipt with a line saying what it shows
+    Then the task "Document the media role" is done
+
   Scenario: An item with no branch is completed, not verified: it cites evidence, and nothing checked it
     The goal-understanding run (task 1057, run 5316) cited a reading for every criterion and
     answered "not yet known"; with no branch to check and no reviewer, HQ closed it as having met

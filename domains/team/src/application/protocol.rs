@@ -131,14 +131,31 @@ fn evidence_lists(args: &Value, wrote: &Wrote) -> Result<Vec<Vec<Ref>>, String> 
     items
         .iter()
         .map(|item| match item {
-            Value::Array(list) => Ok(list
-                .iter()
-                .map(|one| refs_of(one, wrote))
-                .collect::<Result<Vec<_>, _>>()?
-                .concat()),
+            Value::Array(list) => list_refs(list, wrote),
             other => refs_of(other, wrote),
         })
         .collect()
+}
+
+/// One criterion's list: its ids, with words beside an id let go as that id's gloss
+/// (`["r4031", "the :ro statement is in the thread"]`). A list of words alone, or one citing a
+/// document, is refused as a single piece would be.
+fn list_refs(list: &[Value], wrote: &Wrote) -> Result<Vec<Ref>, String> {
+    let mut read = Vec::new();
+    let mut words = None;
+    for one in list {
+        match refs_of(one, wrote) {
+            Ok(refs) => read.extend(refs),
+            Err(why) if document_in(&one.to_string()).is_some() => return Err(why),
+            Err(why) => {
+                words.get_or_insert(why);
+            }
+        }
+    }
+    match words {
+        Some(why) if read.is_empty() => Err(why),
+        _ => Ok(read),
+    }
 }
 
 /// The `evidence` argument as one list.

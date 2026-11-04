@@ -552,6 +552,38 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
     }
 }
 
+// HQ's record to 3 Nov (48 refused calls, 14 of them on 2 Nov's held-out set): a member gives a
+// criterion's evidence as an id and a line saying what it shows, `[["r4031", "the :ro statement
+// is in the thread"]]`, and the whole call was refused for the line, though its id was good.
+// Words beside an id in one criterion's list are its gloss and are let go; a list, or a
+// criterion, holding only words is refused as before, and so is a document.
+#[test]
+fn words_beside_an_id_in_one_criterions_list_are_let_go() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    use_tool("claim", json!({ "task": s.task.0 })).unwrap();
+    let cite = |evidence: serde_json::Value| {
+        use_tool(
+            "post",
+            json!({ "task": s.task.0, "text": "Found it.", "evidence": evidence }),
+        )
+    };
+    let id = format!("task {}", s.task.0);
+
+    cite(json!([[id.clone(), "the list is there, in the thread"]])).unwrap();
+    cite(json!([["what it shows comes first", id.clone()]])).unwrap();
+    for refused in [
+        json!([["the list is there", "and so is the rest"]]),
+        json!([[id.clone()], ["the list is there"]]),
+        json!([id, "the list is there"]),
+    ] {
+        let why = cite(refused.clone()).unwrap_err();
+        assert!(why.contains("is not evidence"), "{refused}: {why}");
+    }
+}
+
 // Set 4 and HQ's record before it (161 refusals in 116 turns): a member cites the document a
 // submit or a check wrote (`d241`), which is not evidence, and was told only "cite a receipt as
 // r12, a task as task 12", so it tried again, some turns several times, and some fell back to

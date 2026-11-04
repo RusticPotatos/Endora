@@ -351,6 +351,22 @@ fn sets_ready_citing_document(w: &mut Office, name: String, title: String) {
     );
 }
 
+/// The member sets its item ready citing the check's receipt with a line beside it saying what
+/// it shows, in one criterion's list, as 48 refused calls in HQ's record did.
+#[when(
+    regex = r#"^(\w+) sets "(.+)" ready, citing the check's receipt with a line saying what it shows$"#
+)]
+fn sets_ready_citing_receipt_with_gloss(w: &mut Office, name: String, title: String) {
+    let task = w.task(&title);
+    let (receipt, _) = check_line_ids(w, task);
+    w.use_tool(
+        &name,
+        "set_status",
+        &json!({ "task": task.0, "status": "in_review", "reason": "Done, as the check shows.",
+                 "evidence": [[receipt, "the check passed: syntax, ansible-lint and yamllint"]] }),
+    );
+}
+
 #[then(regex = r#"^the refusal names the receipt of the check of "(.+)" to cite$"#)]
 fn refusal_names_check_receipt(w: &mut Office, title: String) {
     let task = w.task(&title);
