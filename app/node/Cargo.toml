@@ -64,6 +64,12 @@ zeroize = "1"
 workspace = true
 
 [dev-dependencies]
+# The owner's scenarios for the relay's own count of model requests
+# (`features/*.feature`, run from a `#[test]` because their steps use this crate's test fakes).
+# Tests only, never shipped; the same version `domains/team` uses (0.21 is the last release that
+# builds on the workspace's MSRV). It runs on the test's own tokio runtime, so `futures` (which
+# `domains/team` adds for its own executor) is not needed here.
+cucumber = "0.21"
 http-body-util = "0.1.5"
 # Reading a snapshot back in tests; the same build the persistence crate already uses.
 rusqlite = { version = "0.40", features = ["bundled"] }

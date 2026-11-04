@@ -307,7 +307,8 @@ pub(super) async fn turn_of(
 }
 
 /// Tells HQ what a call cost, and notes it in Endora's own use of models. A failure to tell
-/// HQ is said in the log: it is never quietly charged to nobody.
+/// HQ is said in the log: it is never quietly charged to nobody. Whether HQ accepted the post:
+/// `None` when no charge was attempted (a model with no price).
 fn charge(
     hq: &endora_infrastructure::HqClient,
     state: &AppState,
@@ -315,10 +316,8 @@ fn charge(
     model: &str,
     used: Used,
     served: Option<&str>,
-) {
-    let Some(price) = price_of(model, used.prompt()) else {
-        return;
-    };
+) -> Option<bool> {
+    let price = price_of(model, used.prompt())?;
     let micros = cost(price, used);
     // What is left with the provider (the owner, 2026-10-30): counted, and told when low.
     super::credits::after_charge(state, run, model, micros);
@@ -327,7 +326,8 @@ fn charge(
     let reported = json!({ "run": run, "micros": micros, "input": used.input,
                            "cache_read": used.cache_read, "cache_write": used.cache_write,
                            "output": used.output, "served_model": served });
-    if let Err(e) = hq.post("/v1/team/usage", &reported) {
+    let accepted = hq.post("/v1/team/usage", &reported);
+    if let Err(e) = &accepted {
         eprintln!("relay: could not charge run {run} {micros} micros: {e}");
     }
     endora_application::UsageLog::record(
@@ -340,6 +340,7 @@ fn charge(
             cached_tokens: used.cache_read,
         },
     );
+    Some(accepted.is_ok())
 }
 
 /// Asks Anthropic how many tokens `asked` (a call's prompt, as [`counted`] makes it) comes to.
@@ -533,20 +534,46 @@ pub(super) async fn messages(
     call["max_tokens"] = json!(cap);
     let state2 = state.clone();
     let sent = call.clone();
-    let settle: Settle = Box::new(move |used, served| {
+    // Counted only here, where the call is about to leave for the provider: one refused above
+    // (not authorized, over budget, no key) never reaches it and is not a model request.
+    let counted_as = endora_application::RelayCensus::began(state.store.as_ref(), turn.run, &model);
+    let settle: Settle = Box::new(move |used, served, ended| {
         // Held until this call is charged, so the turn's next call sees what this one cost.
         let _one_at_a_time = one_at_a_time;
+        if let Some(id) = counted_as {
+            endora_application::RelayCensus::ended(
+                state2.store.as_ref(),
+                id,
+                ended.outcome,
+                ended.status,
+                served.as_deref(),
+                ended.usage_complete,
+            );
+        }
         let Some(used) = used else { return };
-        charge(&hq, &state2, turn.run, &model, used, served.as_deref());
+        let told = charge(&hq, &state2, turn.run, &model, used, served.as_deref());
+        if let (Some(id), Some(accepted)) = (counted_as, told) {
+            endora_application::RelayCensus::hq_told(state2.store.as_ref(), id, accepted);
+        }
         state2.relay_calls.remember(&token, &call, used);
     });
     pass_on(upstream, key, version, beta, sent, settle).await
 }
 
+/// How a call passed on ended, for the node's own count of model requests.
+pub(super) struct Ended {
+    pub(super) outcome: endora_application::RelayOutcome,
+    /// The HTTP status, when Anthropic answered at all.
+    pub(super) status: Option<u16>,
+    /// Whether the usage was fully reported (a whole reply parsed, a stream that reached its
+    /// last usage).
+    pub(super) usage_complete: bool,
+}
+
 /// What is done once a call passed on has been answered: told what it used, or `None` when it
-/// never reached Anthropic or Anthropic refused it (and so cost nothing), and the model the
-/// reply said answered, when it said. Called exactly once.
-pub(super) type Settle = Box<dyn FnOnce(Option<Used>, Option<String>) + Send>;
+/// never reached Anthropic or Anthropic refused it (and so cost nothing), the model the
+/// reply said answered, when it said, and how the call ended. Called exactly once.
+pub(super) type Settle = Box<dyn FnOnce(Option<Used>, Option<String>, Ended) + Send>;
 
 /// Sends `call` (its `max_tokens` already capped) to Anthropic with the owner's `key`, whole
 /// or streamed as it asks, passes the reply back, and [`Settle`]s it once its usage is known: a
@@ -593,7 +620,30 @@ pub(super) async fn pass_on(
                 }
                 _ => (None, None),
             };
-            settle(used, served);
+            // A 2xx whose body would not parse may have been a model's answer: interrupted,
+            // never failed. No response or a refusal is failed.
+            let ended = match &answered {
+                Ok((status, _)) if *status < 300 => Ended {
+                    outcome: if used.is_some() {
+                        endora_application::RelayOutcome::Answered
+                    } else {
+                        endora_application::RelayOutcome::Interrupted
+                    },
+                    status: Some(*status),
+                    usage_complete: used.is_some(),
+                },
+                Ok((status, _)) => Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: Some(*status),
+                    usage_complete: false,
+                },
+                Err(_) => Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: None,
+                    usage_complete: false,
+                },
+            };
+            settle(used, served, ended);
             answered
         })
         .await;
@@ -622,7 +672,15 @@ pub(super) async fn pass_on(
         ) {
             Ok(reply) => reply,
             Err(why) => {
-                settle(None, None);
+                settle(
+                    None,
+                    None,
+                    Ended {
+                        outcome: endora_application::RelayOutcome::Failed,
+                        status: None,
+                        usage_complete: false,
+                    },
+                );
                 let _ = head_tx.send(Err(why));
                 return;
             }
@@ -650,14 +708,36 @@ pub(super) async fn pass_on(
         }
         // Charged for what was used, even if the caller stopped listening part way.
         if reply.status >= 300 {
-            settle(None, None);
+            settle(
+                None,
+                None,
+                Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: Some(reply.status),
+                    usage_complete: false,
+                },
+            );
             return;
         }
+        let finished = usage.finished();
         let mut used = usage.used();
-        if !usage.finished() {
+        if !finished {
             used.output = used.output.max(cap);
         }
-        settle(Some(used), usage.served());
+        let outcome = if finished {
+            endora_application::RelayOutcome::Answered
+        } else {
+            endora_application::RelayOutcome::Interrupted
+        };
+        settle(
+            Some(used),
+            usage.served(),
+            Ended {
+                outcome,
+                status: Some(reply.status),
+                usage_complete: finished,
+            },
+        );
     });
     let status = match head_rx.await {
         Ok(Ok(status)) => status,
@@ -923,17 +1003,54 @@ pub(super) async fn chat_completions(
             call.remove("reasoning_effort");
         }
         let sent = serde_json::Value::Object(call).to_string().into_bytes();
-        // DeepSeek is metered and leaves the house; everything else here is free and stays.
-        let (status, bytes) = if on_deepseek {
-            send_metered(&local.url, &local.key, &sent)?
-        } else {
-            send_local(&local.url, &local.key, &sent)?
+        // Counted where the call is about to leave for the model: a refusal above never is.
+        let census = &state.store;
+        let counted_as = endora_application::RelayCensus::began(census.as_ref(), run, &local.model);
+        let end = |outcome, status: Option<u16>, served: Option<&str>| {
+            let Some(id) = counted_as else { return };
+            let complete = outcome == endora_application::RelayOutcome::Answered;
+            endora_application::RelayCensus::ended(
+                census.as_ref(),
+                id,
+                outcome,
+                status,
+                served,
+                complete,
+            );
         };
+        // DeepSeek is metered and leaves the house; everything else here is free and stays.
+        let sent_to = if on_deepseek {
+            send_metered(&local.url, &local.key, &sent)
+        } else {
+            send_local(&local.url, &local.key, &sent)
+        };
+        let (status, bytes) = match sent_to {
+            Ok(answered) => answered,
+            Err(why) => {
+                end(endora_application::RelayOutcome::Failed, None, None);
+                return Err(why);
+            }
+        };
+        if status >= 300 {
+            end(endora_application::RelayOutcome::Failed, Some(status), None);
+        }
         if status < 300 {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes);
+            // A 2xx whose body would not parse may have been a model's answer: interrupted.
+            let outcome = if parsed.is_ok() {
+                endora_application::RelayOutcome::Answered
+            } else {
+                endora_application::RelayOutcome::Interrupted
+            };
+            end(
+                outcome,
+                Some(status),
+                parsed.as_ref().ok().and_then(served_model).as_deref(),
+            );
+            if let Ok(v) = parsed {
                 if on_deepseek {
                     let served = served_model(&v);
-                    charge(
+                    let told = charge(
                         &hq,
                         &state,
                         run,
@@ -941,6 +1058,9 @@ pub(super) async fn chat_completions(
                         Used::from_openai(&v["usage"]),
                         served.as_deref(),
                     );
+                    if let (Some(id), Some(accepted)) = (counted_as, told) {
+                        endora_application::RelayCensus::hq_told(census.as_ref(), id, accepted);
+                    }
                     return Ok((status, bytes));
                 }
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
@@ -948,8 +1068,12 @@ pub(super) async fn chat_completions(
                 // ran out of room (ADR 0142, amended 2026-10-30).
                 let told = json!({ "run": run, "input": used("prompt_tokens"),
                                    "output": used("completion_tokens") });
-                if let Err(e) = hq.post("/v1/team/tokens", &told) {
+                let told = hq.post("/v1/team/tokens", &told);
+                if let Err(e) = &told {
                     eprintln!("relay: could not tell HQ run {run}'s tokens: {e}");
+                }
+                if let Some(id) = counted_as {
+                    endora_application::RelayCensus::hq_told(census.as_ref(), id, told.is_ok());
                 }
                 endora_application::UsageLog::record(
                     state.store.as_ref(),
@@ -985,6 +1109,10 @@ pub(super) async fn chat_completions(
         Err(_) => refuse_openai(StatusCode::BAD_GATEWAY, "api_error", "the relay failed"),
     }
 }
+
+/// The owner's scenarios for the relay's own count of model requests.
+#[cfg(test)]
+mod census_scenarios;
 
 #[cfg(test)]
 pub(super) mod tests {
@@ -1052,7 +1180,7 @@ pub(super) mod tests {
 
     /// HQ, knowing one turn (token `good`, run 7, a developer's thinking with Claude) with
     /// `left` micros to spend.
-    fn hq(left: i64) -> (String, Seen) {
+    pub(in crate::api) fn hq(left: i64) -> (String, Seen) {
         hq_thinking(left, true)
     }
 
@@ -1316,7 +1444,7 @@ pub(super) mod tests {
     }
 
     /// Anthropic, answering as a model whose name is not the alias asked for.
-    fn anthropic_serving(served: &'static str) -> (String, Seen) {
+    pub(in crate::api) fn anthropic_serving(served: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| {
             if path == "/v1/messages/count_tokens" {
                 return (
@@ -1384,6 +1512,197 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(served_told(&to_hq, 1).await, vec![serde_json::Value::Null]);
+    }
+
+    /// Anthropic, overloaded: counting works, every message call is answered with `status`.
+    pub(in crate::api) fn anthropic_failing(status: u16) -> (String, Seen) {
+        fake(Arc::new(move |path, _| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": 1_000 }).to_string(),
+                );
+            }
+            (
+                status,
+                "application/json",
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#
+                    .to_owned(),
+            )
+        }))
+    }
+
+    /// HQ that knows the turn (token `good`) but answers every usage post with a 500.
+    pub(in crate::api) fn hq_refusing_usage(left: i64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| match path {
+            "/v1/team/usage" => (500, "application/json", r#"{"error":"down"}"#.to_owned()),
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Linus", "left": left, "cloud": true,
+                        "brain": "local" })
+                .to_string(),
+            ),
+            _ => (
+                404,
+                "application/json",
+                r#"{"error":"no such turn"}"#.to_owned(),
+            ),
+        }))
+    }
+
+    /// The census rows of run 7 once `n` of them have ended and their charge to HQ was
+    /// attempted (a failed call is never charged): a streamed call settles after its reply.
+    pub(in crate::api) async fn census(
+        state: &AppState,
+        n: usize,
+    ) -> Vec<endora_infrastructure::RelayRequestRow> {
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = state.store.relay_requests(7).unwrap();
+            let settled = |r: &endora_infrastructure::RelayRequestRow| {
+                r.ended_ms.is_some() && (r.outcome == "failed" || r.hq_told.is_some())
+            };
+            if rows.len() >= n && rows.iter().all(settled) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        rows
+    }
+
+    /// Asks the relay for one call, whole or streamed, `extra` merged into the body, and reads
+    /// the reply to its end.
+    pub(in crate::api) async fn call_once(
+        state: &AppState,
+        stream: bool,
+        extra: serde_json::Value,
+    ) -> StatusCode {
+        let mut body = json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000,
+                               "stream": stream, "messages": [] });
+        if let (Some(into), Some(from)) = (body.as_object_mut(), extra.as_object()) {
+            into.extend(from.clone());
+        }
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask("good", body))
+            .await
+            .unwrap();
+        let status = res.status();
+        let _ = res.into_body().collect().await;
+        status
+    }
+
+    /// Round 9: HQ's record of a call is the usage post alone, so a lost post hid that the call
+    /// happened. The node keeps its own count of each request it passes on, with how it ended
+    /// and which model the provider said answered.
+    #[tokio::test]
+    async fn the_relay_counts_an_ordinary_and_a_streamed_call_with_the_model_that_answered() {
+        for stream in [false, true] {
+            let (hq_url, _) = hq(400_000);
+            let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+            let state = node(&hq_url, &upstream);
+            assert_eq!(call_once(&state, stream, json!({})).await, StatusCode::OK);
+            let rows = census(&state, 1).await;
+            assert_eq!(rows.len(), 1, "streamed: {stream}");
+            let row = &rows[0];
+            assert_eq!(row.run, 7);
+            assert_eq!(row.requested_model, "claude-sonnet-5-5");
+            assert_eq!(
+                row.served_model.as_deref(),
+                Some("claude-sonnet-5-5-20261001")
+            );
+            assert_eq!(
+                (row.outcome.as_str(), row.status, row.usage_complete),
+                ("answered", Some(200), true),
+                "streamed: {stream}"
+            );
+            assert_eq!(row.hq_told, Some(true));
+            assert!(row.ended_ms.unwrap() >= row.started_ms);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_whose_answer_names_no_model_is_counted_answered_with_no_model() {
+        let (hq_url, _) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        call_once(&state, false, json!({})).await;
+        let rows = census(&state, 1).await;
+        assert_eq!(rows[0].outcome, "answered");
+        assert_eq!(rows[0].served_model, None, "never the alias in its place");
+    }
+
+    #[tokio::test]
+    async fn a_529_with_no_model_response_is_counted_failed_and_never_charged() {
+        for stream in [false, true] {
+            let (hq_url, to_hq) = hq(400_000);
+            let (upstream, _) = anthropic_failing(529);
+            let state = node(&hq_url, &upstream);
+            assert_eq!(call_once(&state, stream, json!({})).await, 529);
+            let rows = census(&state, 1).await;
+            assert_eq!(rows.len(), 1, "streamed: {stream}");
+            let row = &rows[0];
+            assert_eq!(
+                (row.outcome.as_str(), row.status, row.usage_complete),
+                ("failed", Some(529), false),
+                "streamed: {stream}"
+            );
+            assert_eq!((row.served_model.as_deref(), row.hq_told), (None, None));
+            assert!(charged(&to_hq).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_before_its_last_usage_is_counted_interrupted_not_answered() {
+        let (hq_url, to_hq) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        call_once(&state, true, json!({ "stop_sequences": ["cut"] })).await;
+        let rows = census(&state, 1).await;
+        let row = &rows[0];
+        assert_eq!(
+            (row.outcome.as_str(), row.status, row.usage_complete),
+            ("interrupted", Some(200), false)
+        );
+        assert_eq!(
+            charges(&to_hq, 1).await,
+            vec![12_430],
+            "still charged its cap"
+        );
+        assert_eq!(row.hq_told, Some(true));
+    }
+
+    /// The point of the census: HQ never hearing of a call does not make it vanish.
+    #[tokio::test]
+    async fn a_call_hq_refused_to_hear_of_is_still_counted_and_says_hq_was_not_told() {
+        let (hq_url, to_hq) = hq_refusing_usage(400_000);
+        let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+        let state = node(&hq_url, &upstream);
+        assert_eq!(call_once(&state, false, json!({})).await, StatusCode::OK);
+        let rows = census(&state, 1).await;
+        let row = &rows[0];
+        assert_eq!(row.outcome, "answered");
+        assert_eq!(
+            row.served_model.as_deref(),
+            Some("claude-sonnet-5-5-20261001")
+        );
+        assert_eq!(row.hq_told, Some(false));
+        assert_eq!(
+            charges(&to_hq, 1).await,
+            vec![3_000],
+            "the charge was still attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_refused_before_it_reaches_the_provider_is_not_counted() {
+        let (hq_url, _) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        let status = call_once(&state, false, json!({ "model": "gpt-9" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(state.store.relay_requests(7).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2113,6 +2432,66 @@ pub(super) mod tests {
         assert_eq!(charged.len(), 1);
         assert_eq!(charged[0]["micros"], 244);
         assert_eq!(charged[0]["cache_read"], 600);
+    }
+
+    /// Round 9: the free and the DeepSeek paths are counted too, answered or failed.
+    #[tokio::test]
+    async fn the_house_and_deepseek_calls_are_counted_answered_or_failed() {
+        let (hq_url, _) = hq_on_deepseek(1_200);
+        let (house, _) = local_model();
+        let (deepseek, _) = fake(Arc::new(|_path, body| {
+            if body.contains("\"max_tokens\":0") {
+                return (500, "application/json", "{}".to_owned());
+            }
+            (
+                200,
+                "application/json",
+                json!({ "model": "deepseek-v4-0001", "choices": [],
+                        "usage": { "prompt_tokens": 1_000, "completion_tokens": 100 } })
+                .to_string(),
+            )
+        }));
+        let state = local_node(
+            &hq_url,
+            &house,
+            &[(
+                &format!("{deepseek}/v1"),
+                "deepseek-flash",
+                "a-deepseek-key",
+                true,
+            )],
+        );
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let rows = census(&state, 1).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requested_model, "deepseek-flash");
+        assert_eq!(rows[0].served_model.as_deref(), Some("deepseek-v4-0001"));
+        assert_eq!(
+            (rows[0].outcome.as_str(), rows[0].hq_told),
+            ("answered", Some(true))
+        );
+
+        // The house's own model, down: counted failed, no model.
+        let (hq_url, _) = hq_on(40_000, false, "local");
+        let state = local_node(&hq_url, "http://127.0.0.1:9/v1", &[]);
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let rows = census(&state, 1).await;
+        assert_eq!(
+            (
+                rows[0].outcome.as_str(),
+                rows[0].status,
+                rows[0].served_model.as_deref()
+            ),
+            ("failed", None, None)
+        );
     }
 
     #[tokio::test]

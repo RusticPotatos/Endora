@@ -66,6 +66,22 @@ alias never stands in for it. Charges, budgets, routing and what is sent are unc
 house's free relay (`/v1/team/tokens`) keeps no name yet. Scenarios:
 `domains/team/features/a-turns-model-is-kept-as-the-provider-named-it.feature`.
 
+Amended 2026-11-04 (the agentic-harness climb, round 9): **the node keeps its own count of the
+model requests its relay passes on.** HQ's only record of a call was the usage report the node
+sends it, so a lost report hid that the call happened, and the comparison could not prove every
+request was accounted for. The node's store now has `relay_requests` (`SqliteStore`, behind the
+`RelayCensus` port): one row per request passed to the provider, with the run, when it began and
+ended, the model asked for, the model the provider named (or none), how it ended (`unfinished`,
+`answered`, `interrupted`, `failed`), the HTTP status when known, whether its usage was fully
+reported, and whether HQ accepted the usage post (`hq_told`, empty until the charge is tried).
+A row begun and never ended stays `unfinished`, never complete. The Anthropic relay counts a
+call just before it leaves for the provider, so a call refused earlier (not authorized, over
+budget, no key) is not counted, and `count_tokens` is not a model request; the house's and
+DeepSeek's chat path is counted the same way, as answered or failed (an unreadable 2xx body as
+interrupted). Kept: ids, times, model names, outcome, status, flags. Not kept: any prompt, reply,
+body, key, tool argument or token count of the turn. Charges, budgets, routing and what is sent
+are unchanged. Scenarios: `app/node/features/the-relay-keeps-its-own-count-of-model-requests.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their
