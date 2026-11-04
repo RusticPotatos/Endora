@@ -381,12 +381,14 @@ function hqDrawPlaces(g, scene) {
   if (!scene.desks.some((d) => d.lamp)) { const Z = L.zones.work; hqR(g, Z.x, Z.y, Z.w, Z.h, "rgba(40,30,60,.24)"); }
   // The desks: the lamp's warm pool and the lit screen only while a turn runs there.
   for (const d of scene.desks) {
-    // A turn waiting to retry: no lamp (nothing runs), but an amber pool, the board's retry colour,
-    // so waiting differs from working across the desk and not only by its sign.
+    // A turn waiting to retry: its patch of floor dimmed as if the lamp were off (nothing runs), edged
+    // in hard amber pixels, the board's retry colour, so waiting differs from working at a glance and
+    // not only by its sign (a soft amber glow vanished on the wood, council round 12).
     if (d.who && d.who.kind === "wait") {
-      const pool = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 36);
-      pool.addColorStop(0, "rgba(255,170,60,.38)"); pool.addColorStop(1, "rgba(255,170,60,0)");
-      g.fillStyle = pool; g.fillRect(d.x - 14, d.y - 14, 76, 72);
+      const px = d.x - 6, py = d.y - 8, pw = 60, ph = 50, a = "rgba(255,170,60,.85)";
+      hqR(g, px, py, pw, ph, "rgba(40,30,60,.22)");
+      for (let i = 0; i < pw; i += 4) { hqR(g, px + i, py, 2, 1, a); hqR(g, px + i, py + ph - 1, 2, 1, a); }
+      for (let j = 0; j < ph; j += 4) { hqR(g, px, py + j, 1, 2, a); hqR(g, px + pw - 1, py + j, 1, 2, a); }
     }
     if (d.lamp) {
       const glow = g.createRadialGradient(d.x + 24, d.y + 20, 2, d.x + 24, d.y + 20, 40);
