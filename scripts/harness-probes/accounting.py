@@ -824,10 +824,13 @@ def node_census_identity(meta):
     census = {"source": "node-relay", "requests": len(rows), "answered": len(by.get("answered", [])),
               "interrupted": len(by.get("interrupted", [])), "failed": len(by.get("failed", [])),
               "unfinished": unfinished}
+    # The observer is best-effort (round 10): HQ recording more calls than the census saw means
+    # the census missed some, so it cannot vouch for every call.
+    accounted = unfinished == 0 and hq_recorded <= len(charged)
     return {"requested": meta.get("requested_models") or [], "served": served,
-            "unknown_calls": unknown, "census": census, "accounted": unfinished == 0,
+            "unknown_calls": unknown, "census": census, "accounted": accounted,
             "single_model": len(served) == 1,
-            "complete": unfinished == 0 and unknown == 0 and bool(served),
+            "complete": accounted and unknown == 0 and bool(served),
             "hq_discrepancy": {"census_charged": len(charged), "hq_recorded": hq_recorded,
                                "hq_not_told": sum(1 for r in charged if r.get("hq_told") == 0)}}
 

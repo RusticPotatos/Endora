@@ -906,6 +906,19 @@ class UsageCoverageAndNodeCensusTests(unittest.TestCase):
         self.assertTrue(i["complete"], i)
         self.assertEqual(i["hq_discrepancy"], {"census_charged": 2, "hq_recorded": 1, "hq_not_told": 1})
 
+    def test_a_census_that_missed_calls_hq_recorded_is_not_complete(self):
+        # Round 10: the observer is best-effort; a row it failed to write must leave the identity
+        # unproven, never complete on the rows it did write.
+        a = self.endora([self.row("answered")], [["claude-haiku-5-5", 2]])
+        i = acc.model_identity(a)
+        self.assertFalse(i["complete"], i)
+        self.assertEqual(i["hq_discrepancy"]["census_charged"], 1)
+        self.assertEqual(i["hq_discrepancy"]["hq_recorded"], 2)
+
+    def test_an_empty_census_is_unavailable_evidence_not_a_complete_one(self):
+        a = self.endora([], [["claude-haiku-5-5", 1]])
+        self.assertFalse(acc.model_identity(a)["complete"])
+
     def test_an_unfinished_observation_never_counts_as_complete(self):
         a = self.endora([self.row("answered"), self.row("unfinished", served=None, hq_told=None)],
                         [["claude-haiku-5-5", 1]])
