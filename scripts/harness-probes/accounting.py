@@ -226,9 +226,16 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
         recs, bad = read_jsonl(path)
         bad_lines += bad
         loaded.append((path, kind, aid, recs))
+    # Every invocation's stream, in order (round 16: a killed invocation's stream can hold calls
+    # its session never saved); one path is still accepted.
+    # Each item is a path, or (path, the time its invocation ended), which its records take,
+    # streams carrying no times of their own.
     stream_recs = []
-    if stream_json:
-        stream_recs, bad = read_jsonl(stream_json)
+    streams = [stream_json] if isinstance(stream_json, (str, Path)) else list(stream_json or [])
+    for one in streams:
+        path, at = one if isinstance(one, tuple) else (one, None)
+        recs, bad = read_jsonl(path)
+        stream_recs += [(r, at) for r in recs]
         bad_lines += bad
 
     uuid_ts = {}
@@ -324,7 +331,8 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
     # The headless stream fills in what the session files lack, and is reconciled below.
     stream_result = None
     results_seen = 0
-    for r in stream_recs:
+    session_msgs, session_results = set(msgs), set(tool_results)
+    for r, at in stream_recs:
         if r.get("type") == "result":
             stream_result = r
             results_seen += 1
@@ -333,7 +341,13 @@ def parse_cc(sessions, subagents_dir=None, stream_json=None, family="", seed=0):
         if r.get("parent_tool_use_id"):
             default = str(r["parent_tool_use_id"])
         before = set(msgs)
-        feed(r, default, None)
+        mid = (r.get("message") or {}).get("id") if isinstance(r.get("message"), dict) else None
+        uses = [b.get("tool_use_id") for b in ((r.get("message") or {}).get("content") or [])
+                if isinstance(b, dict) and b.get("type") == "tool_result"] if isinstance(r.get("message"), dict) \
+            and isinstance((r.get("message") or {}).get("content"), list) else []
+        known = (mid in session_msgs) if r.get("type") == "assistant" else \
+            bool(uses) and all(u in session_results for u in uses)
+        feed(r, default, None if known else at)
         for mid in set(msgs) - before:
             msgs[mid].from_stream = True
 
@@ -1245,7 +1259,7 @@ def main(argv=None):
     cc = sub.add_parser("parse-cc")
     cc.add_argument("--session", action="append", required=True)
     cc.add_argument("--subagents")
-    cc.add_argument("--stream-json")
+    cc.add_argument("--stream-json", action="append", help="each invocation's stream, in order (repeat)")
     cc.add_argument("--family", required=True)
     cc.add_argument("--seed", type=int, required=True)
     cc.add_argument("--out", required=True)

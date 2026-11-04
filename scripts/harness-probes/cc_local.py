@@ -128,7 +128,8 @@ def run(args):
     streams = sorted(out.glob("stream-*.jsonl"))
     attempt = accounting.parse_cc(
         session_paths, subagents_dir=(sessions / "subagents") if sub else None,
-        stream_json=streams[-1] if streams else None, family=args.family, seed=args.seed,
+        stream_json=[(out / f"stream-{i['n']}.jsonl", i["at"]) for i in summary["invocations"]],
+        family=args.family, seed=args.seed,
     )
     attempt["dispatched_at"] = summary["dispatched_at"]
     attempt["ended_at"] = summary["ended_at"]

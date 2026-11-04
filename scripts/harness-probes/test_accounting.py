@@ -286,6 +286,43 @@ class StreamJsonTests(unittest.TestCase):
         self.assertEqual(m["tokens"]["output"], 70)
         self.assertEqual(m["tokens"]["calls"], 2)
 
+    def test_a_killed_invocations_stream_keeps_what_its_session_never_saved(self):
+        # Round 16: Claude Code was stopped mid-attempt; its first stream held a completed Edit
+        # (call and result) that the session file never saved, and only the last stream was read.
+        u = {"input_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 7}
+        edit = {"id": "m1", "model": "claude-haiku-5-5", "usage": u, "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": "tu1", "name": "Edit", "input": {"file_path": "a.py"}}]}
+        after = {"id": "m2", "model": "claude-haiku-5-5", "usage": u, "stop_reason": "end_turn",
+                 "content": [{"type": "text", "text": "RESULT: done"}]}
+        with tempfile.TemporaryDirectory() as d:
+            one, two = Path(d) / "stream-1.jsonl", Path(d) / "stream-2.jsonl"
+            thinking = {**edit, "content": [{"type": "thinking", "thinking": "…"}]}
+            write_jsonl(one, [{"type": "system", "subtype": "init", "session_id": "s1"},
+                              {"type": "assistant", "message": thinking, "session_id": "s1"},
+                              {"type": "assistant", "message": edit, "session_id": "s1"},
+                              {"type": "user", "message": {"role": "user", "content": [
+                                  {"type": "tool_result", "tool_use_id": "tu1", "content": "updated"}]}}])
+            write_jsonl(two, [{"type": "assistant", "message": after, "session_id": "s1"},
+                              {"type": "result", "subtype": "success", "is_error": False, "result": "RESULT: done",
+                               "total_cost_usd": 0.001, "duration_ms": 900, "num_turns": 1, "usage": u}])
+            a = acc.parse_cc([], stream_json=[(one, 100.0), (two, None)], family="f", seed=0)
+        edits = [e for e in a["events"] if e.get("kind") == "tool_call" and e.get("tool") == "Edit"]
+        self.assertEqual(len(edits), 1)
+        # a stream carries no times: its records take the end of their invocation, so the
+        # recovered edit sorts where it happened, not after everything else
+        self.assertEqual(edits[0]["t_start"], 100.0)
+        self.assertEqual(a["final_report"], "RESULT: done")
+        self.assertEqual(len([x for x in a["usage"] if x["agent"] == "main"]), 2)
+
+    def test_a_streams_time_never_moves_what_the_session_already_timed(self):
+        a0 = acc.parse_cc([TRACES / "cc_main.jsonl"], stream_json=TRACES / "stream_ok.jsonl", family="f", seed=0)
+        a1 = acc.parse_cc([TRACES / "cc_main.jsonl"], stream_json=[(TRACES / "stream_ok.jsonl", 9e9)],
+                          family="f", seed=0)
+        def times(att):
+            return [(e["kind"], e.get("t_start"), e.get("t_end")) for e in att["events"] if e.get("t_start")]
+        self.assertEqual(times(a0), times(a1))
+        self.assertTrue(times(a0))
+
     def test_stream_alone_builds_the_attempt_and_takes_elapsed_from_result(self):
         with tempfile.TemporaryDirectory() as d:
             empty = Path(d) / "e.jsonl"
