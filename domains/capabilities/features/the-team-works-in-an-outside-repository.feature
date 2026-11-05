@@ -23,6 +23,32 @@ Feature: The team works in a public repository outside the lab, and nothing leav
     And the node keeps it as "refs/submissions/hq/task-936-fix-parse"
     And the repository has no branch "hq/task-936-fix-parse"
 
+  # Seed: a submission rule that ignores which repository it is fails the Then (ADR 0115,
+  # amended 2026-11-05): the owner's values live in the lab's fork, not in a public repository.
+  Scenario: An outside repository's own inventory and vault code are taken
+    Given a public repository "https://github.com/example/tiny" the owner named for an item, whose default branch is "main"
+    When a member submits "hq/task-936-count-stock" on top of "main" as HQ's own commit, adding "shopkeep/inventory/stock.py, inventory/models.py, app/vaultwarden_client.py, pkg/vaulted_cache.py"
+    Then it is taken
+
+  # Seed: a rule that waves every path through fails the Then.
+  Scenario Outline: The lab's fork still refuses the owner's values
+    Given the owner's fork of ansible-nas, worked from "develop"
+    And upstream cannot be reached
+    When a member submits "hq/task-936-tidy" on top of "develop" as HQ's own commit, adding "roles/media/tasks/main.yml, <path>"
+    Then it is refused, saying "touches <path>, which holds the owner's own values"
+
+    Examples:
+      | path                      |
+      | inventory/hosts.yml       |
+      | inventories/prod/hosts    |
+      | group_vars/all.yml        |
+      | host_vars/nas.yml         |
+      | inventory.yml             |
+      | inventory.ini             |
+      | vault.yml                 |
+      | roles/x/vars/vault.yml    |
+      | app/vaultwarden_client.py |
+
   # Seed: an outside mirror that pushes like the fork's fails both Thens.
   Scenario: Delivery never pushes it anywhere
     Given a public repository "https://github.com/example/tiny" the owner named for an item, whose default branch is "main"

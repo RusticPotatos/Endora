@@ -424,15 +424,27 @@ fn holds_the_repository(w: &mut Node, base: String) {
 /// A fix on `branch` from `base` in the sandbox, as HQ's own commit, handed to the node.
 #[when(expr = "a member submits {string} on top of {string} as HQ's own commit")]
 fn submits_outside(w: &mut Node, branch: String, base: String) {
+    submit_files(w, &branch, &base, &["parse.py"]);
+}
+
+/// The same, adding each of `files` (comma-separated) as a small text file.
+#[when(expr = "a member submits {string} on top of {string} as HQ's own commit, adding {string}")]
+fn submits_adding(w: &mut Node, branch: String, base: String, files: String) {
+    let files: Vec<&str> = files.split(',').map(str::trim).collect();
+    submit_files(w, &branch, &base, &files);
+}
+
+fn submit_files(w: &mut Node, branch: &str, base: &str, files: &[&str]) {
+    let (branch, base) = (branch.to_owned(), base.to_owned());
     w.check_out(0);
     let repo = w.sandbox("sandbox");
     git(&repo, &["checkout", "-q", "-b", &branch, &base]);
     let message = format!("parse trims its input\n\n{TRAILER}");
-    std::fs::write(
-        repo.join("parse.py"),
-        "def parse(s):\n    return s.strip()\n",
-    )
-    .unwrap();
+    for file in files {
+        let path = repo.join(file);
+        std::fs::create_dir_all(path.parent().expect("a file is in a folder")).unwrap();
+        std::fs::write(path, "def parse(s):\n    return s.strip()\n").unwrap();
+    }
     git(&repo, &["add", "."]);
     let mut args: Vec<&str> = HQ.to_vec();
     args.extend(["commit", "-q", "-m", &message]);

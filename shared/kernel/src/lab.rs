@@ -44,6 +44,17 @@ pub fn forbidden_path(path: &str) -> bool {
     })
 }
 
+/// Whether a path a branch changes is refused as the owner's values (ADR 0115, amended
+/// 2026-11-05): [`forbidden_path`] in the lab's fork, where those values live, and nothing in a
+/// public repository outside the lab, which holds none of them, whatever its paths are called
+/// (an `inventory/` package, a `vaultwarden_client.py`). `outside_lab` is the trusted context:
+/// the repository the owner named on the item's project, never a member's word. The node holds
+/// a submission to it and HQ holds the review to it, so the two agree.
+#[must_use]
+pub fn refused_as_owners_values(path: &str, outside_lab: bool) -> bool {
+    !outside_lab && forbidden_path(path)
+}
+
 /// The only addresses an outside repository may have (ADR 0115, amended 2026-11-01).
 pub const OUTSIDE_REPO_SHAPE: &str = "https://github.com/<owner>/<name>";
 
@@ -90,6 +101,40 @@ pub fn outside_repo(url: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The autonomy climb's round-1 fixtures: harmless software paths, and the lab's protected
+    /// ones. Outside the lab, every path is the repository's own; in the lab, every protected
+    /// path is still refused, and so is a harmless-looking one the old rule caught.
+    #[test]
+    fn the_owners_values_are_refused_in_the_lab_and_nowhere_else() {
+        let harmless = [
+            "shopkeep/inventory/stock.py",
+            "inventory/models.py",
+            "app/vaultwarden_client.py",
+            "pkg/vaulted_cache.py",
+            "src/inventory.py",
+            "docs/inventory.md",
+        ];
+        let protected = [
+            "inventory/hosts.yml",
+            "inventories/prod/hosts",
+            "group_vars/all.yml",
+            "host_vars/nas.yml",
+            "inventory.yml",
+            "inventory.ini",
+            "vault.yml",
+            "roles/x/vars/vault.yml",
+            "./Group_Vars/all.yml",
+        ];
+        for path in harmless.iter().chain(&protected) {
+            assert!(!refused_as_owners_values(path, true), "{path} outside");
+        }
+        for path in protected {
+            assert!(refused_as_owners_values(path, false), "{path} in the lab");
+        }
+        assert!(refused_as_owners_values("app/vaultwarden_client.py", false));
+        assert!(!refused_as_owners_values("src/inventory.py", false));
+    }
 
     #[test]
     fn an_outside_repository_is_a_public_github_https_address_in_one_plain_form() {

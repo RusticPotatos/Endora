@@ -957,7 +957,10 @@ impl Mirror {
             .filter(|l| !l.is_empty())
             .map(str::to_owned)
             .collect();
-        if let Some(touched) = changed.iter().find(|l| forbidden_path(l)) {
+        if let Some(touched) = changed
+            .iter()
+            .find(|l| endora_kernel::lab::refused_as_owners_values(l, self.outside))
+        {
             return Err(format!(
                 "{branch} touches {touched}, which holds the owner's own values: never edit, cite or copy from group_vars/*.yml, host_vars or an inventory. Drop that change and submit again"
             ));
