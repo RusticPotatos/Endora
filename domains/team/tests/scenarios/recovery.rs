@@ -152,7 +152,7 @@ fn submits_new_head(w: &mut Office, name: String, branch: String) {
         w,
         &name,
         &branch,
-        "f00dfeedbeefcafe0123456789abcdef01234567",
+        "a1b2c3d4e5f60718293a4b5d",
     );
     w.hq.record_branch(&token, &s)
         .expect("the node's record is taken");
