@@ -45,9 +45,11 @@ pub fn forbidden_path(path: &str) -> bool {
 }
 
 /// Whether a path a branch changes is refused as the owner's values (ADR 0115, amended
-/// 2026-11-05): [`forbidden_path`] in the lab's fork, where those values live, and nothing in a
-/// public repository outside the lab, which holds none of them, whatever its paths are called
-/// (an `inventory/` package, a `vaultwarden_client.py`). `outside_lab` is the trusted context:
+/// 2026-11-05): [`forbidden_path`] in the lab's fork, whose layout those names describe, and no
+/// path in a public repository outside the lab, whose `inventory/` package or
+/// `vaultwarden_client.py` is its own code. This scopes a filename rule only: it does not say an
+/// outside repository holds no secret, and the briefing's never-copy rule still applies there.
+/// `outside_lab` is the trusted context:
 /// the repository the owner named on the item's project, never a member's word. The node holds
 /// a submission to it and HQ holds the review to it, so the two agree.
 #[must_use]

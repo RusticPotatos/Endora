@@ -440,8 +440,11 @@ a vault) was applied to every repository, and its limit was accepted above. It c
 two of the harness confirmation's items were refused for an ordinary `inventory/` path in an
 outside repository, and in the autonomy climb's round-1 fixtures it refused 4 of 8 harmless
 software paths (`shopkeep/inventory/stock.py`, `inventory/models.py`,
-`app/vaultwarden_client.py`, `pkg/vaulted_cache.py`). The owner's values live in the lab's fork
-alone; a public repository outside the lab holds none of them.
+`app/vaultwarden_client.py`, `pkg/vaulted_cache.py`). The rule's names describe the lab fork's
+layout, where the owner's values are kept; in another repository the same names are that
+project's own code. Scoping the filename rule is all this changes: it does not establish that an
+outside repository holds no secret, and the briefing's rule never to copy the owner's values
+anywhere still holds.
 
 - **The rule follows the repository.** `endora_kernel::lab::refused_as_owners_values(path,
   outside_lab)` is `forbidden_path` in the fork and nothing outside the lab. `outside_lab` is

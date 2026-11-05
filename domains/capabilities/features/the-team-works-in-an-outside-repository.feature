@@ -24,7 +24,7 @@ Feature: The team works in a public repository outside the lab, and nothing leav
     And the repository has no branch "hq/task-936-fix-parse"
 
   # Seed: a submission rule that ignores which repository it is fails the Then (ADR 0115,
-  # amended 2026-11-05): the owner's values live in the lab's fork, not in a public repository.
+  # amended 2026-11-05): the rule's names describe the lab fork's layout, not a public repository's.
   Scenario: An outside repository's own inventory and vault code are taken
     Given a public repository "https://github.com/example/tiny" the owner named for an item, whose default branch is "main"
     When a member submits "hq/task-936-count-stock" on top of "main" as HQ's own commit, adding "shopkeep/inventory/stock.py, inventory/models.py, app/vaultwarden_client.py, pkg/vaulted_cache.py"
