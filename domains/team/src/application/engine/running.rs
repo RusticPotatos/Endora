@@ -380,6 +380,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// submission of the item's work, full head and status, or none; the node may hold one HQ
     /// never heard of, so none is said as HQ's, and submitting again is safe.
     fn submission_said(&self, run: &Run, task: TaskId) -> Done<String> {
+        let finished = self.newest_finished(task)?;
         let newest = self.newest_branch(task)?;
         // A turn's briefing is written before its attempt is counted: one tried before has
         // started already, or was interrupted.
@@ -387,24 +388,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if newest.is_none() && !tried_before {
             return Ok(String::new());
         }
-        let line = match newest {
-            Some(b) => {
-                let status = if b.status == crate::domain::wing::IN_PROGRESS {
-                    "work in progress, not offered as done"
-                } else {
-                    b.status.as_str()
-                };
-                format!(
-                    "HQ's newest submission for this item: {} at {} ({status}). A newer head \
-                     on your branch is not submitted.",
-                    b.name, b.head
-                )
-            }
-            None => "HQ has recorded no submission for this item.".to_owned(),
+        let mut line = match &finished {
+            Some(b) => format!(
+                "HQ's newest submission for this item: {} at {} ({}), acknowledged as finished \
+                 work.",
+                b.name, b.head, b.status
+            ),
+            None => "HQ has recorded no submission for this item as finished work; the node \
+                     may hold one HQ never heard of."
+                .to_owned(),
         };
+        if let Some(kept) = newest.filter(|n| {
+            n.status == crate::domain::wing::IN_PROGRESS
+                && finished
+                    .as_ref()
+                    .is_none_or(|f| f.name != n.name || f.head != n.head)
+        }) {
+            line.push_str(&format!(
+                " Kept as work in progress, not offered as finished: {} at {}.",
+                kept.name, kept.head
+            ));
+        }
         Ok(format!(
-            "{line} A commit is not a submission: finished work goes to HQ with repo_submit, \
-             and submitting a revision HQ already has records nothing new.\n"
+            "{line} A commit is not a submission: a branch and full revision HQ has not \
+             acknowledged as finished may still be unsubmitted. Once the work is done and \
+             checked, repo_submit it; submitting a revision HQ already has records nothing new.\n"
         ))
     }
 

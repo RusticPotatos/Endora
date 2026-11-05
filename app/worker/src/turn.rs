@@ -1214,9 +1214,10 @@ pub(crate) fn said_already_there(there: &repo::AlreadyThere, asked: Option<&str>
     format!(
         "Already checked out: your sandbox kept it from an earlier turn on this item. {path} is \
          on {on} at {at}{uncommitted}.{other} Go on from it; do not check out again. Its head is \
-         {head}. A commit is not a submission: unless your briefing names this head as HQ's \
-         newest submission for this item, it is not submitted; once the work is done and \
-         checked, repo_submit it (submitting a revision HQ already has records nothing new). \
+         {head}. A commit is not a submission: your briefing says whether HQ has acknowledged \
+         {on} at this full revision as finished work. If it has not, the work may still be \
+         unsubmitted (the node may hold a submission HQ never recorded); once the work is done \
+         and checked, repo_submit it (submitting a revision HQ already has records nothing new). \
          For the node's latest beside your work (as node/<branch>, nothing of yours changed), \
          call repo_checkout with refresh: true; to start over, remove {path} in the shell first.",
         head = there.head

@@ -118,13 +118,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((run, task))
     }
 
-    /// What HQ recorded when the newest submission of `task`'s work is already `s`'s branch at
-    /// `s`'s head (work in progress aside): that branch, its document and its newest check.
+    /// The newest submission of `task`'s work offered as finished: work kept in progress, which
+    /// may share its head, never hides it.
+    pub(super) fn newest_finished(&self, task: TaskId) -> Done<Option<crate::domain::Branch>> {
+        let work = self.work_of(task)?;
+        Ok(self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task) && b.status != IN_PROGRESS)
+            .max_by_key(|b| b.id))
+    }
+
+    /// What HQ recorded when the newest finished submission of `task`'s work is already `s`'s
+    /// branch at `s`'s full head: that branch, its document and its newest check.
     fn already_recorded(&self, task: TaskId, s: &Submission) -> Done<Option<Recorded>> {
-        let Some(newest) = self.newest_branch(task)? else {
+        let Some(newest) = self.newest_finished(task)? else {
             return Ok(None);
         };
-        if newest.name != s.branch || newest.head != s.head || newest.status == IN_PROGRESS {
+        if newest.name != s.branch || newest.head != s.head {
             return Ok(None);
         }
         let title = format!("branch {} (", s.branch);

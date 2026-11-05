@@ -111,3 +111,62 @@ fn thread_says_once(w: &mut Office, title: String, words: String) {
     let times = thread.iter().filter(|p| p.text.contains(&words)).count();
     assert_eq!(times, 1, "{thread:#?}");
 }
+
+/// A submission as the node tells HQ of one, on `name`'s running turn, at `head`.
+fn told(
+    w: &mut Office,
+    name: &str,
+    branch: &str,
+    head: &str,
+) -> (String, endora_team::application::Submission) {
+    let context = w.turn_of(name);
+    (
+        context.token,
+        endora_team::application::Submission {
+            branch: branch.to_owned(),
+            head: head.to_owned(),
+            base: super::SUBMITTED_BASE.to_owned(),
+            files: 1,
+            plus: 4,
+            minus: 1,
+            stat: " parse.py | 5 ++--".to_owned(),
+            diff: "-old\n+new".to_owned(),
+            can_push: true,
+            changed: Vec::new(),
+            texts: Vec::new(),
+            workflows: None,
+        },
+    )
+}
+
+#[when(regex = r#"^(\w+) keeps the branch "(.+)" as work in progress at the same head$"#)]
+fn keeps_in_progress(w: &mut Office, name: String, branch: String) {
+    let (token, s) = told(w, &name, &branch, super::SUBMITTED_HEAD);
+    w.hq.keep_work_in_progress(&token, &s)
+        .expect("the work in progress is kept");
+}
+
+#[when(regex = r#"^(\w+) submits the branch "(.+)" at a new head$"#)]
+fn submits_new_head(w: &mut Office, name: String, branch: String) {
+    let (token, s) = told(
+        w,
+        &name,
+        &branch,
+        "f00dfeedbeefcafe0123456789abcdef01234567",
+    );
+    w.hq.record_branch(&token, &s)
+        .expect("the node's record is taken");
+}
+
+#[then(regex = r#"^"(.+)" has (\d+) finished submissions?$"#)]
+fn finished_submissions(w: &mut Office, title: String, n: usize) {
+    let task = w.task(&title);
+    let finished =
+        w.hq.store()
+            .branches()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|b| b.task == task && b.status != endora_team::domain::wing::IN_PROGRESS)
+            .count();
+    assert_eq!(finished, n);
+}
