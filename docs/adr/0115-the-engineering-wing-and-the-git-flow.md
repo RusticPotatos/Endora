@@ -427,8 +427,59 @@ lab's fork.
   and its reviewer checks the branch out and runs its tests. Acceptance has no consequence
   outside the node, since nothing is delivered.
 
-**Limits, accepted.** The submission rules are the fork's: a path named like a vault, an
-inventory, `group_vars` or `host_vars` is refused in an outside repository too. A repository past
+**Limits, accepted.** The submission rules are the fork's, but for one (*amended 2026-11-05,
+below*). A repository past
 the 32 MB checkout bundle cannot be handed out. The repository must fetch from the node; its
 tests must run in the offline sandbox, so a candidate's dependencies are the experiment's to
 vendor. Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature`.
+
+## Amended 2026-11-05: the owner's values are guarded where they live
+
+The rule against the owner's values (`group_vars`, `host_vars`, any inventory, anything named for
+a vault) was applied to every repository, and its limit was accepted above. It cost real work:
+two of the harness confirmation's items were refused for an ordinary `inventory/` path in an
+outside repository, and in the autonomy climb's round-1 fixtures it refused 4 of 8 harmless
+software paths (`shopkeep/inventory/stock.py`, `inventory/models.py`,
+`app/vaultwarden_client.py`, `pkg/vaulted_cache.py`). The rule's names describe the lab fork's
+layout, where the owner's values are kept; in another repository the same names are that
+project's own code. Scoping the filename rule is all this changes: it does not establish that an
+outside repository holds no secret, and the briefing's rule never to copy the owner's values
+anywhere still holds.
+
+- **The rule follows the repository.** `endora_kernel::lab::refused_as_owners_values(path,
+  outside_lab)` is `forbidden_path` in the fork and nothing outside the lab. `outside_lab` is
+  trusted context, never a member's word: the node's mirror is an outside one only when HQ's
+  turn names the repository the owner set on the item's project, and HQ's review asks the same
+  project setting. The node holds a submission to it and HQ holds the review to it, so the two
+  agree. In the fork every path refused before is refused still.
+- **The fork is never an outside repository.** The node refuses to mirror the lab's own fork,
+  under any of its addresses, as a repository outside the lab, so naming it there cannot step
+  around the rule.
+- **Unchanged.** The briefing's words, the files HQ reads for its checks (role READMEs and
+  defaults, workflows not named for a vault) and the outgoing scan.
+
+Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature` and
+`domains/team/features/the-owners-values-are-guarded-where-they-live.feature`.
+
+## Amended 2026-11-05: a resumed item knows what it submitted
+
+In the minimum-viable-autonomy climb a turn killed after its repair was committed and before it
+was submitted was tried again, read "Nothing new in the thread" and "Already checked out … Go on
+from it", and took the commit for the repair: two interrupted items of eight lost their repair.
+
+- **HQ says where the submission stands.** A turn tried again, and any turn on an item that has a
+  submission, is told HQ's newest submission for the item's work, full head and status (work in
+  progress said as not offered as done), or that HQ has recorded none, and that a commit is not a
+  submission. "None" is HQ's word only: the node may hold a submission HQ never heard of.
+- **The kept checkout says its head.** The worker's "already checked out" names the branch's full
+  head and says that unless the briefing names it as HQ's newest submission, it is not submitted.
+- **One revision is one submission.** The node takes a revision it already keeps again (it always
+  did). HQ, told of the branch and head its newest submission of the item already has, records
+  nothing new: no second branch, document, check or post, and work in review is not sent back. So
+  a turn unsure whether its submission arrived (killed after the node took it, or before the answer
+  came back) may submit it again.
+
+No new storage: HQ's branch records, the node's kept refs and the sandbox already hold all of it.
+Scenarios: `domains/team/features/a-resumed-item-knows-what-it-submitted.feature`,
+`app/worker/features/a-kept-checkout-says-a-commit-is-not-a-submission.feature`, and the
+outside-repository feature's resubmission scenario.

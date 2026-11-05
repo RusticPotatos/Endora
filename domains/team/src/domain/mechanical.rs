@@ -292,13 +292,16 @@ pub struct Scope {
     pub outside: Vec<String>,
 }
 
-/// A branch's changed files against the forbidden paths and the task's named ones.
+/// A branch's changed files against the forbidden paths and the task's named ones. The
+/// forbidden paths are the lab's: a branch of a repository outside the lab (`outside_lab`, the
+/// repository the owner named on the item's project) touches none of the owner's values
+/// (ADR 0115, amended 2026-11-05).
 #[must_use]
-pub fn scope(changed: &[String], task_words: &str) -> Scope {
+pub fn scope(changed: &[String], task_words: &str, outside_lab: bool) -> Scope {
     let named = named_paths(task_words);
     let forbidden_files = changed
         .iter()
-        .filter(|f| forbidden_path(f))
+        .filter(|f| endora_kernel::lab::refused_as_owners_values(f, outside_lab))
         .cloned()
         .collect();
     let outside = if named.is_empty() {
@@ -1421,10 +1424,10 @@ mod tests {
         let changed: Vec<String> = ["roles/a/README.md", "group_vars/all.yml", "docs/x.md"]
             .map(str::to_owned)
             .to_vec();
-        let s = scope(&changed, "Document roles/a/ in its README.md");
+        let s = scope(&changed, "Document roles/a/ in its README.md", false);
         assert_eq!(s.forbidden, vec!["group_vars/all.yml"]);
         assert_eq!(s.outside, vec!["group_vars/all.yml", "docs/x.md"]);
-        let s = scope(&changed, "Tidy whatever needs it");
+        let s = scope(&changed, "Tidy whatever needs it", false);
         assert!(s.named.is_empty() && s.outside.is_empty());
     }
 
@@ -1459,7 +1462,7 @@ mod tests {
                 "docs/say \"hi\".md"
             ]
         );
-        let s = scope(&changed, "");
+        let s = scope(&changed, "", false);
         assert_eq!(
             s.forbidden,
             vec!["group_vars/all.yml", "group_vars/\u{e9}.yml"]
@@ -1563,6 +1566,7 @@ mod tests {
                         "host_vars/nas.yml".to_owned(),
                     ],
                     "roles/a/",
+                    false,
                 ),
             )),
             coverage: vec![Coverage {

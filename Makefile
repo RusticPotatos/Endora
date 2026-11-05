@@ -204,11 +204,13 @@ TARGET_DOCKER = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),)
 # DRAIN_CAP seconds have passed, and only then restart; a turn that is still running at the cap is
 # cut and tried again. Afterwards HQ lifts the drain itself when it starts, and the deploy asks
 # again in case it did not restart. NO_DRAIN=1 skips all of it: `make deploy NO_DRAIN=1`. The
-# work is in scripts/hq-drain.sh, which never stops a deploy.
+# work is in scripts/hq-drain.sh, which never stops a deploy, unless DRAIN_STRICT=1 (what
+# scripts/release.sh sets): then a drain that did not happen stops it before any restart.
 NO_DRAIN ?=
+DRAIN_STRICT ?=
 DRAIN_CAP ?= 300
 HQ_CONTAINER ?= endora-hq
-HQ_DRAIN = env DOCKER="$(TARGET_DOCKER)" HQ_CONTAINER="$(HQ_CONTAINER)" DRAIN_CAP="$(DRAIN_CAP)" NO_DRAIN="$(NO_DRAIN)" sh scripts/hq-drain.sh
+HQ_DRAIN = env DOCKER="$(TARGET_DOCKER)" HQ_CONTAINER="$(HQ_CONTAINER)" DRAIN_CAP="$(DRAIN_CAP)" NO_DRAIN="$(NO_DRAIN)" DRAIN_STRICT="$(DRAIN_STRICT)" sh scripts/hq-drain.sh
 
 # Where the image is BUILT, when that is not where it runs: a Docker context on this machine
 # (e.g. ENDORA_BUILD_CONTEXT = desktop-linux in local.mk on a laptop). The image is built
@@ -335,7 +337,7 @@ ifeq ($(ENDORA_BUILD_CONTEXT),)
 	$(HQ_DRAIN) resume; \
 	exit $$rc
 else
-	@set -e; \
+	@set -e; set -o pipefail; \
 	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
 	arch="$$($(TARGET_DOCKER) version --format '{{.Server.Arch}}')"; \
 	echo "building $$build for linux/$$arch on $(ENDORA_BUILD_CONTEXT)"; \
@@ -386,7 +388,7 @@ deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm6
 	# its turns from HQ, so draining HQ is enough to keep new ones from starting under the
 	# restart (ADR 0134, NO_DRAIN=1 skips it); HQ itself is not restarted here, so the drain is
 	# lifted by name afterwards.
-	@set -e; \
+	@set -e; set -o pipefail; \
 	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
 	echo "building $$build for linux/arm64 on $(ENDORA_PI_BUILD_CONTEXT)"; \
 	docker --context $(ENDORA_PI_BUILD_CONTEXT) buildx build --platform linux/arm64 \
@@ -500,6 +502,11 @@ sound-airplay2-test: ## Test what the AirPlay 2 door writes for shairport-sync a
 .PHONY: mac-brain-test
 mac-brain-test: ## Test the Mac's brain helper and its install against stubs (no Mac, model or network needed)
 	sh scripts/test-mac-brain.sh
+
+.PHONY: release-test
+release-test: ## Test that scripts/release.sh stops at any failing stage, against fakes (nothing pushed or deployed)
+	sh scripts/test-release.sh
+	sh scripts/test-deploy-recipes.sh
 
 .PHONY: hq-drain-test
 hq-drain-test: ## Test the drain a deploy runs before it restarts HQ against a fake docker (no daemon needed)

@@ -148,3 +148,13 @@ repository is not touched: it turns the variable on.
 - **A longer default cap.** Rejected: a turn is stopped after 30 minutes anyway, and a deploy that
   waits half an hour is one nobody runs. Five minutes catches the turns that are nearly done, and
   `DRAIN_CAP` is there for a deploy that can wait.
+
+## Amended 2026-11-05: a release's drain is strict
+
+A deploy is still never stopped by its drain. A release is: `scripts/release.sh` runs both
+deploys with `DRAIN_STRICT=1`, and `scripts/hq-drain.sh` then exits 1, before any restart, when
+NO_DRAIN is set, HQ is not running or predates the drain, HQ refuses the drain, or the cap passes
+with turns still running (`endora-hq drain --wait` returns 0 then; only "no turn is running" is a
+drain). An announcement already made is lifted first. The deploy recipes also set `pipefail`, so
+an image's `save | gzip | load` that fails anywhere stops them. Tests: `scripts/test-hq-drain.sh`
+(the strict cases) and `scripts/test-deploy-recipes.sh` (the real recipes against fakes).

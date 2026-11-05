@@ -23,6 +23,8 @@ pub struct Node {
     said: Option<Result<String, String>>,
     /// The head of the last branch taken.
     taken: Option<(String, String)>,
+    /// The last bundle handed to the node, and its branch, to hand over again.
+    sent: Option<(Vec<u8>, String)>,
 }
 
 impl std::fmt::Debug for Node {
@@ -424,15 +426,27 @@ fn holds_the_repository(w: &mut Node, base: String) {
 /// A fix on `branch` from `base` in the sandbox, as HQ's own commit, handed to the node.
 #[when(expr = "a member submits {string} on top of {string} as HQ's own commit")]
 fn submits_outside(w: &mut Node, branch: String, base: String) {
+    submit_files(w, &branch, &base, &["parse.py"]);
+}
+
+/// The same, adding each of `files` (comma-separated) as a small text file.
+#[when(expr = "a member submits {string} on top of {string} as HQ's own commit, adding {string}")]
+fn submits_adding(w: &mut Node, branch: String, base: String, files: String) {
+    let files: Vec<&str> = files.split(',').map(str::trim).collect();
+    submit_files(w, &branch, &base, &files);
+}
+
+fn submit_files(w: &mut Node, branch: &str, base: &str, files: &[&str]) {
+    let (branch, base) = (branch.to_owned(), base.to_owned());
     w.check_out(0);
     let repo = w.sandbox("sandbox");
     git(&repo, &["checkout", "-q", "-b", &branch, &base]);
     let message = format!("parse trims its input\n\n{TRAILER}");
-    std::fs::write(
-        repo.join("parse.py"),
-        "def parse(s):\n    return s.strip()\n",
-    )
-    .unwrap();
+    for file in files {
+        let path = repo.join(file);
+        std::fs::create_dir_all(path.parent().expect("a file is in a folder")).unwrap();
+        std::fs::write(path, "def parse(s):\n    return s.strip()\n").unwrap();
+    }
     git(&repo, &["add", "."]);
     let mut args: Vec<&str> = HQ.to_vec();
     args.extend(["commit", "-q", "-m", &message]);
@@ -452,6 +466,19 @@ fn submits_outside(w: &mut Node, branch: String, base: String) {
     let said = w.mirror().submit(&bytes, &branch, 936, 1);
     if let Ok(taken) = &said {
         w.taken = Some((taken.branch.clone(), taken.head.clone()));
+    }
+    w.said = Some(said.map(|t| t.title()));
+    w.sent = Some((bytes, branch));
+}
+
+/// The same bundle handed to the node again, as a turn unsure its submission arrived sends it.
+#[when("the member submits the same revision again")]
+fn submits_again(w: &mut Node) {
+    let (bytes, branch) = w.sent.clone().expect("something was submitted");
+    let first = w.taken.clone().expect("the first was taken");
+    let said = w.mirror().submit(&bytes, &branch, 936, 2);
+    if let Ok(taken) = &said {
+        assert_eq!(taken.head, first.1, "the same revision");
     }
     w.said = Some(said.map(|t| t.title()));
 }

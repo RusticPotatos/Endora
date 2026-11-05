@@ -13,10 +13,16 @@
 #   HQ_CONTAINER=endora-hq    HQ's container
 #   DRAIN_CAP=300             seconds the restart waits for turns under way
 #   NO_DRAIN=1                do nothing at all
+#   DRAIN_STRICT=1            a release's drain (scripts/release.sh): see below
 #
 # A deploy is never stopped by it: whatever goes wrong is said, and it exits 0. The one thing it
 # will not do is run the command on an HQ that predates it, because that HQ would take the
 # arguments for nothing and start a second HQ over the same database.
+#
+# DRAIN_STRICT=1 is the exception, for a release: a drain that did not happen stops it. NO_DRAIN,
+# an HQ that is not running or predates the drain, a drain HQ refused, and a cap that passed with
+# turns still running each exit 1, so the restart after it never runs; an announcement already
+# made is lifted first.
 set -u
 
 DOCKER="${DOCKER:-docker}"
@@ -37,23 +43,47 @@ hq_knows_drain() {
     $DOCKER exec "$HQ_CONTAINER" grep -qaF 'usage: endora-hq [drain' /usr/local/bin/endora-hq
 }
 
+# Stops a strict drain: says why, lifts an announcement it may have made, exits 1. Without
+# DRAIN_STRICT it only says why, as a deploy always has.
+not_drained() {
+    echo "hq-drain: $1"
+    [ -n "${DRAIN_STRICT:-}" ] || return 0
+    if [ "${2:-}" = announced ]; then
+        resume
+    fi
+    echo "hq-drain: a release does not restart anything without a drain: stopped"
+    exit 1
+}
+
 drain() {
+    if [ -n "${NO_DRAIN:-}" ] && [ -n "${DRAIN_STRICT:-}" ]; then
+        not_drained "NO_DRAIN is set, and a release always drains"
+    fi
     if [ -n "${NO_DRAIN:-}" ]; then
         echo "hq-drain: NO_DRAIN is set: HQ is not drained, and turns under way may be cut"
         return 0
     fi
     if ! hq_is_up; then
-        echo "hq-drain: HQ is not running here: nothing to drain"
+        not_drained "HQ is not running here: nothing to drain"
         return 0
     fi
     if ! hq_knows_drain; then
-        echo "hq-drain: the running HQ predates 'endora-hq drain': nothing to drain this time"
+        not_drained "the running HQ predates 'endora-hq drain': nothing to drain this time"
         return 0
     fi
     # shellcheck disable=SC2086
-    if ! $DOCKER exec "$HQ_CONTAINER" endora-hq drain --cap "$DRAIN_CAP" --wait; then
-        echo "hq-drain: could not drain HQ; deploying anyway"
+    if ! said=$($DOCKER exec "$HQ_CONTAINER" endora-hq drain --cap "$DRAIN_CAP" --wait); then
+        [ -n "$said" ] && echo "$said"
+        not_drained "could not drain HQ; deploying anyway" announced
+        return 0
     fi
+    echo "$said"
+    # `endora-hq drain --wait` returns when no turn runs or when the cap has passed; only the
+    # first is a drain.
+    case "$said" in
+        *"drain: no turn is running"*) ;;
+        *) not_drained "the cap passed with turns still running" announced ;;
+    esac
     return 0
 }
 

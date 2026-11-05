@@ -640,6 +640,17 @@ impl LabKnowledge {
     /// An address that is not allowed, or the repository not answering for its default branch.
     pub(crate) fn outside_mirror(&self, url: &str) -> Result<Arc<Mirror>, String> {
         let plain = repo::outside_repo(url)?;
+        // The owner's values are guarded in the fork, not outside it (ADR 0115, amended
+        // 2026-11-05): the fork named as an outside repository would escape that guard.
+        if self
+            .docs
+            .fork()
+            .is_some_and(|fork| repo::same_repo(&fork.https_url(), &plain))
+        {
+            return Err(format!(
+                "{plain} is the lab's own fork: its work is done in the fork, never as a repository outside the lab"
+            ));
+        }
         let mut kept = self
             .outside
             .lock()
@@ -4155,6 +4166,38 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("you switched the team's restarts off"))
         );
+    }
+
+    /// The owner's values are guarded in the lab's fork and not in a repository outside the lab
+    /// (ADR 0115, amended 2026-11-05), so the fork itself is never mirrored as one: under any of
+    /// its addresses it is refused before anything is fetched.
+    #[test]
+    fn the_labs_own_fork_is_never_mirrored_as_an_outside_repository() {
+        let lab = LabKnowledge::new(
+            Docs::new(
+                ansible_nas::Fork::of("example/ansible-nas", ""),
+                Box::new(ansible_nas::Web),
+            ),
+            Vec::new(),
+        )
+        // Offline even if the guard is missing: GitHub is never asked.
+        .with_outside(
+            "https://github.com/example/ansible-nas",
+            "/nonexistent/fork.git",
+        )
+        .with_outside(
+            "https://github.com/Example/Ansible-NAS",
+            "/nonexistent/fork.git",
+        );
+        for named in [
+            "https://github.com/example/ansible-nas",
+            "https://github.com/Example/Ansible-NAS.git",
+        ] {
+            let Err(why) = lab.outside_mirror(named) else {
+                panic!("{named} was mirrored as outside the lab");
+            };
+            assert!(why.contains("is the lab's own fork"), "{why}");
+        }
     }
 
     /// Round 4's F4 (ADR 0115, amended 2026-11-01): an item whose project names a public

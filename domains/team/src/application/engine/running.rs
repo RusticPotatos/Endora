@@ -305,6 +305,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The thread with each post's recorded origin, read together.
         let thread = self.all_authored_posts(task.id)?;
         told.push_str(&self.news_said(member, run, &task, &thread)?);
+        told.push_str(&self.submission_said(run, task.id)?);
         // Checks' results have no lineage yet: shown, they fail closed.
         let untraced = self.checking_said(member, run, &task)?;
         if !untraced.is_empty() {
@@ -371,6 +372,48 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             why.push(format!("goal: {}", goal.goal.title));
         }
         Ok(format!("Why it exists: {}\n", why.join(" ← ")))
+    }
+
+    /// Where the item's submission stands, for a turn tried again or an item that has one
+    /// (defect remediation, C): a turn killed after its commit and before its submission came
+    /// back told only to go on, and took the commit for the repair. HQ's record is the newest
+    /// submission of the item's work, full head and status, or none; the node may hold one HQ
+    /// never heard of, so none is said as HQ's, and submitting again is safe.
+    fn submission_said(&self, run: &Run, task: TaskId) -> Done<String> {
+        let finished = self.newest_finished(task)?;
+        let newest = self.newest_branch(task)?;
+        // A turn's briefing is written before its attempt is counted: one tried before has
+        // started already, or was interrupted.
+        let tried_before = run.attempts > 0 || run.interrupted > 0;
+        if newest.is_none() && !tried_before {
+            return Ok(String::new());
+        }
+        let mut line = match &finished {
+            Some(b) => format!(
+                "HQ's newest submission for this item: {} at {} ({}), acknowledged as finished \
+                 work.",
+                b.name, b.head, b.status
+            ),
+            None => "HQ has recorded no submission for this item as finished work; the node \
+                     may hold one HQ never heard of."
+                .to_owned(),
+        };
+        if let Some(kept) = newest.filter(|n| {
+            n.status == crate::domain::wing::IN_PROGRESS
+                && finished
+                    .as_ref()
+                    .is_none_or(|f| f.name != n.name || f.head != n.head)
+        }) {
+            line.push_str(&format!(
+                " Kept as work in progress, not offered as finished: {} at {}.",
+                kept.name, kept.head
+            ));
+        }
+        Ok(format!(
+            "{line} A commit is not a submission: a branch and full revision HQ has not \
+             acknowledged as finished may still be unsubmitted. Once the work is done and \
+             checked, repo_submit it; submitting a revision HQ already has records nothing new.\n"
+        ))
     }
 
     /// What came since the member's last turn on the task: the check-backs it set that fired,

@@ -356,6 +356,27 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
             if !said.text.trim().is_empty() {
                 on_the_way.push(said.text.trim().to_owned());
             }
+            // A reply whose turn-ending call is not its only one and its last runs nothing: the
+            // calls after it would be lost unsaid (task #1144's question to the owner, behind
+            // set_status). Each is refused with why, and the round counts.
+            if let Some(why) = turn_ending_not_last(task, &said.calls) {
+                let refused = said
+                    .calls
+                    .iter()
+                    .map(|call| {
+                        let reply = Reply {
+                            text: why.clone(),
+                            refused: true,
+                            asked: false,
+                            moved_on: false,
+                        };
+                        (call.id.clone(), reply)
+                    })
+                    .collect();
+                talk.answered(refused);
+                round += 1;
+                continue;
+            }
             let mut replies = Vec::new();
             // Whether every call this round only asked for tools the turn already has.
             let mut only_already = true;
@@ -1192,9 +1213,14 @@ pub(crate) fn said_already_there(there: &repo::AlreadyThere, asked: Option<&str>
     };
     format!(
         "Already checked out: your sandbox kept it from an earlier turn on this item. {path} is \
-         on {on} at {at}{uncommitted}.{other} Go on from it; do not check out again. For the \
-         node's latest beside your work (as node/<branch>, nothing of yours changed), call \
-         repo_checkout with refresh: true; to start over, remove {path} in the shell first."
+         on {on} at {at}{uncommitted}.{other} Go on from it; do not check out again. Its head is \
+         {head}. A commit is not a submission: your briefing says whether HQ has acknowledged \
+         {on} at this full revision as finished work. If it has not, the work may still be \
+         unsubmitted (the node may hold a submission HQ never recorded); once the work is done \
+         and checked, repo_submit it (submitting a revision HQ already has records nothing new). \
+         For the node's latest beside your work (as node/<branch>, nothing of yours changed), \
+         call repo_checkout with refresh: true; to start over, remove {path} in the shell first.",
+        head = there.head
     )
 }
 
@@ -2108,6 +2134,40 @@ pub(crate) fn moves_on(task: Option<i64>, tool: &str, args: &Value) -> bool {
             args["status"].as_str(),
             Some("in_review" | "blocked" | "done")
         )
+}
+
+/// Whether a call ends the turn by itself, known before it runs: a question to the owner, or
+/// moving the turn's own task on ([`moves_on`]). An action the node puts on the owner's desk
+/// is known to end the turn only once it has run, and is not counted here.
+fn ends_the_turn(task: Option<i64>, call: &Call) -> bool {
+    call.name == "ask_owner"
+        || arguments(&call.arguments).is_ok_and(|args| moves_on(task, &call.name, &args))
+}
+
+/// Why a reply's calls are refused unrun, if they are: it holds a turn-ending call that is not
+/// its only one and its last. The worker used to stop at the first such call and leave the rest
+/// unanswered, so a question to the owner after `set_status` was lost and the model never knew.
+/// Nothing is reordered or run on the model's behalf: it sends the calls again.
+pub(crate) fn turn_ending_not_last(task: Option<i64>, calls: &[Call]) -> Option<String> {
+    let ending: Vec<&str> = calls
+        .iter()
+        .filter(|c| ends_the_turn(task, c))
+        .map(|c| c.name.as_str())
+        .collect();
+    let last_ends = calls.last().is_some_and(|c| ends_the_turn(task, c));
+    if ending.is_empty() || (ending.len() == 1 && last_ends) {
+        return None;
+    }
+    Some(format!(
+        "Refused: nothing in this reply ran. A call that ends the turn (ask_owner, or set_status \
+         moving your own task to in_review, blocked or done) ends it the moment it runs, so \
+         nothing can come after it, in this reply or this turn; this reply had {} ({}){}. Choose \
+         one: if the owner must decide, send ask_owner now and leave the task as it is until the \
+         answer. Send the calls you still want again, with that one turn-ending call last.",
+        ending.len(),
+        ending.join(", "),
+        if last_ends { "" } else { ", not last" }
+    ))
 }
 
 /// The workbench's shell, as MCP lists a tool.

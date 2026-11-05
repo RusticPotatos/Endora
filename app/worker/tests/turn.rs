@@ -557,13 +557,15 @@ fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
     let (model_url, to_model) = model(vec![
         (
             200,
+            // The broken call first and the closing one last: a turn-ending call not last
+            // would refuse the whole reply unrun (round 3 of the autonomy climb).
             calls(&[
+                ("call_2", "post", r#"{"task": 7, "text": "#),
                 (
                     "call_1",
                     "set_status",
                     r#"{"task": 7, "status": "done", "reason": "it works"}"#,
                 ),
-                ("call_2", "post", r#"{"task": 7, "text": "#),
             ]),
         ),
         (200, says("Task 7 waits for the gate.")),
@@ -573,18 +575,18 @@ fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
 
     let then = to_model.lock().unwrap()[1].body["messages"].clone();
     assert_eq!(
-        then[3],
+        then[4],
         json!({ "role": "tool", "tool_call_id": "call_1",
                 "content": "Refused: `status` must be todo, doing, in_review or blocked" })
     );
-    assert_eq!(then[4]["tool_call_id"], "call_2");
+    assert_eq!(then[3]["tool_call_id"], "call_2");
     assert!(
-        then[4]["content"]
+        then[3]["content"]
             .as_str()
             .unwrap()
             .starts_with("Refused: "),
         "{}",
-        then[4]
+        then[3]
     );
     let to_hq = to_hq.lock().unwrap().clone();
     let posts: Vec<&Value> = to_hq
@@ -595,8 +597,8 @@ fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
     assert_eq!(
         posts,
         [
-            &json!({ "task": 7, "text": "Task 7 waits for the gate.\n\nThis turn did: tried to set \
-            task 7 to done, refused; tried to call post with arguments that could not be read, \
+            &json!({ "task": 7, "text": "Task 7 waits for the gate.\n\nThis turn did: tried to call \
+            post with arguments that could not be read, refused; tried to set task 7 to done, \
             refused.", "last_word": true })
         ],
         "the broken call never reached HQ; the last word did, with what came of each call"
@@ -772,8 +774,8 @@ fn asking_the_owner_ends_the_turn_there_and_exits_0() {
         (
             200,
             calls(&[
-                ("call_1", "ask_owner", r#"{"text": "Steel or titanium?"}"#),
-                ("call_2", "claim", r#"{"task": 7}"#),
+                ("call_1", "claim", r#"{"task": 7}"#),
+                ("call_2", "ask_owner", r#"{"text": "Steel or titanium?"}"#),
             ]),
         ),
         (200, says("Done.")),
@@ -792,6 +794,68 @@ fn asking_the_owner_ends_the_turn_there_and_exits_0() {
     );
 }
 
+// Task #1144 (the autonomy climb, round 2) put set_status and then ask_owner in one reply; the
+// worker ran set_status, ended the turn and the question was lost unsaid. A reply whose
+// turn-ending call is not its only one and its last now runs nothing, and the model is asked
+// again with every call refused.
+#[test]
+fn a_reply_with_a_turn_ending_call_not_last_runs_nothing() {
+    for batch in [
+        [
+            ("call_1", "ask_owner", r#"{"text": "Steel or titanium?"}"#),
+            ("call_2", "post", r#"{"task": 7, "text": "Found it."}"#),
+        ],
+        [
+            (
+                "call_1",
+                "set_status",
+                r#"{"task": 7, "status": "in_review", "reason": "r1"}"#,
+            ),
+            (
+                "call_2",
+                "set_status",
+                r#"{"task": 7, "status": "blocked", "reason": "again"}"#,
+            ),
+        ],
+    ] {
+        let (hq_url, to_hq) = hq_moving(None, true);
+        let (model_url, to_model) =
+            model(vec![(200, calls(&batch)), (200, says("I will ask again."))]);
+        let out = worker(&usual(&hq_url, &model_url));
+        assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+        let sent = methods(&to_hq);
+        for tool in ["ask_owner", "set_status"] {
+            assert!(
+                !sent.contains(&format!("tools/call {tool}")),
+                "{tool} ran: {sent:?}"
+            );
+        }
+        // The one post is the turn's last word, never the refused reply's.
+        assert_eq!(
+            sent.iter().filter(|m| *m == "tools/call post").count(),
+            1,
+            "{sent:?}"
+        );
+        let then = to_model.lock().unwrap()[1].body["messages"].clone();
+        let refused: Vec<&Value> = then
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        assert_eq!(refused.len(), 2, "{then}");
+        for m in refused {
+            assert!(
+                m["content"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Refused: nothing in this reply ran."),
+                "{m}"
+            );
+        }
+    }
+}
+
 // Run 1831 set its task blocked, then called set_status six times more, to "already have
 // this" and "blocked to blocked": the instructions end a turn with set_status, and the loop
 // went on. Moving its own task on to in_review, blocked or done ends the turn there.
@@ -802,18 +866,11 @@ fn moving_its_own_task_on_ends_the_turn_there_and_exits_0() {
         let (model_url, to_model) = model(vec![
             (
                 200,
-                calls(&[
-                    (
-                        "call_1",
-                        "set_status",
-                        &format!(r#"{{"task": 7, "status": "{to}", "reason": "r1 shows it"}}"#),
-                    ),
-                    (
-                        "call_2",
-                        "set_status",
-                        r#"{"task": 7, "status": "blocked", "reason": "again"}"#,
-                    ),
-                ]),
+                calls(&[(
+                    "call_1",
+                    "set_status",
+                    &format!(r#"{{"task": 7, "status": "{to}", "reason": "r1 shows it"}}"#),
+                )]),
             ),
             (200, says("Done.")),
         ]);

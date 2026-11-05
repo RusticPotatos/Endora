@@ -169,7 +169,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         report.branch = Some((
             branch.name.clone(),
-            mechanical::scope(&files.changed, &words),
+            mechanical::scope(
+                &files.changed,
+                &words,
+                self.outside_repo_of_task(task.id)?.is_some(),
+            ),
         ));
         let criteria: Vec<&str> = task.criteria.iter().map(|c| c.text.as_str()).collect();
         report.lint = mechanical::asks_for_lint(&criteria);
