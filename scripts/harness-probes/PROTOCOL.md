@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v4)
+# Harness probes: the comparison protocol (v6)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -49,7 +49,7 @@ convention is diagnostic only: an attempt passes on what it did, not on how it p
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading (v4; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families)
+## Grading (v6; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families, v5 after round 19's development seed 4, v6 after the defect remediation's review of round 23)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
 folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
@@ -88,7 +88,7 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - **v3 pass** = artifact correct, completion verified, and verification observed. The report
   lines are kept as diagnostics; `large_output`'s value must still appear in the final words.
   `--protocol v2` reproduces the v2 verdicts.
-- **v4 (the default since round 14): every requirement traces to the task's words.** Round 13
+- **v4 (the default from round 14 to round 19): every requirement traces to the task's words.** Round 13
   failed correct work on rules the task never stated, so v4 keeps v3's structure and changes
   only these, each the same for both arms and each held by a negative control:
   - **Unknown is a verdict.** A case the grader cannot resolve (a command after the
@@ -112,6 +112,50 @@ hidden tests. It checks forbidden edits by content against the regenerated start
     HQ's own note (`verified` for "HQ's checks passed", `not_verified` for "completed, not
     verified") or null; it never decides a pass.
   `--protocol v3` and `--protocol v2` reproduce the older verdicts.
+- **v6 (the default since the defect remediation, 2026-11-05): one rule for test additions.**
+  The round-23 confirmation failed an `unambiguous` attempt for adding a regression test, while
+  v5 allowed the same addition in `needle` alone; `already_satisfied`'s words even ask for a test.
+  v6 keeps v5 and changes only this: in every family whose words do not forbid touching the tests
+  or the repository (`probes.TEST_ADDITIONS_ALLOWED`: five_file_rename, needle, interrupted,
+  already_satisfied, unambiguous, three_subtasks) a pure test addition is allowed, by v5's needle
+  rule (a new file under `tests/`, or an existing test file with additions only). The others'
+  words forbid it (failing_test "Do not change the tests", impossible "Do not edit any test",
+  tool_failure and large_output "Do not modify … anything") and any test change still fails
+  `no_forbidden_edits`; a changed or weakened existing test fails everywhere. The task words are
+  unchanged (contract 2). Controls in every family: `test_file_added`, `test_appended`,
+  `test_weakened`; `test_probes.py` holds v6's changes from v5 to exactly the declared ones.
+  `--protocol v5` (and older) reproduce the earlier verdicts bit for bit; round 23's frozen
+  verdicts stand as graded.
+- **v5 (the default from round 20 to the remediation): the words, the edit rules and the evidence say what they
+  mean.** A batch on development seed 4 showed three requirements the grader held that the task
+  never stated or the rules never allowed for. v5 keeps v4 and changes only these, each the same
+  for both arms and each held by a negative control; `--protocol v4` (and v3, v2) reproduce the
+  older verdicts bit for bit.
+  - **Task contracts.** A task's words carry a contract version: `generate --contract N` (default
+    the latest, 2) writes it to `task.json`, and `grade --contract N` defaults to the one recorded
+    beside the repo (a `task.json` that predates contracts is contract 1; no `task.json` means the
+    latest). Contract 1 is the original words, byte for byte. Contract 2 adds one sentence to the
+    needle's words that states the intended output (for the percent family: "Percentages are
+    shown with one decimal place at most, rounded (so 0.0415 shows as 4.2%)"); every other
+    family reads the same under both. Under contract 1 the needle symptom check counts only the
+    values the words name; the checks whose expected text depends on what the words leave
+    unstated are listed as `info.unsupported_checks` (values and expected text) and never fail
+    an attempt. Under contract 2 every value is checked.
+  - **Needle edit rules.** Decoy helpers unchanged, existing tests preserved, relevant regression
+    additions permitted. Allowed: the implementation file; new files under `tests/`; additions to
+    an existing file under `tests/` that keep every original line in order and, read as Python,
+    every original class, method and statement unchanged (new methods, classes and imports are
+    additions; a new definition that would shadow an old one is not). Anything else, a decoy or
+    any other non-test file included, and any deleted, modified or weakened existing test, fails
+    `no_forbidden_edits`. The criterion still runs on the sanitized tree, so an added test never
+    helps or hurts the verdict by itself.
+  - **Unknown when the test count is not shown.** A test-run command whose output shows success
+    (`OK`, no failure) but not how many tests ran (a `| tail -1` that leaves only `OK` lines, one
+    run per test file each ending in `OK`) makes `verification_observed` unknown: `pass` is null
+    and the CLI exits 2, with the reason "the output does not show how many tests ran". A run in
+    a shell loop body (`for ...; do python3 -m unittest f; done`) counts as a test run. Still
+    false: output showing FAILED or an error, a summary the command itself could have echoed, and
+    a shown count below the suite's. A run that shows a sufficient count still passes.
 
 ## Metering (`accounting.py`)
 
@@ -122,12 +166,35 @@ hidden tests. It checks forbidden edits by content against the regenerated start
 - Cash: normalized with the one frozen tariff ([tariff.json](tariff.json), v1); the actual
   charge (Claude Code's `total_cost_usd`, HQ's ledger charges) is reported beside it.
 - Time: from dispatch to the terminal outcome, including model latency, local tools, harness
-  overhead and recovery. Reported apart: agent-active time (the union of model and tool
-  intervals), **harness waiting** (HQ's queue between ticks and its retry backoff: the
-  harness's own time, inside elapsed and never an excuse) and **external waiting** (time spent
-  on the world: checks, remote systems, injected waits). An attempt whose external waiting is
-  over 10% of elapsed is contaminated: it cannot establish parity and stays in the ledger.
-  External waiting is never agent-active time, even inside a worker process.
+  overhead and recovery. Reported apart, as exclusive parts that add up to elapsed (within
+  1e-6): `agent_active_s` (the union of model and tool intervals), `harness_wait_s` (HQ's
+  admission, its recovery after an interrupted turn and its retry backoff: the harness's own
+  time, inside elapsed and never an excuse), `agent_requested_wait_s` (below),
+  `external_wait_s` (time spent on the world: checks, remote systems, injected waits) and
+  `unaccounted_s` (what no event explains). An attempt whose external waiting is over 10% of
+  elapsed is contaminated: it cannot establish parity and stays in the ledger. External
+  waiting is never agent-active time, even inside a worker process.
+- HQ's scheduling waits are read per attempt from its event sequence, never from a run row: a
+  retried turn REUSES its row (`attempts` 1 to 2, `started_at` overwritten), so the row's
+  `queued_at` to `started_at` spans the first attempt (round 21: 13.32 s reported for 1.97 s
+  real). Initial admission is the item's `task.created` to its first `run.started`. A recovery
+  is a `run.ended` with result `retry_waiting` to that run's next `run.started` (`wait_kind`
+  `recovery`), split at the first news (an owner reply folded, a wake queued, or the retry
+  deadline) into `news_or_deadline` and `admission`; settlement, the runner's report reaching
+  HQ, is not observable in the store, so a recovery starts at `run.ended`. `meta.hq_waits`
+  records each recovery's boundaries and whether the report or the reply came first
+  (`report_first`, `reply_first`). A retry with no later `run.started` is left unaccounted. Only
+  a store with no such events for a run falls back to the row's own span, and says so
+  (`meta.hq_waits.source`, `rows_fallback_runs`).
+- Agent-requested waits: a `sleep N` (or `time.sleep(N)` in `python3 -c`) the agent's own
+  command executes stays inside elapsed, is never subtracted and never external. It is its own
+  part, `agent_requested_wait_s` (`wait_kind` `agent_sleep`), only with execution evidence: the
+  sleep is actually run in command order (not inside a string, comment or heredoc, not after
+  an `exit`, not backgrounded; behind `&&`, `||` or an `if`, only when the call lasted at least
+  N s) and the call's own `t_start`/`t_end` span covers at least N s. The part is
+  min(N, the call's span), never overlapping harness or external waits. With no timing on the
+  call (Endora's transcript tool calls carry none) nothing is attributed and
+  `time.agent_requested_wait_notes` says so.
 - A failed HTTP call with no usage stays unknown, never zero: totals with one are reported as
   known-cost subtotals, not complete totals.
 - The tariff (v1) is the published one. Endora's relay prices Sonnet 5.5 cache reads at half
@@ -177,3 +244,9 @@ reported; the confirmation batch runs only against those hashes:
 
 `probes.py`, `controls.py`, `accounting.py`, `tariff.json`, `SCHEMA.md`, `PROTOCOL.md`,
 `endora_local.py`, `endora_live.py`, `cc_local.py`, `rig.py`, `sidefx.py`.
+
+The task contracts are frozen with the graders, in the same manifest (since v6): `python3
+freeze.py --contract N --seeds S…` writes every family's task words, allowed files and test-addition
+rule for those seeds to `contracts-cN.json`, hashes it together with the files above, and prints
+one combined hash. A confirmation runs only against a manifest whose combined hash was reported
+before it, with seeds the researcher picks after the freeze.

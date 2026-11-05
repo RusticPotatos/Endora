@@ -135,14 +135,31 @@ def run(args):
         attempt["dispatched_at"] = args.dispatched_at
     if attempt.get("ended_at") is None:
         attempt["ended_at"] = time.time()
+    if args.deadline_at is not None:
+        apply_deadline(attempt, args.deadline_at, not args.deadline_reached, args.teardown_at)
     attempt_path = out / "attempt.json"
     attempt_path.write_text(json.dumps(attempt, indent=2) + "\n")
-    verdict = rig.grade(args.family, args.seed, probe, attempt_path)
+    # tool_failure: the side effects as the item's observer recorded them, exported by the rig
+    # through the runner host's Docker (round 18); without them the criterion is unknown.
+    verdict = rig.grade(args.family, args.seed, probe, attempt_path, observations=args.observations)
     (out / "grade.json").write_text(json.dumps(verdict, indent=2) + "\n")
     print(json.dumps({"collected": collected, "terminal": attempt["terminal"],
                       "artifact_pass": verdict.get("artifact_pass"), "pass": verdict.get("pass"),
                       "reasons": verdict.get("reasons")}, indent=2))
     return 0
+
+
+def apply_deadline(attempt, deadline_at, finished_by_deadline, teardown_at):
+    """An attempt still going at its deadline ends there, as a timeout (round 20): the rig's
+    teardown after it (the item put away) and its collection are recorded apart, never elapsed."""
+    attempt.setdefault("meta", {})["deadline"] = {"at": deadline_at, "reached": not finished_by_deadline}
+    if finished_by_deadline:
+        return attempt
+    attempt["meta"]["deadline"].update({"teardown_at": teardown_at, "terminal_before": attempt.get("terminal"),
+                                        "ended_at_before": attempt.get("ended_at")})
+    attempt["terminal"] = "timeout"
+    attempt["ended_at"] = deadline_at
+    return attempt
 
 
 def main(argv=None):
@@ -156,6 +173,10 @@ def main(argv=None):
     p.add_argument("--context", default="nas")
     p.add_argument("--hq", default="endora-hq")
     p.add_argument("--node", default="endora-node")
+    p.add_argument("--observations", help="tool_failure: the observer's exported records (JSON list)")
+    p.add_argument("--deadline-at", type=float, help="the attempt's deadline (epoch seconds)")
+    p.add_argument("--deadline-reached", action="store_true", help="the item was still going at the deadline")
+    p.add_argument("--teardown-at", type=float, help="when the rig put the item away after the deadline")
     return run(p.parse_args(argv))
 
 

@@ -286,6 +286,25 @@ class StreamJsonTests(unittest.TestCase):
         self.assertEqual(m["tokens"]["output"], 70)
         self.assertEqual(m["tokens"]["calls"], 2)
 
+    def test_time_parts_never_overlap_and_add_up_to_elapsed(self):
+        # Round 18: HQ's model-call interval spans its queue waits, so the same seconds were
+        # counted as agent-active and as harness waiting (27.32 + 0.85 > 27.34 elapsed).
+        a = {"arm": "endora", "family": "f", "seed": 0, "dispatched_at": 0.0, "ended_at": 27.34,
+             "terminal": "done", "final_report": "", "usage": [], "meta": {},
+             "events": [{"kind": "wait", "wait_kind": "queue", "t_start": 0.0, "t_end": 0.4},
+                        {"kind": "model_call", "t_start": 0.0, "t_end": 28.9},
+                        {"kind": "wait", "wait_kind": "queue", "t_start": 0.4, "t_end": 0.85},
+                        {"kind": "wait", "wait_kind": "external", "t_start": 10.0, "t_end": 11.0}]}
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.85)
+        self.assertAlmostEqual(t["external_wait_s"], 1.0)
+        self.assertAlmostEqual(t["agent_active_s"], 27.34 - 0.85 - 1.0)
+        self.assertEqual(t["agent_requested_wait_s"], 0.0)
+        self.assertAlmostEqual(t["agent_active_s"] + t["harness_wait_s"]
+                               + t["agent_requested_wait_s"] + t["external_wait_s"]
+                               + t["unaccounted_s"], t["elapsed_s"], places=6)
+        self.assertGreaterEqual(t["unaccounted_s"], 0.0)
+
     def test_a_killed_invocations_stream_keeps_what_its_session_never_saved(self):
         # Round 16: Claude Code was stopped mid-attempt; its first stream held a completed Edit
         # (call and result) that the session file never saved, and only the last stream was read.
@@ -982,6 +1001,208 @@ class UsageCoverageAndNodeCensusTests(unittest.TestCase):
         cut_unnamed = self.endora([self.row("answered"), self.row("interrupted", served=None)],
                                   [["claude-haiku-5-5", 1], [None, 1]])
         self.assertFalse(acc.model_identity(cut_unnamed)["complete"])
+
+
+PARTS = ("agent_active_s", "harness_wait_s", "agent_requested_wait_s", "external_wait_s",
+         "unaccounted_s")
+
+
+def parts_sum(t):
+    return sum(t[k] for k in PARTS)
+
+
+class HqSchedulingWaitTests(unittest.TestCase):
+    """HQ's waits come from its event sequence: a retried turn reuses its run row, whose
+    queued_at -> started_at spans the whole first attempt (round 21: 13.32 s reported, 1.63 s real)."""
+
+    def build(self, events, attempts=2, started=13200, retry_at=None, ended=30000, with_events=True):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        db = Path(d.name) / "hq.db"
+        con = sqlite3.connect(db)
+        con.executescript("""
+        CREATE TABLE members (id INTEGER PRIMARY KEY, name TEXT, brain TEXT);
+        CREATE TABLE tasks (id INTEGER PRIMARY KEY, parent INTEGER, status TEXT);
+        CREATE TABLE posts (id INTEGER PRIMARY KEY, task INTEGER, author TEXT, text TEXT, at_ms INTEGER);
+        CREATE TABLE runs (id INTEGER PRIMARY KEY, member INTEGER, task INTEGER, status TEXT,
+            attempts INTEGER, queued_at INTEGER, started_at INTEGER, retry_at INTEGER,
+            ended_at INTEGER, input_tokens INTEGER, cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER, output_tokens INTEGER);
+        CREATE TABLE transcripts (run INTEGER PRIMARY KEY, brain TEXT, body TEXT);
+        """)
+        con.execute("INSERT INTO members VALUES (1, 'Jane Doe', 'sonnet')")
+        con.execute("INSERT INTO tasks VALUES (1, NULL, 'done')")
+        con.execute("INSERT INTO runs VALUES (7, 1, 1, 'succeeded', ?, 0, ?, ?, ?, 10, 20, 30, 40)",
+                    (attempts, started, retry_at, ended))
+        if with_events:
+            con.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, at_ms INTEGER, kind TEXT, data TEXT)")
+            con.executemany("INSERT INTO events (at_ms, kind, data) VALUES (?,?,?)",
+                            [(int(at * 1000), kind, json.dumps(data)) for at, kind, data in events])
+        con.commit()
+        con.close()
+        return acc.parse_endora(db, 1, family="interrupted", seed=0)
+
+    @staticmethod
+    def waits(a, kind=None):
+        return sorted((e["wait_kind"], round(e["t_start"], 3), round(e["t_end"], 3))
+                      for e in a["events"] if e["kind"] == "wait"
+                      and (kind is None or e["wait_kind"] == kind))
+
+    START = [(0.0, "task.created", {"task": 1}), (0.1, "wake.queued", {"task": 1, "reason": "assigned"}),
+             (0.4, "run.started", {"run": 7, "task": 1})]
+    RETRY_END = (12.0, "run.ended", {"run": 7, "task": 1, "result": "retry_waiting", "interrupted": True})
+    LAST_END = (30.0, "run.ended", {"run": 7, "task": 1, "result": "succeeded"})
+
+    def test_initial_admission_only(self):
+        a = self.build(self.START + [self.LAST_END], attempts=1, started=400)
+        self.assertEqual([w[0] for w in self.waits(a)], ["queue", "queue"])
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.4)
+        self.assertEqual(a["meta"]["hq_waits"]["source"], "events")
+        self.assertEqual(a["meta"]["hq_waits"]["recoveries"], [])
+
+    def test_report_first_recovery_is_harness_waiting_from_the_event_sequence(self):
+        a = self.build(self.START + [self.RETRY_END, (12.7, "wake.folded", {"task": 1, "reason": "owner_replied"}),
+                                     (13.2, "run.started", {"run": 7, "task": 1}), self.LAST_END])
+        recovery = self.waits(a, "recovery")
+        self.assertEqual(recovery, [("recovery", 12.0, 12.7), ("recovery", 12.7, 13.2)])
+        self.assertEqual([e["part"] for e in a["events"] if e["kind"] == "wait"
+                          and e["wait_kind"] == "recovery"], ["news_or_deadline", "admission"])
+        rec = a["meta"]["hq_waits"]["recoveries"][0]
+        self.assertEqual((rec["order"], rec["status"]), ("report_first", "measured"))
+        self.assertEqual((rec["ended_at"], rec["news_at"], rec["started_at"]), (12.0, 12.7, 13.2))
+        t = metrics_of(a)["time"]
+        # 0.4 first admission + 1.2 recovery; never the reused row's queued_at -> started_at (13.2)
+        self.assertAlmostEqual(t["harness_wait_s"], 1.6)
+        self.assertNotIn("retry_backoff", {w[0] for w in self.waits(a)})
+        self.assertAlmostEqual(parts_sum(t), t["elapsed_s"], places=6)
+
+    def test_reply_first_recovery_waits_for_the_retry_deadline(self):
+        a = self.build(self.START + [(11.0, "wake.folded", {"task": 1, "reason": "owner_replied"}),
+                                     self.RETRY_END, (13.5, "run.started", {"run": 7, "task": 1}),
+                                     self.LAST_END], started=13500, retry_at=13000)
+        rec = a["meta"]["hq_waits"]["recoveries"][0]
+        self.assertEqual(rec["order"], "reply_first")
+        self.assertEqual((rec["ended_at"], rec["news_at"], rec["started_at"]), (12.0, 13.0, 13.5))
+        self.assertEqual(self.waits(a, "recovery"), [("recovery", 12.0, 13.0), ("recovery", 13.0, 13.5)])
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.4 + 1.5)
+        self.assertAlmostEqual(parts_sum(t), t["elapsed_s"], places=6)
+
+    def test_a_retry_with_no_run_started_event_is_left_unaccounted(self):
+        a = self.build(self.START + [self.RETRY_END, (12.7, "wake.folded", {"task": 1}), self.LAST_END],
+                       started=15000)
+        self.assertEqual(self.waits(a, "recovery"), [])
+        self.assertEqual(self.waits(a, "retry_backoff"), [])  # never the reused row's span
+        rec = a["meta"]["hq_waits"]["recoveries"][0]
+        self.assertEqual((rec["status"], rec["started_at"]), ("missing_run_started", None))
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.4)
+        self.assertAlmostEqual(parts_sum(t), t["elapsed_s"], places=6)
+
+    def test_overlapping_scheduling_intervals_are_counted_once(self):
+        a = self.build(self.START + [self.RETRY_END, (12.5, "wake.queued", {"task": 1, "reason": "recovery"}),
+                                     (13.0, "run.started", {"run": 7, "task": 1}), self.LAST_END],
+                       started=13000)
+        self.assertGreater(len(self.waits(a)), 3)  # queue and recovery intervals share seconds
+        t = metrics_of(a)["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 0.4 + 1.0)
+        self.assertAlmostEqual(parts_sum(t), t["elapsed_s"], places=6)
+
+    def test_a_store_without_these_events_keeps_the_rows_own_span_and_says_so(self):
+        a = self.build([], attempts=1, started=5000, ended=30000, with_events=False)
+        self.assertEqual(self.waits(a), [("queue", 0.0, 5.0)])
+        self.assertEqual(a["meta"]["hq_waits"]["source"], "run_rows")
+        b = self.build([(0.0, "task.created", {"task": 99})], attempts=1, started=5000)
+        self.assertEqual(self.waits(b), [("queue", 0.0, 5.0)])
+        self.assertEqual(b["meta"]["hq_waits"]["source"], "run_rows")
+
+
+class AgentRequestedWaitTests(unittest.TestCase):
+    def test_commands_that_really_sleep_in_order(self):
+        s = acc.executed_sleeps
+        self.assertEqual(s("sleep 20; cd /work/repo && python3 tools/publish 4.6.4; echo ok"), [(20.0, True)])
+        self.assertEqual(s("sleep 2; sleep 3"), [(2.0, True), (3.0, True)])
+        self.assertEqual(s("sleep 0.5"), [(0.5, True)])
+        self.assertEqual(s("sleep 1m"), [(60.0, True)])
+        self.assertEqual(s("python3 -c 'import time; time.sleep(7)'"), [(7.0, True)])
+        self.assertEqual(s("make test || sleep 5"), [(5.0, False)])
+        self.assertEqual(s("if ping -c1 x; then sleep 5; fi"), [(5.0, False)])
+
+    def test_text_that_only_mentions_sleep_is_not_a_sleep(self):
+        s = acc.executed_sleeps
+        self.assertEqual(s('echo "sleep 5"'), [])
+        self.assertEqual(s("echo 'x; sleep 5'"), [])
+        self.assertEqual(s("echo hi # sleep 5"), [])
+        self.assertEqual(s("cat <<EOF > notes.txt\nsleep 5\nEOF"), [])
+        self.assertEqual(s("exit 1; sleep 5"), [])
+        self.assertEqual(s("sleep 5 &"), [])
+        self.assertEqual(s("sleep forever"), [])
+        self.assertEqual(s("python3 -c \"print('time.sleep(7)')\""), [])
+        self.assertEqual(s(""), [])
+        self.assertEqual(s(None), [])
+
+    @staticmethod
+    def attempt(command, t0=1010.0, t1=1033.0, tool_t=True, extra=()):
+        call = {"kind": "tool_call", "tool": "shell", "command": command, "agent": "member:Jane Doe",
+                "t_start": t0 if tool_t else None, "t_end": t1 if tool_t else None}
+        return {"arm": "endora", "dispatched_at": 1000.0, "ended_at": 1040.0, "terminal": "done",
+                "usage": [], "meta": {},
+                "events": [{"kind": "model_call", "t_start": 1000.0, "t_end": 1040.0}, call, *extra]}
+
+    def test_a_timed_sleep_is_its_own_part_inside_elapsed(self):
+        t = metrics_of(self.attempt("sleep 20; python3 tools/publish 4.6.4"))["time"]
+        self.assertEqual(t["elapsed_s"], 40.0)
+        self.assertAlmostEqual(t["agent_requested_wait_s"], 20.0)
+        self.assertAlmostEqual(t["agent_active_s"], 20.0)
+        self.assertEqual(t["external_wait_s"], 0.0)
+        self.assertFalse(t["contaminated"])
+        self.assertAlmostEqual(parts_sum(t), 40.0, places=6)
+
+    def test_the_part_is_capped_by_the_calls_span(self):
+        t = metrics_of(self.attempt("sleep 60", t1=1015.0))["time"]  # the span covers 5 s only
+        self.assertEqual(t["agent_requested_wait_s"], 0.0)  # N is not covered by the span: no evidence
+        t = metrics_of(self.attempt("sleep 5; sleep 4", t1=1017.0))["time"]
+        self.assertAlmostEqual(t["agent_requested_wait_s"], 7.0)  # 9 s asked, span 7 s: capped
+
+    def test_no_timing_means_nothing_attributed_and_a_note(self):
+        m = metrics_of(self.attempt("sleep 20; echo hi", tool_t=False))
+        t = m["time"]
+        self.assertEqual(t["agent_requested_wait_s"], 0.0)
+        self.assertEqual(t["agent_active_s"], 40.0)
+        notes = t["agent_requested_wait_notes"]
+        self.assertEqual((notes[0]["seconds"], notes[0]["attributed"]), (20.0, False))
+        self.assertIn("no timing", notes[0]["why"])
+
+    def test_a_sleep_in_a_branch_counts_only_when_the_call_lasted_that_long(self):
+        long_call = metrics_of(self.attempt("make test || sleep 5", t1=1016.0))["time"]
+        self.assertAlmostEqual(long_call["agent_requested_wait_s"], 5.0)
+        short_call = metrics_of(self.attempt("make test || sleep 5", t1=1013.0))["time"]
+        self.assertEqual(short_call["agent_requested_wait_s"], 0.0)
+
+    def test_text_mentions_attribute_nothing(self):
+        t = metrics_of(self.attempt('echo "sleep 20"'))["time"]
+        self.assertEqual(t["agent_requested_wait_s"], 0.0)
+        self.assertNotIn("agent_requested_wait_notes", t)
+
+    def test_never_overlaps_harness_or_external_waits(self):
+        extra = [{"kind": "wait", "wait_kind": "queue", "t_start": 1010.0, "t_end": 1015.0},
+                 {"kind": "wait", "wait_kind": "injected", "t_start": 1015.0, "t_end": 1018.0}]
+        t = metrics_of(self.attempt("sleep 20", extra=extra))["time"]
+        self.assertAlmostEqual(t["harness_wait_s"], 5.0)
+        self.assertAlmostEqual(t["external_wait_s"], 3.0)
+        self.assertAlmostEqual(t["agent_requested_wait_s"], 15.0)  # 23 s span less 8 s of other waits
+        self.assertAlmostEqual(parts_sum(t), 40.0, places=6)
+
+    def test_endora_transcript_calls_carry_no_times_so_the_sleep_stays_unaccounted(self):
+        body = '--- call: shell ---\n{"command": "sleep 20; echo hi"}\n--- result ---\nexit 0\nhi\n'
+        calls = acc.transcript_tool_calls(body, "member:Jane Doe")
+        self.assertEqual((calls[0]["t_start"], calls[0]["t_end"]), (None, None))
+        a = self.attempt("x")
+        a["events"] = [{"kind": "model_call", "t_start": 1000.0, "t_end": 1040.0}, *calls]
+        t = metrics_of(a)["time"]
+        self.assertEqual(t["agent_requested_wait_s"], 0.0)
+        self.assertEqual(len(t["agent_requested_wait_notes"]), 1)
 
 
 class TotalsAndCliTests(unittest.TestCase):

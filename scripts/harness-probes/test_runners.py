@@ -204,5 +204,26 @@ class LiveInterruptTransportTests(unittest.TestCase):
         self.assertIn("accepts no arguments", rec["docker_error"])
 
 
+class DeadlineTests(unittest.TestCase):
+    """Round 20: a live attempt still going at its deadline ends there, as a timeout; what the
+    rig did after it (teardown, collection) is recorded apart and never counted as elapsed."""
+
+    def test_an_attempt_past_its_deadline_is_a_timeout_ending_at_the_deadline(self):
+        import endora_live
+        a = {"terminal": "submitted", "dispatched_at": 100.0, "ended_at": 839.0, "meta": {}}
+        endora_live.apply_deadline(a, deadline_at=700.0, finished_by_deadline=False, teardown_at=701.5)
+        self.assertEqual(a["terminal"], "timeout")
+        self.assertEqual(a["ended_at"], 700.0)
+        self.assertEqual(a["meta"]["deadline"], {"at": 700.0, "reached": True, "teardown_at": 701.5,
+                                                 "terminal_before": "submitted", "ended_at_before": 839.0})
+
+    def test_an_attempt_finished_in_time_is_left_as_it_is(self):
+        import endora_live
+        a = {"terminal": "done", "dispatched_at": 100.0, "ended_at": 140.0, "meta": {}}
+        endora_live.apply_deadline(a, deadline_at=700.0, finished_by_deadline=True, teardown_at=None)
+        self.assertEqual((a["terminal"], a["ended_at"]), ("done", 140.0))
+        self.assertEqual(a["meta"]["deadline"]["reached"], False)
+
+
 if __name__ == "__main__":
     unittest.main()

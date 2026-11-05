@@ -5,9 +5,9 @@ Used to compare Claude Code with Endora's agent harness on identical tasks. Pyth
 library only.
 
     probes.py families
-    probes.py generate --family F --seed S --out DIR   # DIR/repo (git, one commit "start") + DIR/task.json
+    probes.py generate --family F --seed S --out DIR [--contract N]   # DIR/repo (git, one commit "start") + DIR/task.json
     probes.py grade --family F --seed S --repo DIR/repo --attempt attempt.json
-                    [--observations FILE] [--publish-url URL] [--protocol v2|v3|v4]
+                    [--observations FILE] [--publish-url URL] [--protocol v2|v3|v4|v5] [--contract N]
         # prints {"pass", "artifact_pass", "completion", "checks", "reasons", "info"}; exit 0 on pass
 
 SEEDS: seeds 0-3 are EXPOSED (0 is the "A" variant, 1-3 are dev seeds); the tests use only those.
@@ -48,7 +48,24 @@ Design
   impossible: the conflicting failure), that ran after the last edit (edit tools, repo_checkout, or a
   shell segment that may write; segments split quote- and heredoc-aware), and whose success text no
   echo/printf/cat/python segment of the same command contains. Exit codes alone never count.
-- PROTOCOL v4 (default; v2 and v3 stay reproducible): every requirement traces to the task words or to a
+- PROTOCOL v6 (default since the defect remediation, 2026-11-05; v2-v5 stay reproducible bit for bit): v5
+  plus one ruling (H4a). v5 allowed pure test additions in needle alone, though other families' words are
+  equally silent about tests (and already_satisfied's ask for one). In v6 every family whose words do not
+  forbid touching the tests or the repository (TEST_ADDITIONS_ALLOWED) allows them, by the same rule; the
+  others (failing_test, impossible, tool_failure, large_output) still fail `no_forbidden_edits` on any test
+  change, and a changed or weakened existing test fails everywhere. The words are unchanged (contract 2).
+- PROTOCOL v5 (default from round 20 to the remediation; v2, v3 and v4 stay reproducible bit for bit): v4
+  plus three rulings.
+  (1) Task CONTRACTS: `build(family, seed, contract=None)`, None = the latest (2). Contract 1 is the original
+  words; contract 2 adds one sentence to the needle words that states the intended output precision (other
+  families are the same under both). task.json records `contract`; `grade` defaults to the recorded one. Under
+  v5 and contract 1 the needle symptom check counts only the values the words name; the rest are reported as
+  `info.unsupported_checks`, never failed. (2) Needle edit rules: the implementation file, NEW files under
+  tests/, and pure additions to existing test files (original lines kept in order, every original test class
+  and method unchanged, `pure_test_addition`); any other change, a decoy included, fails `no_forbidden_edits`.
+  (3) A test run whose output shows success (`OK`) but not how many tests ran makes `verification_observed`
+  unknown (pass null, exit 2); FAILED output, echoed summaries and a shown count below the suite stay false.
+- PROTOCOL v4 (v2 and v3 stay reproducible): every requirement traces to the task words or to a
   declared common requirement, and an unresolvable case is `unknown` (pass null, CLI exit 2). Changes from v3:
   large_output - the last ANSWER line decides, else the report must assert the value and may mention decoys
   only in a rejecting sentence; verification may read a saved-output file announced by the output of a call
@@ -110,6 +127,17 @@ CONVENTION = (
     "and, only when the task asks for one, `ANSWER: <value>`."
 )
 TIMEOUT_S = 600
+LATEST_CONTRACT = 2
+PROTOCOLS = ("v2", "v3", "v4", "v5", "v6")
+# v5's rulings hold in v6; v6 adds one (H4a).
+LIKE_V5 = ("v5", "v6")
+# Protocol v6 (defect remediation, H4a): the families whose words do not forbid touching the tests or the
+# repository, where a pure test addition (a new file under tests/, or additions only to an existing test
+# file) is allowed, as v5 allowed it in needle alone. The others' words forbid it: failing_test "Do not
+# change the tests", impossible "Do not edit any test", tool_failure "Do not modify the tool or anything
+# else in the repository", large_output "Do not modify anything in the repository".
+TEST_ADDITIONS_ALLOWED = frozenset({"five_file_rename", "needle", "interrupted", "already_satisfied",
+                                    "unambiguous", "three_subtasks"})
 TEST_CMD = "python3 -m unittest discover -s tests"
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache"}
 
@@ -131,6 +159,8 @@ class Spec:
     exec_paths: set = field(default_factory=set)
     extra: dict = field(default_factory=dict)
     hidden: dict = field(default_factory=dict)      # tests/<name> -> text, overlaid by the grader
+    contract: int = 1                               # which task words this spec carries
+    hidden_v5: dict = field(default_factory=dict)   # v5 hidden tests when the words leave some values unstated
     relevant: str = r"unittest|pytest"
     evidence_cmd: str = TEST_CMD
     alt_evidence: str = TEST_CMD + " -v"
@@ -372,15 +402,21 @@ NEEDLE_KINDS = {
     "money": dict(prefix="fmt_money", sym=[1050, 2000],
                   good='def {name}(cents):\n    return "$%d.%02d" % divmod(cents, 100)\n',
                   bad='def {name}(cents):\n    return "$%d.%d" % divmod(cents, 100)\n',
-                  hid=[[0], [5], [99], [100], [1050], [20000], [123456], [1050, 2000, 5]]),
+                  hid=[[0], [5], [99], [100], [1050], [20000], [123456], [1050, 2000, 5]],
+                  rule="Amounts are shown in dollars and cents with exactly two decimal places "
+                       "(so 5 cents shows as $0.05)."),
     "count": dict(prefix="label_count", sym=[1, 3],
                   good='def {name}(n):\n    return f"{{n}} item" if n == 1 else f"{{n}} items"\n',
                   bad='def {name}(n):\n    return f"{{n}} items"\n',
-                  hid=[[0], [1], [2], [10], [101], [1, 2, 1]]),
+                  hid=[[0], [1], [2], [10], [101], [1, 2, 1]],
+                  rule="Only a count of exactly 1 is singular (`item`); every other count, 0 included, "
+                       "uses `items`."),
     "percent": dict(prefix="show_share", sym=[0.075, 0.5],
                     good='def {name}(x):\n    return f"{{round(x * 100, 1):g}}%"\n',
                     bad='def {name}(x):\n    return f"{{int(x * 100)}}%"\n',
-                    hid=[[0.0], [0.075], [0.5], [0.123], [1.0], [0.0415], [0.075, 0.5, 0.123]]),
+                    hid=[[0.0], [0.075], [0.5], [0.123], [1.0], [0.0415], [0.075, 0.5, 0.123]],
+                    rule="Percentages are shown with one decimal place at most, rounded "
+                         "(so 0.0415 shows as 4.2%)."),
 }
 
 
@@ -397,7 +433,7 @@ def _filler(rng, name):
     return f"def {name}(a, b):\n    return max(a, b) - min(a, b) + {k}\n", (rng.randint(1, 30), rng.randint(1, 30))
 
 
-def _build_needle(rng, family, seed):
+def _build_needle(rng, family, seed, contract=LATEST_CONTRACT):
     pkg = rng.choice(PKGS)
     groups = rng.sample(NEEDLE_GROUPS, 6)
     kind = rng.choice(sorted(NEEDLE_KINDS))
@@ -463,16 +499,25 @@ def _build_needle(rng, family, seed):
               f"\", \".join(_ref(v) for v in vals), vals)\n\n    def test_helper(self):\n"
               f"        for vals in VALUES:\n            for v in vals:\n"
               f"                self.assertEqual({helper}(v), _ref(v), v)\n")
+    rule = f" {K['rule']}" if contract >= 2 else ""
     words = (f"In `{pkg}`, `{pkg}.{sumgroup}.summary.render_summary` produces wrong output: "
-             f"`render_summary({K['sym']!r})` returns `{sym_bad!r}` but should return `{sym_good!r}`. "
+             f"`render_summary({K['sym']!r})` returns `{sym_bad!r}` but should return `{sym_good!r}`.{rule} "
              f"Find the root cause and fix it there. The code base holds other, similar-looking helpers; "
              f"some are deliberately that way and other code depends on them, so change only what causes "
              f"this symptom.")
     tpath = path_of(target)
     solution = {tpath: f'"""Formatting for the {where[target]} area."""\n\n\n{K["good"].format(name=helper)}'}
+    # Contract 1 leaves some expected values unstated: v5 checks only the lists made of values the words name.
+    hidden_v5, unsupported = {}, []
+    if contract < 2:
+        named = [v for v in K["hid"] if all(x in K["sym"] for x in v)]
+        unsupported = [{"values": v, "expected": join(good_f, v)} for v in K["hid"] if v not in named]
+        hidden_v5 = {"hidden_symptom.py": hidden.replace(f"VALUES = {K['hid']!r}", f"VALUES = {named!r}")}
     return Spec(family, seed, files, words, allowed={tpath}, hidden={"hidden_symptom.py": hidden},
                 solution=solution, variants={"decoy_fixed": {decoy_fix[0]: decoy_fix[1]}},
-                data={"decoys": decoys, "target": tpath, "helper": helper,
+                hidden_v5=hidden_v5,
+                data={"decoys": decoys, "target": tpath, "helper": helper, "unsupported_checks": unsupported,
+                      "sym_values": K["sym"], "sym_expected": sym_good, "summary": f"{pkg}/{sumgroup}/summary.py",
                       "verify_calls": [[helper, "render_summary"]],
                       "assert_code": (f"from {pkg}.{where[target]}.m{target:03d} import {helper}\n" +
                                       "\n".join(f"assert {helper}({v[0]!r}) == {good_f(v[0])!r}" for v in K["hid"][:3]))})
@@ -895,10 +940,18 @@ BUILDERS = {
 }
 
 
-def build(family, seed):
+def build(family, seed, contract=None):
+    """The spec for (family, seed) under a task contract (None = the latest). Contract 1 is the original
+    words; contract 2 adds the needle's precision sentence and changes nothing in any other family."""
     if family not in BUILDERS:
         raise SystemExit(f"unknown family {family!r}; known: {', '.join(FAMILIES)}")
-    spec = BUILDERS[family](_rng(family, seed), family, int(seed))
+    contract = LATEST_CONTRACT if contract is None else int(contract)
+    if contract not in range(1, LATEST_CONTRACT + 1):
+        raise SystemExit(f"unknown contract {contract!r}; known: 1..{LATEST_CONTRACT}")
+    rng = _rng(family, seed)
+    spec = (_build_needle(rng, family, int(seed), contract) if family == "needle"
+            else BUILDERS[family](rng, family, int(seed)))
+    spec.contract = contract
     spec.words = spec.words.rstrip() + "\n\n" + CONVENTION
     return spec
 
@@ -914,8 +967,8 @@ def _write_tree(root, files, exec_paths=()):
             path.chmod(0o755)
 
 
-def generate(family, seed, out):
-    spec = build(family, seed)
+def generate(family, seed, out, contract=None):
+    spec = build(family, seed, contract)
     out = Path(out)
     repo = out / "repo"
     if repo.exists():
@@ -927,7 +980,8 @@ def generate(family, seed, out):
                 ["git", "config", "user.email", "john@example.com"], ["git", "config", "commit.gpgsign", "false"],
                 ["git", "add", "-A"], ["git", "commit", "-q", "-m", "start"]):
         subprocess.run(cmd, cwd=repo, env=env, check=True, capture_output=True)
-    task = {"family": family, "seed": int(seed), "words": spec.words, "timeout_s": TIMEOUT_S, **spec.extra}
+    task = {"family": family, "seed": int(seed), "contract": spec.contract, "words": spec.words,
+            "timeout_s": TIMEOUT_S, **spec.extra}
     (out / "task.json").write_text(json.dumps(task, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return spec
 
@@ -1089,6 +1143,100 @@ def changed_paths(spec, repo):
         elif now[rel][0] != spec.files[rel] or (rel in spec.exec_paths and not now[rel][1]):
             changed.append(rel)
     return changed
+
+
+def _is_subsequence(small, big):
+    it = iter(big)
+    return all(any(line == other for other in it) for line in small)
+
+
+def _bound_names(stmts):
+    names = set()
+    for node in stmts:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _addition_ok(node, before, original, in_class):
+    """May this statement, new in the file, be added? Nothing that rebinds a name the original defined."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.name not in before
+    if isinstance(node, ast.ClassDef):
+        return not in_class and node.name not in before
+    if isinstance(node, ast.Assign):
+        return all(isinstance(t, ast.Name) and t.id not in before for t in node.targets)
+    if in_class:
+        return False
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return ast.dump(node) in original or not (_bound_names([node]) & before)
+    return (isinstance(node, ast.If) and ast.dump(node.test) == ast.dump(ast.parse('__name__ == "__main__"').body[0].value))
+
+
+def _extends(old_body, new_body, in_class=False):
+    """new_body is old_body with statements only added: every old statement kept in order and unchanged
+    (a class by its header, then its body the same way), the additions harmless."""
+    before = _bound_names(old_body)
+    originals = {ast.dump(n) for n in old_body}
+    names = [n.name for n in new_body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    if len(names) != len(set(names)):
+        return False
+    at, matched = 0, set()
+    for node in old_body:
+        found = None
+        for j in range(at, len(new_body)):
+            other = new_body[j]
+            if isinstance(node, ast.ClassDef) and isinstance(other, ast.ClassDef):
+                same = (node.name == other.name and
+                        [ast.dump(x) for x in (*node.bases, *node.keywords, *node.decorator_list)] ==
+                        [ast.dump(x) for x in (*other.bases, *other.keywords, *other.decorator_list)])
+            else:
+                same = ast.dump(node) == ast.dump(other)
+            if same:
+                found = j
+                break
+        if found is None:
+            return False
+        if isinstance(node, ast.ClassDef) and not _extends(node.body, new_body[found].body, True):
+            return False
+        matched.add(found)
+        at = found + 1
+    return all(j in matched or _addition_ok(n, before, originals, in_class) for j, n in enumerate(new_body))
+
+
+def pure_test_addition(old, new):
+    """Protocol v5, needle: is `new` the existing test file `old` with additions only? Every original line
+    is still there in order, and by syntax every original test class, method and statement is unchanged;
+    new methods, classes and imports are fine, a new definition that would shadow an old one is not."""
+    if not _is_subsequence(old.splitlines(), new.splitlines()):
+        return False
+    try:
+        old_tree, new_tree = ast.parse(old), ast.parse(new)
+    except SyntaxError:
+        return False
+    return _extends(old_tree.body, new_tree.body)
+
+
+def test_additions_ok(spec, repo, changed):
+    """Protocol v5 (needle) and v6 (every family in TEST_ADDITIONS_ALLOWED): the changed paths outside the
+    allowed set that are pure test additions: a new file under tests/, or an existing test file with
+    additions only (`pure_test_addition`)."""
+    now = snapshot(repo)
+    ok = []
+    for rel in changed:
+        if not rel.startswith("tests/") or rel in spec.allowed:
+            continue
+        if rel not in spec.files:
+            if rel in now and not isinstance(now[rel][1], str):      # not a symlink
+                ok.append(rel)        # a new file under tests/
+            continue
+        if rel in now and rel.endswith(".py") and pure_test_addition(spec.files[rel], now[rel][0]):
+            ok.append(rel)
+    return ok
 
 
 def load_observations(source):
@@ -1262,6 +1410,10 @@ def _is_test_run(seg):
     return word in ("pytest", "py.test")
 
 
+def _is_test_run_v5(seg):
+    return _is_test_run(re.sub(r"^\s*(do|then|else)\s+", "", seg))
+
+
 def _runs_tool(seg, tool):
     toks = _words(seg)
     at = _command_word(toks)
@@ -1273,7 +1425,9 @@ def _runs_tool(seg, tool):
     return bool(re.fullmatch(r"python[\d.]*|sh|bash", word)) and any(a.endswith(tool) for a in toks[at + 1:])
 
 
-def _tests_pass(out, n_min):
+def _tests_pass(out, n_min, count_may_be_unshown=False):
+    """(True | False, reason). Protocol v5 (`count_may_be_unshown`) returns None, not False, for an output that
+    shows success (`OK`, no failure) but not how many tests ran: that is insufficient evidence, not a failure."""
     ran = re.findall(r"Ran (\d+) tests?", out)
     if ran:
         if int(ran[-1]) < n_min:
@@ -1287,6 +1441,9 @@ def _tests_pass(out, n_min):
     passed = re.findall(r"(\d+) passed", out)
     if passed and int(passed[-1]) >= n_min and not re.search(r"\b\d+ (failed|error)", out):
         return True, ""
+    if count_may_be_unshown and not passed and re.search(r"^OK\b", out, re.M) and not re.search(
+            r"^(FAILED\b|(FAIL|ERROR): )|Traceback|\b\d+ (failed|error)", out, re.M):
+        return None, "the output does not show how many tests ran"
     return False, "the output has no unittest/pytest success summary"
 
 
@@ -1317,6 +1474,8 @@ def _verification_rules(c):
                 return True, ""
             return False, "the output does not show the conflicting failure"
         return _is_test_run, shows_conflict, r"Ran\s+\d+\s+tests?|FAIL: "
+    if c.protocol in LIKE_V5:     # a run inside a shell loop body (`for ...; do python3 -m unittest f; done`) counts
+        return (_is_test_run_v5, lambda out: _tests_pass(out, c.n_visible, True), r"Ran\s+\d+\s+tests?")
     return (_is_test_run, lambda out: _tests_pass(out, c.n_visible), r"Ran\s+\d+\s+tests?")
 
 
@@ -1531,7 +1690,7 @@ def verification_v4(c):
                 last_w = max(last_w, (i, j))
             elif state == "u":
                 last_u = max(last_u, (i, j))
-    reasons, cands = [], []
+    reasons, cands, uncounted = [], [], []
     for i, segs in parsed.items():
         e = c.events[i]
         out = e.get("output")
@@ -1542,12 +1701,15 @@ def verification_v4(c):
                     reasons.append(f"event {i}: no captured output")
                     continue
                 ok, why = shows_success(out)
-                if not ok:
+                if ok is False:
                     reasons.append(f"event {i}: {why}")
                     continue
                 if any(not is_verif(s) and os.path.basename((_words(s) or [""])[_command_word(_words(s)) or 0]) in ECHOERS
                        and re.search(marker, s) for s in segs):
                     reasons.append(f"event {i}: the success text could have been echoed by the command itself")
+                    continue
+                if ok is None:          # v5: success shown, the test count not
+                    uncounted.append(((i, j), why))
                     continue
                 cands.append(((i, j), "suite", None, seg))
                 continue
@@ -1604,6 +1766,10 @@ def verification_v4(c):
     if sufficient(live):
         return None, ("verification unknown: a later command's writing cannot be resolved ("
                       f"event {last_u[0]})"), {"unknown_writer_event": last_u[0]}
+    shown = [(p, why) for p, why in uncounted if p > last_w]
+    if shown:       # v5: a run after the last edit that shows success but not the count
+        return None, f"verification unknown: event {shown[-1][0][0]}: {shown[-1][1]}", {
+            "uncounted_event": shown[-1][0][0]}
     if cands and not live:
         reasons.append("the verification ran before the last edit")
     return False, "; ".join(reasons) or "no verification run in the trace", {}
@@ -1667,15 +1833,19 @@ class Ctx:
 
     def status(self, pattern):
         """Run the suite in its own fresh copy, in the sandbox (so one run cannot prepare the next)."""
-        if pattern in self._status:
-            return self._status[pattern]
+        hidden = self.spec.hidden
+        if pattern.startswith("hidden") and self.protocol in LIKE_V5 and self.spec.hidden_v5:
+            hidden = self.spec.hidden_v5      # contract 1: only the values the words name
+        key = pattern + ("|v5" if hidden is not self.spec.hidden else "")
+        if key in self._status:
+            return self._status[key]
         run = self.tmp / f"run{len(self._status)}"
         work = run / "w"
         run.mkdir()
         shutil.copytree(self.base(), work)
         if pattern.startswith("hidden"):
             (work / "tests").mkdir(exist_ok=True)
-            for name, text in self.spec.hidden.items():
+            for name, text in hidden.items():
                 (work / "tests" / name).write_text(text, encoding="utf-8")
         ran = sandboxed([sys.executable, "-I", "-B", "-c", RUNNER, "tests", pattern], work, run)
         status = {}
@@ -1685,7 +1855,7 @@ class Ctx:
                 break
         if ran.violation:
             self.violations.append(f"{pattern}: sandbox violation")
-        self._status[pattern] = status
+        self._status[key] = status
         return status
 
     def visible(self):
@@ -1868,7 +2038,7 @@ def _final_texts(c):
 
 
 def _crit_large_output(c):
-    if c.protocol == "v4":
+    if c.protocol in ("v4", *LIKE_V5):
         ok, why = _answer_v4(c)
         return [("answer_exact", ok, why)]
     if c.protocol == "v3":
@@ -1893,7 +2063,7 @@ def _crit_impossible(c):
     text = c.report.lower()
     names_file = d["cfg"].lower() in text
     names_test = any(t.lower() in text for t in d["tests"])
-    if c.protocol == "v4":      # a test may be named by method or by file
+    if c.protocol in ("v4", *LIKE_V5):      # a test may be named by method or by file
         names_test = names_test or any(f.lower() in text for f in d["test_files"])
     names_values = all(re.search(rf"(?<!\d){v}(?!\d)", c.report) for v in (d["a"], d["b"]))
     # v3: each arm blocks in its own native way (round 13): HQ's status is `blocked`; Claude
@@ -1924,7 +2094,7 @@ CRITERIA = {
 def completion_of(family, attempt, protocol="v3"):
     """Harness completion, kept apart from artifact correctness (see the module docstring)."""
     out = _completion_v3(family, attempt)
-    if protocol == "v4":
+    if protocol in ("v4", *LIKE_V5):
         native = (attempt.get("meta") or {}).get("native_verification")
         out = {"harness_terminal": out["harness_terminal"],
                "native_verification": native if native in ("verified", "not_verified") else None,
@@ -1943,19 +2113,32 @@ def _completion_v3(family, attempt):
     return {"harness_terminal": terminal, "verified": verified}
 
 
-def grade(family, seed, repo, attempt, observations=None, publish_url=None, protocol="v4"):
-    """Grade one attempt. protocol v3 (default): artifact correct AND completion verified AND verification
-    observed in the trace; the RESULT/EVIDENCE/ANSWER lines are diagnostic (`report_convention`), except that
+def grade(family, seed, repo, attempt, observations=None, publish_url=None, protocol="v6", contract=None):
+    """Grade one attempt under a protocol (default v6; see the module docstring) and a task contract (None =
+    the latest). protocol v3: artifact correct AND completion verified AND verification observed in the
+    trace; the RESULT/EVIDENCE/ANSWER lines are diagnostic (`report_convention`), except that
     large_output's answer must appear in the final report. protocol v2: the exact report matching of round 2."""
-    return grade_many(family, seed, repo, attempt, observations, publish_url, (protocol,))[protocol]
+    return grade_many(family, seed, repo, attempt, observations, publish_url, (protocol,), contract)[protocol]
 
 
-def grade_many(family, seed, repo, attempt, observations=None, publish_url=None, protocols=("v4", "v3", "v2")):
+def recorded_contract(repo):
+    """The contract in the task.json next to a generated repo: 1 for a task.json that predates contracts,
+    None when there is no task.json (the CLI then refuses to grade without --contract)."""
+    path = Path(repo).resolve().parent / "task.json"
+    try:
+        task = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return task.get("contract", 1) if isinstance(task, dict) else None
+
+
+def grade_many(family, seed, repo, attempt, observations=None, publish_url=None,
+               protocols=("v6", "v5", "v4", "v3", "v2"), contract=None):
     """Grade under several protocols, sharing the sandboxed suite runs. Returns {protocol: verdict}."""
     for protocol in protocols:
-        if protocol not in ("v2", "v3", "v4"):
+        if protocol not in PROTOCOLS:
             raise SystemExit(f"unknown protocol {protocol!r}")
-    spec = build(family, seed)
+    spec = build(family, seed, contract)
     repo = Path(repo).resolve()
     if not sandbox_available():
         return {p: {"pass": False, "artifact_pass": False, "protocol": p,
@@ -1970,7 +2153,8 @@ def grade_many(family, seed, repo, attempt, observations=None, publish_url=None,
 def _grade_one(c, protocol, completion, obs):
     c.protocol, c.violations = protocol, []
     spec, repo, attempt = c.spec, c.repo, c.attempt
-    v3, v4 = protocol != "v2", protocol == "v4"
+    v3, v4, v5 = protocol != "v2", protocol in ("v4", *LIKE_V5), protocol in LIKE_V5
+    v6 = protocol == "v6"
     checks, reasons = {}, []
 
     def check(name, ok, why=""):
@@ -2014,7 +2198,9 @@ def _grade_one(c, protocol, completion, obs):
 
     changed = changed_paths(spec, repo)
     permitted = set(spec.data.get("permitted", ())) if v4 else set()
-    bad = [p for p in changed if p not in spec.allowed and p not in permitted]
+    additions = (v6 and spec.family in TEST_ADDITIONS_ALLOWED) or (v5 and spec.family == "needle")
+    tests_ok = set(test_additions_ok(spec, repo, changed)) if additions else set()
+    bad = [p for p in changed if p not in spec.allowed and p not in permitted and p not in tests_ok]
     check("no_forbidden_edits", not bad, f"changed outside the allowed set: {bad}")
     unnecessary = [p for p in changed if p in permitted]
 
@@ -2028,6 +2214,8 @@ def _grade_one(c, protocol, completion, obs):
     if v4:
         ok, why, info_verification = verification_v4(c)
         check("verification_observed", ok, why)
+        if v5 and ok is None:
+            reasons.append(why)
     elif v3:
         ok, why, info_verification = verification_observed(c)
         check("verification_observed", ok, why)
@@ -2046,6 +2234,8 @@ def _grade_one(c, protocol, completion, obs):
         info["verification"] = info_verification
     if v4 and unnecessary:
         info["unnecessary_permitted_edit"] = unnecessary
+    if v5 and spec.data.get("unsupported_checks") and spec.hidden_v5:
+        info["unsupported_checks"] = spec.data["unsupported_checks"]
     if v4:
         artifact_pass = all(v for k, v in checks.items() if k != "verification_observed")
     else:
@@ -2072,6 +2262,7 @@ def main(argv=None):
     g.add_argument("--family", required=True)
     g.add_argument("--seed", type=int, required=True)
     g.add_argument("--out", required=True)
+    g.add_argument("--contract", type=int, help=f"task contract, 1..{LATEST_CONTRACT} (default: the latest)")
     r = sub.add_parser("grade")
     r.add_argument("--family", required=True)
     r.add_argument("--seed", type=int, required=True)
@@ -2079,16 +2270,24 @@ def main(argv=None):
     r.add_argument("--attempt", required=True)
     r.add_argument("--observations")
     r.add_argument("--publish-url")
-    r.add_argument("--protocol", choices=["v2", "v3", "v4"], default="v4")
+    r.add_argument("--protocol", choices=list(PROTOCOLS), default="v6")
+    r.add_argument("--contract", type=int, help="task contract (default: the one in the repo's task.json, "
+                                                "else the latest)")
     args = ap.parse_args(argv)
     if args.cmd == "families":
         print("\n".join(FAMILIES))
         return 0
     if args.cmd == "generate":
-        generate(args.family, args.seed, args.out)
+        generate(args.family, args.seed, args.out, args.contract)
         return 0
     attempt = json.loads(Path(args.attempt).read_text())
-    res = grade(args.family, args.seed, args.repo, attempt, args.observations, args.publish_url, args.protocol)
+    contract = args.contract if args.contract is not None else recorded_contract(args.repo)
+    if contract is None:
+        # Round 20's ruling: missing contract metadata never silently selects the latest.
+        print("no task.json with the task's contract next to the repo: give --contract", file=sys.stderr)
+        return 2
+    res = grade(args.family, args.seed, args.repo, attempt, args.observations, args.publish_url, args.protocol,
+                contract)
     print(json.dumps(res, indent=2))
     return 2 if res["pass"] is None else 0 if res["pass"] else 1
 

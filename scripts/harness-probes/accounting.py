@@ -19,6 +19,7 @@ Rules (the researcher's):
 import argparse
 import json
 import re
+import shlex
 import sqlite3
 import sys
 from datetime import datetime
@@ -553,8 +554,218 @@ def _split_transcript(body):
     return parts
 
 
-# Waits that are the harness's own doing, not the world's: never contamination.
-HARNESS_WAITS = ("queue", "retry_backoff")
+# Waits that are the harness's own doing, not the world's: never contamination. "recovery" is
+# HQ's wait between a turn it reports interrupted (run.ended, retry_waiting) and that run's next
+# run.started (settlement, news or retry deadline, admission).
+HARNESS_WAITS = ("queue", "retry_backoff", "recovery")
+# A wait the agent asked for itself (a `sleep` in its own command): inside elapsed, apart from
+# both the harness's waiting and the world's, and never contamination.
+AGENT_WAITS = ("agent_sleep",)
+
+_SLEEP_UNITS = {"": 1.0, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+_SLEEP_ARG = re.compile(r"^(\d+(?:\.\d*)?|\.\d+)([smhd]?)$")
+_PY_SLEEP = re.compile(r"^time\.sleep\(\s*(\d+(?:\.\d*)?|\.\d+)\s*\)$")
+_PY_COMPOUND = re.compile(r"^(if|for|while|def|try|with|class|else|elif|except|finally|lambda)\b")
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+_LEAD_WORDS = ("sudo", "env", "command", "time", "nohup")
+_CONDITIONAL_OPENERS = ("if", "then", "else", "elif", "do", "while", "until", "!")
+_COMPOUND_WORDS = ("for", "case", "select", "function", "fi", "done", "esac")
+
+
+def _shell_units(cmd):
+    """[(text, operator before it, backgrounded)] for a shell command, split on newlines, `;`,
+    `&`, `&&`, `||` and `|`. Quote-aware (single, double, backtick, $( ) kept whole), `#` comments
+    dropped, and heredoc bodies skipped (their text is data, not commands). Conservative by
+    design: it only has to tell a command that runs from text that merely mentions one."""
+    units, cur, op = [], [], None
+    i, n, quote, depth = 0, len(cmd), None, 0
+    bodies = []  # heredoc delimiters opened on the current line
+
+    def flush(next_op, bg=False):
+        nonlocal op
+        text = "".join(cur).strip()
+        cur.clear()
+        if text:
+            units.append((text, op, bg))
+            op = next_op
+        elif next_op in ("&&", "||", "|"):
+            op = next_op
+
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            cur.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                cur.append(cmd[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            cur.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if ch in "'\"`":
+            quote = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if cmd.startswith("$(", i):
+            depth += 1
+            cur.append("$(")
+            i += 2
+            continue
+        if depth:
+            depth += (ch == ")") * -1 + (ch == "(")
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == "#" and (not cur or "".join(cur)[-1:].isspace()):
+            end = cmd.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+            m = _HEREDOC.match(cmd, i)
+            if m:
+                bodies.append(m.group(2))
+                cur.append(m.group(0))
+                i = m.end()
+                continue
+        if ch == "\n":
+            flush(None)
+            i += 1
+            for delim in bodies:
+                while i < n:
+                    end = cmd.find("\n", i)
+                    end = n if end < 0 else end
+                    line = cmd[i:end]
+                    i = min(n, end + 1)
+                    if line.strip() == delim:
+                        break
+            bodies = []
+            continue
+        two = cmd[i:i + 2]
+        if two in ("&&", "||"):
+            flush(two)
+            i += 2
+            continue
+        if ch == "|":
+            flush("|")
+            i += 1
+            continue
+        if ch == ";":
+            flush(None)
+            i += 1
+            continue
+        if ch == "&" and not (i > 0 and cmd[i - 1] in "<>") and not cmd.startswith("&>", i):
+            flush(None, bg=True)
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    flush(None)
+    return units
+
+
+def executed_sleeps(command):
+    """[(seconds, unconditional)] for the `sleep N` (or `time.sleep(N)` in a `python3 -c`) a shell
+    command actually executes, in command order. Not counted: text inside quotes, comments and
+    heredoc bodies; anything after an unconditional `exit`; a backgrounded sleep; an argument that
+    is not a plain number. `unconditional` is False when the sleep sits behind `&&`/`||` or inside
+    an if/while/for/case/brace/subshell, where the command may not reach it; a caller then
+    needs timing evidence that it ran. A deliberately small parser, not a shell."""
+    if not isinstance(command, str) or not command.strip():
+        return []
+    out, nested = [], False
+    for text, op, bg in _shell_units(command):
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()
+        guarded = nested or op in ("&&", "||")
+        while words and (words[0] in _CONDITIONAL_OPENERS or words[0] in _LEAD_WORDS
+                         or re.match(r"^\w+=", words[0])):
+            if words[0] in _CONDITIONAL_OPENERS:
+                nested = guarded = True
+            words = words[1:]
+        if not words:
+            continue
+        head = words[0]
+        if head in _COMPOUND_WORDS or head.startswith(("{", "(")) or head.endswith("()"):
+            nested = True
+            continue
+        if head in ("exit", "return"):
+            if not guarded:
+                break
+            continue
+        if bg:
+            continue
+        if head == "sleep" and len(words) > 1:
+            secs = []
+            for arg in words[1:]:
+                m = _SLEEP_ARG.match(arg)
+                if not m:
+                    secs = []
+                    break
+                secs.append(float(m.group(1)) * _SLEEP_UNITS[m.group(2)])
+            if secs and sum(secs) > 0:
+                out.append((sum(secs), not guarded))
+        elif re.match(r"^python[\d.]*$", head) and "-c" in words[1:-1]:
+            code = words[words.index("-c") + 1]
+            lines = [ln for ln in code.split("\n") if ln.strip()]
+            stmts = [s for ln in lines for s in ln.split(";") if s.strip()]
+            compound = any(ln[:1].isspace() or _PY_COMPOUND.match(ln.strip()) for ln in lines)
+            for s in stmts:
+                m = _PY_SLEEP.match(s.strip())
+                if m and float(m.group(1)) > 0:
+                    out.append((float(m.group(1)), not (guarded or compound)))
+    return out
+
+
+def agent_requested_waits(events, taken=()):
+    """([(t_start, t_end)], notes) for the waits the agent asked for in its own tool calls. A
+    sleep is attributed only with execution evidence: it is in the command's executed sleeps
+    (executed_sleeps) and the call's own t_start/t_end span covers at least that many seconds.
+    Each call attributes min(sum of those sleeps, its span), placed in the part of its span that
+    no interval in `taken` (harness and external waits) covers, earliest first: only the total is
+    a claim, the position inside the call is not observable. With no timing on the call, or a
+    span shorter than the sleep, nothing is attributed and a note says why."""
+    spans, notes = [], []
+    cut = merge_intervals(taken)
+    for i, e in enumerate(events):
+        if e.get("kind") != "tool_call":
+            continue
+        sleeps = executed_sleeps(e.get("command"))
+        if not sleeps:
+            continue
+        t0, t1 = e.get("t_start"), e.get("t_end")
+        label = {"tool": e.get("tool"), "run": e.get("run"), "event_index": i}
+        if not (is_number(t0) and is_number(t1) and t1 >= t0):
+            notes.extend(dict(label, seconds=n, unconditional=u, attributed=False,
+                              why="no timing: the tool call has no t_start/t_end")
+                         for n, u in sleeps)
+            continue
+        duration = t1 - t0
+        evidenced = [(n, u) for n, u in sleeps if duration >= n]
+        notes.extend(dict(label, seconds=n, unconditional=u, attributed=(n, u) in evidenced,
+                          why="" if (n, u) in evidenced else
+                          "the call's span (%.2f s) is shorter than the sleep" % duration)
+                     for n, u in sleeps)
+        if evidenced:
+            left, at = min(sum(n for n, _ in evidenced), duration), t0
+            for cs, ce in cut + [(t1, t1)]:
+                if ce <= at:
+                    continue
+                gap = min(max(0.0, cs - at), left)
+                if gap > 0:
+                    spans.append((at, at + gap))
+                    left -= gap
+                at = max(at, ce)
+                if left <= 0 or at >= t1:
+                    break
+    return spans, notes
 
 
 def _relay_ok(status):
@@ -666,6 +877,95 @@ def hq_timeline(db, task, tree, run_ids):
         out.append(("terminal", terminal))
         out.sort(key=lambda x: x[1])
     return out
+
+
+SCHEDULING_KINDS = ("wake.queued", "wake.folded", "run.started", "run.ended")
+
+
+def hq_scheduling(db, tree, run_ids):
+    """[(kind, epoch seconds, data)] of HQ's scheduling events for the task tree and its runs, in
+    store order; empty for a store without an event log."""
+    con = sqlite3.connect(db)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone():
+            return []
+        rows = con.execute("SELECT at_ms, kind, data FROM events WHERE kind IN (%s) ORDER BY id"
+                           % ",".join("?" * len(SCHEDULING_KINDS)), SCHEDULING_KINDS).fetchall()
+    finally:
+        con.close()
+    tasks, runs, out = set(tree), set(run_ids), []
+    for at, kind, data in rows:
+        try:
+            d = json.loads(data)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and (d.get("task") in tasks or d.get("run") in runs):
+            out.append((kind, at / 1000.0, d))
+    return out
+
+
+def hq_recovery_waits(sched, runs):
+    """(wait events, meta) for HQ's scheduling waits, from the event sequence and never from a
+    reused run row. HQ retries an interrupted turn on the SAME run row (attempts 1 -> 2, started_at
+    overwritten), so the row's queued_at -> started_at spans the whole first attempt.
+
+    A recovery runs from a run.ended with result retry_waiting to that run's next run.started. It
+    is split at the first sign HQ had what it waited for: an owner reply folded into the wake
+    (wake.folded), a wake queued, or the retry deadline (a wake's delayed_until, else the row's
+    retry_at); before it, `news_or_deadline`, after it, `admission`. Settlement (the runner's
+    report reaching HQ) is not observable in the store: a recovery starts at run.ended. A reply
+    folded before run.ended is `reply_first` (the wait is then the retry deadline); after it,
+    `report_first`. A retry with no later run.started leaves its interval unaccounted. Runs with
+    no run.started/run.ended event are `rows_fallback_runs`: they keep the row's own span."""
+    events, recoveries, covered = [], [], set()
+    for r in runs:
+        rid = r["id"]
+        starts = sorted(at for kind, at, d in sched if kind == "run.started" and d.get("run") == rid)
+        ends = [(at, d) for kind, at, d in sched if kind == "run.ended" and d.get("run") == rid]
+        if not starts and not ends:
+            continue
+        covered.add(rid)
+        folds = [at for kind, at, d in sched if kind == "wake.folded"]
+        wakes = [(at, d) for kind, at, d in sched if kind == "wake.queued"]
+        for e_at, d in ends:
+            if d.get("result") != "retry_waiting":
+                continue
+            after = [s for s in starts if s > e_at]
+            before = [s for s in starts if s <= e_at]
+            prev = max(before) if before else None
+            reply_first = any((prev is None or prev < f < e_at) for f in folds)
+            rec = {"run": rid, "ended_at": e_at, "order": "reply_first" if reply_first else "report_first",
+                   "news_at": None, "started_at": None, "status": "missing_run_started",
+                   "settlement": "not observable in HQ's store: the recovery starts at run.ended"}
+            recoveries.append(rec)
+            if not after:
+                continue
+            r_at = min(after)
+            rec["started_at"] = r_at
+            cand = [f for f in folds if e_at < f <= r_at]
+            for w_at, wd in wakes:
+                if not e_at < w_at <= r_at:
+                    continue
+                until = wd.get("delayed_until")
+                cand.append(until / 1000.0 if is_number(until) and e_at < until / 1000.0 <= r_at else w_at)
+            retry_at = _ms(r.get("retry_at"))
+            if retry_at is not None and e_at < retry_at <= r_at:
+                cand.append(retry_at)
+            rec["status"] = "measured"
+            if cand:
+                rec["news_at"] = min(cand)
+                parts = [("news_or_deadline", e_at, rec["news_at"]), ("admission", rec["news_at"], r_at)]
+            else:
+                parts = [("recovery", e_at, r_at)]
+            events.extend({"kind": "wait", "t_start": a, "t_end": b, "agent": "hq",
+                           "wait_kind": "recovery", "part": part, "source": "events",
+                           "recovery_of_run": rid} for part, a, b in parts if b >= a)
+    fallback = [r["id"] for r in runs if r["id"] not in covered]
+    meta = {"source": "events" if covered and not fallback else ("run_rows" if not covered else "mixed"),
+            "recoveries": recoveries, "rows_fallback_runs": fallback,
+            "note": "scheduling waits per attempt from HQ's event sequence; a reused run row's "
+                    "queued_at -> started_at is used only for runs with no such events"}
+    return events, meta, covered
 
 
 def event_time(timeline, label, fallback):
@@ -960,6 +1260,8 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, n
         reconciliation = {"checked": True, "parse_errors": bad, "mismatches": [], "match": True}
 
     events, usage_list = [], []
+    sched_events, hq_waits_meta, event_runs = hq_recovery_waits(hq_scheduling(db, tree, run_ids), runs)
+    events.extend(sched_events)
     prev_member = None
     for r in runs:
         agent = who(r)
@@ -979,7 +1281,9 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, n
                            "t_end": started or queued, "agent": agent, "continuation": True,
                            "run": r["id"], "status": "retried_attempt"})
         prev_member = r["member"]
-        if queued is not None and started is not None and started > queued:
+        if r["id"] in event_runs:
+            pass  # its waits come from HQ's event sequence, never from a reused row's span
+        elif queued is not None and started is not None and started > queued:
             kind = "retry_backoff" if (r["attempts"] or 0) > 1 else "queue"
             events.append({"kind": "wait", "t_start": queued, "t_end": started, "agent": agent,
                            "wait_kind": kind, "run": r["id"]})
@@ -1073,6 +1377,7 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, n
             events.append({"kind": "wait", "t_start": a_t, "t_end": b_t, "agent": "hq",
                            "wait_kind": "queue", "source": "events"})
     events.sort(key=lambda e: (e.get("t_start") is None, e.get("t_start") or 0))
+    _, requested_notes = agent_requested_waits(events)
     attempt = {"arm": "endora", "family": family, "seed": seed,
                "final_report": final_report_of(posts, runs, transcripts, members),
                "dispatched_at": event_time(timeline, "task.created",
@@ -1082,6 +1387,9 @@ def parse_endora(db, task, relay_log=None, family="", seed=0, runner_log=None, n
                "terminal": terminal, "events": events, "usage": usage_list,
                "meta": {"task": task, "tasks_in_tree": tree, "runs": run_ids,
                         "timeline": [{"label": l, "t": t} for l, t in timeline],
+                        "hq_waits": hq_waits_meta,
+                        **({"agent_requested_wait_notes": requested_notes}
+                           if requested_notes else {}),
                         "model_calls_observed": sum(
                             _split_kinds(t["body"]).count("reply") for t in transcripts.values()
                             if t["run"] in set(run_ids)),
@@ -1180,19 +1488,35 @@ def attempt_metrics(a, tariff, threshold=DEFAULT_WAIT_THRESHOLD):
     # alone makes an attempt contaminated. The world's waiting is never agent-active time,
     # even inside a worker process or a model call.
     waits = [e for e in events if e.get("kind") == "wait"]
-    harness = union_length([(e.get("t_start"), e.get("t_end")) for e in waits
-                            if e.get("wait_kind") in HARNESS_WAITS], lo, hi)
+    harness_spans = [(e.get("t_start"), e.get("t_end")) for e in waits
+                     if e.get("wait_kind") in HARNESS_WAITS]
+    harness = union_length(harness_spans, lo, hi)
     external = [(e.get("t_start"), e.get("t_end")) for e in waits
-                if e.get("wait_kind") not in HARNESS_WAITS]
-    wait = union_length(external, lo, hi)
+                if e.get("wait_kind") not in HARNESS_WAITS + AGENT_WAITS]
+    # The parts are exclusive, taken in this order: the harness's waiting, the world's, the
+    # agent's own requested waits (a `sleep` it ran, with timing evidence), then agent-active
+    # time. A second claimed on the same seconds is not counted twice.
+    wait = union_length_less(external, harness_spans, lo, hi)
+    sleep_spans, sleep_notes = agent_requested_waits(events, harness_spans + external)
+    sleep_spans += [(e.get("t_start"), e.get("t_end")) for e in waits
+                    if e.get("wait_kind") in AGENT_WAITS]
+    requested = union_length_less(sleep_spans, harness_spans + external, lo, hi)
+    # Waiting of any kind is never agent-active time: a span HQ reports as one model call
+    # can cover its own queue (round 18), and the parts must not overlap.
     active = union_length_less([(e.get("t_start"), e.get("t_end")) for e in events
                                 if e.get("kind") in ("model_call", "tool_call", "worker_active")],
-                               external, lo, hi)
+                               external + harness_spans + sleep_spans, lo, hi)
     frac = (wait / elapsed) if elapsed else None
+    parts = [active, harness, requested, wait]
+    unaccounted = (max(0.0, elapsed - sum(parts))
+                   if elapsed is not None and all(is_number(x) for x in parts) else None)
     time = {"elapsed_s": elapsed, "elapsed_source": source, "agent_active_s": active,
-            "harness_wait_s": harness,
+            "harness_wait_s": harness, "agent_requested_wait_s": requested,
+            "unaccounted_s": unaccounted,
             "external_wait_s": wait, "wait_fraction": frac, "wait_threshold": threshold,
             "contaminated": None if frac is None else frac > threshold}
+    if sleep_notes:
+        time["agent_requested_wait_notes"] = sleep_notes
 
     tools = [e for e in events if e.get("kind") == "tool_call"]
     term = a.get("terminal_at", hi)

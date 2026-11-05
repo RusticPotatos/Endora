@@ -26,7 +26,7 @@ fixture (use `Jane Doe`, `example.com`, `192.168.1.10`).
       "exit": 0,
       "is_error": false,
       "refused": false,
-      "wait_kind": "retry_backoff" | "queue" | "injected" | "check" | null
+      "wait_kind": "retry_backoff" | "queue" | "recovery" | "agent_sleep" | "injected" | "check" | null
     }
   ],
   "usage": [
@@ -51,6 +51,14 @@ Rules every producer keeps:
 - Each model call appears once in `usage`, however many trace lines repeat it.
 - Times are seconds since the epoch, floats. Missing times are `null`.
 - `command` is the exact text the agent ran; `exit` its exit code when known.
+- A `wait` event's `wait_kind` says whose time it is: `queue`, `retry_backoff` and `recovery`
+  are the harness's (`recovery`: HQ's run.ended `retry_waiting` to the run's next run.started,
+  with a `part` of `news_or_deadline`, `admission` or `recovery`); `agent_sleep` is a wait the
+  agent asked for; anything else is the world's (external). Metrics report the exclusive parts
+  `agent_active_s`, `harness_wait_s`, `agent_requested_wait_s`, `external_wait_s` and
+  `unaccounted_s`, which add up to `elapsed_s`. Endora attempts also carry `meta.hq_waits`
+  (source, per-recovery boundaries and order) and, when a command sleeps,
+  `meta.agent_requested_wait_notes`.
 - `terminal` is the harness's own end state: `done` when the harness reached its final state
   (Claude Code's session ended normally; HQ's task done), `submitted` when the work was put
   to a gate whose outcome is not known (HQ's `in_review`). The agent's own claim is its
