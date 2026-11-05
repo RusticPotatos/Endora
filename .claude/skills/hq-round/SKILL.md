@@ -25,13 +25,26 @@ round stands (step 2's status) and do the next due step.
 is the skill's name, so every tick reads the rules as they are now, never a pasted copy that goes
 stale. Start a fresh session for each round; the record, not the conversation, carries it over.
 
-## The cycle (one round a day)
+**Fresh sessions, safely.** A new session in this repository briefs itself: the SessionStart
+hook (`.claude/hooks/round-brief.py`, read-only) gives it the checkout, the round branches
+being built, the latest round's table and the open defects, from the record. So handing over
+is three steps, and nothing is pasted:
+1. The old session brings the record up to date (the round's rows, new defects, what waits on
+   the owner) and pushes it. That is the handoff; a conversation's memory is not.
+2. Start a new session in this repository (the desktop app, or `claude` in the folder) and say
+   `/hq-round` (or `/loop /hq-round tick` for a round in flight).
+3. The old session stops its loop.
+Start one at each round's start, and whenever a session has been summarised or runs long. A
+round branch's builder works in its own worktree; the driver never edits it.
+
+## The cycle (a round in 8 hours)
 
 | When | What |
 |---|---|
-| Round N runs, **24 hours** at most | Ticks (step 2); each task judged as it reaches done or blocked (step 3). Meanwhile round N+1's fixes are built on one branch, `round<N+1>`, in its own worktree and session: a failing test and a scenario first, the gate on each (step 5) |
-| Hour 24, or all judged | Close round N (step 4): a task not finished is not accepted |
-| The same day | Merge `round<N+1>`, gate, release, start round N+1 (step 1) |
+| Round N runs, **8 hours** at most (owner, 1 Nov) | Ticks (step 2); each task judged as it reaches done or blocked (step 3). Meanwhile round N+1's fixes are built on one branch, `round<N+1>`, in its own worktree and session: a failing test and a scenario first, the gate on each (step 5) |
+| Hour 8, or all judged | Close round N (step 4): a task not finished is not accepted |
+| Before the next round | Every change for round N+1 tried first on the replay bench (`scripts/replay-bench/`, real decision points from round N, minutes not hours); score round N with `experiment.py metrics`, three ways (the fixed ten, homelab fresh, outside the homelab) |
+| Then | Merge `round<N+1>`, gate, release, start round N+1 (step 1) |
 
 Speed comes from removing waits, not from more agents: what held round 3 was members stopped
 with money in the pool (D21, D15), verdicts that could not land (D19) and tasks never started.
@@ -57,6 +70,13 @@ Settings that change speed (items in hand at once, limits) change only at a roun
 - **Decide from evidence.** Ask the owner only for money, keys, accepted risk, irreversible
   steps or taste; otherwise decide, and cite the evidence (the round's record, the ADRs,
   published guidance).
+- **Let the agents be agents** (owner, 1 Nov). Prefer removing a hand-off, check or question to
+  adding one; a step of HQ's pipeline stays only where the record shows it changed an outcome.
+- **Investigate without asking, and never idle.** Read-only checks (the store, logs, metrics,
+  the lab's state) need no permission. While a round waits on anything, prepare the next one on
+  its branch (fixes, arms, tasks), gated and pushed; releasing still waits for the close.
+- **No wait longer than it earns.** A task's window or wait is as short as shows what it must
+  (task 8's window: a few hours, unless a round shows the longer one finds more).
 
 ## 1. Before a round (`start`)
 
@@ -83,6 +103,10 @@ Settings that change speed (items in hand at once, limits) change only at a roun
    --previous <last round's ids> --yes < scripts/experiment.py` (dry-run first, without
    `--yes`, and read the plan: the right sources, nothing else). Record in `### Round N` what
    was released, what changed and why, the task ids and the start time.
+   - From round 4, the fresh set: 2–3 homelab tasks HQ has not seen and one outside the
+     homelab (F4: a small task in a public repository new to HQ, cloned into the sandbox, its
+     branch kept local), each with criteria written before either arm runs; Claude Code does
+     them too. Retire each once run.
    - A task that can no longer be met (round 2's task 8: its window had left the logs) is not
      silently kept: say so, and fix the task's conditions before the round counts it.
    - Round 4's solo arm (item E): the same tasks again, with `start --round N --from-tasks
@@ -140,7 +164,9 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
 
 1. **The result**: accepted of ten, **reported** (what HQ recorded) and **verified** (what the
    judge finds the work meets, whatever HQ recorded) apart, so a fixed recording defect is not
-   read as better work; interventions, spend; the side-by-side table of every round
+   read as better work, and each of these for the fixed ten, the homelab fresh tasks and the
+   task outside the homelab apart (a gain that does not show outside the homelab did not carry
+   over); interventions, spend; the side-by-side table of every round
    and Claude Code; what held the round back, by the evidence.
 2. **Cost by model** from HQ's scorecard (`by_model`): per turn and share. It drove the review
    cap.
@@ -155,11 +181,17 @@ first ready; note waits on the pool), **Interventions**, and **Rework** (filled 
    scorecards apart: they are two products. If none improves across two rounds, put the three
    choices to the owner: continue, narrow the development harness, or redirect to unattended
    operations.
+5. **The cheat sheet** (the owner's "Agent teams cheat sheet" Claude Doc, linked from the global
+   instructions): the round's lessons, with their numbers, go into its "Field notes (full)" tab
+   as a dated section, and its current principles change where the evidence does; its "One page"
+   tab stays one page (replace a line, don't add one). Public references only.
 5. **Push the record** after the privacy scan, and summarise for the owner in plain words.
 
 ## 5. The next round (`next`)
 
-Pick the changes from the round's defects, ranked by cost and effect, each with its evidence and,
+Pick the changes from the round's defects, ranked by cost and effect, each labelled **general**
+(helps any task) or **homelab-specific** (helps only the lab's work, and needs a stated reason),
+each with its evidence and,
 for a design choice, published guidance (as the review cap cited Anthropic's and OpenAI's
 evaluation advice). Put each on its own branch from one round branch; build them in parallel
 only when they touch different files, and give each a failing test and a scenario first. Merge
