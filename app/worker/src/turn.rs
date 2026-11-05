@@ -1068,14 +1068,13 @@ pub(crate) fn instructions(
              in /work/repo, on top of its base, and you read it in the shell: git log, git diff \
              against the base, the files themselves. Cite that checkout's receipt (receipt r12) \
              as a reading of your own, with the check's, when you pass the work or send it back. \
-             You read; you submit and push nothing. Never cite or copy from group_vars/*.yml, \
-             host_vars or any \
-             inventory: they hold the owner's own values.",
+             You read; you submit and push nothing. In the lab's fork, never cite or copy from \
+             group_vars/*.yml, host_vars or any inventory: they hold the owner's own values.",
         );
     } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
         told.push_str(
-            "\n\nThe wing's git: repo_checkout brings the lab's ansible-nas fork into /work/repo \
-             with git set up (your commits are authored Endora HQ and carry the trailer for \
+            "\n\nThe wing's git: repo_checkout brings the item's repository into /work/repo (the \
+             lab's ansible-nas fork, unless your briefing names one outside the lab) with git set up (your commits are authored Endora HQ and carry the trailer for \
              you). Work on a branch named hq/task-N-<slug> for your task (N is your task's \
              number), commit in small steps with the shell, then repo_submit that branch: \
              Endora keeps it, writes its diff as a document on the task and runs the lab's \
@@ -1088,7 +1087,8 @@ pub(crate) fn instructions(
              line says a tool could not run, or that develop could not be checked), ask for the \
              same branch to be checked again with recheck rather than submitting it again. \
              Then submit the task for review, citing that receipt. You never push: \
-             the owner pushes an accepted branch to the fork and merges it there. Never edit, \
+             the owner pushes an accepted branch to the fork and merges it there, and a branch \
+             of a repository outside the lab is never pushed. In the lab's fork, never edit, \
              cite or copy from group_vars/*.yml, host_vars or any inventory: they hold the \
              owner's own values, and a branch touching them is refused.",
         );
@@ -1140,24 +1140,51 @@ pub(crate) fn member_of(briefing: &str) -> Option<String> {
 /// Upstream ansible-nas, when it came with the checkout, is said last.
 pub(crate) fn said_after_checkout(
     out: &repo::CheckedOut,
-    base: &str,
-    kept: bool,
+    at: &Where,
     can_submit: bool,
     task: Option<i64>,
     receipt: &str,
 ) -> String {
-    said_of_the_branch(out, base, kept, can_submit, task, receipt)
-        + &upstream_note(out.upstream.as_deref(), base, can_submit)
+    said_of_the_branch(out, at, can_submit, task, receipt)
+        + &upstream_note(out.upstream.as_deref(), &at.base, can_submit)
+}
+
+/// Where a checkout sits, as the node handed it over: its base, whether it is the team's kept
+/// branch, and whether the repository is one outside the lab (ADR 0115, amended 2026-11-05),
+/// which the node says from the repository the owner set on the item's project.
+pub(crate) struct Where {
+    pub(crate) base: String,
+    pub(crate) kept: bool,
+    pub(crate) outside: bool,
+}
+
+/// The rule of the owner's values a checkout states: the lab fork's paths in the fork, which
+/// the node refuses a branch for touching; in a repository outside the lab, whose own files
+/// those names do not describe, only that the owner's values never go into it.
+fn values_rule(outside: bool, can_submit: bool) -> &'static str {
+    match (outside, can_submit) {
+        (true, _) => {
+            " This is a public repository outside the lab: the lab fork's rules of which paths \
+             hold the owner's values do not apply, and its own files are ordinary code. Never \
+             put the owner's own values, credentials or personal details in it."
+        }
+        (false, false) => " Never cite or copy from group_vars/*.yml, host_vars or any inventory.",
+        (false, true) => {
+            " Never edit, cite or copy from group_vars/*.yml, host_vars or any inventory: they \
+             hold the owner's own values, and a branch touching them is refused."
+        }
+    }
 }
 
 fn said_of_the_branch(
     out: &repo::CheckedOut,
-    base: &str,
-    kept: bool,
+    place: &Where,
     can_submit: bool,
     task: Option<i64>,
     receipt: &str,
 ) -> String {
+    let (base, kept) = (place.base.as_str(), place.kept);
+    let rule = values_rule(place.outside, can_submit);
     let at = &out.head[..12.min(out.head.len())];
     let (branch, path, files) = (&out.branch, out.path.display(), out.files);
     if !can_submit {
@@ -1166,8 +1193,7 @@ fn said_of_the_branch(
              of {base}. Read it with the shell: `cd {path} && git log --oneline \
              {base}..{branch}`, `git diff {base}..{branch}`, the files themselves. You read; \
              you submit and push nothing. Cite this checkout's receipt as a reading of your \
-             own, with the check's, when you pass the work or send it back. Never cite or copy \
-             from group_vars/*.yml, host_vars or any inventory."
+             own, with the check's, when you pass the work or send it back.{rule}"
         );
     }
     if kept {
@@ -1177,9 +1203,7 @@ fn said_of_the_branch(
              it: edit, `git add -A && git commit -m \"what and why\"` in {path}, then \
              repo_submit this branch again; if {base} has moved on, `git rebase {base}` \
              first. Git is set up: your commits are authored Endora HQ and the trailer is \
-             added for you. Never edit, cite or copy from group_vars/*.yml, host_vars or any \
-             inventory: they hold the owner's own values, and a branch touching them is \
-             refused."
+             added for you.{rule}"
         );
     }
     let slug = task.map_or_else(|| "N-<slug>".to_owned(), |t| format!("{t}-<slug>"));
@@ -1188,9 +1212,8 @@ fn said_of_the_branch(
          {base}: branch from it and your submission must sit on top of it. Git is set up: \
          your commits are authored Endora HQ and the trailer is added for you. Work on a \
          branch of your own: `cd {path} && git checkout -b hq/task-{slug} {base}`, edit, \
-         `git add -A && git commit -m \"what and why\"`, then repo_submit with that branch. \
-         Never edit, cite or copy from group_vars/*.yml, host_vars or any inventory: they \
-         hold the owner's own values, and a branch touching them is refused."
+         `git add -A && git commit -m \"what and why\"`, then repo_submit with that \
+         branch.{rule}"
     )
 }
 
@@ -1268,6 +1291,9 @@ pub(crate) struct Handed {
     /// Whether it is the team's own kept submission (ADR 0115, amended), bundled with its base
     /// and unpacked as a head of its own on top of it.
     pub(crate) kept: bool,
+    /// Whether the repository is one outside the lab, as the node says (ADR 0115, amended
+    /// 2026-11-05).
+    pub(crate) outside: bool,
     /// The bundle's bytes.
     pub(crate) bundle: Vec<u8>,
     /// The node's receipt after the text, as the model reads it (` (receipt r12)`), or nothing.
@@ -1295,6 +1321,7 @@ pub(crate) fn handed_over(said: &str) -> Option<Handed> {
         branch,
         base,
         kept: handed["kept"] == true,
+        outside: handed["outside"] == true,
         bundle,
         receipt,
     })
@@ -1402,6 +1429,7 @@ pub(crate) fn in_the_repo(
         branch,
         base,
         kept,
+        outside,
         bundle,
         receipt,
     } = handed;
@@ -1428,7 +1456,17 @@ pub(crate) fn in_the_repo(
         Ok(out) => {
             did.note(&call.name, &args, Outcome::Done);
             Ok(Reply {
-                text: said_after_checkout(&out, &base, kept, can_submit, task, &receipt),
+                text: said_after_checkout(
+                    &out,
+                    &Where {
+                        base,
+                        kept,
+                        outside,
+                    },
+                    can_submit,
+                    task,
+                    &receipt,
+                ),
                 refused: false,
                 asked: false,
                 moved_on: false,
@@ -3050,6 +3088,15 @@ mod tests {
         assert_eq!(newest(&[], 10), "");
     }
 
+    /// A checkout of the lab's fork on `develop`, the team's kept branch when `kept`.
+    fn fork(kept: bool) -> Where {
+        Where {
+            base: "develop".to_owned(),
+            kept,
+            outside: false,
+        }
+    }
+
     fn checked_out(branch: &str) -> repo::CheckedOut {
         repo::CheckedOut {
             path: "/work/repo".into(),
@@ -3065,11 +3112,11 @@ mod tests {
     #[test]
     fn a_checkout_with_upstream_says_how_to_read_it_and_never_to_build_on_it() {
         let mut out = checked_out("develop");
-        let without = said_after_checkout(&out, "develop", false, true, Some(936), "");
+        let without = said_after_checkout(&out, &fork(false), true, Some(936), "");
         assert!(!without.contains("upstream"), "{without}");
         out.upstream = Some("upstream/master".to_owned());
         for (kept, can_submit) in [(false, true), (true, true), (false, false)] {
-            let said = said_after_checkout(&out, "develop", kept, can_submit, Some(936), "");
+            let said = said_after_checkout(&out, &fork(kept), can_submit, Some(936), "");
             assert!(
                 said.contains("git log --oneline develop..upstream/master")
                     && said.contains("read-only"),
@@ -3087,8 +3134,7 @@ mod tests {
         // A developer on the fork: branch from the base, work, submit.
         let fresh = said_after_checkout(
             &checked_out("develop"),
-            "develop",
-            false,
+            &fork(false),
             true,
             Some(7),
             receipt,
@@ -3103,8 +3149,7 @@ mod tests {
         // submit again; it is not a fresh branch to cut.
         let kept = said_after_checkout(
             &checked_out("hq/task-7-add-pages"),
-            "develop",
-            true,
+            &fork(true),
             true,
             Some(7),
             receipt,
@@ -3119,8 +3164,7 @@ mod tests {
         // A tester: she reads it and cites the checkout; she submits and pushes nothing.
         let read = said_after_checkout(
             &checked_out("hq/task-7-add-pages"),
-            "develop",
-            true,
+            &fork(true),
             false,
             Some(7),
             receipt,

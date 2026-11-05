@@ -817,7 +817,7 @@ fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Res
         bundle.bytes.len() >> 10,
         upstream_said(&bundle)
     );
-    let text = handed(&bundle, mirror.base(), false);
+    let text = handed(&bundle, mirror.base(), false, mirror.is_outside());
     Ok(Done { text, said })
 }
 
@@ -834,15 +834,20 @@ fn upstream_said(bundle: &repo::Bundle) -> String {
 }
 
 /// The checkout as the worker reads it: the branch, its head, the base, whether it is the team's
-/// kept branch, upstream's name in the sandbox (`upstream/<branch>`) when it came with it, and
+/// kept branch, whether the repository is one outside the lab, upstream's name in the sandbox (`upstream/<branch>`) when it came with it, and
 /// the bundle as base64.
-fn handed(bundle: &repo::Bundle, base: &str, kept: bool) -> String {
+fn handed(bundle: &repo::Bundle, base: &str, kept: bool, outside: bool) -> String {
     let mut text = json!({
         "branch": bundle.branch, "head": bundle.head, "base": base,
         "bundle": repo::to_base64(&bundle.bytes),
     });
     if kept {
         text["kept"] = json!(true);
+    }
+    // A repository outside the lab (ADR 0115, amended 2026-11-05): the worker tells the model
+    // the fork's rule of the owner's values does not describe it.
+    if outside {
+        text["outside"] = json!(true);
     }
     if let Some(up) = &bundle.upstream {
         text["upstream"] = json!(up.named());
@@ -915,7 +920,7 @@ fn kept_checkout(
         bundle.bytes.len() >> 10,
         upstream_said(&bundle)
     );
-    let text = handed(&bundle, mirror.base(), true);
+    let text = handed(&bundle, mirror.base(), true, mirror.is_outside());
     Ok(Done { text, said })
 }
 
@@ -1723,18 +1728,20 @@ mod tests {
             upstream: None,
         };
         let plain: serde_json::Value =
-            serde_json::from_str(&handed(&bundle, "develop", false)).unwrap();
+            serde_json::from_str(&handed(&bundle, "develop", false, false)).unwrap();
         assert_eq!(plain["upstream"], serde_json::Value::Null);
         assert_eq!(plain["kept"], serde_json::Value::Null);
+        assert_eq!(plain["outside"], serde_json::Value::Null);
         assert_eq!(upstream_said(&bundle), "");
         bundle.upstream = Some(repo::Upstream {
             branch: "master".to_owned(),
             head: "0123456789abcdef".to_owned(),
         });
         let with: serde_json::Value =
-            serde_json::from_str(&handed(&bundle, "develop", true)).unwrap();
+            serde_json::from_str(&handed(&bundle, "develop", true, false)).unwrap();
         assert_eq!(with["upstream"], "upstream/master");
         assert_eq!(with["kept"], true);
+        assert_eq!(with["outside"], serde_json::Value::Null);
         assert_eq!(
             upstream_said(&bundle),
             "; upstream ansible-nas's master at 0123456789ab as upstream/master, read-only"
@@ -4279,6 +4286,8 @@ mod tests {
                 Some(git_in(&tiny, &["rev-parse", "refs/heads/main"]).as_str())
             )
         );
+        // O8: the worker is told the checkout is of a repository outside the lab.
+        assert_eq!(handed["outside"], true);
         // 2. A fix on the item's branch, HQ's own commit, submitted.
         let file = root.join("tiny.bundle");
         std::fs::write(

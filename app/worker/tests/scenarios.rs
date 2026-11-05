@@ -153,6 +153,74 @@ fn node_with_repo() -> String {
     .0
 }
 
+/// A node that offers the repository's contracts (only the checkout, to a turn that may only
+/// read) and answers every checkout with `handed`, as the node's text with a receipt after it.
+fn node_handing(handed: Value, read_only: bool) -> String {
+    fake(Box::new(move |sent, _| {
+        if sent.is_null() {
+            let mut tools = vec![
+                json!({ "name": "repo_checkout", "kind": "read", "description": "Check out." }),
+            ];
+            if !read_only {
+                tools.push(
+                    json!({ "name": "repo_submit", "kind": "act", "description": "Submit." }),
+                );
+            }
+            return (200, json!({ "tools": tools }).to_string());
+        }
+        let text = format!("{handed} (receipt r12)");
+        (200, json!({ "text": text }).to_string())
+    }))
+    .0
+}
+
+/// What the node hands out for a checkout, as it writes it: a bundle of a repository whose
+/// default branch is `base`, with the team's kept `branch` on top of it when it is not the base,
+/// and `outside` when the repository is one outside the lab.
+fn handed_out(branch: &str, base: &str, outside: bool) -> Value {
+    use base64::Engine as _;
+    let dir = std::env::temp_dir().join(format!(
+        "endora-worker-handed-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    git_in(&dir, &["init", "-q", "-b", base]);
+    git_in(&dir, &["config", "user.name", "Jane Doe"]);
+    git_in(&dir, &["config", "user.email", "jane@example.com"]);
+    std::fs::write(dir.join("README.md"), "tiny\n").unwrap();
+    git_in(&dir, &["add", "."]);
+    git_in(&dir, &["commit", "-q", "-m", "the base"]);
+    let kept = branch != base;
+    let mut refs = vec![base.to_owned()];
+    if kept {
+        std::fs::write(dir.join("fix.py"), "fixed = True\n").unwrap();
+        git_in(&dir, &["add", "."]);
+        git_in(&dir, &["commit", "-q", "-m", "the fix"]);
+        let head = git_in(&dir, &["rev-parse", "HEAD"]);
+        git_in(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        let kept_ref = format!("refs/submissions/{branch}");
+        git_in(&dir, &["update-ref", &kept_ref, &head]);
+        refs.push(kept_ref);
+    }
+    let mut args = vec!["bundle", "create", "-q", "handed.bundle"];
+    args.extend(refs.iter().map(String::as_str));
+    git_in(&dir, &args);
+    let bytes = std::fs::read(dir.join("handed.bundle")).unwrap();
+    let mut handed = json!({ "branch": branch, "head": git_in(&dir, &["rev-parse", "HEAD"]),
+        "base": base, "bundle": base64::engine::general_purpose::STANDARD.encode(bytes) });
+    if kept {
+        handed["kept"] = json!(true);
+    }
+    if outside {
+        handed["outside"] = json!(true);
+    }
+    handed
+}
+
 /// `git` in `dir`, which must succeed; its output.
 fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -257,6 +325,10 @@ struct Turn {
     stderr: String,
     /// The head of the checkout an earlier turn kept in the workbench, when one did.
     kept_head: Option<String>,
+    /// What the node hands out for a checkout, when the scenario says.
+    handed: Option<Value>,
+    /// Whether the node offers the turn only the checkout, as it does a reviewer.
+    read_only: bool,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -415,10 +487,10 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let dir = w.dir.clone().expect("a turn in the workbench");
     let (hq, to_hq) = hq_answering(w.refuse_first_ask);
     let (model, to_model) = model_replying(rounds);
-    let contracts = if w.kept_head.is_some() {
-        node_with_repo()
-    } else {
-        node()
+    let contracts = match (&w.handed, w.kept_head.is_some()) {
+        (Some(handed), _) => node_handing(handed.clone(), w.read_only),
+        (None, true) => node_with_repo(),
+        (None, false) => node(),
     };
     let env = [
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
@@ -526,6 +598,73 @@ fn kept_checkout(w: &mut Turn, branch: String) {
     )
     .unwrap();
     w.kept_head = Some(git_in(&repo, &["rev-parse", "HEAD"]));
+}
+
+#[given(expr = "the node hands out {string} of a repository outside the lab")]
+fn hands_out_outside(w: &mut Turn, branch: String) {
+    w.handed = Some(handed_out(&branch, &branch, true));
+}
+
+#[given(expr = "the node hands out {string} of the lab's fork")]
+fn hands_out_fork(w: &mut Turn, branch: String) {
+    w.handed = Some(handed_out(&branch, &branch, false));
+}
+
+#[given(
+    expr = "the node hands out the team's kept branch {string} of a repository outside the lab"
+)]
+fn hands_out_kept_outside(w: &mut Turn, branch: String) {
+    w.handed = Some(handed_out(&branch, "main", true));
+}
+
+#[given(expr = "the node hands out the team's kept branch {string} of the lab's fork")]
+fn hands_out_kept_fork(w: &mut Turn, branch: String) {
+    w.handed = Some(handed_out(&branch, "develop", false));
+}
+
+#[given("the turn may only read")]
+fn may_only_read(w: &mut Turn) {
+    w.read_only = true;
+}
+
+#[then(expr = "the model was not told {string} after its first reply")]
+fn not_told_after_first(w: &mut Turn, words: String) {
+    let messages = w.to_model[1]["messages"]
+        .as_array()
+        .expect("a round after that reply");
+    let last_reply = messages
+        .iter()
+        .rposition(|m| m["role"] == "assistant")
+        .expect("the reply");
+    for result in messages[last_reply..]
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .filter_map(|m| m["content"].as_str())
+    {
+        assert!(!result.contains(&words), "{result}");
+    }
+}
+
+/// The turn's instructions: the system message of its first request to the model.
+fn instructions_of(w: &Turn) -> String {
+    w.to_model[0]["messages"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| m["role"] == "system"))
+        .and_then(|m| m["content"].as_str())
+        .expect("the turn's instructions")
+        .to_owned()
+}
+
+#[then(expr = "the model's instructions say {string}")]
+fn instructions_say(w: &mut Turn, words: String) {
+    let told = instructions_of(w);
+    assert!(told.contains(&words), "{told}");
+}
+
+#[then(expr = "the model's instructions do not say {string}")]
+fn instructions_do_not_say(w: &mut Turn, words: String) {
+    let told = instructions_of(w);
+    assert!(!told.contains(&words), "{told}");
 }
 
 #[then("the model was told the kept branch's full head after its first reply")]

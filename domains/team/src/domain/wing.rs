@@ -15,6 +15,21 @@ pub const BRANCH_PREFIX: &str = "hq/";
 pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the repo's rules; \
     propose one if missing.\n";
 
+/// What a turn on an item in a repository outside the lab is told in place of how the lab is
+/// built (ADR 0115, amended 2026-11-05): which repository it is, that the lab fork's rule of
+/// the owner's values does not describe it, and what holds there instead.
+#[must_use]
+pub fn outside_repo_said(repo: &str) -> String {
+    format!(
+        "Your item's repository: {repo}, a public repository outside the lab. repo_checkout \
+         and repo_submit work in it, not in the lab's ansible-nas fork, and the fork's rules \
+         of which paths hold the owner's values do not apply: its own files, an inventory or \
+         a vault module among them, are ordinary code. Never put the owner's own values, \
+         credentials or personal details in it. A branch you submit is kept on the node for \
+         judging and never pushed.\n"
+    )
+}
+
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.
 #[derive(Debug, Clone, PartialEq, Eq)]

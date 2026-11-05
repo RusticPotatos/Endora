@@ -455,8 +455,9 @@ anywhere still holds.
 - **The fork is never an outside repository.** The node refuses to mirror the lab's own fork,
   under any of its addresses, as a repository outside the lab, so naming it there cannot step
   around the rule.
-- **Unchanged.** The briefing's words, the files HQ reads for its checks (role READMEs and
-  defaults, workflows not named for a vault) and the outgoing scan.
+- **Unchanged.** The briefing's words (see "an outside repository is briefed as one" below), the
+  files HQ reads for its checks (role READMEs and defaults, workflows not named for a vault) and
+  the outgoing scan.
 
 Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature` and
 `domains/team/features/the-owners-values-are-guarded-where-they-live.feature`.
@@ -483,3 +484,31 @@ No new storage: HQ's branch records, the node's kept refs and the sandbox alread
 Scenarios: `domains/team/features/a-resumed-item-knows-what-it-submitted.feature`,
 `app/worker/features/a-kept-checkout-says-a-commit-is-not-a-submission.feature`, and the
 outside-repository feature's resubmission scenario.
+
+## Amended 2026-11-05: an outside repository is briefed as one
+
+The amendment above scoped the rule of the owner's values to the fork and left the briefing's
+words unchanged. So a member on an item in a repository outside the lab was still told how the
+lab is built (ansible-nas roles and playbooks) and, at every checkout, "never edit, cite or copy
+from group_vars/*.yml, host_vars or any inventory": a prohibition the node no longer enforces
+there and that names that project's own code (the defect-remediation handoff's O8).
+
+- **The briefing names the repository.** HQ's briefing of an item whose project names a
+  repository outside the lab says which one it is, that `repo_checkout` and `repo_submit` work in
+  it, that the fork's rules of which paths hold the owner's values do not apply, that the owner's
+  own values, credentials and personal details never go into it, and that a submitted branch is
+  kept on the node and never pushed. It says this in place of how the lab is built. An item of the
+  lab keeps that paragraph.
+- **The checkout says where it is.** The node's checkout answer carries `outside` when its
+  mirror is an outside one, the same trusted context as above (the project setting, never a
+  member's word). The worker then says what holds there instead of the fork's rule, for a fresh
+  checkout, the team's kept branch and a reviewer's checkout alike. A checkout of the fork keeps
+  the fork's rule word for word.
+- **The worker's instructions scope it.** The git paragraph says `repo_checkout` brings the item's
+  repository (the fork unless the briefing names one outside the lab), that an outside branch is
+  never pushed, and states the fork's rule as the fork's.
+- **Unchanged.** What the node and HQ refuse, non-delivery outside the lab, and the files HQ reads
+  for its checks.
+
+Scenarios: `domains/team/features/an-item-outside-the-lab-is-briefed-as-outside.feature` and
+`app/worker/features/a-checkout-outside-the-lab-carries-no-lab-rule.feature`.

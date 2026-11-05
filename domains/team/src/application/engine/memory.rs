@@ -205,6 +205,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let relevance = self.item_relevance(run)?;
         pieces.extend(self.house_pieces(situation, relevance.as_ref())?);
+        // An item in a repository outside the lab is told that one, not how the lab is built
+        // (ADR 0115, amended 2026-11-05: the lab's rules hold in its fork alone).
+        if let Some(repo) = match run.task {
+            Some(task) => self.outside_repo_of_task(task)?,
+            None => None,
+        } {
+            pieces.push(Piece::new(
+                "repository",
+                crate::domain::wing::outside_repo_said(&repo),
+                Weight::Core,
+            ));
+            return Ok(pieces);
+        }
         // How the lab is built, for every member (ADR 0142); on an item, its lines about it.
         let lab = match &relevance {
             Some(relevance) => self.lab_said_about(relevance),
