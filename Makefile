@@ -501,6 +501,10 @@ sound-airplay2-test: ## Test what the AirPlay 2 door writes for shairport-sync a
 mac-brain-test: ## Test the Mac's brain helper and its install against stubs (no Mac, model or network needed)
 	sh scripts/test-mac-brain.sh
 
+.PHONY: release-test
+release-test: ## Test that scripts/release.sh stops at any failing stage, against fakes (nothing pushed or deployed)
+	sh scripts/test-release.sh
+
 .PHONY: hq-drain-test
 hq-drain-test: ## Test the drain a deploy runs before it restarts HQ against a fake docker (no daemon needed)
 	sh scripts/test-hq-drain.sh
