@@ -138,6 +138,38 @@ fn node() -> String {
     fake(Box::new(|_, _| (200, json!({ "tools": [] }).to_string()))).0
 }
 
+/// A node that offers the repository's two contracts, and answers nothing else.
+fn node_with_repo() -> String {
+    fake(Box::new(|_, _| {
+        (
+            200,
+            json!({ "tools": [
+                { "name": "repo_checkout", "kind": "read", "description": "Check out the fork." },
+                { "name": "repo_submit", "kind": "act", "description": "Submit a branch." },
+            ] })
+            .to_string(),
+        )
+    }))
+    .0
+}
+
+/// `git` in `dir`, which must succeed; its output.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 /// The model: runs `python3 report.py` in the shell, then says it is done.
 fn model() -> (String, Seen) {
     fake(Box::new(|_, before| {
@@ -174,6 +206,10 @@ fn call_of(written: &str, n: usize) -> Value {
                     "evidence": [receipt] }),
         ),
         ["post"] => ("post", json!({ "task": 7, "text": "What I found." })),
+        ["repo_checkout", branch] => (
+            "repo_checkout",
+            json!({ "branch": branch, "why": "to go on" }),
+        ),
         ["shell", command @ ..] => (
             "shell",
             json!({ "command": command.join(" "), "why": "as the scenario says" }),
@@ -219,6 +255,8 @@ struct Turn {
     to_model: Vec<Value>,
     /// What the worker said on its way out.
     stderr: String,
+    /// The head of the checkout an earlier turn kept in the workbench, when one did.
+    kept_head: Option<String>,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -377,13 +415,18 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let dir = w.dir.clone().expect("a turn in the workbench");
     let (hq, to_hq) = hq_answering(w.refuse_first_ask);
     let (model, to_model) = model_replying(rounds);
+    let contracts = if w.kept_head.is_some() {
+        node_with_repo()
+    } else {
+        node()
+    };
     let env = [
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
         ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
         (
             "ENDORA_CONTRACTS",
-            format!("{}/team-relay/contracts", node()),
+            format!("{contracts}/team-relay/contracts"),
         ),
         ("ENDORA_WORKBENCH", "1".to_owned()),
         ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
@@ -456,6 +499,45 @@ fn told_after(w: &Turn, nth: usize, words: &str) {
     for result in results {
         assert!(result.contains(words), "{result}");
     }
+}
+
+/// An earlier turn's checkout, kept in the workbench as the sandbox keeps it: the fork's
+/// `develop`, then `branch` with one commit of the member's beyond it, nothing uncommitted.
+#[given(expr = "the workbench kept a checkout on {string} with a commit since its base")]
+fn kept_checkout(w: &mut Turn, branch: String) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "develop"]);
+    git_in(&repo, &["config", "user.name", "Endora HQ"]);
+    git_in(&repo, &["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-q", "-m", "the lab"]);
+    git_in(&repo, &["checkout", "-q", "-b", &branch]);
+    std::fs::write(repo.join("fix.yml"), "fixed: true\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    git_in(&repo, &["commit", "-q", "-m", "the fix"]);
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Kit) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    w.kept_head = Some(git_in(&repo, &["rev-parse", "HEAD"]));
+}
+
+#[then("the model was told the kept branch's full head after its first reply")]
+fn told_kept_head(w: &mut Turn) {
+    let head = w.kept_head.clone().expect("a kept checkout");
+    told_after(w, 1, &head);
+}
+
+#[then("the kept checkout still holds its commit")]
+fn still_holds(w: &mut Turn) {
+    let repo = w.dir.clone().unwrap().join("repo");
+    assert_eq!(Some(git_in(&repo, &["rev-parse", "HEAD"])), w.kept_head);
 }
 
 #[then(expr = "the model was told {string} after its first reply")]

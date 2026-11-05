@@ -118,6 +118,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok((run, task))
     }
 
+    /// What HQ recorded when the newest submission of `task`'s work is already `s`'s branch at
+    /// `s`'s head (work in progress aside): that branch, its document and its newest check.
+    fn already_recorded(&self, task: TaskId, s: &Submission) -> Done<Option<Recorded>> {
+        let Some(newest) = self.newest_branch(task)? else {
+            return Ok(None);
+        };
+        if newest.name != s.branch || newest.head != s.head || newest.status == IN_PROGRESS {
+            return Ok(None);
+        }
+        let title = format!("branch {} (", s.branch);
+        let document = self
+            .store
+            .documents_of(newest.task)?
+            .into_iter()
+            .filter(|d| d.title.starts_with(&title))
+            .map(|d| d.id)
+            .max()
+            .unwrap_or(0);
+        let check = self
+            .store
+            .checks()?
+            .into_iter()
+            .filter(|c| c.branch == newest.id)
+            .map(|c| c.id)
+            .max()
+            .unwrap_or(0);
+        Ok(Some(Recorded {
+            branch: newest.id,
+            document,
+            check,
+        }))
+    }
+
     /// Keeps the branch `s` of `run`'s on `task` as `status`, with its files.
     fn keep_branch(
         &self,
@@ -156,6 +189,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn record_branch(&self, token: &str, s: &Submission) -> Done<Recorded> {
         let _held = self.held();
         let (run, task) = self.submitting(token, s)?;
+        // One revision is one submission (defect remediation, C): a turn unsure whether its
+        // submission arrived (interrupted after the node took it, or before the answer came
+        // back) may submit it again, and that records nothing new.
+        if let Some(kept) = self.already_recorded(task, s)? {
+            return Ok(kept);
+        }
         let now = self.clock.now();
         let title = format!(
             "branch {} ({} file{}, +{} −{})",

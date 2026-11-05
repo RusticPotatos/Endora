@@ -7,6 +7,7 @@ use cucumber::{given, then, when};
 use endora_team::application::office_ports::OfficeStore;
 use endora_team::application::receipt_ports::ReceiptStore;
 use endora_team::application::run_ports::RunStore;
+use endora_team::application::wing_ports::WingStore;
 use endora_team::application::{Author, Submission, TeamStore};
 use endora_team::domain::{Criterion, RunStatus, TaskId, WakeReason};
 use serde_json::json;
@@ -203,11 +204,14 @@ fn asks_for_review_quoting(w: &mut Office, name: String, title: String, one: Str
 fn submits_changing(w: &mut Office, name: &str, branch: &str, changed: &str, diff: &str) {
     let context = w.turn_of(name);
     let changed: Vec<String> = changed.split(", ").map(str::to_owned).collect();
+    // Each submission is a new commit, as a fix after a failed check is: its own head, the
+    // same first twelve characters. One revision submitted again records nothing new.
+    let made = w.hq.store().branches().expect("the store answers").len();
     let recorded = w.hq.record_branch(
         &context.token,
         &Submission {
             branch: branch.to_owned(),
-            head: "a1b2c3d4e5f60718293a4b5c".to_owned(),
+            head: format!("a1b2c3d4e5f6{:012x}", made + 1),
             base: "0123456789abcdef01234567".to_owned(),
             files: changed.len(),
             plus: 1,

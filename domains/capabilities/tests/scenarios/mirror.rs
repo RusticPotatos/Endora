@@ -23,6 +23,8 @@ pub struct Node {
     said: Option<Result<String, String>>,
     /// The head of the last branch taken.
     taken: Option<(String, String)>,
+    /// The last bundle handed to the node, and its branch, to hand over again.
+    sent: Option<(Vec<u8>, String)>,
 }
 
 impl std::fmt::Debug for Node {
@@ -464,6 +466,19 @@ fn submit_files(w: &mut Node, branch: &str, base: &str, files: &[&str]) {
     let said = w.mirror().submit(&bytes, &branch, 936, 1);
     if let Ok(taken) = &said {
         w.taken = Some((taken.branch.clone(), taken.head.clone()));
+    }
+    w.said = Some(said.map(|t| t.title()));
+    w.sent = Some((bytes, branch));
+}
+
+/// The same bundle handed to the node again, as a turn unsure its submission arrived sends it.
+#[when("the member submits the same revision again")]
+fn submits_again(w: &mut Node) {
+    let (bytes, branch) = w.sent.clone().expect("something was submitted");
+    let first = w.taken.clone().expect("the first was taken");
+    let said = w.mirror().submit(&bytes, &branch, 936, 2);
+    if let Ok(taken) = &said {
+        assert_eq!(taken.head, first.1, "the same revision");
     }
     w.said = Some(said.map(|t| t.title()));
 }

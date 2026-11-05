@@ -4,7 +4,9 @@
 
 use cucumber::{then, when};
 use endora_team::application::Author;
+use endora_team::application::TeamStore;
 use endora_team::application::run_ports::RunStore;
+use endora_team::application::wing_ports::WingStore;
 use endora_team::domain::{Exit, RunStatus};
 
 use super::Office;
@@ -72,4 +74,40 @@ fn is_running(w: &mut Office, name: String, title: String, again: String) {
 fn is_not_running(w: &mut Office, name: String, title: String) {
     let run = w.newest_turn_on(&name, &title);
     assert_ne!(run.status, RunStatus::Running, "{run:?}");
+}
+
+// ---- `features/a-resumed-item-knows-what-it-submitted.feature` (defect remediation, C) -------
+
+#[then(regex = r#"^"(.+)" has (\d+) branch records?$"#)]
+fn branch_records(w: &mut Office, title: String, n: usize) {
+    let task = w.task(&title);
+    let kept =
+        w.hq.store()
+            .branches()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|b| b.task == task)
+            .count();
+    assert_eq!(kept, n);
+}
+
+#[then(regex = r#"^"(.+)" has (\d+) checks? queued$"#)]
+fn checks_queued(w: &mut Office, title: String, n: usize) {
+    let task = w.task(&title);
+    let queued =
+        w.hq.store()
+            .checks()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|c| c.task == task)
+            .count();
+    assert_eq!(queued, n);
+}
+
+#[then(regex = r#"^the thread of "(.+)" says "(.+)" once$"#)]
+fn thread_says_once(w: &mut Office, title: String, words: String) {
+    let task = w.task(&title);
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    let times = thread.iter().filter(|p| p.text.contains(&words)).count();
+    assert_eq!(times, 1, "{thread:#?}");
 }

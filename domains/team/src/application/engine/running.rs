@@ -305,6 +305,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The thread with each post's recorded origin, read together.
         let thread = self.all_authored_posts(task.id)?;
         told.push_str(&self.news_said(member, run, &task, &thread)?);
+        told.push_str(&self.submission_said(run, task.id)?);
         // Checks' results have no lineage yet: shown, they fail closed.
         let untraced = self.checking_said(member, run, &task)?;
         if !untraced.is_empty() {
@@ -371,6 +372,40 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             why.push(format!("goal: {}", goal.goal.title));
         }
         Ok(format!("Why it exists: {}\n", why.join(" ← ")))
+    }
+
+    /// Where the item's submission stands, for a turn tried again or an item that has one
+    /// (defect remediation, C): a turn killed after its commit and before its submission came
+    /// back told only to go on, and took the commit for the repair. HQ's record is the newest
+    /// submission of the item's work, full head and status, or none; the node may hold one HQ
+    /// never heard of, so none is said as HQ's, and submitting again is safe.
+    fn submission_said(&self, run: &Run, task: TaskId) -> Done<String> {
+        let newest = self.newest_branch(task)?;
+        // A turn's briefing is written before its attempt is counted: one tried before has
+        // started already, or was interrupted.
+        let tried_before = run.attempts > 0 || run.interrupted > 0;
+        if newest.is_none() && !tried_before {
+            return Ok(String::new());
+        }
+        let line = match newest {
+            Some(b) => {
+                let status = if b.status == crate::domain::wing::IN_PROGRESS {
+                    "work in progress, not offered as done"
+                } else {
+                    b.status.as_str()
+                };
+                format!(
+                    "HQ's newest submission for this item: {} at {} ({status}). A newer head \
+                     on your branch is not submitted.",
+                    b.name, b.head
+                )
+            }
+            None => "HQ has recorded no submission for this item.".to_owned(),
+        };
+        Ok(format!(
+            "{line} A commit is not a submission: finished work goes to HQ with repo_submit, \
+             and submitting a revision HQ already has records nothing new.\n"
+        ))
     }
 
     /// What came since the member's last turn on the task: the check-backs it set that fired,

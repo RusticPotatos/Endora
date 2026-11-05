@@ -49,6 +49,16 @@ Feature: The team works in a public repository outside the lab, and nothing leav
       | roles/x/vars/vault.yml    |
       | app/vaultwarden_client.py |
 
+  # Seed: a node that refuses a revision it already keeps fails the first Then (defect
+  # remediation, C): a turn killed after the node took its branch, before HQ recorded it, can
+  # only recover by submitting it again.
+  Scenario: The same revision submitted again is taken again and kept once
+    Given a public repository "https://github.com/example/tiny" the owner named for an item, whose default branch is "main"
+    And a member's branch "hq/task-936-fix-parse" on "main" was taken
+    When the member submits the same revision again
+    Then it is taken
+    And the node keeps it as "refs/submissions/hq/task-936-fix-parse"
+
   # Seed: an outside mirror that pushes like the fork's fails both Thens.
   Scenario: Delivery never pushes it anywhere
     Given a public repository "https://github.com/example/tiny" the owner named for an item, whose default branch is "main"

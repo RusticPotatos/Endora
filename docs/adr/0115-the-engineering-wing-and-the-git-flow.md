@@ -460,3 +460,26 @@ anywhere still holds.
 
 Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature` and
 `domains/team/features/the-owners-values-are-guarded-where-they-live.feature`.
+
+## Amended 2026-11-05: a resumed item knows what it submitted
+
+In the minimum-viable-autonomy climb a turn killed after its repair was committed and before it
+was submitted was tried again, read "Nothing new in the thread" and "Already checked out … Go on
+from it", and took the commit for the repair: two interrupted items of eight lost their repair.
+
+- **HQ says where the submission stands.** A turn tried again, and any turn on an item that has a
+  submission, is told HQ's newest submission for the item's work, full head and status (work in
+  progress said as not offered as done), or that HQ has recorded none, and that a commit is not a
+  submission. "None" is HQ's word only: the node may hold a submission HQ never heard of.
+- **The kept checkout says its head.** The worker's "already checked out" names the branch's full
+  head and says that unless the briefing names it as HQ's newest submission, it is not submitted.
+- **One revision is one submission.** The node takes a revision it already keeps again (it always
+  did). HQ, told of the branch and head its newest submission of the item already has, records
+  nothing new: no second branch, document, check or post, and work in review is not sent back. So
+  a turn unsure whether its submission arrived (killed after the node took it, or before the answer
+  came back) may submit it again.
+
+No new storage: HQ's branch records, the node's kept refs and the sandbox already hold all of it.
+Scenarios: `domains/team/features/a-resumed-item-knows-what-it-submitted.feature`,
+`app/worker/features/a-kept-checkout-says-a-commit-is-not-a-submission.feature`, and the
+outside-repository feature's resubmission scenario.
