@@ -36,6 +36,17 @@ Amended 2026-10-19: moving the turn's own task on with `set_status` (to `in_revi
 or `done`) ends the turn, as a question does; the instructions already said so, and run 1831
 called `set_status` six times more after it. Starting work or moving a sub-task on does not.
 
+Amended 2026-11-05 (the minimum-viable-autonomy climb, round 3): **a reply whose turn-ending
+call is not its only one and its last runs nothing.** The worker stopped at the first
+turn-ending call of a reply and left the rest unanswered, so in task #1144 a question to the
+owner sent after `set_status in_review` in the same reply never reached the desk and the model
+was never told. Now, before any call of a reply runs, the worker checks it: if it holds a
+question to the owner or a move of the turn's own task on that is not the reply's only such call
+and its last, every call is refused with why, nothing runs, and the round counts against the
+turn's. Nothing is reordered or run on the model's behalf; an action the node puts on the desk
+is known to end the turn only once it has run and is not counted. Scenarios:
+`app/worker/features/a-reply-whose-turn-ending-call-is-not-last-runs-nothing.feature`.
+
 ## Context
 
 Every member thought with the house's model (qwen3:8b, thinking). The lead coordinates the

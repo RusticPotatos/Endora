@@ -61,7 +61,15 @@ fn fake(answer: Answer) -> (String, Seen) {
 
 /// HQ's team protocol, as little of it as a turn needs.
 fn hq() -> String {
-    fake(Box::new(|sent, _| {
+    hq_answering(false).0
+}
+
+/// HQ's team protocol with its closing tools, keeping every request it is sent; with
+/// `refuse_first_ask`, the first question to the owner is refused as HQ refuses one whose
+/// evidence is not a receipt.
+fn hq_answering(refuse_first_ask: bool) -> (String, Seen) {
+    let asked = Arc::new(Mutex::new(0usize));
+    fake(Box::new(move |sent, _| {
         let id = sent["id"].clone();
         let result = match sent["method"].as_str().unwrap_or("") {
             "initialize" => json!({ "protocolVersion": "2025-06-18",
@@ -73,13 +81,41 @@ fn hq() -> String {
                 { "name": "post", "description": "Write in a task's thread.",
                   "inputSchema": { "type": "object", "properties": {
                       "task": { "type": "integer" }, "text": { "type": "string" } },
-                      "required": ["task", "text"] } } ] }),
+                      "required": ["task", "text"] } },
+                { "name": "set_status", "description": "Move a task on.",
+                  "inputSchema": { "type": "object", "properties": {
+                      "task": { "type": "integer" }, "status": { "type": "string" },
+                      "reason": { "type": "string" } },
+                      "required": ["task", "status", "reason"] } },
+                { "name": "ask_owner", "description": "Put a question to the owner.",
+                  "inputSchema": { "type": "object", "properties": {
+                      "text": { "type": "string" } }, "required": ["text"] } } ] }),
             "tools/call" => {
-                let text = match sent["params"]["name"].as_str().unwrap_or("") {
-                    "my_turn" => BRIEFING,
-                    _ => "Posted.",
+                let params = &sent["params"];
+                let (text, refused) = match params["name"].as_str().unwrap_or("") {
+                    "my_turn" => (BRIEFING.to_owned(), false),
+                    "set_status" => (
+                        format!(
+                            "Task {} is {}.",
+                            params["arguments"]["task"], params["arguments"]["status"]
+                        ),
+                        false,
+                    ),
+                    "ask_owner" => {
+                        let mut n = asked.lock().unwrap();
+                        *n += 1;
+                        if refuse_first_ask && *n == 1 {
+                            (
+                                "`a log line` is not evidence: cite a receipt as r12".to_owned(),
+                                true,
+                            )
+                        } else {
+                            ("It is on the owner's desk.".to_owned(), false)
+                        }
+                    }
+                    _ => ("Posted.".to_owned(), false),
                 };
-                json!({ "content": [{ "type": "text", "text": text }], "isError": false })
+                json!({ "content": [{ "type": "text", "text": text }], "isError": refused })
             }
             _ => {
                 return (
@@ -95,7 +131,6 @@ fn hq() -> String {
             json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string(),
         )
     }))
-    .0
 }
 
 /// The node, offering no contracts.
@@ -119,12 +154,71 @@ fn model() -> (String, Seen) {
     }))
 }
 
+/// One call as a scenario writes it: `set_status 7 in_review`, `ask_owner` (`ask_owner r12`
+/// citing a receipt), `post`,
+/// `shell touch made.txt`.
+fn call_of(written: &str, n: usize) -> Value {
+    let words: Vec<&str> = written.split_whitespace().collect();
+    let (name, arguments) = match words.as_slice() {
+        ["set_status", task, status] => (
+            "set_status",
+            json!({ "task": task.parse::<i64>().unwrap(), "status": status, "reason": "as found" }),
+        ),
+        ["ask_owner"] => (
+            "ask_owner",
+            json!({ "text": "Account jdoe is locked: unlock it or leave it locked?" }),
+        ),
+        ["ask_owner", receipt] => (
+            "ask_owner",
+            json!({ "text": "Account jdoe is locked: unlock it or leave it locked?",
+                    "evidence": [receipt] }),
+        ),
+        ["post"] => ("post", json!({ "task": 7, "text": "What I found." })),
+        ["shell", command @ ..] => (
+            "shell",
+            json!({ "command": command.join(" "), "why": "as the scenario says" }),
+        ),
+        _ => panic!("a call the scenarios do not know: {written}"),
+    };
+    json!({ "id": format!("call_{n}"), "type": "function",
+            "function": { "name": name, "arguments": arguments.to_string() } })
+}
+
+/// The model: each reply in `rounds` in turn (calls written as `call_of` reads them, joined
+/// with ", "), then its last word.
+fn model_replying(rounds: Vec<String>) -> (String, Seen) {
+    fake(Box::new(move |_, before| {
+        let body = match rounds.get(before) {
+            Some(reply) => {
+                let calls: Vec<Value> = reply
+                    .split(", ")
+                    .enumerate()
+                    .map(|(i, c)| call_of(c, before * 10 + i))
+                    .collect();
+                json!({ "choices": [{ "index": 0, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant", "content": null, "tool_calls": calls } }] })
+            }
+            None => json!({ "choices": [{ "index": 0, "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "Done." } }] }),
+        };
+        (200, body.to_string())
+    }))
+}
+
 #[derive(Debug, Default, World)]
 struct Turn {
     /// The workbench's folder, where the shell runs.
     dir: Option<std::path::PathBuf>,
     /// What the model read of the command, exactly.
     read: Option<String>,
+    /// Whether HQ refuses the turn's first question to the owner.
+    refuse_first_ask: bool,
+    /// The closing tools HQ was called with, in order, as `call_of` writes them.
+    hq_called: Vec<String>,
+    /// Every request the model was sent.
+    to_model: Vec<Value>,
+    /// What the worker said on its way out.
+    stderr: String,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -271,6 +365,102 @@ fn nothing_left_out(w: &mut Turn) {
         !read.contains("left out") && !read.contains("bytes cut"),
         "{read}"
     );
+}
+
+#[given("HQ refuses the first question to the owner as not evidence")]
+fn refuses_first_ask(w: &mut Turn) {
+    w.refuse_first_ask = true;
+}
+
+/// Runs a turn whose model sends `rounds`, keeping what HQ and the model were sent.
+fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    let (hq, to_hq) = hq_answering(w.refuse_first_ask);
+    let (model, to_model) = model_replying(rounds);
+    let env = [
+        ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq}/v2/team/mcp")),
+        ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
+        (
+            "ENDORA_CONTRACTS",
+            format!("{}/team-relay/contracts", node()),
+        ),
+        ("ENDORA_WORKBENCH", "1".to_owned()),
+        ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
+        ("PATH", std::env::var("PATH").unwrap_or_default()),
+    ];
+    let out = Command::new(env!("CARGO_BIN_EXE_endora-worker"))
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .unwrap();
+    w.stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{}", w.stderr);
+    w.hq_called = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s["method"] == "tools/call")
+        .filter_map(|s| {
+            let p = &s["params"];
+            match p["name"].as_str()? {
+                "set_status" => Some(format!(
+                    "set_status {} {}",
+                    p["arguments"]["task"],
+                    p["arguments"]["status"].as_str().unwrap_or("")
+                )),
+                name @ ("ask_owner" | "post") => Some(name.to_owned()),
+                _ => None,
+            }
+        })
+        .collect();
+    w.to_model = to_model.lock().unwrap().clone();
+}
+
+#[when(expr = "the model replies {string}")]
+fn replies(w: &mut Turn, reply: String) {
+    run_rounds(w, vec![reply]);
+}
+
+#[when(expr = "the model replies {string}, then {string}")]
+fn replies_then(w: &mut Turn, first: String, second: String) {
+    run_rounds(w, vec![first, second]);
+}
+
+#[then(expr = "HQ was called with {string}")]
+fn hq_called_with(w: &mut Turn, calls: String) {
+    assert_eq!(w.hq_called.join(", "), calls, "{}", w.stderr);
+}
+
+#[then("the model was told that nothing in its first reply ran")]
+fn told_nothing_ran(w: &mut Turn) {
+    let messages = w.to_model[1]["messages"]
+        .as_array()
+        .expect("a second round");
+    let results: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert!(!results.is_empty(), "no results told");
+    for result in results {
+        assert!(result.contains("nothing in this reply ran"), "{result}");
+    }
+}
+
+#[then("the turn ended asking the owner")]
+fn ended_asking(w: &mut Turn) {
+    assert!(w.stderr.contains("asked the owner"), "{}", w.stderr);
+}
+
+#[then("the turn ended moving its task on")]
+fn ended_moving_on(w: &mut Turn) {
+    assert!(w.stderr.contains("moved its task on"), "{}", w.stderr);
+}
+
+#[then(expr = "the workbench holds no file {string}")]
+fn holds_no_file(w: &mut Turn, name: String) {
+    assert!(!w.dir.clone().unwrap().join(name).exists());
 }
 
 /// Cucumber's options from the command line, without the flags `cargo test` passes every test
