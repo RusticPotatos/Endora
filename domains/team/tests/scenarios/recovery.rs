@@ -148,12 +148,7 @@ fn keeps_in_progress(w: &mut Office, name: String, branch: String) {
 
 #[when(regex = r#"^(\w+) submits the branch "(.+)" at a new head$"#)]
 fn submits_new_head(w: &mut Office, name: String, branch: String) {
-    let (token, s) = told(
-        w,
-        &name,
-        &branch,
-        "a1b2c3d4e5f60718293a4b5d",
-    );
+    let (token, s) = told(w, &name, &branch, "a1b2c3d4e5f60718293a4b5d");
     w.hq.record_branch(&token, &s)
         .expect("the node's record is taken");
 }
