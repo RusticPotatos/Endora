@@ -3,6 +3,14 @@
 ## Status
 
 Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+Amended 2026-10-31 by the owner: accepted work reaches the fork without a card, and HQ may merge
+develop behind a setting (see the last section).
+Amended 2026-10-31 by the one-team clean-up (ADR 0142, "What goes"): the check after a deploy is
+retired. There is no Deployed card (kind `deploy`), no check of the lab after one, and no
+`deploy_check` card; the section on it below is history.
+Amended 2026-11-01 for round 4's F4: an item's project may name one public repository outside
+the lab, which the node mirrors and the wing's two contracts work in; its branches stay on the
+node and are never pushed (see the last section).
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
 [0106](0106-team-contracts.md) (two more contracts, `repo_checkout` and `repo_submit`, for a
@@ -156,7 +164,12 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    **1 MB** of diff; **every commit is HQ's** (the author and the trailer); and it **touches
    nothing of the owner's values**: `group_vars/*.yml`, `host_vars/`, any inventory or anything
    named for a vault is refused whole, and the briefing says never to edit, cite or copy from
-   them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
+   them. *Amended 2026-10-30 (review of round 2):* both sides of a move count, and a name is
+   read as it is: the node lists the files with `git -c core.quotePath=false diff --no-renames
+   --name-only -z`, so moving `group_vars/all.yml` to `roles/all.yml` touches `group_vars/`
+   (git listed only the new name), and `group_vars/é.yml` is under `group_vars/` (git quoted it
+   as `"group_vars/\303\251.yml"`, which matched nothing); HQ's own reading of a recorded diff
+   takes both sides of each `diff --git` line and unquotes them. What passes is kept under the task (`submissions/task-N/<slug>-<sha>.bundle`, and as
    `refs/submissions/hq/…` in the mirror, which the mirror's fetch never prunes: the
    submission is **staged** apart and moved there only once every rule has passed, so a
    refused attempt, a missing trailer being the commonest, leaves the kept branch as it was),
@@ -189,7 +202,9 @@ and merges nothing; the owner alone pushes an accepted branch, and merges it on 
    (the node names it, from the branch HQ recorded, in an `x-endora-base` header on the bundle),
    and passes when no check is worse there: ansible-lint findings and yamllint errors no more
    than on the base, syntax failing only where the base's did, a timeout always a fail. The line
-   then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop") and the
+   then says both ("ansible-lint 25 findings (develop 25), …: no worse than develop"; since
+   2026-11-01 "…: no new findings against develop: met", ADR 0142's D22; since 2026-11-03
+   "…: no more findings than develop: met", which is what a comparison of counts proves) and the
    report holds the base's outcomes; a clean branch costs no second run, and a base that cannot
    be found leaves the plain pass or fail, said in the line. *Amended 2026-10-19:* a check that
    **could not run** (its tool not found or not executable, exit 127 or 126; killed; out of
@@ -306,3 +321,165 @@ one report per check, one push per approval) is code on the node or in HQ's engi
   checks load only the fork's collections, which are baked in.
 - **The check as a model's turn.** Rejected: the lab's own linters are the gate (0114), and a
   model's word about them would be a claim, not a reading.
+
+## Amended 2026-10-31: accepted work reaches the fork without a card
+
+**The owner's decision, 31 Oct.** Merging accepted work "is just not something I need to review",
+and no "Ready to merge" or "Push" cards on the desk. This is the record the Deferred list above
+waited for ("HQ merging anything. Not until the owner says the audit period is over"), and it
+amends [0142](0142-one-team-of-loops.md)'s "plus ready PRs" on the desk. Scenarios:
+`domains/team/features/accepted-work-reaches-the-fork.feature`.
+
+**What changes.**
+
+- **No ready-to-merge or push cards.** An accepted branch is listed on HQ's Manage tab, folded
+  to one line: "Accepted, waiting to merge", with its task, its branch, when it was accepted and
+  where it stands (pushing, on the fork, held, failed, not pushed and why). A merged branch leaves
+  the list. Cards already waiting stay until answered. What a researcher wrote is still the
+  owner's to read, and work nobody on the team can review still reaches the desk as before.
+- **The push is HQ's, by rule.** A branch is due to be pushed only when its review passed (the
+  item is accepted), its newest check passed, and HQ's mechanical checks find no forbidden path
+  and no CI criterion that cannot be met (`domains/team/src/domain/delivery.rs`, `may_push`). Any
+  other branch is listed with why it was not pushed; without a deploy key, with its bundle.
+- **The privacy scan, before every push.** The node asks HQ what is due every minute
+  (`GET /v1/team/deliveries`) and scans the branch's whole diff against where it left develop,
+  and every commit message, by code (`domains/capabilities/src/outgoing.rs`): only what the
+  branch adds is read. It looks for the shapes of `scripts/check-nothing-personal.mjs` (a real
+  mailbox, a real network address, coordinates, a phone number, a long hex string, with the same
+  allowed examples), the kernel's secret tripwire (`shared/kernel/src/secrets.rs`), and the
+  owner's own values. If it finds anything, nothing is pushed and one desk card (kind `privacy`)
+  says what and where (`a real network address (roles/x/defaults/main.yml line 3)`), never the
+  value; the owner sends it back to the team or, having read it, pushes it anyway. A branch the
+  node cannot read is not pushed: the scan could not tell.
+- **Where the owner's values come from.** `ENDORA_PERSONAL_VALUES`, the same comma-separated list
+  `make personal-check` reads, in the node's environment and in no tracked file: the Makefile
+  exports it from the git-ignored `local.mk`, Compose passes it to the node, and the `endora`
+  role renders it from `endora_personal_values`, which is meant to come from the owner's vault
+  (`{{ vault_endora_personal_values }}`). Absent, the scan reads shapes and the tripwire only, and
+  every push says so in the thread ("no personal values are set on the node").
+- **What needs the owner still reaches the desk.** From the same diff, by code: a role default
+  that now reads a `vault_*` variable it did not before, and an assert the change adds that a
+  variable is set (`is defined`, `| length > 0`, `!= ""`, `is not none`). Each puts one card (kind
+  `needs_owner`) naming the variable and the file. Everything else, a push or a merge, is a
+  notice that clears itself, with a receipt and a post in the change's thread.
+- **Merging develop, behind a setting that is off.** With `delivery_merge_develop` on, the node
+  merges each pushed branch into the fork's develop: a fast-forward when develop has not moved,
+  else one merge commit authored by Endora HQ with its trailer; a conflict merges nothing and is
+  listed for the owner's hand. Never a force, never `main` or `master`, never upstream, and only
+  branches HQ pushed under this rule. The setting stays off while the baseline experiment's rounds run
+  (the fork's develop is frozen at ee878f7); the owner, or the assistant, turns it on when they
+  end.
+- **The cards come back on a setting.** With `delivery_cards` on, accepted work puts the "Ready
+  to merge" and "Push" cards on the desk exactly as before, and nothing is pushed without them.
+  Both switches are on the Manage line, and `POST /v1/hq/delivery` through the node.
+
+**Can today's deploy key update develop?** Yes, with no new credential. Read on 31 Oct from
+GitHub's API: the fork's deploy key `endora-hq` has write access, and `develop` is not protected
+and has no rulesets. The push code refused the base branch; the merge is a separate path that
+pushes the base only as a fast-forward of what the fork has. The consequence above, "GitHub
+itself should protect main and develop", is now the owner's to weigh: protecting develop against
+everyone but the deploy key would keep a mistaken push elsewhere refused there too.
+
+**Safeguards, all code.** Models propose; deterministic policy authorizes: the review is a
+model's, but whether a branch is pushed is `may_push`, the scan, and the push path's own refusals
+(only `hq/` branches, only the stored head, never a force); a held branch is pushed only on the
+owner's word. Each step is told to HQ once (a second report is refused), and every push and
+merge is an audit line on the node.
+
+**Limits, accepted.** The shapes give false positives (a 40-character commit id pinned in a
+requirements file reads as a live-looking secret); the owner's "push anyway" is the way past
+one. The scan reads what leaves in the branch, not what is already on the fork. A personal value
+split across a line break is not seen, as in the repository's own check.
+
+## Amended 2026-11-01: a repository outside the lab (round 4's F4)
+
+**Why.** Round 4 of the baseline experiment adds F4: each round, one small task in a public
+open-source repository HQ has never seen, done by both arms against criteria written first, its
+branch kept locally and pushed nowhere (`docs/proposals/baseline-experiment-2026-10-28.md`,
+"Not only the homelab"). A member's sandbox has no internet, and `repo_checkout` served only the
+lab's fork.
+
+**What changes.**
+
+- **The owner names the repository on the item's project**, once, when the task is set up:
+  `POST /v1/hq/projects/{id}/repo` with `{"url": "https://github.com/<owner>/<name>"}` (null
+  takes it away), kept as the setting `project_repo:<project>`. Only a public
+  `https://github.com/<owner>/<name>` is taken, by one rule in the kernel
+  (`endora_kernel::lab::outside_repo`): any other scheme or host, a credential, a port, a query
+  or a path past the repository is refused. A task with no project of its own takes the nearest
+  one above it.
+- **HQ tells the node** in its answer to `/v1/team/turn` (`"repo"`). The node holds the address
+  to the same rule again, clones it once into a mirror of its own beside the fork's
+  (under `outside-repos/` in the node's data folder, `Mirror::outside`), worked from the default branch the
+  repository names, and fetches it on the fork's five-minute schedule. No upstream rides with it.
+- **`repo_checkout`** hands that repository's default branch (or the team's kept branch of it)
+  to `/work/repo`, as it does the fork's. **`repo_submit`** takes the branch by the same rules
+  (named for the task, on top of the default branch, HQ's commits, the limits) and keeps it as
+  `refs/submissions/<branch>` in that mirror, with its bundle under the task, for judging. HQ is
+  told `can_push: false` and the repository.
+- **Never pushed, by code at three places.** The outside mirror refuses `push` and
+  `merge_into_base` for every branch (`repo::OUTSIDE_KEPT`); HQ never lists such a branch as due
+  (`accept_branch` keeps it "accepted" with why) and never puts a push card for it, whatever the
+  card setting; and the node's delivery and the owner's push work from the fork's mirror alone,
+  which does not hold the submission.
+- **No check of the lab's.** The dev node's check is ansible's and says nothing of another
+  repository, so none is queued: the item's criteria are its gate, which opens on submission,
+  and its reviewer checks the branch out and runs its tests. Acceptance has no consequence
+  outside the node, since nothing is delivered.
+
+**Limits, accepted.** The submission rules are the fork's, but for one (*amended 2026-11-05,
+below*). A repository past
+the 32 MB checkout bundle cannot be handed out. The repository must fetch from the node; its
+tests must run in the offline sandbox, so a candidate's dependencies are the experiment's to
+vendor. Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature`.
+
+## Amended 2026-11-05: the owner's values are guarded where they live
+
+The rule against the owner's values (`group_vars`, `host_vars`, any inventory, anything named for
+a vault) was applied to every repository, and its limit was accepted above. It cost real work:
+two of the harness confirmation's items were refused for an ordinary `inventory/` path in an
+outside repository, and in the autonomy climb's round-1 fixtures it refused 4 of 8 harmless
+software paths (`shopkeep/inventory/stock.py`, `inventory/models.py`,
+`app/vaultwarden_client.py`, `pkg/vaulted_cache.py`). The rule's names describe the lab fork's
+layout, where the owner's values are kept; in another repository the same names are that
+project's own code. Scoping the filename rule is all this changes: it does not establish that an
+outside repository holds no secret, and the briefing's rule never to copy the owner's values
+anywhere still holds.
+
+- **The rule follows the repository.** `endora_kernel::lab::refused_as_owners_values(path,
+  outside_lab)` is `forbidden_path` in the fork and nothing outside the lab. `outside_lab` is
+  trusted context, never a member's word: the node's mirror is an outside one only when HQ's
+  turn names the repository the owner set on the item's project, and HQ's review asks the same
+  project setting. The node holds a submission to it and HQ holds the review to it, so the two
+  agree. In the fork every path refused before is refused still.
+- **The fork is never an outside repository.** The node refuses to mirror the lab's own fork,
+  under any of its addresses, as a repository outside the lab, so naming it there cannot step
+  around the rule.
+- **Unchanged.** The briefing's words, the files HQ reads for its checks (role READMEs and
+  defaults, workflows not named for a vault) and the outgoing scan.
+
+Scenarios: `domains/capabilities/features/the-team-works-in-an-outside-repository.feature` and
+`domains/team/features/the-owners-values-are-guarded-where-they-live.feature`.
+
+## Amended 2026-11-05: a resumed item knows what it submitted
+
+In the minimum-viable-autonomy climb a turn killed after its repair was committed and before it
+was submitted was tried again, read "Nothing new in the thread" and "Already checked out … Go on
+from it", and took the commit for the repair: two interrupted items of eight lost their repair.
+
+- **HQ says where the submission stands.** A turn tried again, and any turn on an item that has a
+  submission, is told HQ's newest submission for the item's work, full head and status (work in
+  progress said as not offered as done), or that HQ has recorded none, and that a commit is not a
+  submission. "None" is HQ's word only: the node may hold a submission HQ never heard of.
+- **The kept checkout says its head.** The worker's "already checked out" names the branch's full
+  head and says that unless the briefing names it as HQ's newest submission, it is not submitted.
+- **One revision is one submission.** The node takes a revision it already keeps again (it always
+  did). HQ, told of the branch and head its newest submission of the item already has, records
+  nothing new: no second branch, document, check or post, and work in review is not sent back. So
+  a turn unsure whether its submission arrived (killed after the node took it, or before the answer
+  came back) may submit it again.
+
+No new storage: HQ's branch records, the node's kept refs and the sandbox already hold all of it.
+Scenarios: `domains/team/features/a-resumed-item-knows-what-it-submitted.feature`,
+`app/worker/features/a-kept-checkout-says-a-commit-is-not-a-submission.feature`, and the
+outside-repository feature's resubmission scenario.

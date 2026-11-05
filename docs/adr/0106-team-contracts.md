@@ -39,6 +39,69 @@ profiles let act ([0108](0108-the-bridge.md)): the lead and the developers. It w
 but the CEO, so a reviewer or a researcher, read-only on the bridge, could restart a container
 here. A turn whose rounds run out now posts what its model said on the way (below).
 
+Amended 2026-10-30 (tools fitted to the task): one more read, `image_tags` (read, Internal,
+every role on any brain). HQ failed "Pin the homepage and stats roles off the latest image tag"
+twice because a sandbox is offline and nothing could show that the release it chose exists on
+the image's registry. The node now asks: given an image reference, it returns the newest 30
+tags (highest version first, optionally releases only or by a prefix) and whether a named tag
+exists, from Docker Hub's API, or from ghcr.io and quay.io by the OCI distribution API with an
+anonymous pull token (lscr.io is read on ghcr.io, which serves it). The reference is checked
+strictly and any other registry is refused before anything is asked; every URL is built by the
+node from the checked parts, nothing a registry answers is followed (no redirect, no `next`
+link), and no credential is sent. HTTPS only, ten seconds and 2 MB an answer, at most three
+pages of Docker Hub and ten of an OCI list. It is not one of the post-deploy check's lab reads.
+Code: `domains/capabilities/src/registry.rs`.
+
+Amended 2026-10-31 (round 3, D13: the team reads upstream ansible-nas): `repo_checkout` carries
+upstream ansible-nas, read-only. In round 2 task 936 ("List what upstream ansible-nas changed
+that this fork lacks") was blocked: the sandbox is offline, and `repo_checkout` hands out only the
+fork's base (`develop`) and the team's `hq/` branches. Claude Code did it by fetching upstream from
+GitHub. The node may reach GitHub; the sandbox may not. So the node's mirror of the fork
+(`/data/team-repo/mirror.git`, [0115](0115-the-engineering-wing-and-the-git-flow.md)) now fetches
+upstream's default branch too, asked of upstream each time (`git ls-remote --symref`), into
+`refs/upstream/<branch>`, over plain HTTPS with no credential, on the fork's schedule (at most
+every five minutes, on a checkout or a submission). Upstream is `davestephens/ansible-nas`, a
+public address kept in code (`ansible_nas::UPSTREAM_REPO`) as the fork's GitHub address is built
+in code; no new setting, volume or compose change. An upstream that cannot be reached leaves what
+was last fetched, or nothing, and never fails the fork's refresh. Every checkout's bundle, of the
+base, of a team branch or of a kept submission, carries that ref; the worker unpacks it as
+`refs/remotes/upstream/<branch>`, so `git log --oneline develop..upstream/master` and
+`git diff develop upstream/master -- roles/x` work offline in the sandbox, and the checkout's
+answer says so.
+
+Chosen over a separate `upstream: true` checkout because the task is a comparison: upstream on
+its own in `/work/repo` cannot be compared with the fork without a second checkout replacing the
+first. One more ref in the bundle is the smallest change that makes the comparison one command;
+upstream shares the fork's history, so the bundle grows by what upstream has beyond the fork's
+base, which should stay well inside the 32 MB a checkout may be (the fork is about 6 MB).
+
+Upstream is never written to, by rules in code: no remote is configured for it, in the mirror or
+in the sandbox; `repo_checkout` of `upstream/…` alone is refused with where to find it;
+`repo_submit` refuses a branch named for upstream (`upstream`, `upstream/…`, under `refs/`), and a
+branch that carries any of upstream's commits (a merge of it, a branch cut from it), since
+upstream is never a base: a change read from upstream is taken only as HQ's own commit on top of
+the base, under the usual rules. The node's push refuses upstream's address in any of its GitHub
+forms. Scenarios: `domains/capabilities/features/the-team-reads-upstream.feature`. Code:
+`domains/capabilities/src/repo.rs`, `app/node/src/api/contracts.rs`, `app/worker/src/repo.rs`.
+
+Amended 2026-10-31 (what Watchtower did, D11): `homelab_status` says what recreated a
+container. The NAS's Watchtower recreates containers on new images every night, and after
+sonarr restarted at 03:24 nobody at HQ could tell an update from a crash. A container last
+created again on a new image now carries `updated` (on the owner's clock, `31 Oct 03:24`), and
+the docker service one line, `updates`: "Updated last night by Watchtower: sonarr, nzbget
+(03:24)", or since when no update was seen. It is inferred from Docker alone, through the
+observer's list route, which now also passes each container's creation time and image id
+(nothing else, no label): a creation time that moved means created again (a restart keeps it),
+and on a different image, updated. The node remembers both since it started, in memory, so
+what happened before is never guessed, and the line says since when it knows; an update
+pulled by a deploy rather than Watchtower looks the same, and is said "by Watchtower" when a
+container of that name is in the lab. Watchtower's own log is not read: the observer has no
+route to logs, and the log can hold notification URLs. Endora's own containers are left out,
+and kept out of Watchtower by a label on every compose service and every runner container:
+Endora is released by its own workflow. A container adds `updated` only when it has one, and
+the line is the day's: the reply stays small (ADR 0142). Code:
+`domains/capabilities/src/lab_updates.rs`.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the
@@ -66,7 +129,7 @@ boundary.
 
 | Contract | Kind | Tier | What it does, and its limits |
 | --- | --- | --- | --- |
-| `homelab_status` | read | Internal | The observer's snapshot, compact: each service's state and items; for each container its name, state, status text, health and exit code. Marked stale when unseen for a minute. No ids. |
+| `homelab_status` | read | Internal | The observer's snapshot, compact: each service's state and items; for each container its name, state, status text, health and exit code, and when it was last recreated on a new image; a line of the last day's updates. Marked stale when unseen for a minute. No ids. |
 | `container_logs` | read | Confidential | The newest 100 lines of one container's log, at most 16 KB, scrubbed of secrets. A name resolved through Portainer; an unknown name is refused, and so is Endora's own. Refused with a plain message when Portainer is not set up. |
 | `restart_container` | automatic act | Internal | Restarts one container through the console's own container action (its allowlist, protection, journal and read-back), with a reason. Never Endora's own, and never what a restart will not fix (below). At most once a container an hour, and three an hour across the team. |
 

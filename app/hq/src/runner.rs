@@ -5,20 +5,23 @@
 //! With the demo on, HQ runs no real turns: these routes answer a signed runner 404.
 
 use axum::Json;
+
 use axum::Router;
 use axum::extract::{Path, Request, State as Extract};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use endora_team::application::run_ports::RunStore;
 use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::ports::{StoreError, TeamStore as _};
-use endora_team::domain::{Exit, RunId};
+use endora_team::domain::{Exit, RunId, TaskId};
 use endora_team::infrastructure::RemoteRunner;
 
 use crate::api::{State, bearer, same};
+use endora_team::application::wing_ports::WingStore;
 
 /// The runner's routes.
 pub(crate) fn routes(state: State) -> Router<State> {
@@ -26,6 +29,7 @@ pub(crate) fn routes(state: State) -> Router<State> {
         .route("/v1/runner/next", post(next))
         .route("/v1/runner/{run}/ended", post(ended))
         .route("/v1/runner/stops", get(stops))
+        .route("/v1/runner/sandboxes", post(sandboxes))
         .route_layer(middleware::from_fn_with_state(state, signed_by_the_runner))
 }
 
@@ -126,21 +130,42 @@ async fn next(Extract(state): Extract<State>, Json(room): Json<Room>) -> Respons
             // A shell where the runner has one, but not for the check after a deploy, which
             // reads the lab through the node and nothing else (ADR 0115, amended).
             let shell = hq.may_use_a_shell(handed.turn.run).unwrap_or(false);
-            (handed, member, runtime, on, shell)
+            let project = handed
+                .turn
+                .task
+                .and_then(|t| hq.store().task(t).ok().flatten())
+                .and_then(|t| t.project)
+                .map(|p| p.0);
+            (handed, member, runtime, on, shell, project)
         }))
     })
     .await;
     match handed {
-        Ok(Ok(Some((handed, member, runtime, on, shell)))) => Json(json!({
+        Ok(Ok(Some((handed, member, runtime, on, shell, project)))) => Json(json!({
             "run": handed.turn.run.0,
             "lease": handed.lease,
             "token": handed.turn.token,
             "member": member.as_ref().map_or("", |m| m.name.as_str()),
-            "role": member.as_ref().map_or("", |m| m.role.name()),
             // What the member thinks with: the runner points the worker at the matching relay.
             "brain": on.map_or("local", endora_team::domain::Brain::name),
             "task": handed.turn.task.map(|t| t.0),
-            "effort": handed.turn.effort.map(endora_team::domain::Effort::name),
+            // The project of that task, if it is in one: only a number, which a runner set up
+            // to watch some projects' side effects checks against its own list.
+            "project": project,
+            // What the turn may read in all, by its brain: the figure HQ judges it by.
+            "prompt_budget": endora_team::domain::handover::prompt_budget(
+                on.unwrap_or(endora_team::domain::Brain::Local)
+            ),
+            // How the worker counts it: the conversation once, or every call summed.
+            "budget_counts": if endora_team::domain::handover::counts_conversation(
+                on.unwrap_or(endora_team::domain::Brain::Local)
+            ) {
+                "conversation"
+            } else {
+                "every_call"
+            },
+            // How hard Claude tries: its model's own (the roles that named one are gone).
+            "effort": serde_json::Value::Null,
             // What runs the turn in the workbench (ADR 0117): `worker` or `claude-code`.
             "runtime": runtime.name(),
             "shell": shell,
@@ -195,9 +220,10 @@ fn exit_of(req: &Ended) -> Exit {
     Exit::Unsaid
 }
 
-/// How a turn the runner was handed ended. The engine's next tick ends the run. A report from
-/// an attempt that is no longer the run's current one (its lease is out of date) is refused,
-/// 409, and changes nothing.
+/// How a turn the runner was handed ended. An accepted report asks the engine for a pass at
+/// once, which ends the run (ADR 0102, amended 2026-11-04): it used to wait for the next tick.
+/// A report from an attempt that is no longer the run's current one (its lease is out of date)
+/// is refused, 409, changes nothing and asks for no pass.
 async fn ended(
     Extract(state): Extract<State>,
     Path(run): Path<i64>,
@@ -220,6 +246,7 @@ async fn ended(
         )
             .into_response();
     }
+    state.hq.a_turn_has_ended();
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -286,6 +313,39 @@ pub(crate) async fn check_done(
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Sandboxes {
+    /// The items whose sandboxes the runner keeps.
+    items: Vec<i64>,
+}
+
+/// The most items the runner may ask about at once.
+const SANDBOXES_AT_MOST: usize = 1000;
+
+/// Of the items whose sandboxes the runner keeps between their turns (ADR 0142, amended
+/// 2026-11-01), the ones to go on keeping: those open. The runner lets the rest go.
+async fn sandboxes(Extract(state): Extract<State>, Json(req): Json<Sandboxes>) -> Response {
+    if state.hq.runner().remote().is_none() {
+        return no_runner();
+    }
+    if req.items.len() > SANDBOXES_AT_MOST {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "too many items at once" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+    match tokio::task::spawn_blocking(move || hq.sandboxes_to_keep(&items)).await {
+        Ok(Ok(keep)) => {
+            let keep: Vec<i64> = keep.into_iter().map(|t| t.0).collect();
+            Json(json!({ "keep": keep })).into_response()
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

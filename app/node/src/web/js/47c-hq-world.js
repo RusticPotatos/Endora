@@ -137,7 +137,7 @@ const HQ_WORLD_VIEW = { page: null, writing: false };
 // Everything in them is a member's, so all of it is escaped.
 function hqWorldPageList(w) {
   const mapped = ((w.map || {}).pages || []);
-  const pages = mapped.length ? mapped : [{ slug: "house", address: "world:house", title: "The house", steward: "the CEO", sections: (w.sections || []).length }];
+  const pages = mapped.length ? mapped : [{ slug: "house", address: "world:house", title: "The house", steward: "you", sections: (w.sections || []).length }];
   const rows = pages.map((pg) => {
     const count = Number(pg.sections) || 0;
     const what = pg.derived ? "from the record" : `kept by ${esc(pg.steward)} · ${count} section${count === 1 ? "" : "s"}`;
@@ -156,7 +156,7 @@ function hqWorldPageBody(w, slug, sections, sectionRow) {
     const timeline = ((w.pages || [])[0] || {}).timeline || [];
     const lines = timeline.slice(0, 20).map((l) => `<li><b>${esc(l.day)}</b>, ${esc(l.by)}: ${esc(l.line)}</li>`).join("");
     return `${back}<h3>The house page</h3>
-      <ul class="hq-team hq-world">${rows || `<li class="hq-empty">No sections yet: the CEO writes them from the timeline.</li>`}</ul>
+      <ul class="hq-team hq-world">${rows || `<li class="hq-empty">No sections yet.</li>`}</ul>
       <h4>Its timeline (${timeline.length})</h4><ul class="hq-thread hq-timeline">${lines || `<li class="hq-empty">Nothing yet.</li>`}</ul>`;
   }
   const derived = (w.pages || []).find((p) => p.derived && p.slug === slug);

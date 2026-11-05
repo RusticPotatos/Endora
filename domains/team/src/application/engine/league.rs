@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 
 use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
+use crate::domain::chess_match::Match;
 use crate::domain::games::{self, Rng};
 use crate::domain::league::{self, Played};
-use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
+use crate::domain::{Brain, MemberId, Millis, ProjectId, Refusal, TaskId};
+use crate::domain::{dates, money};
 
 /// Where the league is kept: its project and its brains, by name.
 const LEAGUE: &str = "league";
@@ -21,22 +23,12 @@ const GAMES: &str = "league_games";
 /// Where the games each reset set aside are kept: `[{at, games: [[task, white, black]]}]`.
 const BEFORE_RESET: &str = "league_games_before_reset";
 
+/// A league game as kept: its world's task and the brains playing white and black.
+type Kept = (TaskId, Brain, Brain);
+
 /// Where the brain a league game's side is pinned to is kept, by the side's task.
 fn side_key(task: TaskId) -> String {
     format!("league_side:{}", task.0)
-}
-
-/// Whether a member who plays (any role but the CEO's) may think with `brain`.
-fn may_play(brain: Brain) -> bool {
-    !brain.cloud()
-        || [
-            Role::Lead,
-            Role::Developer,
-            Role::Reviewer,
-            Role::Researcher,
-        ]
-        .into_iter()
-        .any(|r| brain.allowed_for(r))
 }
 
 fn refused(why: impl Into<String>) -> EngineError {
@@ -65,14 +57,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         if named.len() < 2 {
             return Err(refused("a league is two brains or more"));
-        }
-        // The relay lets a role think only with its own Claudes (ADR 0111), and the CEO never
-        // sits at the board: a brain only the CEO may think with has nobody to play it.
-        if let Some(only_the_ceo) = named.iter().find(|b| !may_play(**b)) {
-            return Err(refused(format!(
-                "{} is the CEO's alone (ADR 0111), and the CEO does not play",
-                only_the_ceo.label()
-            )));
         }
         let found = self.holds_scenarios(project)?;
         if named.iter().any(|b| b.cloud()) && found.cap.is_none() {
@@ -111,11 +95,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The league's games as kept: each game's task and its two brains.
     fn league_kept(&self) -> Done<Vec<(TaskId, Brain, Brain)>> {
-        let kept: Vec<(i64, String, String)> = self
-            .store
-            .setting(GAMES)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let kept: Vec<(i64, String, String)> = self.setting_json(GAMES)?.unwrap_or_default();
         Ok(kept
             .into_iter()
             .filter_map(|(task, w, b)| {
@@ -125,23 +105,76 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The league's games with their results: a game whose world ended by the rules is scored;
-    /// one still being played, or abandoned with no result, is not.
-    fn league_played(&self) -> Done<Vec<(TaskId, Played, Option<&'static str>)>> {
-        let mut played = Vec::new();
-        for (task, white, black) in self.league_kept()? {
-            let now = self.replay_chess(task)?;
-            let end = now.outcome().map(|(name, _)| name);
-            played.push((
-                task,
-                Played {
-                    white,
-                    black,
-                    score: end.map(|_| now.score()),
-                },
-                end,
-            ));
-        }
-        Ok(played)
+    /// one still being played, or abandoned with no result, is not. Each with its match as its
+    /// log replays.
+    fn league_played(&self) -> Done<Vec<(TaskId, Played, Match)>> {
+        self.league_kept()?
+            .into_iter()
+            .map(|(task, white, black)| self.league_game(task, white, black))
+            .collect()
+    }
+
+    /// One league game, scored when its world ended by the rules, and its match.
+    fn league_game(
+        &self,
+        task: TaskId,
+        white: Brain,
+        black: Brain,
+    ) -> Done<(TaskId, Played, Match)> {
+        let now = self.replay_chess(task)?;
+        let score = now.outcome().map(|_| now.score());
+        Ok((
+            task,
+            Played {
+                white,
+                black,
+                score,
+            },
+            now,
+        ))
+    }
+
+    /// The games each reset set aside, in the order kept: one list a round, the first round
+    /// first, each with when it was set aside.
+    fn league_rounds_before(&self) -> Done<Vec<(Millis, Vec<Kept>)>> {
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
+        Ok(before
+            .iter()
+            .map(|r| {
+                let games = r["games"]
+                    .as_array()
+                    .map(|all| {
+                        all.iter()
+                            .filter_map(|g| {
+                                Some((
+                                    TaskId(g[0].as_i64()?),
+                                    Brain::from_name(g[1].as_str()?)?,
+                                    Brain::from_name(g[2].as_str()?)?,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (r["at"].as_i64().unwrap_or(0), games)
+            })
+            .collect())
+    }
+
+    /// `at` as the owner's day says it: "17 Oct".
+    fn owners_day(&self, at: Millis) -> String {
+        let (day, month) = dates::day_and_month(money::day_of(at, self.settings.offset_minutes));
+        format!("{day} {month}")
+    }
+
+    /// A league game's round (its place among the games kept, from 1) and the brains that
+    /// played white and black, if the match on `world` is one.
+    pub(super) fn league_game_of(&self, world: TaskId) -> Done<Option<(usize, Brain, Brain)>> {
+        Ok(self
+            .league_kept()?
+            .into_iter()
+            .enumerate()
+            .find(|(_, (task, _, _))| *task == world)
+            .map(|(i, (_, white, black))| (i + 1, white, black)))
     }
 
     /// The brain a turn on `task` is pinned to, if the task is a side of a league game.
@@ -169,11 +202,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 return Err(refused("no league has been started"));
             }
             let kept = self.league_kept()?;
-            let mut before: Vec<Value> = self
-                .store
-                .setting(BEFORE_RESET)?
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            let mut before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
             before.push(json!({
                 "at": self.clock.now(),
                 "games": kept.iter().map(|(t, w, b)| json!([t.0, w.name(), b.name()]))
@@ -182,14 +211,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.store
                 .set_setting(BEFORE_RESET, &Value::Array(before).to_string())?;
             self.store.set_setting(GAMES, "[]")?;
-            let mut live = Vec::new();
-            for (game, _, _) in &kept {
-                for task in self.store.tasks()? {
-                    if (task.id == *game || task.parent == Some(*game)) && !task.status.finished() {
-                        live.push(task.id);
-                    }
-                }
-            }
+            let tasks = self.store.tasks()?;
+            let live: Vec<TaskId> = kept
+                .iter()
+                .flat_map(|(game, _, _)| {
+                    tasks.iter().filter(move |t| {
+                        (t.id == *game || t.parent == Some(*game)) && !t.status.finished()
+                    })
+                })
+                .map(|t| t.id)
+                .collect();
             self.emit(
                 crate::domain::EventKind::WorldChanged,
                 json!({ "what": "league reset", "set_aside": kept.len(), "by": "owner" }),
@@ -204,25 +235,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// How many games the last reset set aside.
     fn league_set_aside(&self) -> Done<usize> {
-        let before: Vec<Value> = self
-            .store
-            .setting(BEFORE_RESET)?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
         Ok(before
             .last()
             .and_then(|r| r["games"].as_array())
             .map_or(0, Vec::len))
     }
 
-    /// On the tick: when the league is on, no world is being played, nothing waits to run
-    /// again and two members are free, the next pair of brains sits down to a game, by two of
-    /// the free members (who plays is the board's; which brain thinks is the league's).
+    /// The league games any reset set aside, by their world's task, so the owner's list can
+    /// show them as from before it.
+    pub(super) fn league_games_set_aside(&self) -> Done<Vec<TaskId>> {
+        let before: Vec<Value> = self.setting_json(BEFORE_RESET)?.unwrap_or_default();
+        Ok(before
+            .iter()
+            .filter_map(|r| r["games"].as_array())
+            .flatten()
+            .filter_map(|g| g[0].as_i64())
+            .map(TaskId)
+            .collect())
+    }
+
+    /// On the tick: when the league is on, no match is being played and two members are free,
+    /// the next pair of brains sits down to a game, by two of the free members (who plays is
+    /// the board's; which brain thinks is the league's).
     pub(super) fn league_tick(&self, now: Millis) -> Done<()> {
         let Some((project, brains)) = self.league()? else {
             return Ok(());
         };
-        if !self.rerun_queue()?.is_empty() || self.a_world_is_live()? {
+        // Paused by the owner, it sets nobody down (baseline 28 Oct: it went on opening games).
+        if self.held_by_owner(Some(project))? {
+            return Ok(());
+        }
+        if self.a_world_is_live()? {
             return Ok(());
         }
         let mut kept = self.league_kept()?;
@@ -240,21 +284,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(picked) = games::pick_two(&ids, &mut pick) else {
             return Ok(());
         };
-        // Each side is played by a member whose role may think with its brain: the two picked
-        // if they fit, either way round, or else the first two free members who do.
-        let fits = |w: MemberId, b: MemberId| {
-            let role = |id: MemberId| free.iter().find(|m| m.id == id).map(|m| m.role);
-            w != b
-                && role(w).is_some_and(|r| white.allowed_for(r) || !white.cloud())
-                && role(b).is_some_and(|r| black.allowed_for(r) || !black.cloud())
-        };
-        let seated = [picked, (picked.1, picked.0)]
-            .into_iter()
-            .chain(ids.iter().flat_map(|w| ids.iter().map(move |b| (*w, *b))))
-            .find(|(w, b)| fits(*w, *b));
-        let Some((a, b)) = seated else {
-            return Ok(());
-        };
+        // Any member may play either side: a member is the model it is pinned to for the game.
+        let (a, b) = picked;
         let seed = u64::try_from(kept.len()).unwrap_or(0) + 1;
         let game = self.start_chess_held_lock(project, [a, b], seed)?;
         let part = self
@@ -276,8 +307,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The league for the screen: its brains rated best first, how many pairs have yet to
-    /// finish a game, and its games, latest last. `null` before the owner starts it.
+    /// The league for the screen: its brains in the standings' order (points, then rating), how
+    /// many pairs have yet to finish a game, which round it is, and its games, latest last; a
+    /// game in play with its board, the board before the last move, whose move it is and the
+    /// last move (the owner's Chess tab, 31 Oct). `null` before the owner starts it.
     pub(super) fn league_shown(&self) -> Done<Value> {
         let Some((project, brains)) = self.league()? else {
             return Ok(Value::Null);
@@ -288,19 +321,82 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .into_iter()
             .map(|r| {
                 json!({ "brain": r.brain.name(), "label": r.brain.label(), "rating": r.rating,
-                        "won": r.won, "drawn": r.drawn, "lost": r.lost })
+                        "points": r.points(), "won": r.won, "drawn": r.drawn, "lost": r.lost,
+                        "history": r.history })
             })
             .collect();
-        let games: Vec<Value> = played
-            .iter()
-            .map(|(task, p, end)| {
-                json!({ "task": task.0, "white": p.white.name(), "black": p.black.name(),
-                        "end": end })
-            })
-            .collect();
+        let mut games = Vec::new();
+        for (task, p, now) in &played {
+            let end = now.outcome().map(|(name, _)| name);
+            let mut game = json!({ "task": task.0, "white": p.white.name(),
+                                   "black": p.black.name(), "end": end,
+                                   "half_moves": now.moves().len() });
+            let live = end.is_none() && !self.task(*task)?.status.finished();
+            game["live"] = json!(live);
+            if live {
+                let mut seen = now.positions();
+                let rows = seen.pop();
+                game["rows"] = json!(rows);
+                if let Some((fen, _)) = now.board() {
+                    game["fen"] = json!(fen);
+                }
+                game["before"] = json!(seen.pop().or_else(|| rows.clone()));
+                game["to_move"] = json!(now.to_move().name());
+                game["last"] = json!(now.moves().last());
+            }
+            games.push(game);
+        }
+        let before = self.league_rounds_before()?;
+        let since = before.last().map(|(at, _)| self.owners_day(*at));
         Ok(
             json!({ "project": project.0, "table": table, "games": games,
-                   "pairs_left": league::pairs_left(&brains, &results) }),
+                   "pairs_left": league::pairs_left(&brains, &results),
+                   "round": { "number": before.len() + 1, "since": since } }),
+        )
+    }
+
+    /// Every finished league game, of every round, newest first, `per` to a page (`page` from
+    /// 1): each with its round, its brains, its result (or `abandoned` for one stopped with no
+    /// result), its half-moves and the owner's day it ended. A game in play is not listed.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn league_games(&self, page: usize, per: usize) -> Done<Value> {
+        let per = per.max(1);
+        let mut rounds = self.league_rounds_before()?;
+        rounds.push((0, self.league_kept()?));
+        let mut finished = Vec::new();
+        for (round, (_, games)) in rounds.into_iter().enumerate() {
+            for (task, white, black) in games {
+                let (_, _, now) = self.league_game(task, white, black)?;
+                let result = now.outcome().map(|(name, _)| name);
+                if result.is_none() && !self.task(task)?.status.finished() {
+                    continue;
+                }
+                finished.push((round + 1, task, white, black, result, now.moves().len()));
+            }
+        }
+        finished.sort_by_key(|(_, task, ..)| std::cmp::Reverse(*task));
+        let total = finished.len();
+        let mut listed = Vec::new();
+        for (round, task, white, black, result, half_moves) in finished
+            .into_iter()
+            .skip(page.saturating_sub(1).saturating_mul(per))
+            .take(per)
+        {
+            let last = self.store.scenario_actions(task)?.last().map(|a| a.at);
+            listed.push(
+                json!({ "task": task.0, "round": round, "white": white.name(),
+                                "white_label": white.label(), "black": black.name(),
+                                "black_label": black.label(),
+                                "result": result.unwrap_or("abandoned"),
+                                "half_moves": half_moves,
+                                "day": last.map(|at| self.owners_day(at)) }),
+            );
+        }
+        Ok(
+            json!({ "page": page.max(1), "pages": total.div_ceil(per), "per_page": per,
+                   "total": total, "games": listed }),
         )
     }
 }

@@ -292,8 +292,10 @@ function modelsSection() {
       ${modelListRows("everyday")}
       ${modelListAdd("everyday")}
     </div>
+    ${hqMacSetup()}
 
-    ${providersCard()}`;
+    ${providersCard()}
+    ${hqCreditsSetup()}`;
 }
 
 // One home for app settings — so they aren't scattered across pages.
@@ -342,8 +344,6 @@ function viewModels() {
     <h2>AI</h2>
     ${aiOverviewSection()}
     ${modelsSection()}
-    <h3>The Mac's brain</h3>
-    ${hqMacSetup()}
     ${worthKnowingSection()}`;
 }
 

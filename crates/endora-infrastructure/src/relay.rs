@@ -107,6 +107,55 @@ pub fn send_local(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), 
     if !crate::model_server::reaches_only_the_house(base) {
         return Err(format!("{base} is not on the house's network"));
     }
+    post_chat(base, key, body)
+}
+
+/// Sends a metered OpenAI-shaped call (a DeepSeek member's, charged to HQ by the caller) to
+/// `base`: out of the house only over HTTPS, or to an endpoint on the house's network.
+///
+/// # Errors
+/// `base` is neither, the endpoint could not be reached, or its reply was longer than
+/// [`LARGEST_LOCAL_REPLY`].
+pub fn send_metered(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    if !base.starts_with("https://") && !crate::model_server::reaches_only_the_house(base) {
+        return Err(format!("{base} is reached over https only"));
+    }
+    post_chat(base, key, body)
+}
+
+/// Asks a provider's balance (`GET <origin>/user/balance`, as DeepSeek answers it) with its
+/// key: `base` is the provider's OpenAI base, `.../v1`, whose `/v1` is left off. Over https
+/// only, or to an endpoint on the house's network.
+///
+/// # Errors
+/// `base` is neither, the endpoint could not be reached, or did not answer 200 with JSON.
+pub fn get_balance(base: &str, key: &str) -> Result<Value, String> {
+    if !base.starts_with("https://") && !crate::model_server::reaches_only_the_house(base) {
+        return Err(format!("{base} is reached over https only"));
+    }
+    let origin = base.trim_end_matches('/');
+    let origin = origin.strip_suffix("/v1").unwrap_or(origin);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into();
+    let response = agent
+        .get(format!("{origin}/user/balance"))
+        .header("authorization", format!("Bearer {key}"))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let status = response.status().as_u16();
+    let body = read_at_most(response.into_body().into_reader(), 64 * 1024)?;
+    if status != 200 {
+        return Err(format!("the provider answered {status}"));
+    }
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
+/// Posts `body` to `base`'s chat completions, with `key` if any, and reads the whole reply.
+fn post_chat(base: &str, key: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(LONGEST_CALL))
         .http_status_as_error(false)
@@ -165,6 +214,16 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
             output: 20.0,
         });
     }
+    // DeepSeek Flash, through the local relay to the owner's DeepSeek entry, at its peak prices
+    // (off-peak is half): it writes its cache for nothing.
+    if is("deepseek-flash") {
+        return Some(Price {
+            input: 0.30,
+            cache_write: 0.30,
+            cache_read: 0.006,
+            output: 1.20,
+        });
+    }
     if is("claude-haiku-5-5") {
         if prompt > HAIKU_LONG_PROMPT {
             return Some(Price {
@@ -182,6 +241,18 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
         });
     }
     None
+}
+
+/// The model a reply says answered it (its `model`), as the provider named it: kept as said, so
+/// a turn's record shows what actually answered, not only the alias it asked for (the
+/// agentic-harness climb, round 7). `None` when the reply does not say.
+#[must_use]
+pub fn served_model(reply: &Value) -> Option<String> {
+    reply["model"]
+        .as_str()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
 }
 
 /// What a call used, in tokens.
@@ -202,6 +273,20 @@ impl Used {
     #[must_use]
     pub const fn prompt(&self) -> u64 {
         self.input + self.cache_write + self.cache_read
+    }
+
+    /// From an OpenAI-shaped `usage` object, as DeepSeek reports it: what its cache held
+    /// (`prompt_cache_hit_tokens`) is read from the cache, the rest of the prompt is fresh.
+    #[must_use]
+    pub fn from_openai(usage: &Value) -> Self {
+        let n = |k: &str| usage[k].as_u64().unwrap_or(0);
+        let read = n("prompt_cache_hit_tokens");
+        Self {
+            input: n("prompt_tokens").saturating_sub(read),
+            cache_write: 0,
+            cache_read: read,
+            output: n("completion_tokens"),
+        }
     }
 
     /// From an Anthropic `usage` object; a field it lacks counts as none.
@@ -254,6 +339,8 @@ pub struct StreamedUsage {
     pending: String,
     used: Used,
     finished: bool,
+    /// The model the stream's first event said answered, as the provider named it.
+    served: Option<String>,
 }
 
 impl StreamedUsage {
@@ -275,7 +362,12 @@ impl StreamedUsage {
                     continue;
                 };
                 match v["type"].as_str() {
-                    Some("message_start") => self.raise(&v["message"]["usage"]),
+                    Some("message_start") => {
+                        self.raise(&v["message"]["usage"]);
+                        if self.served.is_none() {
+                            self.served = served_model(&v["message"]);
+                        }
+                    }
                     Some("message_delta") => {
                         self.raise(&v["usage"]);
                         self.finished = true;
@@ -302,6 +394,12 @@ impl StreamedUsage {
     #[must_use]
     pub const fn used(&self) -> Used {
         self.used
+    }
+
+    /// The model the provider said answered, when the stream said: never the alias asked for.
+    #[must_use]
+    pub fn served(&self) -> Option<String> {
+        self.served.clone()
     }
 
     /// Whether the stream reached its last usage (or Anthropic's own error). Until then the
@@ -334,6 +432,13 @@ const METERED_FIELDS: [&str; 15] = [
     "cache_control",
 ];
 
+/// Anthropic's tool search, the one server tool passed on: it costs nothing and reaches nothing
+/// outside, only picking from the tools the call itself sent (held back with `defer_loading`).
+pub const TOOL_SEARCH: [&str; 2] = [
+    "tool_search_tool_bm25_20251119",
+    "tool_search_tool_regex_20251119",
+];
+
 /// Why a call cannot be metered, if it cannot: a field not in [`METERED_FIELDS`], a tool that
 /// runs on Anthropic's side (web search and fetch, code execution, MCP: each with fees of its
 /// own, and each a way out to the internet), content Anthropic would fetch from a URL or
@@ -356,8 +461,10 @@ pub fn unmetered(call: &Value) -> Option<String> {
             return Some("`tools` is not a list".to_owned());
         };
         let server_side = tools.iter().find(|t| {
-            t.get("type")
-                .is_some_and(|kind| kind.as_str() != Some("custom"))
+            t.get("type").is_some_and(|kind| {
+                kind.as_str() != Some("custom")
+                    && !kind.as_str().is_some_and(|k| TOOL_SEARCH.contains(&k))
+            })
         });
         if let Some(tool) = server_side {
             return Some(format!(
@@ -540,39 +647,51 @@ pub fn betas_passed(header: Option<&str>) -> Option<String> {
     Some(kept.join(","))
 }
 
-/// The most one turn of a member in `role` may spend, in micros (ADR 0111): a dollar for the
-/// CEO, forty cents for everyone else. The relay holds each call to it, whatever HQ says is
-/// left, as HQ holds each turn's reservation.
+/// The most one turn of a member whose brain is `brain` may spend, in micros (ADR 0111, 0142):
+/// a dollar for the member who thinks with Opus, forty cents for everyone else. The relay holds
+/// each call to it, whatever HQ says is left, as HQ holds each turn's reservation.
 #[must_use]
-pub fn most_a_turn(role: &str) -> i64 {
-    if role == "ceo" {
+pub fn most_a_turn(brain: &str) -> i64 {
+    if is_opus(brain) {
         return 1_000_000;
     }
     400_000
 }
 
-/// Whether a member in `role` may call `model`, by the plan's models by role: Opus or Sonnet
-/// for the CEO; Sonnet for the developer, the reviewer and the lead, Haiku for the researcher
-/// (and for them all, being cheaper). Opus is the CEO's alone (the owner's decision of
-/// 2026-10-17, ADR 0111). A role the relay does not know may call nothing.
+/// Whether a member whose brain is `brain` may call `model` (ADR 0142, one team): Sonnet or
+/// Haiku for every member; Opus or Sonnet for the one whose brain is Opus, which is its alone
+/// (the owner's decision of 2026-10-17, ADR 0111); no Claude for a member who thinks with
+/// DeepSeek; nothing for a brain HQ did not name.
 ///
 /// # Errors
 /// Why not, said to the worker.
-pub fn may_use(role: &str, model: &str) -> Result<(), String> {
-    let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
-    if is("claude-opus-5-5") && role != "ceo" {
-        return Err("Opus is the CEO's alone, by the owner's decision".to_owned());
+pub fn may_use(brain: &str, model: &str) -> Result<(), String> {
+    // A member who thinks with DeepSeek thinks with nothing else: no Claude on its turn.
+    if brain.starts_with("deepseek") {
+        return Err(format!(
+            "a member who thinks with {brain} may not use {model}"
+        ));
     }
-    let allowed = match role {
-        "ceo" => is("claude-opus-5-5") || is("claude-sonnet-5-5"),
-        "developer" | "reviewer" | "lead" => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
-        "researcher" => is("claude-haiku-5-5"),
-        _ => false,
+    let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
+    if is("claude-opus-5-5") && !is_opus(brain) {
+        return Err("Opus is for the member who thinks with Opus alone".to_owned());
+    }
+    let allowed = match brain {
+        "" => false,
+        _ if is_opus(brain) => is("claude-opus-5-5") || is("claude-sonnet-5-5"),
+        _ => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
     };
     if allowed {
         return Ok(());
     }
-    Err(format!("a {role} may not use {model}"))
+    Err(format!(
+        "a member who thinks with {brain} may not use {model}"
+    ))
+}
+
+/// Whether a model is Opus, the top rank's under ADR 0142.
+fn is_opus(model: &str) -> bool {
+    model == "claude-opus-5-5" || model.starts_with("claude-opus-5-5-")
 }
 
 /// What to ask Anthropic to count before a call: the call's prompt, without what only a
@@ -1039,6 +1158,26 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_says_which_model_answered_or_nothing() {
+        // The provider's own name for the model that answered, which may differ from the
+        // alias asked for (the agentic-harness climb, round 7): kept as said, never guessed.
+        let whole = json!({ "type": "message", "model": "claude-haiku-5-5-20261001",
+                            "usage": { "input_tokens": 1, "output_tokens": 1 } });
+        assert_eq!(
+            served_model(&whole).as_deref(),
+            Some("claude-haiku-5-5-20261001")
+        );
+        assert_eq!(served_model(&json!({ "usage": {} })), None);
+        assert_eq!(served_model(&json!({ "model": "  " })), None);
+        let mut usage = StreamedUsage::default();
+        usage.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-haiku-5-5-20261001\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n");
+        assert_eq!(usage.served().as_deref(), Some("claude-haiku-5-5-20261001"));
+        let mut silent = StreamedUsage::default();
+        silent.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n");
+        assert_eq!(silent.served(), None);
+    }
+
+    #[test]
     fn a_stream_cut_before_its_last_delta_is_not_finished() {
         let mut usage = StreamedUsage::default();
         usage.feed(
@@ -1089,6 +1228,45 @@ mod tests {
             assert!(refused(change.clone()).is_some(), "{change}");
         }
         assert!(unmetered(&json!([])).is_some(), "a call is an object");
+    }
+
+    /// Tool search runs on Anthropic's side but costs nothing and reaches nothing outside: it
+    /// only picks from the tools the call sent. So it passes, with tools held back behind it,
+    /// and the blocks it answers with go back in the conversation; no other server tool does.
+    #[test]
+    fn tool_search_passes_and_no_other_server_tool() {
+        let searching = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10,
+            "tools": [
+                { "type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25" },
+                { "name": "post", "input_schema": { "type": "object" } },
+                { "name": "sonarr_queue", "input_schema": { "type": "object" }, "defer_loading": true },
+            ],
+            "messages": [
+                { "role": "user", "content": "Look at Sonarr." },
+                { "role": "assistant", "content": [
+                    { "type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25",
+                      "input": { "query": "sonarr queue" } },
+                    { "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_1",
+                      "content": { "type": "tool_search_tool_search_result",
+                        "tool_references": [{ "type": "tool_reference", "tool_name": "sonarr_queue" }] } },
+                    { "type": "tool_use", "id": "toolu_1", "name": "sonarr_queue", "input": {} },
+                ] },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "toolu_1", "content": "empty" }] },
+            ] });
+        assert_eq!(unmetered(&searching), None);
+        let mut regex = searching.clone();
+        regex["tools"][0] =
+            json!({ "type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex" });
+        assert_eq!(unmetered(&regex), None);
+        let mut beside = searching;
+        beside["tools"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "type": "web_search_20260209", "name": "web_search" }));
+        assert!(
+            unmetered(&beside).is_some(),
+            "web search does not ride along"
+        );
     }
 
     #[test]
@@ -1202,31 +1380,91 @@ mod tests {
         assert_eq!(betas_passed(None), None);
     }
 
+    /// The models a member may call follow its brain alone (ADR 0142, one team): Sonnet or
+    /// Haiku for every member, Opus and Sonnet for the one whose brain is Opus, and nothing for a
+    /// turn whose brain HQ did not name.
     #[test]
-    fn a_role_uses_the_models_the_plan_gives_it_and_opus_is_the_ceos_alone() {
-        for role in ["developer", "reviewer", "lead"] {
-            assert!(may_use(role, "claude-sonnet-5-5").is_ok(), "{role}");
+    fn a_member_uses_the_models_its_brain_allows_and_opus_only_its_own() {
+        for brain in ["claude-haiku-5-5", "claude-sonnet-5-5", "local", "mac"] {
+            assert!(may_use(brain, "claude-sonnet-5-5").is_ok(), "{brain}");
             assert!(
-                may_use(role, "claude-haiku-5-5").is_ok(),
-                "{role}: cheaper is fine"
+                may_use(brain, "claude-haiku-5-5-20261001").is_ok(),
+                "{brain}"
             );
+            let why = may_use(brain, "claude-opus-5-5").unwrap_err();
+            assert!(why.contains("Opus"), "{why}");
+            assert_eq!(most_a_turn(brain), 400_000, "{brain}");
         }
-        assert!(may_use("researcher", "claude-haiku-5-5-20261001").is_ok());
-        assert!(may_use("researcher", "claude-sonnet-5-5").is_err());
-        for role in ["developer", "lead", "researcher", "reviewer"] {
-            let why = may_use(role, "claude-opus-5-5").unwrap_err();
-            assert!(why.contains("CEO's alone"), "{why}");
-            assert_eq!(most_a_turn(role), 400_000, "{role}");
+        let opus = "claude-opus-5-5";
+        assert!(may_use(opus, opus).is_ok());
+        assert!(may_use(opus, "claude-opus-5-5-20261001").is_ok());
+        assert!(
+            may_use(opus, "claude-sonnet-5-5").is_ok(),
+            "cheaper is fine"
+        );
+        assert!(
+            may_use(opus, "claude-haiku-5-5").is_err(),
+            "as the CEO's was"
+        );
+        assert_eq!(most_a_turn(opus), 1_000_000);
+        for brain in ["claude-haiku-5-5", opus] {
+            assert!(may_use(brain, "deepseek-chat").is_err(), "{brain}");
         }
-        assert!(may_use("ceo", "claude-opus-5-5").is_ok());
-        assert!(may_use("ceo", "claude-opus-5-5-20261001").is_ok());
-        assert!(may_use("ceo", "claude-sonnet-5-5").is_ok());
-        assert!(may_use("ceo", "claude-haiku-5-5").is_err(), "not the CEO's");
-        assert!(may_use("ceo", "deepseek-chat").is_err());
-        assert_eq!(most_a_turn("ceo"), 1_000_000);
         assert!(
             may_use("", "claude-sonnet-5-5").is_err(),
-            "no role, no model"
+            "no brain, no model"
         );
+    }
+
+    #[test]
+    fn a_metered_call_leaves_the_house_only_over_https_and_a_free_one_never() {
+        // Live, 30 Oct: Dex's first DeepSeek turn was refused by the local relay's fence.
+        assert!(
+            send_local("https://api.deepseek.com/v1", "", b"{}")
+                .unwrap_err()
+                .contains("not on the house's network")
+        );
+        let refused = send_metered("http://api.deepseek.com/v1", "", b"{}").unwrap_err();
+        assert!(refused.contains("https"), "{refused}");
+        let refused = send_metered("ftp://example.com/v1", "", b"{}").unwrap_err();
+        assert!(refused.contains("https"), "{refused}");
+    }
+
+    #[test]
+    fn a_deepseek_member_is_metered_at_deepseeks_prices_and_never_reaches_claude() {
+        // DeepSeek's peak prices, a million tokens: $0.30 in, $0.006 read from its cache,
+        // $1.20 out (owner, 2026-10-28).
+        let price = price_of("deepseek-flash", 0).unwrap();
+        let used = Used::from_openai(&json!({ "prompt_tokens": 1_000, "completion_tokens": 100,
+            "prompt_cache_hit_tokens": 600, "prompt_cache_miss_tokens": 400 }));
+        assert_eq!(
+            used,
+            Used {
+                input: 400,
+                cache_write: 0,
+                cache_read: 600,
+                output: 100
+            }
+        );
+        assert_eq!(
+            cost(price, used),
+            244,
+            "400×0.30 + 600×0.006 + 100×1.20, rounded up"
+        );
+        let plain = Used::from_openai(&json!({ "prompt_tokens": 50, "completion_tokens": 5 }));
+        assert_eq!(
+            plain,
+            Used {
+                input: 50,
+                cache_write: 0,
+                cache_read: 0,
+                output: 5
+            }
+        );
+        // Its calls go to DeepSeek alone: the Anthropic relay refuses it every Claude.
+        for model in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"] {
+            assert!(may_use("deepseek-flash", model).is_err(), "{model}");
+        }
+        assert_eq!(most_a_turn("deepseek-flash"), 400_000);
     }
 }

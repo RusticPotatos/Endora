@@ -3,11 +3,12 @@
 use serde_json::{Value, json};
 
 use super::ports::{DeskItem, Run};
-use super::scorecard::{Record, Window, score};
+use super::scorecard::{Record, Window, by_model_shown, score};
 use crate::domain::money::{DAY_MS, day_of};
+use crate::domain::runs;
 use crate::domain::{
-    DeskId, Event, GoalId, Label, MemberId, Priority, RunId, RunStatus, Task, TaskId, TaskStatus,
-    WakeId,
+    Brain, DeskId, Event, GoalId, Label, MemberId, Priority, RunId, RunStatus, Task, TaskId,
+    TaskStatus, WakeId,
 };
 
 /// 2026-10-17 12:00 UTC.
@@ -129,6 +130,7 @@ fn record<'a>(
         tasks,
         desk,
         events,
+        kept_from: events.first().map(|e| e.at),
     }
 }
 
@@ -244,6 +246,28 @@ fn a_finished_task_costs_its_whole_life_and_a_dropped_one_is_waste() {
     assert_eq!((finished.dropped, finished.dropped_spent), (1, 30_000));
     let empty = score(&record(&[], &[], &[], &[]), &today()).finished;
     assert_eq!(empty.per_done(), None, "no finished task, no cost per one");
+}
+
+/// A task done with nothing checked (a loop worked alone, no branch) is counted done and, apart,
+/// as not verified, so the card never folds it into verified outcomes; a done said before the
+/// mark existed, or verified, is not (ADR 0124, amended 2026-11-03).
+#[test]
+fn a_task_completed_with_nothing_checked_is_counted_apart_as_not_verified() {
+    let unverified = event(
+        1,
+        NOON,
+        "task.changed",
+        json!({ "task": 1, "status": "done", "unverified": true }),
+    );
+    let events = [
+        unverified,
+        changed(2, NOON, 2, TaskStatus::Done),
+        changed(3, NOON, 3, TaskStatus::Done),
+    ];
+    let finished = score(&record(&[], &[], &[], &events), &today()).finished;
+    assert_eq!((finished.done, finished.unverified), (3, 1));
+    let shown = score(&record(&[], &[], &[], &events), &today()).json();
+    assert_eq!(shown["finished"]["unverified"], json!(1));
 }
 
 #[test]
@@ -426,6 +450,11 @@ fn a_record_shorter_than_the_window_says_where_it_starts() {
     let early = [changed(1, NOON - 10 * DAY_MS, 1, TaskStatus::Doing)];
     assert_eq!(score(&record(&[], &[], &[], &early), &week()).since, None);
     assert_eq!(score(&record(&[], &[], &[], &[]), &week()).since, None);
+    // The feed starts where it is kept from, though the kinds the card never reads (ticks,
+    // the guards' findings) are not handed to it.
+    let mut kept = record(&[], &[], &[], &late);
+    kept.kept_from = Some(NOON - 10 * DAY_MS);
+    assert_eq!(score(&kept, &week()).since, None);
 }
 
 #[test]
@@ -444,4 +473,89 @@ fn the_json_carries_the_shares_the_screen_shows() {
     assert_eq!(shown["finished"]["per_done"], Value::Null);
     assert_eq!(shown["cache"]["share"], Value::Null);
     assert_eq!(shown["since"], Value::Null);
+}
+
+// ---- What each model cost (the owner, 2026-10-31) -------------------------------------------
+
+fn on(mut run: Run, brain: Brain) -> Run {
+    run.brain = Some(brain);
+    run
+}
+
+#[test]
+fn by_model_counts_the_turns_that_ran_on_each_brain_this_week_and_the_week_before() {
+    let day = day_of(NOON, 0);
+    let last_week = NOON - 7 * DAY_MS;
+    let mut never = on(
+        spending(run(5, 2, Some(7), Some(NOON), None), 0),
+        Brain::Sonnet,
+    );
+    never.status = RunStatus::Failed;
+    never.end_reason = format!("{}: the runtime could not start", runs::NEVER_STARTED);
+    // Turned away before it started (the guards, the kill switch): it ran nothing.
+    let mut refused = on(run(6, 2, Some(7), Some(NOON), None), Brain::Opus);
+    refused.started_at = None;
+    refused.status = RunStatus::Stopped;
+    let runs = [
+        on(
+            spending(run(1, 2, Some(7), Some(NOON), None), 400_000),
+            Brain::Sonnet,
+        ),
+        on(
+            spending(run(2, 3, Some(7), Some(NOON), None), 10_000),
+            Brain::Haiku,
+        ),
+        on(run(3, 4, Some(7), Some(NOON), None), Brain::Local),
+        // Still running: not yet a turn that ran.
+        on(run(4, 4, Some(7), None, None), Brain::Local),
+        never,
+        refused,
+        // Before brains were recorded on a turn: which it ran on cannot be told.
+        spending(run(7, 2, Some(7), Some(NOON), None), 90_000),
+        on(
+            spending(run(8, 3, Some(7), Some(last_week), None), 30_000),
+            Brain::Haiku,
+        ),
+        on(run(9, 4, Some(7), Some(last_week), None), Brain::Mac),
+        // Older than both weeks.
+        on(
+            spending(run(10, 3, Some(7), Some(NOON - 15 * DAY_MS), None), 5_000),
+            Brain::Haiku,
+        ),
+    ];
+    let shown = by_model_shown(&runs, day, 0);
+    let names: Vec<&str> = shown["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| r["brain"].as_str().expect("a brain"))
+        .collect();
+    assert_eq!(
+        names,
+        ["claude-sonnet-5-5", "claude-haiku-5-5", "local", "mac"],
+        "{shown}"
+    );
+    assert_eq!(
+        shown["rows"][0],
+        json!({ "brain": "claude-sonnet-5-5", "trend": "up",
+                "now": { "turns": 1, "spent": 400_000, "per_turn": 400_000, "share": 98 },
+                "before": { "turns": 0, "spent": 0, "per_turn": null, "share": 0 } })
+    );
+    assert_eq!(
+        shown["rows"][1],
+        json!({ "brain": "claude-haiku-5-5", "trend": "down",
+                "now": { "turns": 1, "spent": 10_000, "per_turn": 10_000, "share": 2 },
+                "before": { "turns": 1, "spent": 30_000, "per_turn": 30_000, "share": 100 } })
+    );
+    assert_eq!(shown["rows"][3]["now"]["per_turn"], Value::Null);
+    assert_eq!(shown["rows"][3]["before"]["turns"], json!(1));
+    let week = Window::days_ending(day, 7, 0);
+    assert_eq!(
+        shown["now"],
+        json!({ "from": week.from, "until": week.until, "turns": 3, "spent": 410_000,
+                "per_turn": 136_666 })
+    );
+    assert_eq!(shown["before"]["from"], json!(week.from - 7 * DAY_MS));
+    assert_eq!(shown["before"]["until"], json!(week.from));
+    assert_eq!(shown["before"]["turns"], json!(2));
 }

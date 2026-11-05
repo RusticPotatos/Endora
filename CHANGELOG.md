@@ -33,6 +33,18 @@ tagged release.
 
 ### Changed
 
+- **The Mac's card moves from HQ to Settings, AI** ([ADR 0130](docs/adr/0130-the-macs-brain.md),
+  amended 2026-10-31). Its state, the turns waiting for it, the helper's last word and the **Mac
+  busy** switch join its setup in one card beside the house's Everyday models. HQ has no Mac card
+  or chip; where a member's brain is named it says the Mac's state in a word, "Mac (busy)".
+
+- **HQ's daily pool follows the Claude credit** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md),
+  amended 2026-10-31). Today's base pool is what is left of the plan's grant spread over the days
+  until it renews, counting today, never less than the floor ($95 a month over 30 days) nor more
+  than three floors; bought credit never raises it. The node tells HQ the grant left and the next
+  renewal every five minutes (`POST /v1/pool/credit` on HQ, signed), and HQ keeps the first word
+  of each owner's day. Without it, or with no grant, the floor as before. The Money card says which
+  figure was used and why. Caps and the owner's top-ups are unchanged.
 - **Compiled Python is no longer tracked.** Four `__pycache__/*.pyc` files had been committed
   under the `endora.homelab` collection's roles, and the repository ignored none. They are
   untracked, `__pycache__/` and `*.pyc` are ignored, and the collection's own `build_ignore`
@@ -178,6 +190,16 @@ tagged release.
 
 ### Added
 
+- **The team reads upstream ansible-nas** ([ADR 0106](docs/adr/0106-team-contracts.md), amended
+  2026-10-31; D13 of the baseline experiment). The node's mirror of the fork also fetches
+  upstream's default branch, on the same schedule, and every `repo_checkout` carries it as
+  `upstream/<branch>`, read-only, so an offline sandbox can list what upstream changed that the
+  fork lacks. Upstream is never a base or a push target: a branch named for it or carrying its
+  commits is refused, and the node never pushes to it.
+- **`image_tags`, a read contract for the team** ([ADR 0106](docs/adr/0106-team-contracts.md),
+  amended 2026-10-30): the node reads an image's newest tags, and whether a named tag exists,
+  from Docker Hub, ghcr.io, quay.io or lscr.io, anonymously, so an offline sandbox can pin an
+  image to a release that exists. Any other registry is refused.
 - **The check after a deploy** ([ADR 0115](docs/adr/0115-the-engineering-wing-and-the-git-flow.md),
   amended). Once the node pushes a branch, the owner's desk asks whether it is deployed.
   Deployed hands the member of the routine that takes the home lab's alarms one turn to read the

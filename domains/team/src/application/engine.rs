@@ -13,9 +13,8 @@ use super::ports::{
     WorkerAdapter,
 };
 use super::scorecard;
-use crate::domain::chain::Decision;
 use crate::domain::cut::cut;
-use crate::domain::effort::{self, Effort};
+use crate::domain::docs;
 use crate::domain::guards::{GuardRefusal, Stopped};
 use crate::domain::history::InputOrigin;
 use crate::domain::mac::{self, MacFacts};
@@ -25,18 +24,18 @@ use crate::domain::review::{self, SendBackReason};
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::turns;
-use crate::domain::wakes::{self, LiveTurn};
+use crate::domain::wakes::{self};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
     Brain, CheckBackStatus, EventKind, Fault, Firing, GoalId, GoalStatus, Liveness, Member,
-    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId,
-    RunStatus, Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
+    MemberId, Millis, Priority, ProjectId, Receipt, Refusal, Routine, RoutineId, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeDecision, WakeReason,
 };
-use crate::domain::{docs, house};
 
 mod allowance;
 mod areas;
-mod deploy;
+mod days;
+mod delivery;
 mod digest;
 mod discipline;
 mod drain;
@@ -44,14 +43,17 @@ mod evidence;
 mod games;
 mod gaps;
 mod guards;
+mod handover;
 mod health;
 mod history;
-mod kinds;
+mod lab_tools;
 mod league;
+mod lessons;
 mod lineage;
 mod long_waits;
 mod loops;
 mod map;
+mod mechanical;
 mod memory;
 mod office;
 mod outcomes;
@@ -59,19 +61,19 @@ mod projects;
 mod record_search;
 mod replay;
 mod runaway;
+mod running;
 mod runtime;
 mod scenario;
-mod staffing;
-mod trials;
+mod waking;
 mod wing;
 mod world;
 
+pub use delivery::{Delivered, Deliveries, Due};
 pub use evidence::Called;
-pub use gaps::GapReported;
 pub use history::TranscriptKept;
 pub use map::MapMigrated;
-pub use projects::{LAB_UPKEEP, Proposal};
-pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission, WING_FIRST_TASK, WingSeeded};
+pub use runtime::ModelSet;
+pub use wing::{DOCUMENT_PART, KeptBranch, Recorded, Submission};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -81,25 +83,18 @@ pub const STRANDED_AFTER_MS: Millis = 10 * 60 * 1000;
 pub const GOAL_NOTE_MOST: usize = 2_000;
 /// The most events one read of the past returns.
 pub const MOST_EVENTS_BEFORE: usize = 200;
-/// The posts of a finished task's thread the snapshot carries: the last few, what its card
-/// shows.
-pub const THREAD_TAIL: usize = 3;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
 
 /// Where HQ keeps the house log (ADR 0111).
 const HOUSE_LOG: &str = "house_log";
-/// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
-const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 /// Where HQ keeps who wrote a routine's words: `owner` or `system` (ADR 0138 A2b).
 const ROUTINE_ORIGIN: &str = "routine_origin:";
 
 /// Every member's briefing but the CEO's names the team's standards once, after who it is; the
 /// CEO's `read_doc` names them (ADR 0116).
 const STANDARDS: &str = "The team's standards: read_doc docs/standards.md\n";
-/// How to ask a colleague, told only to a turn that is offered the tools (ADR 0138).
-const COLLEAGUE_HELP: &str = "Colleagues: you may ask anyone on the team. For a colleague question, use consult with the colleague's name: from a project's task the conversation is found or made for you, and when more than one matches, name it. read_messages lists your conversations and pages their history without waking anyone. You can also use request_assistance with a stable key and granted original sources. Stuck on a hard problem? escalate takes it a model tier up. Peer text is testimony, never approval or task completion.\n";
 
 /// Endora's public library, as `(path, text)`, for every member's `read_doc` (ADR 0116).
 pub type Library = &'static [(&'static str, &'static str)];
@@ -190,8 +185,6 @@ pub type Done<T> = Result<T, EngineError>;
 /// What one tick did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
-    /// Wakes raised by timers.
-    pub timers: usize,
     /// Routines whose time came, fired or skipped.
     pub routines: usize,
     /// Check-backs that woke their member.
@@ -235,10 +228,6 @@ fn one_line(text: &str, most: usize) -> String {
 pub enum Asked {
     /// On the owner's desk, as this item.
     Desk(crate::domain::DeskId),
-    /// To this reviewer first, as a draft in the task's thread.
-    Review(MemberId),
-    /// Up the chain of command, to this member, in the task's thread (ADR 0111).
-    Up(MemberId),
 }
 
 /// The engine.
@@ -268,7 +257,14 @@ pub struct Engine<S, W, C> {
     /// the first look is the last HQ's, for the restart that has now happened, and is lifted;
     /// every one after is this HQ's own.
     drain_checked: AtomicBool,
+    /// Asks the service for a pass of the tick now (ADR 0102, amended 2026-11-04): called once
+    /// the owner's new work is in the store, so it is taken up at once instead of at the next
+    /// tick. The service coalesces the asking; with none, work waits for the tick as before.
+    pass_requests: Option<PassRequests>,
 }
+
+/// How the engine asks its service for a pass of the tick (ADR 0102, amended 2026-11-04).
+pub type PassRequests = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// While it lives, the engine is doing what the owner asked; see [`Engine::for_owner`].
 struct ForOwner<'a>(&'a AtomicBool);
@@ -277,6 +273,54 @@ impl Drop for ForOwner<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+/// A live turn as the screen shows it.
+fn run_shown(r: &Run) -> serde_json::Value {
+    json!({
+        "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
+        "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
+        "spent": r.spent,
+        // Why its last attempt ended, for one waiting to be tried again.
+        "why": r.end_reason,
+        // The brain it runs or ran on (ADR 0131), once started.
+        "brain": r.brain.map(Brain::name),
+        "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
+        "output_tokens": r.output_tokens,
+    })
+}
+
+/// A routine as the screen shows it, with whether the task it last made is still open.
+fn routine_shown(r: &crate::domain::Routine, tasks: &[Task]) -> serde_json::Value {
+    json!({
+        "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
+        "project": r.project.map(|p| p.0),
+        "assignee": r.assignee.0, "every_ms": r.every_ms,
+        "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
+        "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
+        "last_fired_at": r.last_fired_at, "last_task": r.last_task.map(|t| t.0),
+        "last_task_open": r.last_task
+            .and_then(|id| tasks.iter().find(|t| t.id == id))
+            .is_some_and(|t| !t.status.finished()),
+    })
+}
+
+/// Where a queued turn was placed, and what it reserves; see [`Engine::launch`].
+#[derive(Clone, Copy)]
+struct Placement {
+    brain: Brain,
+    amount: Micros,
+    kind: turns::TurnKind,
+}
+
+/// What the screen's task rows are read against; see [`Engine::board`].
+struct Board<'a> {
+    tasks: &'a [Task],
+    goals: &'a [crate::domain::Goal],
+    routines: &'a [crate::domain::Routine],
+    branches: Vec<crate::domain::wing::Branch>,
+    checks: Vec<crate::domain::wing::Check>,
+    posts: std::collections::HashMap<TaskId, usize>,
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -294,6 +338,40 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             for_owner: AtomicBool::new(false),
             acting: Mutex::new(None),
             drain_checked: AtomicBool::new(false),
+            pass_requests: None,
+        }
+    }
+
+    /// The engine that asks `ask` for a pass of the tick once the owner's new work is stored
+    /// (ADR 0102, amended 2026-11-04). The service wires it to its ticker, which coalesces
+    /// what is asked and keeps its own clock besides.
+    #[must_use]
+    pub fn with_pass_requests(mut self, ask: PassRequests) -> Self {
+        self.pass_requests = Some(ask);
+        self
+    }
+
+    /// Asks for a pass when the owner's work was stored: never for a member's own work, nor
+    /// for work refused. Called with the engine's lock released.
+    fn ask_for_a_pass_after(&self, by: Author, stored: &Done<TaskId>) {
+        if by != Author::Owner || stored.is_err() {
+            return;
+        }
+        self.ask_for_a_pass();
+    }
+
+    /// The runner's report that a turn ended was accepted: ask for a pass, so the turn is
+    /// settled now rather than on the clock (ADR 0102, amended 2026-11-04, round 17). The pass
+    /// is the ordinary tick; how long a failed turn waits to be tried again is unchanged.
+    /// Called by the service with the engine's lock released.
+    pub fn a_turn_has_ended(&self) {
+        self.ask_for_a_pass();
+    }
+
+    /// Asks the service for a pass of the tick, when it listens (`with_pass_requests`).
+    fn ask_for_a_pass(&self) {
+        if let Some(ask) = &self.pass_requests {
+            ask();
         }
     }
 
@@ -336,7 +414,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What the node last said about the Mac, if it has.
-    fn mac_facts(&self) -> Option<MacFacts> {
+    pub(super) fn mac_facts(&self) -> Option<MacFacts> {
         self.mac
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -450,11 +528,36 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// models and reserves nothing. A project with a cap holds a turn to what is left of it this
     /// month, and to nothing while it is paused for its budget (ADR 0113).
     ///
+    /// What a queued turn may reserve, if it may: only judgment is paid for, and work on the
+    /// house's models reserves nothing. A league side is paid from the league's capped project
+    /// alone; it reserves nothing outside one. Judgment is paid on `brain`, and needs at least
+    /// what its opening call costs there.
+    fn reservable(
+        &self,
+        run: &Run,
+        member: &Member,
+        (kind, brain): (turns::TurnKind, Brain),
+        league: bool,
+        project: Option<ProjectId>,
+    ) -> Done<Option<Micros>> {
+        let least = money::least_a_turn(brain);
+        match kind {
+            turns::TurnKind::Work => Ok(Some(0)),
+            turns::TurnKind::Judgment if league => match self.project_left(project)? {
+                Some(_) => self.affordable(member, project, true, least),
+                None => Ok(None),
+            },
+            turns::TurnKind::Judgment => {
+                self.affordable(member, project, run.asked_by_owner, least)
+            }
+        }
+    }
+
     /// A member's share is its first claim, not a wall (ADR 0113, amended): past it, the
     /// member borrows at most one more share of what the other paid members have not used
     /// today, so its day reaches twice its share and no more, the owner's allowance aside
     /// ([`money::may_draw`]). Turned away at that limit with the pool's day not spent, it puts
-    /// one "out for today" item a day on the owner's desk.
+    /// one "out for today" item on the owner's desk, and another after each allowance.
     /// A turn the owner asked for (`for_owner`) is the pool's alone and needs no share. The
     /// pool's day is the hard ceiling either way, and the per-turn cap holds.
     fn affordable(
@@ -462,15 +565,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         member: &Member,
         project: Option<ProjectId>,
         for_owner: bool,
+        least: Micros,
     ) -> Done<Option<Micros>> {
         let day = self.today();
         let pool_left = self.pool_left_today()?;
-        let mut most = money::most_a_turn(member.role);
+        let mut most = most_a_turn_for(member);
         if let Some(left) = self.project_left(project)? {
             most = most.min(left);
         }
         if for_owner {
-            return Ok(money::reservation(pool_left, pool_left, most));
+            return Ok(money::reservation(pool_left, pool_left, most, least));
         }
         let paid = self.paid_weights()?;
         let pool_day = self.pool_day_today()?;
@@ -487,16 +591,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let allowance = self.allowance_of(member.id, day)?;
         let draw = money::may_draw(share, spent, others, allowance);
-        let amount = money::reservation(draw, pool_left, most);
+        let amount = money::reservation(draw, pool_left, most, least);
         // Turned away at twice its share while the pool's day and the project's month have
-        // money: the owner is asked, once a day (ADR 0113, amended).
+        // money: the owner is asked, once for each allowance (ADR 0113, amended 2026-11-01).
         let out_for_the_day = share > 0
             && !member.furloughed()
-            && draw < money::LEAST_A_TURN
-            && pool_left >= money::LEAST_A_TURN
-            && most >= money::LEAST_A_TURN;
+            && draw < least
+            && pool_left >= least
+            && most >= least;
         if amount.is_none() && out_for_the_day {
-            self.ask_about_the_day(member, day, share, spent, pool_left)?;
+            self.ask_about_the_day(member, day, (share, spent, allowance), pool_left)?;
         }
         Ok(amount)
     }
@@ -509,17 +613,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the team and the work ---------------------------------------------------------
 
     /// Adds a member. (Hiring goes through the owner's desk once HQ is a service.)
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
-    pub fn hire(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Done<MemberId> {
+    pub fn hire(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Done<MemberId> {
         let _held = self.held();
         let members = self.store.members()?;
         // No name given: the next free one (ADR 0142).
@@ -529,100 +623,55 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             name.to_owned()
         };
-        let id = self
-            .store
-            .add_member(&given, role, share_percent, slots, look)?;
+        let id = self.store.add_member(&given, share_percent, slots, look)?;
         Ok(id)
     }
 
     /// Pauses or resumes a member: a paused member's wakes are turned away.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn pause(&self, member: MemberId, paused: bool) -> Done<()> {
         let _held = self.held();
         Ok(self.store.set_paused(member, paused)?)
     }
 
-    /// The owner sets a brain of a member's (ADR 0109, 0131), by its name, to the slot it belongs
-    /// to: a Claude its role may use is the brain it judges with, the house's model (`local`) or
-    /// the Mac (`mac`) the brain it works with. The other is left as it is. The next turn starts
-    /// with it. The node asks HQ on every call, so a turn already running is held to it at
-    /// once. Returns the brain set.
+    /// The owner sets a member's model (ADR 0109, 0142), by its name: every turn of the member's
+    /// runs on it, whatever woke it. The node asks HQ on every call, so a turn already running is
+    /// held to it at once. Returns the brain set.
     ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// one its role may not think with; a store failure.
-    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_role(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// The owner sets a member's model (ADR 0142), by its name: every turn of the member's runs
-    /// on it, whatever woke it. Any member may be any model; a title is a name only.
+    /// Any member may be any model; a title is a name only.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
     /// a name that is not a model Endora has; a store failure.
-    pub fn set_model(&self, member: MemberId, brain: &str) -> Done<Brain> {
+    pub fn set_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
         let _held = self.held();
         let found = self.member(member)?;
-        let brain = Brain::from_name(brain).ok_or_else(|| {
-            EngineError::Refused(Refusal::NotABrain {
-                role: found.role,
-                asked: brain.to_owned(),
-            })
-        })?;
-        self.store.set_model(found.id, brain)?;
+        self.brain_set_held_lock(&found, brain)
+    }
+
+    /// The owner sets a member's model from the console (ADR 0142), as [`Self::set_brain`] does.
+    /// A member whose runtime cannot run the new model is put back on Endora's worker, and the
+    /// answer says so (ADR 0117, amended 2026-10-31).
+    ///
+    /// # Errors
+    /// As [`Self::set_brain`].
+    pub fn set_model(&self, member: MemberId, brain: &str) -> Done<ModelSet> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let brain = self.brain_set_held_lock(&found, brain)?;
+        let said = self.runtime_after_model(&found, brain)?;
+        Ok(ModelSet { brain, said })
+    }
+
+    /// Records a model set (the lock held), and says it in the feed.
+    fn brain_set_held_lock(&self, found: &Member, brain: &str) -> Done<Brain> {
+        let brain = Brain::named(brain).map_err(EngineError::Refused)?;
+        self.store.set_brain(found.id, brain)?;
         self.emit(
             EventKind::BrainSet,
             json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
                     "slot": "model" }),
         )?;
         Ok(brain)
-    }
-
-    /// The owner sets what a member does its work with (ADR 0131), by its name: `mac` or
-    /// `local`, the house's own models. Claude never does the work. The next turn of work
-    /// starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not one of the house's models; a store failure.
-    pub fn set_work_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_work(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// The owner sets the Claude a member judges with (ADR 0131), by its name. Every member
-    /// has one: Haiku until the owner says otherwise (the CEO, Sonnet). The next turn of
-    /// judgment starts with it.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotABrain`] for
-    /// a name that is not a Claude its role may use; a store failure.
-    pub fn set_judgment_brain(&self, member: MemberId, brain: &str) -> Done<Brain> {
-        let _held = self.held();
-        let found = self.member(member)?;
-        let brain = Brain::for_judgment(found.role, brain).map_err(EngineError::Refused)?;
-        self.brain_set_held_lock(&found, brain)?;
-        Ok(brain)
-    }
-
-    /// Records a brain set (the lock held): in the slot it belongs to, and said in the feed.
-    fn brain_set_held_lock(&self, found: &Member, brain: Brain) -> Done<()> {
-        self.store.set_brain(found.id, brain)?;
-        self.emit(
-            EventKind::BrainSet,
-            json!({ "member": found.id.0, "name": found.name, "brain": brain.name(),
-                    "slot": if brain.house() { "work" } else { "judgment" } }),
-        )
     }
 
     /// The owner renames a member: one to 40 characters on one line, and no other member's
@@ -649,109 +698,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "was": found.name, "name": name }),
         )?;
         Ok(name)
-    }
-
-    // ---- the house log (ADR 0111) ---------------------------------------------------------
-
-    /// The house log: empty when nothing is in it.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn house_log(&self) -> Done<String> {
-        Ok(self.store.setting(HOUSE_LOG)?.unwrap_or_default())
-    }
-
-    fn keep_house_log(&self, log: &str, by: &str, said: serde_json::Value) -> Done<()> {
-        self.store.set_setting(HOUSE_LOG, log)?;
-        let mut about = json!({ "by": by, "length": log.chars().count() });
-        if let (Some(about), Some(said)) = (about.as_object_mut(), said.as_object()) {
-            about.extend(said.clone());
-        }
-        self.emit(EventKind::HouseNoted, about)
-    }
-
-    /// Endora seeds the house log with how this lab is built ([`house::lab_built`]), once, and
-    /// only when it is empty: what the CEO or the owner wrote is never overwritten, and a log
-    /// the owner cleared later stays clear. Said in the feed as Endora's. Returns whether it
-    /// was seeded now.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn seed_house_log(&self) -> Done<bool> {
-        let _held = self.held();
-        if self.store.setting(HOUSE_LOG_SEEDED)?.is_some() {
-            return Ok(false);
-        }
-        self.store.set_setting(HOUSE_LOG_SEEDED, "1")?;
-        if !self.house_log()?.trim().is_empty() {
-            return Ok(false);
-        }
-        self.keep_house_log(
-            &house::lab_built(),
-            "Endora",
-            json!({ "entry": endora_kernel::lab::LAB_BUILT_TITLE, "seeded": true }),
-        )?;
-        Ok(true)
-    }
-
-    /// The owner rewrites the house log on HQ's screen; empty clears it. Once the house log is
-    /// the house page's timeline (ADR 0122), it is kept read-only for a release: refused.
-    ///
-    /// # Errors
-    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`] once moved; a store failure.
-    pub fn set_house_log(&self, log: &str) -> Done<()> {
-        let _held = self.held();
-        if self.world_migrated()? {
-            return Err(EngineError::Refused(Refusal::World(
-                crate::domain::world::WorldRefusal::HouseLogRetired,
-            )));
-        }
-        let log = house::rewritten(log).map_err(EngineError::Refused)?;
-        self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
-    }
-
-    /// A turn of the CEO's adds a dated line to the house page's timeline (ADR 0122; before
-    /// it, to the house log). Returns the line.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`] for anyone else; [`EngineError::Unknown`]
-    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`].
-    pub fn note_house(&self, run: RunId, entry: &str) -> Done<String> {
-        let _held = self.held();
-        let (run, ceo) = self.the_ceos_turn(run)?;
-        if entry.trim().is_empty() {
-            return Err(EngineError::Unknown("entry for the house page's timeline"));
-        }
-        let line = self.note_house_line(&run, &ceo, entry)?;
-        if let Some(task) = run.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        Ok(line)
-    }
-
-    /// A turn of the CEO's once rewrote the house log whole. The house log is the house page
-    /// now (ADR 0122): refused, saying what to use instead, for one release.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`];
-    /// [`crate::domain::world::WorldRefusal::HouseLogRetired`].
-    pub fn rewrite_house(&self, run: RunId, _log: &str) -> Done<usize> {
-        let _held = self.held();
-        self.the_ceos_turn(run)?;
-        Err(EngineError::Refused(Refusal::World(
-            crate::domain::world::WorldRefusal::HouseLogRetired,
-        )))
-    }
-
-    /// A running turn of the CEO's, and the CEO.
-    fn the_ceos_turn(&self, run: RunId) -> Done<(Run, Member)> {
-        let run = self.running(run)?;
-        let member = self.member(run.member)?;
-        if member.role != Role::Ceo {
-            return Err(EngineError::Refused(Refusal::OnlyTheCeo));
-        }
-        Ok((run, member))
     }
 
     /// A member's turn reads one of Endora's public library (its records, plans, drafts and
@@ -794,20 +740,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Sets a goal. The owner's is active at once; one Endora proposes waits on the desk.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn set_goal(&self, title: &str, reason: &str, by: Author) -> Done<GoalId> {
         let _held = self.held();
         if by != Author::Owner {
             return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
         self.set_goal_authored_held_lock(title, reason, InputOrigin::Owner)
-    }
-
-    fn set_generated_goal(&self, title: &str, reason: &str) -> Done<GoalId> {
-        let _held = self.held();
-        self.set_goal_authored_held_lock(title, reason, InputOrigin::Unknown)
     }
 
     fn set_goal_authored_held_lock(
@@ -862,14 +800,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Refused`] if a member hands work up or across;
     /// [`EngineError::Unknown`] for a goal, task or member that does not exist.
     pub fn add_task(&self, by: Author, task: NewTask) -> Done<TaskId> {
-        let _held = self.held();
-        let _asked = (by == Author::Owner).then(|| self.for_owner());
-        let origin = if by == Author::Owner {
-            InputOrigin::Owner
-        } else {
-            InputOrigin::Unknown
+        let stored = {
+            let _held = self.held();
+            let _asked = (by == Author::Owner).then(|| self.for_owner());
+            let origin = if by == Author::Owner {
+                InputOrigin::Owner
+            } else {
+                InputOrigin::Unknown
+            };
+            self.add_task_authored_held_lock(by, task, origin)
         };
-        self.add_task_authored_held_lock(by, task, origin)
+        self.ask_for_a_pass_after(by, &stored);
+        stored
     }
 
     fn add_task_held_lock(&self, by: Author, task: NewTask) -> Done<TaskId> {
@@ -914,10 +856,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .map_err(EngineError::Refused)?;
         }
         let task = NewTask { project, ..task };
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
         if let (Author::Member(from), Some(to)) = (by, task.assignee) {
             if from != to {
-                let (from, to) = (self.member(from)?, self.member(to)?);
-                work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+                return Err(EngineError::Refused(Refusal::NotBelow));
             }
         }
         if let Some(to) = task.assignee {
@@ -1036,337 +978,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(None)
     }
 
-    // ---- wakes ---------------------------------------------------------------------------
-
-    /// Asks `member` to take a turn, about `task` if any. Every wake leaves a receipt.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails; [`EngineError::Unknown`] for a member that
-    /// does not exist.
-    pub fn wake(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        reason: WakeReason,
-    ) -> Done<Receipt> {
-        let _held = self.held();
-        self.wake_held_lock(member, task, reason)
-    }
-
-    /// The live turns a wake about `task` meets. A wake of judgment (`judgment`) may join any
-    /// of them but a work turn already running on the house's models: it would be judged by a
-    /// brain that must not judge (ADR 0131).
-    fn live_turns(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        judgment: bool,
-    ) -> Done<Vec<LiveTurn>> {
-        Ok(self
-            .store
-            .runs()?
-            .into_iter()
-            .filter(|run| run.status.live())
-            .filter(|run| match task {
-                Some(_) => run.task == task,
-                // A wake about no task joins only the member's own turn about no task.
-                None => run.task.is_none() && run.member == member,
-            })
-            .map(|run| LiveTurn {
-                run: run.id,
-                member: run.member,
-                foldable: !(judgment
-                    && run.status == RunStatus::Running
-                    && run.brain.is_some_and(Brain::house)),
-            })
-            .collect())
-    }
-
-    /// Whether a member has a task of its own that is not over: handed to it, or taken.
-    fn has_open_task(&self, member: MemberId) -> Done<bool> {
-        Ok(self.store.tasks()?.iter().any(|t| {
-            !t.status.finished() && (t.assignee == Some(member) || t.owner == Some(member))
-        }))
-    }
-
-    fn situation(
-        &self,
-        member: &Member,
-        task: Option<TaskId>,
-        reason: WakeReason,
-    ) -> Done<WakeSituation> {
-        let nothing_to_do =
-            task.is_none() && reason.on_a_clock() && !self.has_open_task(member.id)?;
-        let already_held = match task {
-            Some(task) => self
-                .store
-                .held_wakes(task)?
-                .iter()
-                .any(|w| w.member == member.id),
-            None => false,
-        };
-        let waits_for_review = match task {
-            Some(task) if !reason.reaches_work_in_review() => {
-                let task = self.task(task)?;
-                task.status == TaskStatus::InReview
-                    && task.owner.or(task.assignee) == Some(member.id)
-            }
-            _ => false,
-        };
-        let project = self.project_of(task)?;
-        Ok(WakeSituation {
-            waits_for_review,
-            not_for_the_ceo: member.role == Role::Ceo && !reason.reaches_the_ceo(),
-            project_paused: self.held_by_owner(project)?,
-            stopped: self.store.stopped()?,
-            paused: member.paused,
-            furloughed: member.furloughed(),
-            // Whether the money is there is not asked of a wake (ADR 0131): the turn is queued,
-            // and waits for budget where turns start.
-            about_a_task: task.is_some(),
-            live: self.live_turns(
-                member.id,
-                task,
-                self.need_of_wake(member, reason)?.kind == turns::TurnKind::Judgment,
-            )?,
-            already_held,
-            nothing_to_do,
-            // A wake that brings nothing new, to a member its last turns showed nothing for,
-            // again and again (ADR 0124): parked, not woken once more.
-            woken_for_nothing: match task {
-                Some(task) if !reason.brings_news() => self.woken_for_nothing(member.id, task)?,
-                _ => false,
-            },
-        })
-    }
-
-    fn decide_wake(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        reason: WakeReason,
-    ) -> Done<WakeDecision> {
-        let who = self.member(member)?;
-        // News is never kept waiting: a turn on its task held back by the back-off, or waiting
-        // to try again, is brought forward to take it.
-        if let (Some(task), true) = (task, reason.brings_news()) {
-            self.bring_forward(task)?;
-        }
-        let situation = self.situation(&who, task, reason)?;
-        let decision = match task {
-            // The check after a deploy has one turn (ADR 0115, amended): once its verdict is
-            // given, nothing wakes it again.
-            Some(task) if self.deploy_check_given(task)? => {
-                WakeDecision::Refuse(wakes::Refused::Checked)
-            }
-            _ => wakes::decide(member, &situation),
-        };
-        Ok(decision)
-    }
-
-    fn wake_held_lock(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        reason: WakeReason,
-    ) -> Done<Receipt> {
-        if reason == WakeReason::Consulted {
-            return Err(EngineError::Refused(Refusal::Conversation(
-                "legacy consultation wakes are retired; use authorized assistance",
-            )));
-        }
-        let decision = self.decide_wake(member, task, reason)?;
-        let now = self.clock.now();
-        let mut about = json!({
-            "member": member.0, "task": task.map(|t| t.0), "reason": reason.name(),
-        });
-        match decision {
-            WakeDecision::Queue => {
-                let wake = self
-                    .store
-                    .add_wake(member, task, reason, Receipt::Queued, None, now)?;
-                self.mark_owners(wake, None)?;
-                let (run, delayed) =
-                    self.queue_turn(member, task, wake, reason, self.asked_by_owner())?;
-                self.store.set_wake(wake, Receipt::Queued, Some(run))?;
-                if let Some(until) = delayed {
-                    about["delayed_until"] = json!(until);
-                }
-                self.emit(EventKind::WakeQueued, about)?;
-                Ok(Receipt::Queued)
-            }
-            WakeDecision::Fold(run) => {
-                let wake =
-                    self.store
-                        .add_wake(member, task, reason, Receipt::Folded, Some(run), now)?;
-                self.mark_owners(wake, Some(run))?;
-                self.emit(EventKind::WakeFolded, about)?;
-                Ok(Receipt::Folded)
-            }
-            WakeDecision::Hold => {
-                let wake = self
-                    .store
-                    .add_wake(member, task, reason, Receipt::Held, None, now)?;
-                self.mark_owners(wake, None)?;
-                self.emit(EventKind::WakeHeld, about)?;
-                Ok(Receipt::Held)
-            }
-            WakeDecision::Refuse(why) => {
-                self.store
-                    .add_wake(member, task, reason, Receipt::Refused(why), None, now)?;
-                about["why"] = json!(why.name());
-                self.emit(EventKind::WakeRefused, about)?;
-                Ok(Receipt::Refused(why))
-            }
-        }
-    }
-
-    /// Marks a wake the owner's asking, while the engine does what they asked; and the turn it
-    /// folds into, if that has not started yet (its reservation is still to be made).
-    fn mark_owners(&self, wake: crate::domain::WakeId, folded: Option<RunId>) -> Done<()> {
-        if !self.asked_by_owner() {
-            return Ok(());
-        }
-        self.store.set_wake_by_owner(wake)?;
-        let Some(run) = folded else {
-            return Ok(());
-        };
-        let Some(mut run) = self.store.run(run)? else {
-            return Ok(());
-        };
-        if run.started_at.is_none() && !run.asked_by_owner {
-            run.asked_by_owner = true;
-            self.store.save_run(&run)?;
-        }
-        Ok(())
-    }
-
-    /// How many turns in a row on a task, newest first, moved nothing forward.
-    fn empty_turns(&self, task: TaskId) -> Done<usize> {
-        let mut ended: Vec<Run> = self
-            .store
-            .runs()?
-            .into_iter()
-            .filter(|r| r.task == Some(task) && !r.status.live() && r.started_at.is_some())
-            .collect();
-        ended.sort_by_key(|r| core::cmp::Reverse(r.id));
-        // A turn's label says whether it did something (ADR 0114). A turn with none (from
-        // before labels, or that never settled) cannot be told, so the count stops there
-        // rather than guess from whether it moved its task (ADR 0124).
-        Ok(ended
-            .iter()
-            .take_while(|r| r.label.is_some_and(|l| !l.productive()))
-            .count())
-    }
-
-    /// How long a wake that brings nothing new to `task` waits now (ADR 0107): its back-off,
-    /// and at least until [`wakes::AGAIN_AFTER_MS`] after `member`'s last turn on the task ended.
-    fn back_off(&self, member: MemberId, task: Option<TaskId>, reason: WakeReason) -> Done<Millis> {
-        let Some(task) = task else {
-            return Ok(0);
-        };
-        if reason.brings_news() {
-            return Ok(0);
-        }
-        let last_ended = self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.member == member && r.task == Some(task))
-            .filter_map(|r| r.ended_at)
-            .max();
-        let gap = last_ended.map_or(0, |at| {
-            (at + wakes::AGAIN_AFTER_MS - self.clock.now()).max(0)
-        });
-        Ok(routines::back_off(self.empty_turns(task)?).max(gap))
-    }
-
-    /// Queues a turn for a wake: at once, or, for a stale wake on a task whose turns keep
-    /// moving nothing, waiting out its back-off. Returns the turn, and until when it waits. A
-    /// wake the owner's asking raised starts a turn the owner asked for.
-    fn queue_turn(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        wake: crate::domain::WakeId,
-        reason: WakeReason,
-        by_owner: bool,
-    ) -> Done<(RunId, Option<Millis>)> {
-        let now = self.clock.now();
-        let id = self.store.add_run(member, task, wake, now)?;
-        let mut run = self.store.run(id)?.ok_or(EngineError::Unknown("run"))?;
-        if by_owner {
-            run.asked_by_owner = true;
-            self.store.save_run(&run)?;
-        }
-        let wait = self.back_off(member, task, reason)?;
-        if wait == 0 {
-            return Ok((id, None));
-        }
-        run.status = RunStatus::RetryWaiting;
-        run.retry_at = Some(now + wait);
-        run.end_reason =
-            "backing off: its last turns moved nothing, or it took one on this moments ago"
-                .to_owned();
-        self.store.save_run(&run)?;
-        Ok((id, Some(now + wait)))
-    }
-
-    /// Brings a task's waiting turn forward, to start on the next tick.
-    fn bring_forward(&self, task: TaskId) -> Done<()> {
-        for mut run in self.store.runs()? {
-            if run.task != Some(task) || run.status != RunStatus::RetryWaiting {
-                continue;
-            }
-            run.status = RunStatus::Queued;
-            run.retry_at = None;
-            self.store.save_run(&run)?;
-        }
-        Ok(())
-    }
-
-    /// Releases the oldest wake held for a task, now that its turn has ended.
-    fn release_held(&self, task: TaskId) -> Done<()> {
-        let Some(oldest) = self.store.held_wakes(task)?.into_iter().next() else {
-            return Ok(());
-        };
-        let who = self.member(oldest.member)?;
-        let decision = wakes::decide(
-            oldest.member,
-            &self.situation(&who, Some(task), oldest.reason)?,
-        );
-        match decision {
-            WakeDecision::Queue => {
-                let (run, _) = self.queue_turn(
-                    oldest.member,
-                    Some(task),
-                    oldest.id,
-                    oldest.reason,
-                    oldest.by_owner,
-                )?;
-                self.store.set_wake(oldest.id, Receipt::Queued, Some(run))?;
-                self.emit(
-                    EventKind::WakeQueued,
-                    json!({ "member": oldest.member.0, "task": task.0, "reason": oldest.reason.name() }),
-                )?;
-            }
-            WakeDecision::Fold(run) => {
-                self.store.set_wake(oldest.id, Receipt::Folded, Some(run))?
-            }
-            // Still held behind another turn; it waits on.
-            WakeDecision::Hold | WakeDecision::Refuse(wakes::Refused::Duplicate) => {}
-            WakeDecision::Refuse(why) => {
-                self.store
-                    .set_wake(oldest.id, Receipt::Refused(why), None)?;
-            }
-        }
-        Ok(())
-    }
-
     // ---- what members do -------------------------------------------------------------------
 
     fn mark_progress(&self, member: MemberId, task: TaskId) -> Done<()> {
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.member == member && run.task == Some(task) && run.status == RunStatus::Running {
                 run.moved_forward = true;
                 self.store.save_run(&run)?;
@@ -1389,24 +1004,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether a turn may act on `task`: its own task and the sub-tasks under it, at any
     /// depth. Writing reaches further: the task its own hangs from, and any task whose thread
-    /// names the member (`@name`, as a wake reads it). The lead and the CEO may act on any task
-    /// in a goal they lead; a team has one of each, which lead every goal.
+    /// names the member (`@name`, as a wake reads it).
     ///
     /// # Errors
     /// [`EngineError::Refused`] with [`Refusal::OutOfReach`] when it may not.
     fn reach(&self, run: &Run, task: TaskId, writing: bool) -> Done<()> {
         let target = self.task(task)?;
         let member = self.member(run.member)?;
-        if member.role.leads() {
-            return Ok(());
-        }
         if let Some(own) = run.task {
-            let mut at = Some(target.id);
-            while let Some(id) = at {
-                if id == own {
-                    return Ok(());
-                }
-                at = self.task(id)?.parent;
+            if self.under(target.id, own)? {
+                return Ok(());
             }
             if writing && self.task(own)?.parent == Some(target.id) {
                 return Ok(());
@@ -1547,12 +1154,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a task that does not exist; [`Refusal::OutOfReach`] for a
     /// member.
     pub fn post(&self, by: Author, task: TaskId, text: &str) -> Done<()> {
+        let woke = self.post_held(by, task, text)?;
+        // The owner's reply that woke someone asks for a pass, with the lock released: a turn
+        // it queued, or a waiting one it brought forward, starts now rather than on the clock
+        // (ADR 0102, amended 2026-11-04, round 17).
+        if woke {
+            self.ask_for_a_pass();
+        }
+        Ok(())
+    }
+
+    /// [`Self::post`] under the lock: whether the owner's reply woke someone (a turn queued, or
+    /// folded into one, which brings a waiting turn forward).
+    fn post_held(&self, by: Author, task: TaskId, text: &str) -> Done<bool> {
         let _held = self.held();
         if let Author::Member(_) = by {
             return Err(EngineError::Refused(Refusal::OutOfReach));
         }
         if by != Author::Owner {
-            return self.post_held_lock(by, task, text);
+            return self.post_held_lock(by, task, text).map(|()| false);
         }
         // The owner's reply on an open task wakes whoever has it at once, named or not: it is
         // new, so the back-off never holds it.
@@ -1562,15 +1182,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Err(EngineError::Refused(Refusal::Finished));
         }
         self.post_authored_held_lock_marked(by, task, text, &[], false, InputOrigin::Owner)?;
-        let Some(member) = found.owner.or(found.assignee) else {
-            return Ok(());
-        };
+        // Whoever the reply names was woken by the post itself.
         let members = self.store.members()?;
-        if mentions(text, &members).iter().any(|m| m.id == member) {
-            return Ok(());
+        let named = mentions(text, &members);
+        let Some(member) = found.holder() else {
+            return Ok(!named.is_empty());
+        };
+        if named.iter().any(|m| m.id == member) {
+            return Ok(true);
         }
-        self.wake_held_lock(member, Some(task), WakeReason::OwnerReplied)?;
-        Ok(())
+        let receipt = self.wake_held_lock(member, Some(task), WakeReason::OwnerReplied)?;
+        Ok(!named.is_empty() || matches!(receipt, Receipt::Queued | Receipt::Folded))
     }
 
     /// The owner's notes for every member working towards a goal, at most
@@ -1592,9 +1214,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A goal's notes from the owner: empty when there are none.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn goal_note(&self, goal: GoalId) -> Done<String> {
         Ok(self.store.goal_note(goal)?)
     }
@@ -1788,9 +1407,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
         }
+        // Set ready in a loop worked alone, the item is done by HQ's checks: they must pass
+        // first (ADR 0142, amended 2026-11-01).
+        if to == TaskStatus::InReview && self.solo_of(&current)?.is_some() {
+            self.ready_alone(&current)?;
+        }
         self.store.set_task_status(task, to)?;
         if to == TaskStatus::Blocked {
             self.mark_turn(member, task, &|run| run.blocked = true)?;
+            self.loop_blocked(task, member, reason)?;
         } else {
             self.mark_progress(member, task)?;
         }
@@ -1821,31 +1446,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The team's reviewer: the first member with the reviewer's role, if there is one.
-    fn reviewer(&self) -> Done<Option<Member>> {
-        Ok(self
-            .store
-            .members()?
-            .into_iter()
-            .filter(|m| m.role == Role::Reviewer)
-            .min_by_key(|m| m.id))
-    }
-
     /// Work was moved to review by its owner: the reviewer is woken to look at it. With no
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
-        // In the loops, the member one rank up reviews it (ADR 0142).
+        // A new ask is a new review: nobody is passed over on it yet (D26).
+        self.review_starts_again(task.id)?;
+        // What can be judged by rule is judged first (ADR 0142, amended 2026-10-30): a branch
+        // that touches a forbidden path goes back without a reviewer.
+        if self.checked_at_review(task)? {
+            return Ok(());
+        }
+        // A loop worked alone has no review: HQ's checks passed, so it is done.
+        if let Some(alone) = self.solo_of(task)? {
+            return self.done_alone(task, alone);
+        }
+        // In the loops, a member at Haiku's rank or below reviews it, when there is one (ADR
+        // 0142, amended 2026-10-31).
         if let Some(reviewer) = self.loop_reviewer_of(task)? {
             self.post_held_lock(
                 Author::Endora,
                 task.id,
-                &format!("{} reviews this, one rank up.", reviewer.name),
+                &format!("{} reviews this.", reviewer.name),
             )?;
             self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
             return Ok(());
         }
-        // Nobody one rank up: the owner reads it.
+        // No reviewer on the team: the owner reads it.
         let members = self.store.members()?;
         let thread: Vec<String> = self
             .store
@@ -1876,82 +1503,101 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// The reviewer's verdict on work in review, in its turn: `approve` closes work that needs
-    /// no gate as done (work that needs the gate waits for it, as [`Self::approve`] says), and
-    /// `send_back` returns it to its owner as `doing`, waking them. The notes go in the thread
-    /// either way. Only the reviewer gives a verdict, and never on its own work.
-    ///
-    /// The tester's tool reaches it for a send-back alone ([`Self::test_in`]): a pass is judged
-    /// there, on evidence, and never closes a draft for the owner (ADR 0114, amended).
-    ///
-    /// A send-back may name its `reason` when it is one HQ counts (ADR 0132); a pass has none.
+    /// The one gate for a verdict on work in review (ADR 0142, amended 2026-10-31), a pass's
+    /// ([`Self::test_in`]) or a send-back's ([`Self::send_back_in`]): the turn reaches the item,
+    /// its member is the item's reviewer in the loops, the item is in review, and the work is
+    /// not the reviewer's own; a pass also needs a CI criterion a push can meet. Returns the
+    /// reviewer, the item and who holds its work.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
-    /// is not a reviewer; [`Refusal::NotAStep`] for a task not in review; [`Refusal::OwnWork`];
-    /// [`Refusal::GateNotPassed`] for work that needs the gate.
-    pub fn review_in(
+    /// [`Refusal::OutOfReach`], [`Refusal::NotYours`] for a member who is not its reviewer,
+    /// [`Refusal::NotAStep`] for a task not in review, [`Refusal::OwnWork`]; for a pass, what
+    /// [`Self::ci_can_be_had`] refuses.
+    fn verdict_gate(
         &self,
-        run: RunId,
+        run: &Run,
         task: TaskId,
-        approve: bool,
-        notes: &str,
-        reason: Option<SendBackReason>,
-    ) -> Done<()> {
-        let _held = self.held();
-        let run = self.running(run)?;
-        self.reach(&run, task, true)?;
+        pass: bool,
+    ) -> Done<(Member, Task, Option<MemberId>)> {
+        self.reach(run, task, true)?;
         let reviewer = self.member(run.member)?;
         let current = self.task(task)?;
-        // In the loops, the member one rank up reviews (ADR 0142); otherwise, the tester.
-        let in_the_loops = self
+        if self
             .loop_reviewer_of(&current)?
-            .is_some_and(|r| r.id == reviewer.id);
-        if !in_the_loops {
+            .is_none_or(|r| r.id != reviewer.id)
+        {
             return Err(EngineError::Refused(Refusal::NotYours));
         }
-        let to = if approve {
-            TaskStatus::Done
-        } else {
-            TaskStatus::Doing
-        };
         if current.status != TaskStatus::InReview {
+            let to = if pass {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Doing
+            };
             return Err(EngineError::Refused(Refusal::NotAStep {
                 from: current.status,
                 to,
             }));
         }
-        let worker = current.owner.or(current.assignee);
+        let worker = current.holder();
         if worker == Some(reviewer.id) {
             return Err(EngineError::Refused(Refusal::OwnWork));
         }
-        // The tester's verdict is her deliverable, whichever way it goes (ADR 0114).
+        if pass {
+            // A CI criterion no push can meet is never passed (ADR 0142, amended 2026-10-31).
+            self.ci_can_be_had(&current)?;
+        }
+        Ok((reviewer, current, worker))
+    }
+
+    /// After a verdict (the lock held): what the worker and the reviewer marked as lessons goes
+    /// in the loop's list; a send-back (`sent_back`: the reviewer's name and the work's holder)
+    /// is also one of the item's failures, and kept at its rank the item goes back to its
+    /// worker with a handover (ADR 0142, amended 2026-10-30).
+    fn after_verdict(
+        &self,
+        current: &Task,
+        notes: &str,
+        sent_back: Option<(&str, Option<MemberId>)>,
+    ) -> Done<()> {
+        self.learn_held_lock(current, notes)?;
+        let Some((reviewer, worker)) = sent_back else {
+            return Ok(());
+        };
+        self.loop_failed(current.id)?;
+        let now = self.task(current.id)?;
+        if let Some(worker) = worker.filter(|w| now.holder() == Some(*w)) {
+            self.hand_over(current.id, worker, &format!("sent back by {reviewer}"))?;
+        }
+        Ok(())
+    }
+
+    /// The reviewer sends work in review back to its holder, in its turn ([`Self::test_in`]
+    /// without a pass): it returns as `doing`, its holder is woken, and the notes go in the
+    /// thread. A send-back may name its `reason` when it is one HQ counts (ADR 0132).
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], and what [`Self::verdict_gate`] refuses.
+    fn send_back_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        notes: &str,
+        reason: Option<SendBackReason>,
+    ) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        let (reviewer, current, worker) = self.verdict_gate(&run, task, false)?;
+        // The reviewer's verdict is its deliverable, whichever way it goes (ADR 0114).
         self.mark_progress(reviewer.id, task)?;
-        if !approve {
-            self.store.set_task_status(task, TaskStatus::Doing)?;
-            self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
-            self.emit_status(&current, TaskStatus::Doing)?;
-            self.emit_sent_back(task, reviewer.id, "tester", reason)?;
-            if let Some(owner) = worker {
-                self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
-            }
-            // In the loops a send-back is one of the item's failures (ADR 0142).
-            if in_the_loops {
-                return self.loop_failed(task);
-            }
-            return Ok(());
+        self.store.set_task_status(task, TaskStatus::Doing)?;
+        self.post_own_held_lock(reviewer.id, task, &format!("Sent back: {notes}"), &[])?;
+        self.emit_status(&current, TaskStatus::Doing)?;
+        self.emit_sent_back(task, reviewer.id, "tester", reason)?;
+        if let Some(owner) = worker {
+            self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
         }
-        if self.gated(&current)? {
-            // Gated work keeps the gate's rule: done only once the gate has passed.
-            self.approve_held_lock(reviewer.id, task)?;
-            self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
-            return Ok(());
-        }
-        review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
-        self.store.set_task_status(task, TaskStatus::Done)?;
-        self.post_own_held_lock(reviewer.id, task, &format!("Approved: {notes}"), &[])?;
-        self.emit_status(&current, TaskStatus::Done)?;
-        self.after_finishing(&current)
+        self.after_verdict(&current, notes, Some((&reviewer.name, worker)))
     }
 
     /// Says a task moved to `to`, in the feed.
@@ -2041,22 +1687,80 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let gate = self.store.gate(task)?.unwrap_or(false);
         work::is_done(gate, current.owner, reviewer).map_err(EngineError::Refused)?;
+        self.accept(&current)
+    }
+
+    /// Whether an item set ready in a loop worked alone may be (ADR 0142, amended 2026-11-01):
+    /// the check of its newest head passed, for work the gate holds, and a CI run its criteria
+    /// ask for can be had, as a reviewer's pass would need.
+    ///
+    /// # Errors
+    /// [`Refusal::GateNotPassed`]; what [`Self::ci_can_be_had`] refuses.
+    fn ready_alone(&self, task: &Task) -> Done<()> {
+        if self.gated(task)? && !self.store.gate(task.id)?.unwrap_or(false) {
+            return Err(EngineError::Refused(Refusal::GateNotPassed));
+        }
+        self.ci_can_be_had(task)
+    }
+
+    /// An item of a loop `alone` works by itself passed HQ's checks as it was set ready: it is
+    /// done with no review, and goes on as accepted work does (ADR 0142, amended 2026-11-01).
+    /// With no branch there was nothing to check but that its criteria cite evidence: it is
+    /// completed, not verified, and kept so (ADR 0124, amended 2026-11-03).
+    fn done_alone(&self, task: &Task, alone: MemberId) -> Done<()> {
+        use crate::domain::closure::{Closure, DoneWhy};
+        let name = self.member(alone)?.name;
+        if self.gated(task)? {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!(
+                    "HQ's checks passed and {name} set it ready: done, with no review ({name} \
+                     works this loop alone)."
+                ),
+            )?;
+            return self.accept(task);
+        }
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "{name} set it ready with its criteria cited: completed, not verified. Nothing \
+                 checked that the evidence settles it: there is no branch to check, and nobody \
+                 reviews ({name} works this loop alone)."
+            ),
+        )?;
+        self.store.set_task_status(task.id, TaskStatus::Done)?;
+        self.closed(
+            task.id,
+            Closure::Done(DoneWhy::CompletedUnverified),
+            None,
+            "endora",
+        )?;
+        // The feed says it too, so what counts outcomes keeps it apart from verified ones.
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": task.id.0, "goal": task.goal.0, "owner": task.owner.map(|o| o.0),
+                    "status": TaskStatus::Done.name(), "priority": task.priority.name(),
+                    "unverified": true }),
+        )?;
+        self.after_finishing(task)
+    }
+
+    /// Work accepted, its gate passed: done, listed for the merge (or carded, if the owner put
+    /// the cards back), and on to what follows a finish.
+    fn accept(&self, current: &Task) -> Done<()> {
+        let task = current.id;
         self.store.set_task_status(task, TaskStatus::Done)?;
         self.emit(
             EventKind::TaskChanged,
             json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
-        if current.parent.is_none() {
-            let researched = match current.owner {
-                Some(worker) => self.member(worker)?.role == Role::Researcher,
-                None => false,
-            };
-            let (kind, says) = if researched {
-                ("ready_to_read", "Ready to read")
-            } else {
-                ("ready_to_merge", "Ready to merge")
-            };
+        // Accepted work is listed, not carded, unless the owner put the cards back (ADR 0115,
+        // amended 2026-10-31).
+        if current.parent.is_none() && self.cards_back()? {
+            let (kind, says) = ("ready_to_merge", "Ready to merge");
             let desk = self.store.add_desk(
                 kind,
                 Some(task),
@@ -2070,8 +1774,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 json!({ "item": desk.0, "kind": kind, "task": task.0 }),
             )?;
         }
-        self.after_finishing(&current)?;
-        Ok(())
+        self.after_finishing(current)
     }
 
     /// The owner drops a task, giving no reason: work that will not be done (ADR 0124; see
@@ -2107,13 +1810,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         }
         let parent = self.task(parent)?;
-        if let Some(owner) = parent.owner.or(parent.assignee) {
+        if let Some(owner) = parent.holder() {
             self.wake_held_lock(owner, Some(parent.id), WakeReason::SubtasksFinished)?;
         }
         Ok(())
     }
 
     // ---- money -----------------------------------------------------------------------------
+
+    /// The node's word on which model answered one of a turn's calls, as the provider named
+    /// it, or that the answer named none (the agentic-harness climb, round 7). Kept beside the
+    /// turn, every name with its calls; it changes no charge and no budget.
+    ///
+    /// # Errors
+    /// The store's, and [`EngineError::Unknown`] for a run HQ does not have.
+    pub fn note_served_model(&self, run: RunId, model: Option<&str>) -> Done<()> {
+        let _held = self.held();
+        self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        self.store.note_served_model(run, model)?;
+        Ok(())
+    }
+
+    /// The models that answered a turn's calls, and how many calls each; `None` for calls whose
+    /// model is not known.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn served_models(&self, run: RunId) -> Done<Vec<(Option<String>, u32)>> {
+        Ok(self.store.served_models(run)?)
+    }
 
     /// What one model call of a turn used, in tokens, as the relay reported them: input
     /// (fresh, read from the prompt cache and written to it) and output. The turn's record
@@ -2149,7 +1874,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn report_usage(&self, run: RunId, amount: Micros) -> Done<bool> {
         let _held = self.held();
         let mut current = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
-        let most = money::most_a_turn(self.member(current.member)?.role);
+        let most = most_a_turn_for(&self.member(current.member)?);
         let amount = amount.clamp(0, most);
         if current.status != RunStatus::Running {
             self.charge_late(current, amount)?;
@@ -2201,9 +1926,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- the kill switch -----------------------------------------------------------------
 
     /// Stops every turn at once; every wake is turned away until the owner resumes.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn stop_all(&self, why: &str) -> Done<()> {
         let _held = self.held();
         self.stop_all_held_lock("owner", why, json!({}))
@@ -2220,10 +1942,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             "the runaway tripwire"
         };
-        for run in self.store.runs()? {
-            if !run.status.live() {
-                continue;
-            }
+        for run in self.store.live_runs()? {
             if run.status == RunStatus::Running {
                 self.runner.stop(run.id, self.settings.grace);
             }
@@ -2237,335 +1956,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Lets the team work again. Only the owner does this.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn resume(&self) -> Done<()> {
         let _held = self.held();
         self.resume_held_lock()
     }
 
-    // ---- runs --------------------------------------------------------------------------------
-
-    /// How hard the member's Claude tries this turn (see [`effort::effort_for`]).
-    fn effort_of(&self, member: &Member) -> Option<Effort> {
-        effort::effort_for(member.brain, member.role, effort::Weight::Ordinary)
-    }
-
-    fn reason_for(&self, run: &Run) -> Done<&'static str> {
-        Ok(self.store.wake(run.wake)?.map_or("", |w| w.reason.name()))
-    }
-
-    /// Ends a turn: settles its money, closes its wake, and lets the next held wake on its task
-    /// go. A turn that moved its task forward earns the task a fresh recovery nudge.
-    fn end(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
-        let now = self.clock.now();
-        if run.started_at.is_some() {
-            self.store.settle(run.id, run.member, self.today(), now)?;
-        }
-        let label = self.settle_label(&mut run)?;
-        run.status = status;
-        run.ended_at = Some(now);
-        run.end_reason = why.to_owned();
-        run.reserved = 0;
-        self.store.save_run(&run)?;
-        self.store
-            .set_wake(run.wake, Receipt::Finished, Some(run.id))?;
-        // The tokens as the relay reported them, which only it adds to: all the input sent
-        // and the output, for a turn that sent any, and the share the cache gave.
-        let kept = self.store.run(run.id)?;
-        let cached = kept.as_ref().and_then(|r| {
-            runs::cached_share(r.input_tokens, r.cache_read_tokens, r.cache_write_tokens)
-        });
-        let tokens = kept
-            .as_ref()
-            .map(|r| {
-                (
-                    r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
-                    r.output_tokens,
-                )
-            })
-            .filter(|(input, output)| input + output > 0);
-        self.emit(
-            EventKind::RunEnded,
-            json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": status.name(), "why": why, "moved_forward": run.moved_forward,
-                    "label": label.map(crate::domain::Label::name),
-                    "spent": run.spent, "cached": cached,
-                    "input": tokens.map(|t| t.0), "output": tokens.map(|t| t.1) }),
-        )?;
-        if let Some(task) = run.task {
-            // A turn that showed something earns its task a fresh recovery nudge; a reading the
-            // turn before had already taken shows nothing, so it earns none.
-            let repeated = self
-                .shown_nothing(run.member, task)?
-                .last()
-                .is_some_and(|(id, nothing)| *id == run.id && *nothing);
-            if label.is_some_and(crate::domain::Label::productive) && !repeated {
-                self.store.set_nudged(task, false)?;
-            }
-            self.release_held(task)?;
-        }
-        if status == RunStatus::Succeeded && label.is_some() {
-            self.after_nothing_shown(&run)?;
-        }
-        // A deploy check's one turn is over: its verdict, once (ADR 0115, amended).
-        self.after_a_deploy_check(&run)?;
-        Ok(())
-    }
-
-    /// Ends a turn that put a blocker to someone: a question, a draft, a decision, an approval.
-    fn end_blocked(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
-        run.blocked = true;
-        self.end(run, status, why)
-    }
-
-    /// A failed turn: tried again a minute later, at most twice; then failed for good. A turn the
-    /// platform cut short (HQ or the runner restarted under it, its container vanished) did
-    /// nothing wrong: the first time, its start does not count against its retries, and it says
-    /// it was interrupted (ADR 0124, amended).
-    fn fail(&self, mut run: Run, why: &str, fault: Fault) -> Done<bool> {
-        let now = self.clock.now();
-        let why = match fault {
-            Fault::Worker => why.to_owned(),
-            Fault::Platform => {
-                run.interrupted = run.interrupted.saturating_add(1);
-                format!("interrupted: {why}")
-            }
-        };
-        let why = why.as_str();
-        let assistance_delivery = false;
-        // A turn on the owner's Mac that failed because the Mac went away (the owner came back,
-        // the laptop left its charger) did nothing wrong: it is tried again when the Mac is
-        // free, and the failure is not counted against it (ADR 0130).
-        let on_the_mac = run.brain == Some(Brain::Mac);
-        if !assistance_delivery
-            && on_the_mac
-            && mac::wait_for(self.mac_facts().as_ref(), now, false).is_some()
-        {
-            run.attempts = run.attempts.saturating_sub(1);
-        }
-        let own = if assistance_delivery {
-            run.attempts
-        } else {
-            runs::own_attempts(run.attempts, run.interrupted)
-        };
-        let Some(due) = runs::retry_after_failure(own, now) else {
-            self.end(run, RunStatus::Failed, why)?;
-            return Ok(false);
-        };
-        // A retry is a stale continuation: it backs off like one.
-        let due = due.max(now + self.back_off(run.member, run.task, WakeReason::Retry)?);
-        if run.started_at.is_some() {
-            self.store.settle(run.id, run.member, self.today(), now)?;
-        }
-        run.status = RunStatus::RetryWaiting;
-        run.retry_at = Some(due);
-        run.reserved = 0;
-        run.end_reason = why.to_owned();
-        self.store.save_run(&run)?;
-        self.emit(
-            EventKind::RunEnded,
-            json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": RunStatus::RetryWaiting.name(), "why": why,
-                    "interrupted": fault == Fault::Platform }),
-        )?;
-        Ok(true)
-    }
-
-    /// What a member is told at the start of a turn: who it is, then what of the team's world
-    /// its situation needs within its budget (ADR 0122), then its work; and at the very end,
-    /// what of the world was left out and how to read it. The run records its situation.
-    fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
-        let (_, memory) = self.memory(member, run)?;
-        let mut told = self.briefing_body(member, run, &memory.text)?;
-        told.push_str(&memory.omitted);
-        // In the loops: the map and what the loop did lately (ADR 0142). Never in a game: what
-        // other turns in a league said is the other side's thinking.
-        let in_a_game = match run.task {
-            Some(task) => self.in_a_scenario(task)?,
-            None => false,
-        };
-        if self.in_the_loops(member.id)? && !in_a_game {
-            told.push_str(&self.loops_said(run)?);
-        }
-        // Decided last, once the briefing has recorded what it showed the turn: a turn is told
-        // of colleague help only when it is offered the tools (downtime lists them itself).
-        if self.reason_for(run)? != WakeReason::Downtime.name()
-            && self.colleague_help_said(member, run)?
-        {
-            told.push_str(COLLEAGUE_HELP);
-        }
-        Ok(told)
-    }
-
-    fn colleague_help_said(&self, _member: &Member, _run: &Run) -> Done<bool> {
-        // Colleagues are no longer asked (ADR 0142): the loops' checks and ranks are the help.
-        Ok(false)
-    }
-
-    /// The briefing, around what it carries of the world (`memory`). Every member is told the
-    /// same way (ADR 0142): no roles, only its model's rank.
-    fn briefing_body(&self, member: &Member, run: &Run, memory: &str) -> Done<String> {
-        let mut told = format!(
-            "You are {}, rank {} of the team's five, thinking with {}. Today is {}.\n",
-            member.name,
-            member.brain.rank(),
-            member.brain.label(),
-            self.said_today()
-        );
-        // What it knows, first: its situation's pieces of the world (ADR 0118, 0122).
-        told.push_str(memory);
-        // Downtime has no task to brief: a chess move, or nothing (ADR 0119).
-        if self.reason_for(run)? == WakeReason::Downtime.name() {
-            told.push_str(&self.downtime_said(member, run.id)?);
-            told.push_str("Your tools at HQ: my_turn, chess, read_doc, read_world.\n");
-            return Ok(told);
-        }
-        told.push_str(STANDARDS);
-        told.push_str(self.wing_rules(member)?);
-        let Some(task) = run.task else {
-            told.push_str("This turn is about no task: look over the team's work.\n");
-            return Ok(told);
-        };
-        // Each section is classified by the lineage of what it shows, and what has none fails
-        // closed (ADR 0138 A2c): the task's body and criteria, its parents and goal, and the
-        // thread's posts by their recorded origins.
-        let input = self
-            .store
-            .task_inputs(task)?
-            .ok_or(EngineError::Unknown("task"))?;
-        self.inherit_authored_input(run.id, input.body_origin)?;
-        if !input.task.criteria.is_empty() {
-            self.inherit_authored_input(run.id, input.criteria_origin)?;
-        }
-        let task = input.task;
-        told.push_str(&format!(
-            "Your task: {} (#{}, {}, {})\n{}\n",
-            task.title,
-            task.id,
-            task.status.name(),
-            task.priority.name(),
-            task.description
-        ));
-        told.push_str(&self.criteria_said(&task));
-        if let Some(nudge) = self.nudge_for(member.id, run)? {
-            told.push_str(&format!("{nudge}\n"));
-        }
-        let note = self.goal_note_briefed(task.goal)?;
-        if !note.is_empty() {
-            self.unclassified_message_input(run.id)?;
-            told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
-        }
-        let mut why = vec![task.title.clone()];
-        let mut parent = task.parent;
-        while let Some(id) = parent {
-            let up = self
-                .store
-                .task_inputs(id)?
-                .ok_or(EngineError::Unknown("parent task"))?;
-            self.inherit_authored_input(run.id, up.body_origin)?;
-            why.push(up.task.title.clone());
-            parent = up.task.parent;
-        }
-        if let Some(goal) = self.store.goal_input(task.goal)? {
-            self.inherit_authored_input(run.id, goal.origin)?;
-            why.push(format!("goal: {}", goal.goal.title));
-        }
-        told.push_str(&format!("Why it exists: {}\n", why.join(" ← ")));
-        let documents = self.documents_said(task.id)?;
-        if !documents.is_empty() {
-            self.documents_reached(run.id, task.id)?;
-        }
-        told.push_str(&documents);
-        if !task.waits_on.is_empty() {
-            let waits: Vec<String> = task.waits_on.iter().map(|t| format!("#{t}")).collect();
-            told.push_str(&format!("It waits on: {}\n", waits.join(", ")));
-        }
-        let since = self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.member == member.id && r.task == run.task && r.id != run.id)
-            .filter_map(|r| r.started_at)
-            .max()
-            .unwrap_or(Millis::MIN);
-        for came_back in self.store.check_backs()?.iter().filter(|c| {
-            c.member == member.id
-                && c.task == task.id
-                && c.status == CheckBackStatus::Fired
-                && c.done_at.is_some_and(|at| at > since)
-        }) {
-            self.unclassified_message_input(run.id)?;
-            told.push_str(&format!(
-                "You said you would check back: {}\n",
-                came_back.why
-            ));
-        }
-        let members = self.store.members()?;
-        // The thread with each post's recorded origin, read together.
-        let thread = self.all_authored_posts(task.id)?;
-        let mut new = Vec::new();
-        for input in thread.iter().filter(|p| p.post.at > since) {
-            self.inherit_authored_input(run.id, input.origin)?;
-            let p = &input.post;
-            new.push(Self::post_line(&members, &p.author, &p.text, p.unsupported));
-        }
-        if new.is_empty() {
-            told.push_str("Nothing new in the thread since your last turn.\n");
-        } else {
-            told.push_str("New in the thread since your last turn:\n");
-            for line in new {
-                told.push_str(&format!("- {line}\n"));
-            }
-        }
-        if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
-            for input in &thread {
-                self.inherit_authored_input(run.id, input.origin)?;
-            }
-            let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
-                p.text.contains(" → in_review").then(|| {
-                    format!(
-                        "{} asks for your review.\n{}",
-                        p.author,
-                        review::REVIEW_WORK
-                    )
-                })
-            });
-            if let Some(asked) = asked {
-                told.push_str(&format!("{}\n", asked.trim_end()));
-            }
-        }
-        // Checks' results have no lineage yet: shown, they fail closed.
-        let untraced = self.checking_said(member, run, &task)?;
-        if !untraced.is_empty() {
-            self.unclassified_message_input(run.id)?;
-        }
-        told.push_str(&untraced);
-        // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
-        // lab's read took this line for its whole kit and said it could not read the lab.
-        let names: Vec<String> = crate::application::protocol::tools()
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|t| t["name"].as_str().map(str::to_owned))
-            .collect();
-        told.push_str(&format!(
-            "Your tools at HQ: {}. Endora's own tools on the home lab (homelab_status and the \
-             like) come beside them: what your tool list offers, you have.\n",
-            names.join(", ")
-        ));
-        Ok(told)
-    }
-
     // ---- the tick ----------------------------------------------------------------------------
 
-    /// The engine's regular pass (every 30 seconds), in the spec's order: timers, routines and
+    /// The engine's regular pass (every 30 seconds), in the spec's order: routines and
     /// check-backs, ended and vanished turns, retries, starts, stuck work, finished waits. A
     /// late tick runs once.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn tick(&self) -> Done<TickReport> {
         let _held = self.held();
         let mut report = TickReport::default();
@@ -2578,15 +1978,87 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(report);
         }
 
-        // 1. Timers that are due raise their wakes; a late one fires once.
-        for timer in self.store.timers()? {
-            if timer.due_at <= now {
-                self.wake_held_lock(timer.member, None, timer.reason)?;
-                self.store.set_timer_due(timer.id, now + timer.every_ms)?;
-                report.timers += 1;
-            }
+        // 1. Routines that are due fire; a late one fires once.
+        self.fire_due(now, &mut report)?;
+        // Check-backs whose time came wake their member, while the task is still open.
+        self.fire_check_backs(now, &mut report)?;
+        // Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+        self.expire_approvals(now)?;
+
+        // 2. Running turns: ended, failed, vanished, or too long.
+        self.settle_running(now, &mut report)?;
+
+        // A project paused for its budget goes on once the month turns (ADR 0113).
+        self.lift_budget_pauses()?;
+
+        // 3. Retries whose time has come are queued again.
+        self.requeue_retries(now, &mut report)?;
+
+        // 3b. One member with nothing to do is given a downtime turn (ADR 0119).
+        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
+        // gets its page.
+        self.migrate_map_held()?;
+        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
+        // of a member on a task, is let go; handover notes and posts are not touched.
+        self.history_tick(now)?;
+        if self.settings.downtime {
+            self.downtime_look(now)?;
         }
-        // Routines whose time came fire once, however late, and count on from now.
+        // Games (ADR 0121): free members play a match in code, and a game of chess nobody
+        // has moved in a week is adjourned. No model is asked.
+        self.games_tick(now)?;
+        // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
+        self.close_ended_scenarios()?;
+        // The model league: the next pair of brains sits down to chess once nothing is played.
+        self.league_tick(now)?;
+        // The loops hand out their plans' next items (ADR 0142).
+        self.loops_tick()?;
+
+        // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
+        //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
+        //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
+        report.started = self.start_queued(now)?;
+        // Work that waits long for the Mac is said in the owner's digest (Phase 0 audit, P5).
+        self.long_mac_waits(now)?;
+        if self.store.stopped()? {
+            return Ok(report);
+        }
+
+        let tasks = self.store.tasks()?;
+        let live: Vec<Option<TaskId>> = self.store.live_runs()?.iter().map(|r| r.task).collect();
+        // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
+        //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
+        //    one look from its area's lead.
+        self.stalled_work(&tasks, &live, &mut report)?;
+
+        // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
+        //     running or waiting to retry, and no wake held for it, for ten minutes. One
+        //     recovery wake for its member; still so ten minutes after, the owner's desk, once.
+        //     Never handed to anyone else.
+        let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
+        report.nudged += stranded_nudged;
+        report.stuck += stranded_stuck;
+        // 5b'. Work whose last turn never started (the runner could not start it) is woken
+        //      again for the same member after a wait: nobody's failure (ADR 0142, amended
+        //      2026-10-31).
+        self.wake_after_failed_starts(&tasks, &live, now)?;
+        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
+        //     few minutes each project's process health is looked at.
+        self.guards_tick()?;
+        self.health_tick()?;
+
+        // 6. Tasks whose waits have all finished are woken, once.
+        self.wake_finished_waits(&tasks, &mut report)?;
+
+        self.emit(
+            EventKind::Tick,
+            json!({ "started": report.started, "ended": report.ended, "stuck": report.stuck }),
+        )?;
+        Ok(report)
+    }
+
+    /// Due routines fire, each once however late, and count on from now (tick step 1).
+    fn fire_due(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for mut routine in self.store.routines()? {
             if !routine.enabled || routine.next_due_at > now {
                 continue;
@@ -2595,7 +2067,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.fire_held_lock(routine, &Firing::Schedule)?;
             report.routines += 1;
         }
-        // Check-backs whose time came wake their member, while the task is still open.
+        Ok(())
+    }
+
+    /// Check-backs whose time came wake their member, while the task is still open (tick step 1).
+    fn fire_check_backs(&self, now: Millis, report: &mut TickReport) -> Done<()> {
         for back in self.store.check_backs()? {
             if back.status != CheckBackStatus::Pending || back.due_at > now {
                 continue;
@@ -2633,7 +2109,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(back.member, Some(back.task), WakeReason::CheckBack)?;
             report.check_backs += 1;
         }
-        // Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+        Ok(())
+    }
+
+    /// Approvals nobody decided within a day go unrun, and the thread says so (ADR 0108).
+    fn expire_approvals(&self, now: Millis) -> Done<()> {
         for item in self.store.desk()? {
             if item.kind != "approval"
                 || item.status != "waiting"
@@ -2648,61 +2128,71 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             )?;
             self.settle_unrun(&item, "Nobody decided this within a day, so it was not run")?;
         }
+        Ok(())
+    }
 
-        // 2. Running turns: ended, failed, vanished, or too long.
-        for run in self.store.runs()? {
-            if run.status != RunStatus::Running {
-                continue;
-            }
-            if run
-                .started_at
-                .is_some_and(|started| now - started > LONGEST_TURN_MS)
-            {
-                self.runner.stop(run.id, self.settings.grace);
-                self.end(run, RunStatus::TimedOut, "took longer than a turn may")?;
-                report.ended += 1;
-                continue;
-            }
-            match self.runner.status(run.id) {
-                Liveness::Running => {}
-                Liveness::Finished { succeeded: true } => {
-                    self.end(run, RunStatus::Succeeded, "ended its turn")?;
-                    report.ended += 1;
-                }
-                Liveness::Finished { succeeded: false } => {
-                    // The runner's words when it gave them: the worker's exit code's meaning
-                    // and its last words, which would otherwise be lost with its container.
-                    let why = self
-                        .runner
-                        .why_ended(run.id)
-                        .unwrap_or_else(|| "the turn failed".to_owned());
-                    // Whose it was: a container the runner found gone, or killed from outside
-                    // before its full time, was cut short by the platform (ADR 0124, amended).
-                    let ran = run.started_at.map_or(0, |started| now - started);
-                    let fault = runs::fault_of(self.runner.exit_of(run.id), ran);
-                    if self.fail(run, &why, fault)? {
-                        report.retrying += 1;
-                    } else {
-                        report.ended += 1;
-                    }
-                }
-                // HQ lost the turn: it restarted, and with it the memory of what the runner
-                // was handed. Nothing its member did.
-                Liveness::Gone => {
-                    if self.fail(run, "its container is gone", Fault::Platform)? {
-                        report.retrying += 1;
-                    } else {
-                        report.ended += 1;
-                    }
-                }
+    /// Running turns that ended, failed, vanished or ran too long are settled (tick step 2).
+    fn settle_running(&self, now: Millis, report: &mut TickReport) -> Done<()> {
+        for run in self.store.live_runs()? {
+            if run.status == RunStatus::Running {
+                self.settle_one(run, now, report)?;
             }
         }
+        Ok(())
+    }
 
-        // A project paused for its budget goes on once the month turns (ADR 0113).
-        self.lift_budget_pauses()?;
+    fn settle_one(&self, run: Run, now: Millis, report: &mut TickReport) -> Done<()> {
+        if run
+            .started_at
+            .is_some_and(|started| now - started > LONGEST_TURN_MS)
+        {
+            self.runner.stop(run.id, self.settings.grace);
+            self.end(run, RunStatus::TimedOut, "took longer than a turn may")?;
+            report.ended += 1;
+            return Ok(());
+        }
+        let retrying = match self.runner.status(run.id) {
+            Liveness::Running => return Ok(()),
+            Liveness::Finished { succeeded: true } => {
+                self.end(run, RunStatus::Succeeded, "ended its turn")?;
+                false
+            }
+            Liveness::Finished { succeeded: false } => {
+                // The runner's words when it gave them: the worker's exit code's meaning and
+                // its last words, which would otherwise be lost with its container.
+                let why = self
+                    .runner
+                    .why_ended(run.id)
+                    .unwrap_or_else(|| "the turn failed".to_owned());
+                // Whose it was: a container the runner found gone, or killed from outside
+                // before its full time, was cut short by the platform (ADR 0124, amended).
+                let ran = run.started_at.map_or(0, |started| now - started);
+                let exit = self.runner.exit_of(run.id);
+                let fault = runs::fault_of(exit, ran);
+                // A container that never started ran nothing: it says so, so the record knows
+                // it is nobody's failure (ADR 0142, amended 2026-10-31).
+                let why = if runs::never_started(exit) {
+                    runs::never_started_said(&why)
+                } else {
+                    why
+                };
+                self.fail(run, &why, fault)?
+            }
+            // HQ lost the turn: it restarted, and with it the memory of what the runner was
+            // handed. Nothing its member did.
+            Liveness::Gone => self.fail(run, "its container is gone", Fault::Platform)?,
+        };
+        if retrying {
+            report.retrying += 1;
+        } else {
+            report.ended += 1;
+        }
+        Ok(())
+    }
 
-        // 3. Retries whose time has come are queued again.
-        for mut run in self.store.runs()? {
+    /// Retries whose time has come are queued again (tick step 3).
+    fn requeue_retries(&self, now: Millis, report: &mut TickReport) -> Done<()> {
+        for mut run in self.store.live_runs()? {
             if run.status == RunStatus::RetryWaiting && run.retry_at.is_some_and(|due| due <= now) {
                 run.status = RunStatus::Queued;
                 run.retry_at = None;
@@ -2710,127 +2200,80 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 report.requeued += 1;
             }
         }
+        Ok(())
+    }
 
-        // 3b. One member with nothing to do is given a downtime turn (ADR 0119).
-        // The team's map (ADR 0126): a lead hired, a project or goal made since the last look
-        // gets its page.
-        self.migrate_map_held()?;
-        // The team's history (ADR 0129): what is past its thirty days, or beyond the last five
-        // of a member on a task, is let go; handover notes and posts are not touched.
-        self.history_tick(now)?;
-        if self.settings.downtime {
-            self.downtime_look(now)?;
+    /// Doing work with no turn: nudged once, then marked stuck once it has sat long (tick step 5).
+    fn stalled_work(
+        &self,
+        tasks: &[Task],
+        live: &[Option<TaskId>],
+        report: &mut TickReport,
+    ) -> Done<()> {
+        for task in tasks {
+            if task.status == TaskStatus::Doing && !live.contains(&Some(task.id)) {
+                self.stalled_one(task, report)?;
+            }
         }
-        // Games (ADR 0121): free members play a match in code, and a game of chess nobody
-        // has moved in a week is adjourned. No model is asked.
-        self.games_tick(now)?;
-        // Scenarios (ADR 0135): a world that has ended with its tasks open is closed.
-        self.close_ended_scenarios()?;
-        // The owner's re-run of the Holodeck: the next scenario starts once none is running.
-        self.holodeck_rerun_tick()?;
-        // The model league: the next pair of brains sits down to chess once nothing is played.
-        self.league_tick(now)?;
-        // The loops hand out their plans' next items (ADR 0142).
-        self.loops_tick()?;
+        Ok(())
+    }
 
-        // 4. Queued turns start where a member has a free slot, budget can be reserved, and a
-        //    runner has room: urgent work first, then the oldest. The tripwire may stop the team
-        //    here (ADR 0133): then nothing else in this tick is done, as when the owner stops it.
-        report.started = self.start_queued(now)?;
-        // Work that waits long for the Mac is said in the owner's digest (Phase 0 audit, P5).
-        self.long_mac_waits(now)?;
-        if self.store.stopped()? {
-            return Ok(report);
+    fn stalled_one(&self, task: &Task, report: &mut TickReport) -> Done<()> {
+        let Some(owner) = task.owner else {
+            return Ok(());
+        };
+        // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
+        if self.in_a_scenario(task.id)? {
+            return Ok(());
         }
-
-        // 5. Doing, with no turn: parked work (ADR 0124) gets one nudge, then climbs the
-        //    ladder; work held on purpose is left alone, and work HQ cannot tell about gets
-        //    one look from its area's lead.
-        let tasks = self.store.tasks()?;
-        let live: Vec<Option<TaskId>> = self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.status.live())
-            .map(|r| r.task)
-            .collect();
-        for task in &tasks {
-            if task.status != TaskStatus::Doing || live.contains(&Some(task.id)) {
-                continue;
-            }
-            let Some(owner) = task.owner else {
-                continue;
-            };
-            // A scenario's world wakes its players (ADR 0135): waiting for it is no stall.
-            if self.in_a_scenario(task.id)? {
-                continue;
-            }
-            // Its member said when it comes back, or it waits on open work: that is its plan,
-            // not a stall (live, #667 was woken every ten seconds while its check-back waited).
-            let Some(found) = self.diagnosis(task.id)? else {
-                continue;
-            };
-            // In the loops (ADR 0142) a stall is nudged once, then each further stall is one
-            // of the item's failures: three climb a rank. No ladder, no desk.
-            if self.loop_holds(task)? {
-                if matches!(found.stopped, Stopped::Working | Stopped::Held) {
-                    continue;
-                }
-                if !task.nudged {
-                    self.store.set_nudged(task.id, true)?;
-                    if self.nudge_once(task, owner, WakeReason::Recovery)? {
-                        report.nudged += 1;
-                    }
-                    continue;
-                }
-                if self.idle_for(task.id, STRANDED_AFTER_MS)? {
-                    self.loop_stalled(task)?;
-                    report.stuck += 1;
-                }
-                continue;
-            }
-            match found.stopped {
-                Stopped::Working | Stopped::Held | Stopped::Indeterminate => continue,
-                Stopped::Parked => {}
-            }
-            if !task.nudged {
-                self.store.set_nudged(task.id, true)?;
-                if self.nudge_once(task, owner, WakeReason::Recovery)? {
-                    report.nudged += 1;
-                }
-                continue;
-            }
-            // It is marked stuck once it has sat as long as stranded work does: never a reflex.
-            if !self.idle_for(task.id, STRANDED_AFTER_MS)? {
-                continue;
-            }
-            self.store.set_task_status(task.id, TaskStatus::Blocked)?;
-            self.emit(
-                EventKind::TaskChanged,
-                json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
-                        "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
-            )?;
-            report.stuck += 1;
+        // Its member said when it comes back, or it waits on open work: that is its plan, not
+        // a stall (live, #667 was woken every ten seconds while its check-back waited).
+        let Some(found) = self.diagnosis(task.id)? else {
+            return Ok(());
+        };
+        // In the loops (ADR 0142) any stall but work and holds counts, is nudged once, then
+        // each further stall is one of the item's failures: three climb a rank. No ladder, no
+        // desk. Outside them only parked work does (ADR 0124).
+        let looped = self.loop_holds(task)?;
+        let stalled = if looped {
+            !matches!(found.stopped, Stopped::Working | Stopped::Held)
+        } else {
+            found.stopped == Stopped::Parked
+        };
+        if !stalled {
+            return Ok(());
         }
+        if !task.nudged {
+            self.store.set_nudged(task.id, true)?;
+            if self.nudge_once(task, owner, WakeReason::Recovery)? {
+                report.nudged += 1;
+            }
+            return Ok(());
+        }
+        // It is marked stuck once it has sat as long as stranded work does: never a reflex.
+        if !self.idle_for(task.id, STRANDED_AFTER_MS)? {
+            return Ok(());
+        }
+        report.stuck += 1;
+        if looped {
+            return self.loop_stalled(task);
+        }
+        self.store.set_task_status(task.id, TaskStatus::Blocked)?;
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": task.id.0, "goal": task.goal.0, "owner": owner.0,
+                    "status": TaskStatus::Blocked.name(), "priority": task.priority.name() }),
+        )?;
+        Ok(())
+    }
 
-        // 5b. Open work handed to a member that nothing will bring it back to: no turn queued,
-        //     running or waiting to retry, and no wake held for it, for ten minutes. One
-        //     recovery wake for its member; still so ten minutes after, the owner's desk, once.
-        //     Never handed to anyone else.
-        let (stranded_nudged, stranded_stuck) = self.recover_stranded(&tasks, &live, now)?;
-        report.nudged += stranded_nudged;
-        report.stuck += stranded_stuck;
-        // 5c. The guards (ADR 0124): what is stuck and has moved again closes itself, and every
-        //     few minutes each project's process health is looked at.
-        self.guards_tick()?;
-        self.health_tick()?;
-
-        // 6. Tasks whose waits have all finished are woken, once.
-        for task in &tasks {
+    /// Tasks whose waits have all finished are woken, once (tick step 6).
+    fn wake_finished_waits(&self, tasks: &[Task], report: &mut TickReport) -> Done<()> {
+        for task in tasks {
             if task.waits_on.is_empty() || task.status.finished() {
                 continue;
             }
-            let Some(member) = task.owner.or(task.assignee) else {
+            let Some(member) = task.holder() else {
                 continue;
             };
             if self.store.woken_after_waits(task.id)? || !self.waits_over(&task.waits_on)? {
@@ -2840,12 +2283,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.wake_held_lock(member, Some(task.id), WakeReason::WaitFinished)?;
             report.woken += 1;
         }
-
-        self.emit(
-            EventKind::Tick,
-            json!({ "started": report.started, "ended": report.ended, "stuck": report.stuck }),
-        )?;
-        Ok(report)
+        Ok(())
     }
 
     fn start_queued(&self, now: Millis) -> Done<usize> {
@@ -2861,32 +2299,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let mut queued: Vec<Run> = self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
             .filter(|r| r.status == RunStatus::Queued)
             .collect();
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
-        // What deciding a turn's kind reads, once for the tick (ADR 0131).
-        let wakes = self.store.wakes()?;
-        let known = self.known_for_kinds()?;
         // What the caps on a runaway read, once for the tick and kept up as turns start (ADR
         // 0133). A scripted team, the demo, has none.
         let mut starts = self.starts_read(now)?;
         let mut started = 0;
-        for mut run in queued {
-            // A turn queued for work that has since finished (dropped, or done) is ended, not
-            // started: nothing is left for it to do.
-            let over = run
-                .task
-                .and_then(|t| tasks.iter().find(|task| task.id == t))
-                .is_some_and(|t| t.status.finished());
-            if over {
-                self.end(run, RunStatus::Stopped, "its task is over")?;
+        // A downtime turn queued before a round of the experiment began waits for its close
+        // (ADR 0142, amended 2026-11-01).
+        let round = self.round_running()?;
+        for run in queued {
+            if round && self.reason_for(&run)? == WakeReason::Downtime.name() {
                 continue;
             }
+            let Some(run) = self.task_still_open(run, &tasks)? else {
+                continue;
+            };
             let running: Vec<Run> = self
                 .store
-                .runs()?
+                .live_runs()?
                 .into_iter()
                 .filter(|r| r.status == RunStatus::Running)
                 .collect();
@@ -2894,18 +2328,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 break;
             }
             let member = self.member(run.member)?;
+            let Some(mut run) = self.member_still_free(run, &member)? else {
+                continue;
+            };
             let busy = running.iter().filter(|r| r.member == member.id).count();
-            if member.furloughed() {
-                // Furloughed after its wake queued a turn: there is nothing for it to do.
-                self.end(run, RunStatus::Stopped, "its member is on furlough")?;
-                continue;
-            }
-            let downtime = self.reason_for(&run)? == WakeReason::Downtime.name();
-            if downtime && member.paused {
-                // Paused after its wake queued a turn: downtime is not kept waiting.
-                self.end(run, RunStatus::Stopped, "its member was paused")?;
-                continue;
-            }
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
@@ -2913,60 +2339,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if self.held_by_owner(project)? {
                 continue;
             }
-            // What the turn needs is decided here, from why it was asked for (ADR 0131), and
-            // never by the member: judgment runs only on the member's Claude, work on the best
-            // free work brain it is allowed on. A turn that has nowhere it may run waits where
-            // it is, and says why. It is never given another brain; an alarm out of budget is
-            // the one exception, and acts at once.
-            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
-            // side is paid from the league's capped project alone.
-            let league = self.league_brain_of(run.task)?;
             // A member is its model (ADR 0142): every turn of its runs there, whatever woke it.
-            // A member still split between a Claude and a house model is placed as before.
-            let pinned = league.or((member.brain == member.work_brain).then_some(member.brain));
+            // A side of a league game is pinned to its brain, whoever plays it, and a Claude
+            // side is paid from the league's capped project alone. A turn that cannot run there
+            // now waits where it is, and says why; it is never given another brain.
+            let league = self.league_brain_of(run.task)?;
+            let brain = league.unwrap_or(member.brain);
+            let kind = turns::TurnKind::on(brain);
             // A scenario's turn is bounded by its world, not its player's day (ADR 0133, amended).
             let in_a_world = match run.task {
                 Some(task) => self.in_a_scenario(task)?,
                 None => false,
             };
-            let need = match pinned {
-                Some(brain) => turns::Need::pinned(brain),
-                None => self.need_of_run(&run, &member, &wakes, &known),
-            };
-            // Only judgment is paid for; work on the house's models reserves nothing.
-            let asked = match (need.kind, league) {
-                (turns::TurnKind::Work, _) => Some(0),
-                (turns::TurnKind::Judgment, Some(_)) => match self.project_left(project)? {
-                    Some(_) => self.affordable(&member, project, true)?,
-                    None => None,
-                },
-                (turns::TurnKind::Judgment, None) => {
-                    self.affordable(&member, project, run.asked_by_owner)?
-                }
-            };
+            let asked = self.reservable(&run, &member, (kind, brain), league.is_some(), project)?;
             let on_the_mac = running.iter().any(|r| r.brain == Some(Brain::Mac));
             let facts = turns::Facts {
-                work_brain: member.work_brain,
-                judgment_brain: pinned
-                    .filter(|b| b.cloud())
-                    .unwrap_or_else(|| member.judgment_brain()),
                 mac_waits: mac::wait_for(self.mac_facts().as_ref(), now, on_the_mac),
                 can_afford: asked.is_some(),
-                free_turns_today: if in_a_world {
+                free_turns_wasted: if in_a_world {
                     0
                 } else {
-                    starts.free_turns_of(&run)
+                    starts.free_turns_wasted_of(&run)
                 },
             };
-            let (brain, amount, fell_back) = match turns::place(need, &facts) {
-                turns::Placed::On(brain) => (brain, asked.unwrap_or(0), false),
-                turns::Placed::Fallback(brain) => (brain, 0, true),
+            let (brain, amount) = match turns::place(brain, &facts) {
+                turns::Placed::On(brain) => (brain, asked.unwrap_or(0)),
                 turns::Placed::Waits(wait) => {
-                    let said = wait.words();
-                    if run.end_reason != said {
-                        run.end_reason = said;
-                        self.store.save_run(&run)?;
-                    }
+                    self.say_why_it_waits(&mut run, wait.words())?;
                     continue;
                 }
             };
@@ -2977,59 +2376,99 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.trip(&ran)?;
                 return Ok(started);
             }
-            // The turn is briefed, told how hard to try and answered by the brain it runs on.
-            let on = Member {
+            starts.started(member.id, now);
+            let placed = Placement {
                 brain,
-                ..member.clone()
+                amount,
+                kind,
             };
-            run.brain = Some(brain);
-            run.told = self.briefing(&on, &run)?;
-            self.store
-                .reserve(run.id, member.id, self.today(), amount, now)?;
-            run.status = RunStatus::Running;
-            run.attempts = run.attempts.saturating_add(1);
-            run.started_at = Some(now);
-            run.reserved = amount;
-            if turns::is_waiting_words(&run.end_reason) {
-                run.end_reason.clear();
+            if self.launch(run, &member, &placed, now)? {
+                started += 1;
             }
-            self.store.save_run(&run)?;
-            starts.started(member.id, brain, now, in_a_world);
-            let context = RunContext {
-                run: run.id,
-                member: member.id,
-                task: run.task,
-                told: run.told.clone(),
-                token: self.store.issue_token(run.id)?,
-                effort: self.effort_of(&on),
-            };
-            if let Err(why) = self.runner.start(&context) {
-                self.fail(run, &format!("could not start: {}", why.0), Fault::Worker)?;
-                continue;
-            }
-            self.store
-                .set_wake(run.wake, Receipt::Started, Some(run.id))?;
-            self.emit(
-                EventKind::RunStarted,
-                json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount, "reason": self.reason_for(&run)?,
-                        "kind": need.kind.label(), "brain": brain.name() }),
-            )?;
-            if fell_back {
-                self.alarm_on_the_house(&run, &member, brain)?;
-            }
-            started += 1;
         }
         Ok(started)
+    }
+
+    /// A queued turn whose task has since finished (dropped, or done) is ended, not started:
+    /// nothing is left for it to do.
+    fn task_still_open(&self, run: Run, tasks: &[Task]) -> Done<Option<Run>> {
+        let over = run
+            .task
+            .and_then(|t| tasks.iter().find(|task| task.id == t))
+            .is_some_and(|t| t.status.finished());
+        if over {
+            self.end(run, RunStatus::Stopped, "its task is over")?;
+            return Ok(None);
+        }
+        Ok(Some(run))
+    }
+
+    /// A queued turn whose member went on furlough, or was paused before its downtime, since
+    /// its wake is ended, not kept waiting.
+    fn member_still_free(&self, run: Run, member: &Member) -> Done<Option<Run>> {
+        if member.furloughed() {
+            self.end(run, RunStatus::Stopped, "its member is on furlough")?;
+            return Ok(None);
+        }
+        let downtime = self.reason_for(&run)? == WakeReason::Downtime.name();
+        if downtime && member.paused {
+            self.end(run, RunStatus::Stopped, "its member was paused")?;
+            return Ok(None);
+        }
+        Ok(Some(run))
+    }
+
+    /// Starts a placed turn: briefed, told how hard to try and answered by the brain it runs
+    /// on, with its budget reserved. False when the runner could not start it.
+    fn launch(&self, mut run: Run, member: &Member, placed: &Placement, now: Millis) -> Done<bool> {
+        let Placement {
+            brain,
+            amount,
+            kind,
+        } = *placed;
+        let on = Member {
+            brain,
+            ..member.clone()
+        };
+        run.brain = Some(brain);
+        run.told = self.briefing(&on, &run)?;
+        self.store
+            .reserve(run.id, member.id, self.today(), amount, now)?;
+        run.status = RunStatus::Running;
+        run.attempts = run.attempts.saturating_add(1);
+        run.started_at = Some(now);
+        run.reserved = amount;
+        if turns::is_waiting_words(&run.end_reason) {
+            run.end_reason.clear();
+        }
+        self.store.save_run(&run)?;
+        let context = RunContext {
+            run: run.id,
+            member: member.id,
+            task: run.task,
+            told: run.told.clone(),
+            token: self.store.issue_token(run.id)?,
+        };
+        if let Err(why) = self.runner.start(&context) {
+            let why = runs::never_started_said(&format!("could not start: {}", why.0));
+            self.fail(run, &why, Fault::Worker)?;
+            return Ok(false);
+        }
+        self.store
+            .set_wake(run.wake, Receipt::Started, Some(run.id))?;
+        self.emit(
+            EventKind::RunStarted,
+            json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
+                    "reserved": amount, "reason": self.reason_for(&run)?,
+                    "kind": kind.label(), "brain": brain.name() }),
+        )?;
+        Ok(true)
     }
 
     // ---- the team protocol (spec section 6) ------------------------------------------------
 
     /// The turn a token was issued for, while it runs: its run and its member. A token for a
     /// turn that has ended opens nothing.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn turn_of(&self, token: &str) -> Done<Option<(Run, Member)>> {
         let Some(id) = self.store.run_of_token(token)? else {
             return Ok(None);
@@ -3059,8 +2498,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
-    /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
-    /// last question waits; a store failure.
+    /// [`Refusal::TurnOver`] for a turn that has ended, [`Refusal::AlreadyAsked`] while its
+    /// last question waits, or [`Refusal::Answered`] once the owner has answered a question
+    /// about the item in words; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<Asked> {
         self.ask_owner_citing(run, text, &[])
     }
@@ -3084,8 +2524,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let text = cut(record::scrub(text).trim(), 1200);
         let lab = self.lab_names();
         let turn = self.running(run)?;
-        turn.task
+        let task = turn
+            .task
             .ok_or(EngineError::Unknown("task for this turn"))?;
+        // Once answered in words, the item's answer is acted on, not asked for again (ADR 0142,
+        // amended 2026-11-01).
+        self.not_asked_again(task)?;
         // There is no chain: a question goes to the owner's desk (ADR 0142).
         let text = self.with_evidence(&text, cited)?;
         let checked = review::checked(&text, lab.as_deref());
@@ -3104,9 +2548,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         for d in self.store.desk()? {
-            if !matches!(d.kind.as_str(), "question" | "approval" | "decision")
-                || d.status != "waiting"
-            {
+            if !matches!(d.kind.as_str(), "question" | "approval") || d.status != "waiting" {
                 continue;
             }
             if d.member == Some(member) && d.task == Some(task) {
@@ -3173,25 +2615,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if self.waiting_question(member.id, task)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
-        // The same question from another task, already waiting, is one card (ADR 0124). An
-        // approval never is: each runs exactly the one action it stored.
-        let desk = if kind == "question" {
-            self.ask_on_the_desk(kind, task, member.id, &say(&member.name))?
-        } else {
-            let desk = self.store.add_desk(
-                kind,
-                Some(task),
-                None,
-                Some(member.id),
-                &say(&member.name),
-                self.clock.now(),
-            )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
-            )?;
-            desk
-        };
+        // One question about an item waits at a time, and the same question from another task
+        // is one card; an approval never is one with another (ADR 0124; ADR 0142, amended
+        // 2026-10-31).
+        let desk = self.put_on_the_desk(kind, task, Some(member.id), &say(&member.name), true)?;
         // The worker ends its turn on reading that it has; its container is let go too, so a
         // worker that does not cannot linger.
         let id = run.id;
@@ -3220,7 +2647,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.kind == "out_for_day" {
             return self.owner_decides_the_day(&found, decision, "");
         }
-        self.decide_held_lock(&found, decision)?;
+        self.decide_held_lock(&found, decision, "")?;
         self.answer_the_same_asks(item, decision, "")
     }
 
@@ -3240,7 +2667,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let task = found.task.ok_or(EngineError::Unknown("task"))?;
         self.post_held_lock(Author::Owner, task, text)?;
-        self.decide_held_lock(&found, "seen")?;
+        self.decide_held_lock(&found, "seen", text)?;
         // One answer to the same ask from other tasks reaches each of them (ADR 0124).
         self.answer_the_same_asks(item, "seen", text)
     }
@@ -3261,11 +2688,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _asked = self.for_owner();
         let found = self.waiting_on_desk(item)?;
         let words = cut(words.trim(), 4000);
-        if found.kind == "decision" {
-            self.board_decides(&found, decision, &words)?;
-            // The board's one word on the same decision from other tasks (ADR 0124).
-            return self.answer_the_same_asks(item, decision, &words);
-        }
         if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
             return self.owner_decides_cap(&found, decision, &words);
         }
@@ -3276,35 +2698,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let task = found.task.ok_or(EngineError::Unknown("task"))?;
             self.post_held_lock(Author::Owner, task, &words)?;
         }
-        self.decide_held_lock(&found, decision)?;
+        self.decide_held_lock(&found, decision, &words)?;
         self.answer_the_same_asks(item, decision, &words)
-    }
-
-    /// The board's word on the CEO's decision (ADR 0111): in the task's thread as the owner's,
-    /// with what they wrote, and the CEO woken to act on it.
-    fn board_decides(&self, found: &DeskItem, verdict: &str, words: &str) -> Done<()> {
-        let said = match verdict {
-            "approve" => "The board approves",
-            "decline" => "The board declines",
-            "answer" if !words.is_empty() => "The board answers",
-            _ => return Err(EngineError::Unknown("decision for this item")),
-        };
-        let task = found.task.ok_or(EngineError::Unknown("task"))?;
-        let decision = Decision::read(&found.text).map_or_else(String::new, |d| d.decision);
-        let mut text = format!("{said}: {decision}");
-        if !words.is_empty() {
-            text.push_str(&format!("\n{words}"));
-        }
-        self.post_held_lock(Author::Owner, task, &text)?;
-        self.store.set_desk_status(found.id, verdict)?;
-        self.emit(
-            EventKind::DeskDecided,
-            json!({ "item": found.id.0, "kind": found.kind, "decision": verdict }),
-        )?;
-        if let Some(ceo) = found.member {
-            self.wake_held_lock(ceo, Some(task), WakeReason::ProposalDecided)?;
-        }
-        Ok(())
     }
 
     /// A desk item still waiting for the owner.
@@ -3321,7 +2716,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(found)
     }
 
-    fn decide_held_lock(&self, found: &DeskItem, decision: &str) -> Done<()> {
+    fn decide_held_lock(&self, found: &DeskItem, decision: &str, words: &str) -> Done<()> {
         let item = found.id;
         match (found.kind.as_str(), decision) {
             ("goal", "approve" | "decline") => {
@@ -3343,7 +2738,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             ("stuck", "retry") => {
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                let to = task.owner.or(task.assignee);
+                let to = task.holder();
                 // Tried again means someone is woken. If nobody can be, say so and change
                 // nothing: the item stays on the desk, rather than the button doing nothing
                 // with no word about it.
@@ -3375,8 +2770,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("question", "seen") => {
                 // The member who asked carries on, reading the thread for any answer. A
                 // question from before the desk knew who asked goes to whoever has the task.
+                // In the loops the card is the item's: whoever holds it now reads the answer,
+                // and a blocked item is woken only by the owner's words (ADR 0142, amended
+                // 2026-10-31).
                 let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
-                if let Some(member) = found.member.or(task.owner).or(task.assignee) {
+                // Answered in words, the item is not asked about again (ADR 0142, amended
+                // 2026-11-01).
+                self.keep_the_answer(task.id, words)?;
+                let holder = task.holder();
+                let to = if self.loop_holds(&task)? {
+                    holder.or(found.member)
+                } else {
+                    found.member.or(holder)
+                };
+                let wordless =
+                    self.waits_for_the_owner(task.id, WakeReason::ProposalDecided, Some(words))?;
+                if let (Some(member), false) = (to, wordless) {
                     self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
                 }
             }
@@ -3388,20 +2797,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             // The wing (ADR 0115): a branch to push.
             ("push", "approve" | "decline") => self.decide_push(found, decision == "approve")?,
-            // The check after a deploy (ADR 0115, amended): the owner's word that it is deployed.
-            ("deploy", "deployed" | "not_deploying") => {
-                self.decide_deploy(found, decision == "deployed")?;
-            }
             // The runaway tripwire's card (ADR 0133): resume the team, which answers the card
             // itself, or leave it stopped and have the card seen.
             ("tripwire", "resume") => return self.resume_held_lock(),
             ("tripwire", "seen" | "dismiss") => {}
-            ("push", "seen" | "dismiss")
+            // A branch the privacy scan held (ADR 0115, amended 2026-10-31): back to the team,
+            // or pushed anyway on the owner's word.
+            ("privacy", "send_back" | "push_anyway") => {
+                self.decide_held(found, decision == "push_anyway")?;
+            }
+            ("push" | "notice" | "needs_owner" | "privacy", "seen" | "dismiss")
             | ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
-            | ("question", "dismiss")
-            | ("notice", "seen" | "dismiss")
-            | ("deploy_check", "seen" | "dismiss") => {}
+            | ("question", "dismiss") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;
@@ -3410,6 +2818,50 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "item": item.0, "kind": found.kind, "decision": decision }),
         )?;
         Ok(())
+    }
+
+    /// Stranded work's one nudge: what it waited on and was dropped is said in its thread;
+    /// work in review asks its review again, other work wakes its member, recorded before it
+    /// is sent and never sent again unchanged (ADR 0124). True when a nudge went out.
+    fn nudge_stranded(&self, task: &Task, member: MemberId, dropped: Option<&Task>) -> Done<bool> {
+        self.store.set_nudged(task.id, true)?;
+        if let Some(gone) = dropped {
+            self.post_held_lock(
+                Author::Endora,
+                task.id,
+                &format!(
+                    "#{} ({}), which this waited on, was dropped: decide whether this still \
+                     needs doing, and say so here, or ask.",
+                    gone.id, gone.title
+                ),
+            )?;
+        }
+        if task.status == TaskStatus::InReview {
+            self.review_asked(task)?;
+            return Ok(true);
+        }
+        self.nudge_once(task, member, WakeReason::AssignmentRecovery)
+    }
+
+    /// Whether `task` is `own` or sits under it.
+    fn under(&self, task: TaskId, own: TaskId) -> Done<bool> {
+        let mut at = Some(task);
+        while let Some(id) = at {
+            if id == own {
+                return Ok(true);
+            }
+            at = self.task(id)?.parent;
+        }
+        Ok(false)
+    }
+
+    /// A turn that has nowhere it may run says why, once.
+    fn say_why_it_waits(&self, run: &mut Run, said: String) -> Done<()> {
+        if run.end_reason == said {
+            return Ok(());
+        }
+        run.end_reason = said;
+        Ok(self.store.save_run(run)?)
     }
 
     /// The tick's step 5b: open work with a member and nothing that will bring it back, for
@@ -3437,10 +2889,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 continue;
             }
-            let Some(member) = task.owner.or(task.assignee) else {
+            let Some(member) = task.holder() else {
                 continue;
             };
             if members.iter().any(|m| m.id == member && !m.at_work()) {
+                continue;
+            }
+            // A blocked item in the loops waits for the owner, not for a nudge: item 938 woke
+            // Kit about every eleven minutes this way (ADR 0142, amended 2026-10-31).
+            if self.waits_for_the_owner(task.id, WakeReason::Recovery, None)? {
                 continue;
             }
             let on_the_desk = desk
@@ -3478,27 +2935,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             let dropped = self.dropped_wait(&task.waits_on)?;
             if !task.nudged {
-                self.store.set_nudged(task.id, true)?;
-                if let Some(gone) = &dropped {
-                    self.post_held_lock(
-                        Author::Endora,
-                        task.id,
-                        &format!(
-                            "#{} ({}), which this waited on, was dropped: decide whether this \
-                             still needs doing, and say so here, or ask.",
-                            gone.id, gone.title
-                        ),
-                    )?;
-                }
-                if task.status == TaskStatus::InReview {
-                    nudged += 1;
-                    self.review_asked(task)?;
-                    continue;
-                }
-                // Recorded before it is sent, and never sent again unchanged (ADR 0124).
-                if self.nudge_once(task, member, WakeReason::AssignmentRecovery)? {
-                    nudged += 1;
-                }
+                nudged += usize::from(self.nudge_stranded(task, member, dropped.as_ref())?);
                 continue;
             }
             // In the loops (ADR 0142) stranded work is one of the item's failures.
@@ -3571,9 +3008,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Tells the owner something done that needs no decision: a notice on the desk, only seen
     /// or dismissed. From a turn (`run`), it is from that turn's member and about its task:
     /// how Endora reports a safe fix a member made through a contract (ADR 0106).
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn notice(&self, run: Option<RunId>, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
         let run = match run {
@@ -3627,10 +3061,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- routines, alarms and check-backs (ADR 0107) -------------------------------------
 
     /// The routine whose last task this is, if any: the one task a routine has open.
-    /// Whether a task is a check its member closes itself: a routine's, or the check after a
-    /// deploy (ADR 0107; 0115, amended). A check changes no code.
+    /// Whether a task is a check its member closes itself: a routine's (ADR 0107). A check
+    /// changes no code.
     fn is_a_check(&self, task: TaskId) -> Done<bool> {
-        Ok(self.routine_of(task)?.is_some() || self.deploy_check_of(task)?.is_some())
+        Ok(self.routine_of(task)?.is_some())
     }
 
     fn routine_of(&self, task: TaskId) -> Done<Option<Routine>> {
@@ -3749,9 +3183,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// An alarm from Endora about the home lab, in its words: fired into the first routine
     /// that is on and takes the home lab's alarms. `None` when no routine takes them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn alarm(&self, said: &str) -> Done<Option<(RoutineId, Fired)>> {
         let _held = self.held();
         let said = one_line(said, 300);
@@ -3777,9 +3208,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// tells the member that the moment passed, so it looks at the state now rather than
     /// diagnosing what already recovered. `None`, and nothing done, when no routine takes the
     /// alarms or its task is not open: a recovery hands out no work.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn recovered(&self, said: &str) -> Done<Option<TaskId>> {
         let _held = self.held();
         let said = one_line(said, 300);
@@ -3802,7 +3230,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(None);
         };
         self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
-        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        let to = task.holder().unwrap_or(routine.assignee);
         self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
         self.emit(
             EventKind::RoutinePosted,
@@ -3843,7 +3271,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let (Some(task), Firing::Alarm(said)) = (open, firing) {
             let text = format!("Alarm: {said}");
             self.post_held_lock(Author::Endora, task.id, &text)?;
-            let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+            let to = task.holder().unwrap_or(routine.assignee);
             self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
             routine.last_fired_at = Some(now);
             self.store.save_routine(&routine)?;
@@ -3909,9 +3337,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Routines made before their origin was recorded (ADR 0138 A2b) whose words are exactly
     /// one of HQ's own templates (`title`, `description`) the composition root names. They are recorded as HQ's; every other
     /// stays unknown. Returns how many were.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn vouch_template_routines(&self, also: &[(&str, &str)]) -> Done<usize> {
         let _held = self.held();
         let mut vouched = 0;
@@ -4037,17 +3462,106 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(due)
     }
 
+    /// A setting kept as JSON, read as `T`; `None` when it is not set or does not read.
+    fn setting_json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Done<Option<T>> {
+        Ok(self
+            .store
+            .setting(key)?
+            .and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
     // ---- what the office shows ------------------------------------------------------------
+
+    /// One task whole, as the owner opens it: its whole thread, evidence and documents.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for no such task; a store failure.
+    pub fn task_shown(&self, id: TaskId) -> Done<serde_json::Value> {
+        let tasks = self.store.tasks()?;
+        let task = tasks
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or(EngineError::Unknown("task"))?;
+        let goals = self.store.goals()?;
+        let routines = self.store.routines()?;
+        let board = self.board(&tasks, &goals, &routines)?;
+        self.task_row(task, &board, true)
+    }
+
+    /// What every task row is read against, read once for the whole board, not once a row.
+    fn board<'a>(
+        &self,
+        tasks: &'a [Task],
+        goals: &'a [crate::domain::Goal],
+        routines: &'a [crate::domain::Routine],
+    ) -> Done<Board<'a>> {
+        Ok(Board {
+            tasks,
+            goals,
+            routines,
+            branches: self.store.branches()?,
+            checks: self.store.checks()?,
+            posts: self.store.post_counts()?,
+        })
+    }
+
+    /// A task as the screen shows it. Finished work comes in brief, with no thread, evidence,
+    /// documents, description or chain of why (those of 800 done tasks made the snapshot 1.6 MB on every poll); the
+    /// owner's screen asks for it `whole` when it is opened.
+    fn task_row(&self, t: &Task, board: &Board<'_>, whole: bool) -> Done<serde_json::Value> {
+        let mut row = json!({
+            "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
+            "parent": t.parent.map(|p| p.0), "title": t.title,
+            "owner": t.owner.map(|o| o.0),
+            "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
+            "priority": t.priority.name(), "depth": t.depth,
+            "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
+            "gate": self.store.gate(t.id)?,
+            "routine": board.routines.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
+            "posts": board.posts.get(&t.id).copied().unwrap_or(0), "brief": !whole,
+            // The wing's branches on it (ADR 0115).
+            "branches": wing::branches_shown(t.id, &board.branches, &board.checks),
+            // Why it closed, and what carries it on (ADR 0124).
+            "closure": self.store.closure(t.id)?.map(|c| json!({
+                "why": c.closure.name(), "said": c.closure.plainly(),
+                "duplicate_of": c.closure.duplicate_of().map(|d| d.0),
+                "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
+        });
+        if whole {
+            let thread = self.store.thread(t.id)?;
+            row["posts"] = json!(thread.len());
+            row["description"] = json!(t.description);
+            let mut chain = vec![t.title.clone()];
+            let mut parent = t.parent;
+            while let Some(up) = parent.and_then(|id| board.tasks.iter().find(|x| x.id == id)) {
+                chain.push(up.title.clone());
+                parent = up.parent;
+            }
+            if let Some(goal) = board.goals.iter().find(|g| g.id == t.goal) {
+                chain.push(format!("Goal: {}", goal.title));
+            }
+            row["why"] = json!(chain);
+            // Each post with its place in the thread, which the activity log finds it by.
+            row["thread"] = thread
+                .iter()
+                .enumerate()
+                .map(|(n, p)| {
+                    json!({ "n": n, "author": p.author, "text": p.text,
+                                      "at": p.at, "unsupported": p.unsupported })
+                })
+                .collect();
+            // What done means, and what was cited for it at each stage (ADR 0114).
+            row["evidence"] = self.evidence_shown(t)?;
+            row["documents"] = self.documents_shown(t.id)?;
+        }
+        Ok(row)
+    }
 
     /// Everything on screen now (spec section 12), and the id of the last event in it: the
     /// event stream resumes after that id, so nothing is shown twice or missed.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn snapshot(&self) -> Done<serde_json::Value> {
         let _held = self.held();
         let day = self.today();
-        let pool = self.settings.pool_per_month;
         let every_run = self.store.runs()?;
         // A lead's report and patterns turns are not work on the board (ADR 0120).
         let reports = self.report_task_ids()?;
@@ -4064,111 +3578,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| !downtime.contains(&r.wake))
             .cloned()
             .collect();
-        let scorecard = self.scorecard(&worked, &tasks, day)?;
+        // Today's pool, sized once for the snapshot and its scorecard alike.
+        let sized = self.pool_sized_today()?;
+        let topped_up = self.topup_of(day)?;
+        let scorecard = self.scorecard(&worked, &every_run, &tasks, day, sized.base, topped_up)?;
         let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
         for g in &goals {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
         }
-        let mut members = Vec::new();
-        let paid = self.paid_weights()?;
-        let pool_day = self.pool_day_today()?;
-        let topped_up = self.topup_of(day)?;
+        let pool_day = sized.base + topped_up;
         let all_members = self.store.members()?;
-        for m in all_members.clone() {
-            let committed = self.store.committed(Some(m.id), day)?;
-            let spent = self.store.spent(Some(m.id), day)?;
-            members.push(json!({
-                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
-                "paused": m.paused, "slots": m.slots,
-                // On furlough (ADR 0118): when it began, and when it ended if it has.
-                "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
-                "recalled_at": m.recalled_at,
-                // What it thinks with, and what the owner may choose for its role (ADR 0109).
-                "brain": m.brain.name(),
-                "brains": Brain::choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                // Two brains (ADR 0131): what it does its work with (the Mac or the house's
-                // model), and the Claude it judges with, each with what the owner may choose.
-                "work_brain": m.work_brain.name(), "work_brain_label": m.work_brain.label(),
-                "rank": m.brain.rank(),
-                "work_brains": Brain::work_choices().into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                "judgment_brain": m.judgment_brain().name(),
-                "judgment_brain_label": m.judgment_brain().label(),
-                "judgment_brains": Brain::judgment_choices(m.role).into_iter()
-                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
-                    .collect::<Vec<_>>(),
-                // What runs its turns (ADR 0117), and whether Claude Code may.
-                "runtime": self.store.runtime_of(m.id)?.effective(m.role, m.brain).name(),
-                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.role, m.brain),
-                // Only its judgment is paid: the pool is shared by the members' claims.
-                "per_day": self.per_day(&m, paid, pool_day),
-                "committed": committed, "spent": spent, "held": (committed - spent).max(0),
-                "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
-                    .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
-                    .collect::<Vec<_>>(),
-                // How often the CEO reached into its work this week (ADR 0124); null when the
-                // pruned feed no longer holds the week, and HQ cannot tell.
-            }));
-        }
-        let why = |task: &Task| {
-            let mut chain = vec![task.title.clone()];
-            let mut parent = task.parent;
-            while let Some(id) = parent {
-                let Some(up) = tasks.iter().find(|t| t.id == id) else {
-                    break;
-                };
-                chain.push(up.title.clone());
-                parent = up.parent;
-            }
-            if let Some(goal) = goals.iter().find(|g| g.id == task.goal) {
-                chain.push(format!("Goal: {}", goal.title));
-            }
-            chain
-        };
+        let members = self.members_shown(&all_members, &runs, day, pool_day)?;
         let routine_list = self.store.routines()?;
+        let board = self.board(&tasks, &goals, &routine_list)?;
         let mut task_rows = Vec::new();
         for t in &tasks {
-            // Finished work carries only the posts its card shows: whole threads of hundreds
-            // of done tasks made the snapshot over a megabyte, on every poll. Each post keeps
-            // its place in the whole thread, which the activity log finds it by.
-            let thread = self.store.thread(t.id)?;
-            let posts = thread.len();
-            let from = if t.status.finished() {
-                posts.saturating_sub(THREAD_TAIL)
-            } else {
-                0
-            };
-            let (documents, branches) = self.documents_shown(t.id)?;
-            task_rows.push(json!({
-                "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
-                "parent": t.parent.map(|p| p.0), "title": t.title,
-                "description": t.description, "owner": t.owner.map(|o| o.0),
-                "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
-                "priority": t.priority.name(), "depth": t.depth,
-                "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
-                "gate": self.store.gate(t.id)?, "why": why(t),
-                "routine": routine_list.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
-                "posts": posts,
-                "thread": thread.iter().enumerate().skip(from)
-                    .map(|(n, p)| json!({ "n": n, "author": p.author, "text": p.text,
-                                          "at": p.at, "unsupported": p.unsupported }))
-                    .collect::<Vec<_>>(),
-                // What done means, and what was cited for it at each stage (ADR 0114).
-                "evidence": self.evidence_shown(t)?,
-                // The wing's documents and branches on it (ADR 0115).
-                "documents": documents,
-                "branches": branches,
-                // Why it closed, and what carries it on (ADR 0124).
-                "closure": self.store.closure(t.id)?.map(|c| json!({
-                    "why": c.closure.name(), "said": c.closure.plainly(),
-                    "duplicate_of": c.closure.duplicate_of().map(|d| d.0),
-                    "successor": c.successor.map(|s| s.0), "by": c.by, "at": c.at })),
-            }));
+            task_rows.push(self.task_row(t, &board, !t.status.finished())?);
         }
         // Spent is what turns reported using; held is what they have reserved and not yet
         // spent. Committed, the two together, is what the budget counts.
@@ -4207,14 +3634,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
                         "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
             "last_tick_at": last_tick_at,
-            "pool": { "per_day": pool_day, "base_per_day": money::pool_a_day(pool),
+            "pool": { "per_day": pool_day, "base_per_day": sized.base,
+                      // Which figure today's base is and why (ADR 0113, amended 2026-10-31).
+                      "sized": { "by": sized.sizing.name(), "why": sized.why(),
+                                 "floor": sized.floor, "ceiling": sized.ceiling },
                       "topped_up": topped_up, "committed": pool_committed,
                       "spent": pool_spent, "held": (pool_committed - pool_spent).max(0),
                       // Turns of judgment that wait for budget (ADR 0131): none is dropped.
                       "waiting": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_budget(&r.end_reason)).count(),
-                      // Turns of work that wait for the day to turn, their member having taken
-                      // its day's turns on the house's own models (ADR 0133).
+                      // Turns of work that wait for the day to turn, their member's turns on
+                      // the house's own models having shown nothing too long (ADR 0133).
                       "capped": runs.iter().filter(|r| r.status == RunStatus::Queued
                           && turns::is_waiting_for_cap(&r.end_reason)).count() },
             "members": members,
@@ -4223,30 +3653,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
             "tasks": task_rows,
-            "runs": runs.iter().map(|r| json!({
-                "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
-                "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
-                "spent": r.spent,
-                // Why its last attempt ended, for one waiting to be tried again.
-                "why": r.end_reason,
-                // The brain it runs or ran on (ADR 0131), once started.
-                "brain": r.brain.map(Brain::name),
-                "input_tokens": r.input_tokens + r.cache_read_tokens + r.cache_write_tokens,
-                "output_tokens": r.output_tokens,
-            })).collect::<Vec<_>>(),
-            "routines": routine_list.iter().map(|r| json!({
-                "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
-                "project": r.project.map(|p| p.0),
-                "assignee": r.assignee.0, "every_ms": r.every_ms,
-                "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
-                "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
-                "last_fired_at": r.last_fired_at, "last_task": r.last_task.map(|t| t.0),
-                "last_task_open": r.last_task
-                    .and_then(|id| tasks.iter().find(|t| t.id == id))
-                    .is_some_and(|t| !t.status.finished()),
-            })).collect::<Vec<_>>(),
+            "runs": runs.iter().map(run_shown).collect::<Vec<_>>(),
+            "routines": routine_list.iter().map(|r| routine_shown(r, &tasks)).collect::<Vec<_>>(),
             // What waits on the owner and needs their word (ADR 0132); the rest waits below.
             "desk": self.desk_shown()?,
+            // Accepted work waiting to merge, and the owner's two settings for it (ADR 0115,
+            // amended 2026-10-31): listed on Manage, never carded unless the cards are back.
+            "accepted": self.accepted_shown()?,
+            "delivery": self.delivery_shown()?,
             // "While you were away": stuck work, findings and notices, newest first (ADR 0132).
             "digest": self.digest_shown()?,
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
@@ -4265,12 +3679,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "office": self.office_shown()?,
             // Ping-pong, pool and chess in the office (ADR 0121).
             "games": self.games_shown()?,
-            // The Holodeck's scenarios and trials (ADR 0135).
+            // The Holodeck's chess matches and the model league (ADR 0135).
             "holodeck": self.holodeck_shown()?,
             // The guards (ADR 0124): their thresholds, precision, ceremony and findings.
             // The owner's Mac as the team sees it (ADR 0130).
             "mac": self.mac_shown(&runs, &all_members),
         }))
+    }
+
+    /// The members as the screen shows them: what each thinks with, may be given, holds of
+    /// the day's pool and is running now.
+    fn members_shown(
+        &self,
+        members: &[Member],
+        runs: &[Run],
+        day: i64,
+        pool_day: Micros,
+    ) -> Done<Vec<serde_json::Value>> {
+        let paid = self.paid_weights()?;
+        let mut shown = Vec::new();
+        for m in members {
+            let committed = self.store.committed(Some(m.id), day)?;
+            let spent = self.store.spent(Some(m.id), day)?;
+            shown.push(json!({
+                "id": m.id.0, "name": m.name, "look": m.look,
+                "paused": m.paused, "slots": m.slots,
+                // On furlough (ADR 0118): when it began, and when it ended if it has.
+                "furloughed": m.furloughed(), "furloughed_at": m.furloughed_at,
+                "recalled_at": m.recalled_at,
+                // What it thinks with, and what the owner may choose (ADR 0109, 0142).
+                "brain": m.brain.name(),
+                "brains": Brain::all().into_iter()
+                    .map(|b| json!({ "name": b.name(), "label": b.label() }))
+                    .collect::<Vec<_>>(),
+                "rank": m.brain.rank(),
+                // What runs its turns (ADR 0117), and whether Claude Code may.
+                "runtime": self.store.runtime_of(m.id)?.effective(m.brain).name(),
+                "claude_code": crate::domain::Runtime::ClaudeCode.allowed_for(m.brain),
+                // Only its judgment is paid: the pool is shared by the members' claims.
+                "per_day": self.per_day(m, paid, pool_day),
+                "committed": committed, "spent": spent, "held": (committed - spent).max(0),
+                "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
+                    .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
+                    .collect::<Vec<_>>(),
+                // How often the CEO reached into its work this week (ADR 0124); null when the
+                // pruned feed no longer holds the week, and HQ cannot tell.
+            }));
+        }
+        Ok(shown)
     }
 
     /// The owner's Mac as the team's screen reads it (ADR 0130): whether a turn may start on it
@@ -4299,14 +3755,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The scorecard ("How the team is doing"), for today and the last seven days by the
     /// owner's day boundaries, over every run, task, desk item and event the store keeps. The
     /// feed is pruned by the node, so each window says where the record starts when that is
-    /// later than the window does.
-    fn scorecard(&self, runs: &[Run], tasks: &[Task], day: i64) -> Done<serde_json::Value> {
+    /// later than the window does. `every_run` is every turn, downtime's too: what each model
+    /// cost counts every turn that ran, work or not. `pool_base` and `topped_up` are today's
+    /// pool as the snapshot sized it.
+    fn scorecard(
+        &self,
+        runs: &[Run],
+        every_run: &[Run],
+        tasks: &[Task],
+        day: i64,
+        pool_base: Micros,
+        topped_up: Micros,
+    ) -> Done<serde_json::Value> {
         let desk = self.store.desk()?;
         // A lead's report and patterns turns are not work on the scorecard (ADR 0120).
         let reports = self.report_task_ids()?;
         let events: Vec<crate::domain::Event> = self
             .store
-            .events_after(0)?
+            .events_of(&scorecard::KINDS_READ)?
             .into_iter()
             .filter(|e| {
                 !e.data["task"]
@@ -4314,11 +3780,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .is_some_and(|t| reports.contains(&TaskId(t)))
             })
             .collect();
+        let kept_from = self.store.first_event_at()?;
         let record = scorecard::Record {
             runs,
             tasks,
             desk: &desk,
             events: &events,
+            kept_from,
         };
         let offset = self.settings.offset_minutes;
         Ok(json!({
@@ -4326,10 +3794,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
             // What the work came to, over the last day and week: landed changes, what one cost,
             // talk against work, interruptions and what waits (ADR 0132).
-            "outcomes": self.outcomes_shown(runs, &events)?,
-            // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6).
-            "pool": { "base": money::pool_a_day(self.settings.pool_per_month),
-                      "topped_up": self.topup_of(day)? },
+            "outcomes": self.outcomes_shown(runs, &events, kept_from)?,
+            // Today's pool: the base day and the owner's top-up (ADR 0113 rule 6). The base is
+            // sized from the Claude credit (amended 2026-10-31); a top-up is counted in floors.
+            "pool": { "base": pool_base,
+                      "floor": money::pool_a_day(self.settings.pool_per_month),
+                      "topped_up": topped_up },
+            // What each model cost, the owner's last seven days against the seven before (the
+            // owner, 2026-10-31): shown on the Money card.
+            "by_model": scorecard::by_model_shown(every_run, day, offset),
             // Each team's seats, at work and on furlough (ADR 0118).
             // Each area's measures, today and the last seven days (ADR 0120).
         }))
@@ -4337,27 +3810,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Keeps the newest `keep` events that are not ticks, and the ticks among the newest `keep`
     /// of all, and deletes the rest. Returns how many went.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn prune_events(&self, keep: i64) -> Done<usize> {
         let _held = self.held();
         Ok(self.store.prune_events(keep)?)
     }
 
     /// The events after `id`, for the stream.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
         Ok(self.store.events_after(id)?)
     }
 
     /// The `limit` events just before an id (at most [`MOST_EVENTS_BEFORE`]), oldest first:
     /// how the activity log goes further back than what it was opened with.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn events_before(&self, id: i64, limit: usize) -> Done<Vec<crate::domain::Event>> {
         Ok(self
             .store
@@ -4365,10 +3829,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Every wake, with its receipt.
-    ///
-    /// # Errors
-    /// [`EngineError::Store`] if the store fails.
     pub fn wakes(&self) -> Done<Vec<Wake>> {
         Ok(self.store.wakes()?)
     }
+}
+
+/// The most one of `member`'s turns may spend: the dollar when it thinks with Opus (ADR 0142),
+/// forty cents otherwise.
+fn most_a_turn_for(member: &Member) -> Micros {
+    money::most_a_turn_of(member.brain)
 }

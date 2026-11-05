@@ -315,12 +315,21 @@ pub fn decode_logs(bytes: &[u8]) -> String {
     } else {
         payload.extend_from_slice(bytes);
     }
-    String::from_utf8_lossy(&payload)
+    // A log is read for its newest lines: past what is kept, the oldest go.
+    let text: Vec<char> = String::from_utf8_lossy(&payload)
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .take(32 * 1024)
-        .collect()
+        .collect();
+    let from = text.len().saturating_sub(LOG_KEPT);
+    text[from..].iter().collect()
 }
+
+/// The most of a log [`decode_logs`] keeps, in characters: its newest.
+const LOG_KEPT: usize = 32 * 1024;
+
+/// The most of any answer read from a service: a log's last hundred lines too, cut to what a
+/// reader may see only after it is read (`stats-smartctl` writes 1.3 KB lines, 135 KB a hundred).
+const MOST_READ: u64 = 2 * 1024 * 1024;
 
 /// Durable at-most-once submission journal. An interrupted operation stays uncertain.
 pub struct Journal {
@@ -577,11 +586,11 @@ impl Adapter {
             response
                 .body_mut()
                 .as_reader()
-                .take(64 * 1024 + 1)
+                .take(MOST_READ + 1)
                 .read_to_end(&mut bytes)
                 .map_err(|_| "protocol")?;
-            if bytes.len() > 64 * 1024 {
-                return Err("protocol");
+            if bytes.len() as u64 > MOST_READ {
+                return Err("too_large");
             }
             let output = decode_logs(&bytes);
             return Ok(json!({"summary":output,"items":[]}));
@@ -589,7 +598,7 @@ impl Adapter {
         response
             .body_mut()
             .with_config()
-            .limit(2 * 1024 * 1024)
+            .limit(MOST_READ)
             .read_json()
             .map_err(|_| "protocol")
     }
@@ -993,7 +1002,9 @@ impl HomeConsole for Adapter {
                     return Err("invalid_target");
                 }
                 let endpoint = self.endpoint()?;
-                self.call("portainer","GET",&format!("/api/endpoints/{endpoint}/docker/containers/{query}/logs?stdout=true&stderr=true&tail=100&timestamps=true"),None)
+                // At most the newest LOG_LINES: a read that long says older lines may be left out.
+                let tail = crate::contracts::LOG_LINES;
+                self.call("portainer","GET",&format!("/api/endpoints/{endpoint}/docker/containers/{query}/logs?stdout=true&stderr=true&tail={tail}&timestamps=true"),None)
             }
             "metrics" => self.metrics(),
             "dashboard" => {

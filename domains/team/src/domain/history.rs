@@ -212,8 +212,6 @@ pub fn to_prune(kept: &[Kept], now: Millis) -> Vec<RunId> {
 /// What the history refuses, said so a member can do something about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryRefusal {
-    /// The turn's conversation is already kept: a turn has one.
-    TranscriptKept,
     /// A search with no words to search for.
     NothingToSearchFor,
     /// A name that is no member of the team.
@@ -223,7 +221,6 @@ pub enum HistoryRefusal {
 impl fmt::Display for HistoryRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TranscriptKept => f.write_str("this turn's conversation is already kept"),
             Self::NothingToSearchFor => f.write_str(
                 "ask_record searches for the distinctive words of your question: give a question \
                  with a few (a name, a thing, what was decided)",

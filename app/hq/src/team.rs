@@ -58,7 +58,14 @@ fn answer(
         "ping" => json!({}),
         // The role's tools, and the one tool of the special turn this is (a quiz, a consult).
         "tools/list" => {
-            json!({ "tools": protocol::tools_in_v2(hq, run, member) })
+            let tools = protocol::tools_in_v2(hq, run, member);
+            // The node's tools the turn loads up front, which HQ does not list (D27).
+            let node = protocol::node_tools_up_front(hq, run, member);
+            if node.is_empty() {
+                json!({ "tools": tools })
+            } else {
+                json!({ "tools": tools, "_meta": { protocol::UP_FRONT: node } })
+            }
         }
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
@@ -170,14 +177,20 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
         // The node's tools the turn may use, when HQ narrows them: the check after a deploy
         // reads the lab's health, logs and metrics alone (ADR 0115, amended).
         let only = hq.lab_tools_of(run.id)?;
-        Ok::<_, endora_team::application::EngineError>(Some((run, member, runtime, wing, only)))
+        // And what it may never use: the lab's acts, on a task that leaves the lab as it is.
+        let never = hq.lab_tools_refused(run.id)?;
+        // The repository outside the lab the turn's work is in (ADR 0115, amended 2026-11-01):
+        // the node mirrors it, and its checkout and submission work there, not in the fork.
+        let repo = hq.outside_repo_of_run(run.id)?;
+        Ok::<_, endora_team::application::EngineError>(Some((
+            run, member, runtime, wing, only, never, repo,
+        )))
     })
     .await;
     match found {
-        Ok(Ok(Some((run, member, runtime, wing, only)))) => Json(json!({
+        Ok(Ok(Some((run, member, runtime, wing, only, never, repo)))) => Json(json!({
             "run": run.id.0,
             "member": member.name,
-            "role": member.role.name(),
             "left": (run.reserved - run.spent).max(0),
             // The check point the node's relays, contracts and bridge ask (ADR 0109): a turn
             // on a cloud model is given no Confidential result beyond what the owner allowed,
@@ -189,6 +202,8 @@ pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAs
             "task": run.task.map(|t| t.0),
             "wing": wing,
             "only": only,
+            "never": never,
+            "repo": repo,
         }))
         .into_response(),
         Ok(Ok(None)) => (
@@ -215,6 +230,10 @@ pub(crate) struct UsageReported {
     /// The call's output tokens. A relay that says none is taken at none.
     #[serde(default)]
     output: i64,
+    /// The model the provider said answered the call, as it named it; none when the answer
+    /// named none, or from a node that does not say (the agentic-harness climb, round 7).
+    #[serde(default)]
+    served_model: Option<String>,
 }
 
 /// For the node's model relay: what one model call of a turn cost. Crossing the turn's
@@ -228,11 +247,57 @@ pub(crate) async fn usage(
         let run = endora_team::domain::RunId(req.run);
         // The tokens first: a charge that stops the turn ends its record too.
         hq.note_tokens(run, req.input, req.cache_read, req.cache_write, req.output)?;
-        hq.report_usage(run, req.micros.max(0))
+        let may_go_on = hq.report_usage(run, req.micros.max(0));
+        // Then which model answered, as the provider named it, or that it is not known: best
+        // effort, after the charge, so it can never keep a call from being charged.
+        if let Err(e) = hq.note_served_model(run, req.served_model.as_deref()) {
+            eprintln!("hq: could not note which model answered run {}: {e}", run.0);
+        }
+        may_go_on
     })
     .await;
     match reported {
         Ok(Ok(may_go_on)) => Json(json!({ "may_go_on": may_go_on })).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TokensTold {
+    run: i64,
+    /// The call's prompt tokens, as the house's model reported them.
+    #[serde(default)]
+    input: i64,
+    /// Its output tokens.
+    #[serde(default)]
+    output: i64,
+}
+
+/// For the node's model relay: what one free call of a turn (the house's models) read and
+/// wrote, in tokens. Nothing is charged; HQ keeps them to see whether a turn reached its
+/// prompt's budget (ADR 0142, amended 2026-10-30).
+pub(crate) async fn tokens(
+    Extract(state): Extract<State>,
+    Json(req): Json<TokensTold>,
+) -> Response {
+    let hq = state.hq.clone();
+    let noted = tokio::task::spawn_blocking(move || {
+        hq.note_tokens(
+            endora_team::domain::RunId(req.run),
+            req.input.max(0),
+            0,
+            0,
+            req.output.max(0),
+        )
+    })
+    .await;
+    match noted {
+        Ok(Ok(())) => Json(json!({ "noted": true })).into_response(),
         Ok(Err(e)) => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": e.to_string() })),
@@ -454,6 +519,21 @@ pub(crate) struct BranchTold {
     diff: String,
     #[serde(default)]
     can_push: bool,
+    /// Every file the branch changes; absent from an older node.
+    #[serde(default)]
+    changed: Vec<String>,
+    /// `[path, text]` at its head for HQ's mechanical checks; absent from an older node.
+    #[serde(default)]
+    texts: Vec<(String, String)>,
+    /// Work in progress the worker kept as its turn ran out of room (ADR 0142, amended
+    /// 2026-10-31): recorded to be checked out by the next turn, never checked or offered.
+    #[serde(default)]
+    wip: bool,
+    /// `[path, text]` of each GitHub Actions workflow at its head, for the check of a CI
+    /// criterion (ADR 0142, amended 2026-10-31); absent from an older node, which is told apart
+    /// from a branch with none.
+    #[serde(default)]
+    workflows: Option<Vec<(String, String)>>,
 }
 
 /// For the node's `repo_submit` (ADR 0115): a branch it took from a turn, recorded with its
@@ -463,28 +543,33 @@ pub(crate) async fn branch(
     Json(req): Json<BranchTold>,
 ) -> Response {
     let hq = state.hq.clone();
+    let wip = req.wip;
     let recorded = tokio::task::spawn_blocking(move || {
-        hq.record_branch(
-            &req.token,
-            &endora_team::application::Submission {
-                branch: req.branch,
-                head: req.head,
-                base: req.base,
-                files: req.files,
-                plus: req.plus,
-                minus: req.minus,
-                stat: req.stat,
-                diff: req.diff,
-                can_push: req.can_push,
-            },
-        )
+        let submission = endora_team::application::Submission {
+            branch: req.branch,
+            head: req.head,
+            base: req.base,
+            files: req.files,
+            plus: req.plus,
+            minus: req.minus,
+            stat: req.stat,
+            diff: req.diff,
+            can_push: req.can_push,
+            changed: req.changed,
+            texts: req.texts,
+            workflows: req.workflows,
+        };
+        if wip {
+            return hq
+                .keep_work_in_progress(&req.token, &submission)
+                .map(|branch| json!({ "branch": branch, "kept": true }));
+        }
+        hq.record_branch(&req.token, &submission)
+            .map(|r| json!({ "branch": r.branch, "document": r.document, "check": r.check }))
     })
     .await;
     match recorded {
-        Ok(Ok(r)) => Json(json!({
-            "branch": r.branch, "document": r.document, "check": r.check,
-        }))
-        .into_response(),
+        Ok(Ok(said)) => Json(said).into_response(),
         Ok(Err(e)) => refused(&e),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -558,6 +643,101 @@ pub(crate) async fn push_outcome(
         hq.push_outcome(endora_team::domain::DeskId(id), req.ok, &req.text)
     })
     .await;
+    match told {
+        Ok(Ok(())) => Json(json!({ "told": true })).into_response(),
+        Ok(Err(e)) => refused(&e),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// For the node (ADR 0115, amended 2026-10-31): the accepted branches to push, each with
+/// whether its privacy scan still decides, and the pushed ones to merge into develop while
+/// merging is on.
+pub(crate) async fn deliveries(Extract(state): Extract<State>) -> Response {
+    let hq = state.hq.clone();
+    let due = tokio::task::spawn_blocking(move || hq.deliveries()).await;
+    let due = match due {
+        Ok(Ok(due)) => due,
+        Ok(Err(e)) => return refused(&e),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let branch = |b: &endora_team::domain::Branch| {
+        json!({ "branch": b.id, "task": b.task.0, "name": b.name, "head": b.head,
+                "base": b.base })
+    };
+    let push: Vec<_> = due
+        .push
+        .iter()
+        .map(|d| {
+            let mut row = branch(&d.branch);
+            row["scan"] = json!(d.scan);
+            row
+        })
+        .collect();
+    let merge: Vec<_> = due.merge.iter().map(branch).collect();
+    Json(json!({ "push": push, "merge": merge })).into_response()
+}
+
+/// One thing a scan found, as the node tells it: what and where, never the value.
+#[derive(serde::Deserialize)]
+pub(crate) struct FoundTold {
+    what: String,
+    at: String,
+}
+
+/// What the node says came of a branch: `step` is `push`, `held` or `merge`.
+#[derive(serde::Deserialize)]
+pub(crate) struct DeliveredTold {
+    step: String,
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    found: Vec<FoundTold>,
+    #[serde(default)]
+    needs: Vec<FoundTold>,
+}
+
+/// For the node (ADR 0115, amended 2026-10-31): what came of a branch it was asked about. Told
+/// once a step.
+pub(crate) async fn delivered(
+    Extract(state): Extract<State>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(req): Json<DeliveredTold>,
+) -> Response {
+    use endora_team::application::{Delivered, Found};
+    let found = |list: Vec<FoundTold>| -> Vec<Found> {
+        list.into_iter()
+            .map(|f| Found {
+                what: f.what,
+                at: f.at,
+            })
+            .collect()
+    };
+    let report = match req.step.as_str() {
+        "push" => Delivered::Pushed {
+            ok: req.ok,
+            text: req.text,
+            needs: found(req.needs),
+        },
+        "held" if !req.found.is_empty() => Delivered::Held {
+            found: found(req.found),
+        },
+        "merge" => Delivered::Merged {
+            ok: req.ok,
+            text: req.text,
+        },
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "step is push, held (with what was found) or merge" })),
+            )
+                .into_response();
+        }
+    };
+    let hq = state.hq.clone();
+    let told = tokio::task::spawn_blocking(move || hq.delivered(id, &report)).await;
     match told {
         Ok(Ok(())) => Json(json!({ "told": true })).into_response(),
         Ok(Err(e)) => refused(&e),

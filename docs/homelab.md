@@ -246,38 +246,13 @@ nothing is lost. To set it up:
 Then, when a card says "Push hq/… to your fork", Approve pushes that branch; you merge it on
 GitHub when you are ready. HQ never opens a pull request and never merges.
 
-## The bench's credential (ADR 0123)
+## The bench's credential (ADR 0123): removed
 
-The bench measures an external agent harness against HQ's wing on one task, in the Pi's
-sandbox. Its seats reach Claude only through the node's relay, with a token of the bench's
-own that opens the relay alone (Haiku or Sonnet, never Opus), at most `ENDORA_BENCH_CAP_CENTS`
-a day ($2.00 unless set), metered in the node's usage log as `bench` and never charged to HQ.
-It is off until you create its file, and off again the moment you delete it. To turn it on:
-
-1. On the NAS, make a folder of its own and a random token in it, readable by the node alone:
-
-   ```sh
-   sudo install -d -m 0700 /srv/endora/bench-token
-   openssl rand -hex 32 | sudo tee /srv/endora/bench-token/token >/dev/null
-   sudo chmod 0600 /srv/endora/bench-token/token
-   ```
-
-   (Any folder works; `/srv/endora/bench-token` is only an example.)
-2. In `local.mk`, name the folder, and the day's cap in cents if not $2.00:
-
-   ```make
-   ENDORA_BENCH_TOKEN = /srv/endora/bench-token
-   # ENDORA_BENCH_CAP_CENTS = 200
-   ```
-
-3. `make deploy`. The node mounts the folder read-only at `/bench-token` and says
-   `bench: a credential for the model relay alone, Haiku or Sonnet, $2.00 a day` at start.
-   It never prints the token.
-
-The token is read from that file when the bench runs, passed into the bench's container and
-nowhere else; never paste it into a chat, a file in git or an image. What the bench has spent
-today: `GET http://<the NAS>:8788/team-relay/bench` with the token as `Authorization: Bearer`.
-To turn it off: delete the file (no restart needed), and remove the line from `local.mk`.
+The node no longer has a bench: its credential, its day's cap and `GET /team-relay/bench` were
+removed on 2 November 2026 (4 calls ever, all on 18 October). A bench token the node was given
+now opens nothing. To finish the removal, delete the token file on the NAS and the
+`ENDORA_BENCH_TOKEN` and `ENDORA_BENCH_CAP_CENTS` lines from `local.mk`; the compose mount, the
+role's variables and the `bench` image target are left for that change.
 
 ## The Mac's brain (ADR 0130)
 
@@ -289,8 +264,8 @@ reading and status work use it when it is free and the NAS's model when it is no
 Mac stays yours: the model is loaded only while the Mac is **plugged in** and **Mac busy** is
 off, and a turn runs on it only after you have been **idle** (ten minutes unless you change it),
 one at a time. On battery, or with Mac busy on, the model is unloaded and its memory (about
-15 GB) comes back. Mac busy is a switch on the HQ screen of the console, so you can flip it from
-your phone.
+15 GB) comes back. Mac busy is a switch on the Mac's card in the console's Settings, AI, so you
+can flip it from your phone.
 
 A small helper on the Mac, run by launchd every 30 seconds, reads the power source and your idle
 time, tells the node, and loads or unloads the model. It touches no other process.
@@ -340,11 +315,11 @@ time, tells the node, and loads or unloads the model. It touches no other proces
 7. A member works with the **Mac** unless you choose the house's model instead (roster, tap the
    member, *Work*), or when hiring (*works with*).
 
-The card says *Free: the team may use it* when all of it holds, and otherwise why: *Not heard
-from lately* (the helper is not running, or the node cannot be reached), *Mac busy is on*, *On
-battery*, *the model is loading*, or *You are using it*. A turn waiting for the Mac says so in
-its replay and on the roster. Without the helper the Mac is "not heard from" and nothing runs on
-it.
+The Mac's card in Settings, AI says *Free: the team may use it* when all of it holds, and
+otherwise why: *Not heard from lately* (the helper is not running, or the node cannot be
+reached), *Mac busy is on*, *On battery*, *the model is loading*, or *You are using it*. A turn
+waiting for the Mac says so in its replay and on the roster. Without the helper the Mac is "not
+heard from" and nothing runs on it.
 
 To check by hand, on the Mac: `sh ~/Library/Application\ Support/Endora/mac-brain/endora-mac-brain.sh`
 runs one pass. `make mac-brain-test` tests the helper against stubs, on any machine.
@@ -441,7 +416,9 @@ python3 scripts/homelab-docker-proxy.py
 ```
 
 It binds only loopback on port 9876 and accepts exactly `GET /version`,
-`GET /containers/json?all=true`, and `GET /containers/<name>/json` for a name
+`GET /containers/json?all=true` (each container's name, state, status, creation time and
+image id, which tell Watchtower's updates from restarts; no label or anything else), and
+`GET /containers/<name>/json` for a name
 matching `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` (the team's lab map, ADR 0112: only
 the id, name, image, state, restart policy, network mode and the compose
 service, project and `depends_on` labels are passed on; never the environment,

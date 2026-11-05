@@ -1,18 +1,22 @@
-//! Caps on a runaway (ADR 0133), through the engine: a member's day of turns on the house's own
-//! models, and the tripwire that stops the team itself. Live, the scripted demo ran 1,539 turns in
+//! Caps on a runaway (ADR 0133), through the engine: a member's waste of turns on the house's
+//! own models (amended 2026-11-01, D15: ten in a row that showed nothing, not sixty a day), and
+//! the tripwire that stops the team itself. Live, the scripted demo ran 1,539 turns in
 //! 3 h 40 min, the free models have no budget to stop a runaway, and only the owner could pull the
 //! kill switch.
 
 use std::sync::atomic::AtomicI64;
+
+use crate::application::run_ports::RunStore;
 
 use serde_json::Value;
 
 use super::engine::{Engine, Settings};
 use super::guards_tests::{Hands, Hq, NOON, later, one_turn, team};
 use super::ports::{Run, TeamStore};
+use crate::application::desk_ports::DeskStore;
 use crate::domain::guards::{Stopped, THRESHOLDS};
 use crate::domain::turns;
-use crate::domain::{Brain, MemberId, Receipt, Refused, Role, RunStatus, TaskId, WakeReason};
+use crate::domain::{MemberId, Receipt, Refused, RunStatus, TaskId, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 const MINUTE: i64 = 60_000;
@@ -50,18 +54,33 @@ fn tripwire_cards(hq: &Hq<'_>) -> Vec<Value> {
 }
 
 /// Wakes `member` on `task` and lets its turn come and go at once, as a crash loop would: a turn
-/// started, and ended before it did anything.
+/// started, took a reading, and ended. (A loop whose turns show nothing is stopped by the check
+/// on waste before the tripwire.)
 fn quick_turn(hq: &Hq<'_>, member: MemberId, task: TaskId) {
     hq.wake(member, Some(task), WakeReason::Mentioned).unwrap();
     hq.tick().unwrap();
-    for run in hq
-        .store()
-        .runs()
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.status == RunStatus::Running)
-    {
-        hq.runner().finish(run.id, true);
+    for context in hq.runner().started() {
+        let running = hq
+            .store()
+            .run(context.run)
+            .unwrap()
+            .is_some_and(|r| r.status == RunStatus::Running);
+        if !running {
+            continue;
+        }
+        hq.record_receipt(
+            &context.token,
+            &super::engine::Called {
+                tool: "homelab_status".to_owned(),
+                args: "{}".to_owned(),
+                excerpt: "all well".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+        hq.runner().finish(context.run, true);
     }
     hq.tick().unwrap();
 }
@@ -79,25 +98,44 @@ fn runaway(hq: &Hq<'_>, clock: &Hands, members: &[MemberId], task: TaskId, most:
     most
 }
 
+/// D15 of round 3 (31 Oct): Bo, on the house's own model, stopped at sixty turns a day whatever
+/// they achieved. Turns that do something are never counted against a free model: the
+/// sixty-first, and the sixty-second, start as the first did.
 #[test]
-fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when_the_day_turns() {
+fn a_free_models_turns_that_do_work_are_not_stopped_by_a_count() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
-    // Sixty turns, two minutes apart: five in ten minutes, nowhere near a runaway, and each on
-    // the house's own models, which cost nothing and so are bounded by nothing else.
-    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
-    for _ in 0..60 {
+    for _ in 0..62 {
         one_turn(&hq, linus, task, true);
         later(&clock, 2 * MINUTE);
     }
-    assert_eq!(started_by(&hq, linus), 60);
-    assert!(
-        capped(&hq).is_empty(),
-        "the sixtieth is a turn like the rest"
-    );
+    assert_eq!(started_by(&hq, linus), 62);
+    assert!(capped(&hq).is_empty());
     assert!(!hq.store().stopped().unwrap(), "and not a runaway");
+}
 
-    // The sixty-first is not lost: it is queued, and waits, and says so.
+/// What stops a free model is waste (ADR 0133, amended 2026-11-01): its tenth turn in a row today
+/// that showed nothing. The next is not lost: it waits for the day to turn, and says so.
+#[test]
+fn ten_turns_in_a_row_that_show_nothing_wait_for_tomorrow_and_start_when_the_day_turns() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, linus, task) = team(&clock, false);
+    // A turn that did something sets the count back to none.
+    for _ in 0..9 {
+        one_turn(&hq, linus, task, false);
+        later(&clock, 2 * MINUTE);
+    }
+    one_turn(&hq, linus, task, true);
+    later(&clock, 2 * MINUTE);
+    assert!(capped(&hq).is_empty(), "a turn that acted ends the run");
+    for _ in 0..10 {
+        one_turn(&hq, linus, task, false);
+        later(&clock, 2 * MINUTE);
+    }
+    assert_eq!(started_by(&hq, linus), 20);
+    assert!(!hq.store().stopped().unwrap(), "not a runaway");
+
+    // The next is not lost: it is queued, and waits, and says so.
     assert_eq!(
         hq.wake(linus, Some(task), WakeReason::Mentioned).unwrap(),
         Receipt::Queued
@@ -107,9 +145,9 @@ fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when
     assert_eq!(waiting.len(), 1, "{waiting:?}");
     assert_eq!(
         waiting[0].end_reason,
-        "waiting for tomorrow: 60 turns a day is the most a member takes on the house's own models"
+        "waiting for tomorrow: 10 turns in a row on the house's own models showed nothing"
     );
-    assert_eq!(started_by(&hq, linus), 60, "it did not start");
+    assert_eq!(started_by(&hq, linus), 20, "it did not start");
 
     // It is on the screen where waits are: the top bar, the card of what waits, the roster line.
     let snap = hq.snapshot().unwrap();
@@ -140,18 +178,17 @@ fn the_sixty_first_turn_of_a_day_on_the_house_waits_for_tomorrow_and_starts_when
     later(&clock, 12 * HOUR);
     hq.tick().unwrap();
     assert!(capped(&hq).is_empty());
-    assert_eq!(started_by(&hq, linus), 61);
+    assert_eq!(started_by(&hq, linus), 21);
     assert_eq!(hq.snapshot().unwrap()["pool"]["capped"], 0);
 }
 
 #[test]
-fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
+fn one_members_day_is_its_own() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
-    let dee = hq.hire("Dee", Role::Developer, 40, 2, 4).unwrap();
-    // Turns that act: one that shows nothing would be taken a model tier up (ADR 0139).
-    for _ in 0..60 {
-        one_turn(&hq, linus, task, true);
+    let dee = hq.hire("Dee", 40, 2, 4).unwrap();
+    for _ in 0..THRESHOLDS.free_turns_wasted {
+        one_turn(&hq, linus, task, false);
         later(&clock, 2 * MINUTE);
     }
     // Dee has taken none: her turn starts as ever.
@@ -164,20 +201,6 @@ fn one_members_day_is_its_own_and_judgment_is_not_a_turn_on_the_house() {
     let waiting = capped(&hq);
     assert_eq!(waiting.len(), 1, "{waiting:?}");
     assert_eq!(waiting[0].task, Some(second));
-    // A decision asked of him is judgment, on his Claude, and is not held by the day's count: the
-    // wake joins his waiting turn and makes it one of judgment.
-    hq.wake(linus, Some(second), WakeReason::Decide).unwrap();
-    hq.tick().unwrap();
-    assert!(capped(&hq).is_empty(), "{:?}", capped(&hq));
-    let run = hq
-        .store()
-        .runs()
-        .unwrap()
-        .into_iter()
-        .rfind(|r| r.member == linus && r.task == Some(second))
-        .unwrap();
-    assert_eq!(run.status, RunStatus::Running);
-    assert_eq!(run.brain, Some(Brain::Haiku));
 }
 
 #[test]
@@ -189,7 +212,7 @@ fn forty_turns_in_ten_minutes_stop_the_team_and_the_forty_first_never_starts() {
         .members()
         .unwrap()
         .into_iter()
-        .find(|m| m.role == Role::Lead)
+        .find(|m| m.name == "Ada")
         .unwrap()
         .id;
     let tried = runaway(&hq, &clock, &[ada, linus], task, 100);
@@ -333,8 +356,8 @@ fn a_scripted_team_is_never_stopped_by_the_wire_and_is_not_held_to_a_day_of_turn
                 ..Settings::default()
             },
         );
-        let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-        let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+        let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+        let linus = hq.hire("Linus", 40, 2, 4).unwrap();
         let goal = hq
             .set_goal(
                 "Keep the home lab healthy",
@@ -370,18 +393,18 @@ fn a_scripted_team_is_never_stopped_by_the_wire_and_is_not_held_to_a_day_of_turn
 fn a_scenarios_turn_is_bounded_by_its_world_not_by_its_players_day_of_free_turns() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, linus, task) = team(&clock, false);
-    for _ in 0..60 {
-        one_turn(&hq, linus, task, true);
+    for _ in 0..THRESHOLDS.free_turns_wasted {
+        one_turn(&hq, linus, task, false);
         later(&clock, 2 * MINUTE);
     }
     let goal = hq
         .set_goal("Holodeck", "", super::engine::Author::Owner)
         .unwrap();
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let project = hq.add_project(goal, "Lighthouse", "", lead, None).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let project = hq.add_project(goal, "Holodeck", "", lead, None).unwrap();
     hq.set_project_tools(project, Some(vec!["scenario".to_owned()]))
         .unwrap();
-    let world = hq.start_scenario(project, linus, 7).unwrap();
+    let world = hq.start_chess(project, [linus, lead], 7).unwrap();
     hq.tick().unwrap();
     let played = hq
         .store()

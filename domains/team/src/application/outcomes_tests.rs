@@ -125,6 +125,7 @@ fn record<'a>(
         branches,
         checks,
         consults,
+        kept_from: events.first().map(|e| e.at),
     }
 }
 
@@ -312,10 +313,10 @@ fn turns_that_wait_are_counted_by_what_they_wait_for_and_the_oldest_wait_is_said
         waits(4, "", NOON - 3 * HOUR),
         // Under way.
         run(5, 2, Some(7), None, None),
-        // A member that has taken its day's turns on the house's models (ADR 0133).
+        // A member whose turns on the house's models showed nothing too often (ADR 0133).
         waits(
             6,
-            "waiting for tomorrow: 60 turns a day is the most a member takes on the house's own models",
+            "waiting for tomorrow: 10 turns in a row on the house's own models showed nothing",
             NOON - 45 * MINUTE,
         ),
     ];

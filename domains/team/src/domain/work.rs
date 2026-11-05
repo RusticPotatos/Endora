@@ -52,92 +52,10 @@ id!(
     ProjectId
 );
 
-/// What a member does on the team. The rank decides who may hand work to whom: by default a
-/// member hands work only to members below it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// Runs the team for the owner, who is the board (ADR 0111): decides what the lead asks,
-    /// reviews the house once a day, and puts to the board only what the owner alone decides.
-    Ceo,
-    /// Looks over the team's work and hands it out.
-    Lead,
-    /// Writes and changes code.
-    Developer,
-    /// Finds things out and writes them up.
-    Researcher,
-    /// Reviews what others did.
-    Reviewer,
-}
-
-impl Role {
-    /// Stable lowercase name, for storage and the event feed.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Ceo => "ceo",
-            Self::Lead => "lead",
-            Self::Developer => "developer",
-            Self::Researcher => "researcher",
-            Self::Reviewer => "reviewer",
-        }
-    }
-
-    /// The role as HQ's screen names it: the reviewer is the tester (ADR 0114).
-    #[must_use]
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Ceo => "CEO",
-            Self::Lead => "Lead",
-            Self::Developer => "Developer",
-            Self::Researcher => "Researcher",
-            Self::Reviewer => "Tester",
-        }
-    }
-
-    /// The role with this [`name`](Self::name), if there is one.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "ceo" => Some(Self::Ceo),
-            "lead" => Some(Self::Lead),
-            "developer" => Some(Self::Developer),
-            "researcher" => Some(Self::Researcher),
-            "reviewer" => Some(Self::Reviewer),
-            _ => None,
-        }
-    }
-
-    /// Lower is more senior.
-    #[must_use]
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Ceo => 0,
-            Self::Lead => 1,
-            Self::Developer | Self::Researcher | Self::Reviewer => 2,
-        }
-    }
-
-    /// The role's weight in the team's pool (ADR 0111): what a member in it is hired with as
-    /// its share. The day's pool is split among the members by these weights and the price
-    /// class of the Claude each judges with (ADR 0131); a member's work costs nothing.
-    #[must_use]
-    pub const fn share(self) -> u8 {
-        match self {
-            Self::Ceo => 35,
-            Self::Lead => 25,
-            Self::Developer => 40,
-            Self::Reviewer => 20,
-            Self::Researcher => 15,
-        }
-    }
-
-    /// Whether a member in this role may act on any task of the team: the CEO and the lead,
-    /// who lead every goal.
-    #[must_use]
-    pub const fn leads(self) -> bool {
-        matches!(self, Self::Ceo | Self::Lead)
-    }
-}
+/// What a member is hired with as its share of the team's pool when none is given (ADR 0111,
+/// 0142): the day's pool is split among the members by their shares and the price class of the
+/// Claude each judges with (ADR 0131); a member's work costs nothing.
+pub const A_MEMBERS_SHARE: u8 = 40;
 
 /// One worker on the team.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,8 +64,6 @@ pub struct Member {
     pub id: MemberId,
     /// What it is called.
     pub name: String,
-    /// What it does.
-    pub role: Role,
     /// Its share of the team pool, in percent.
     pub share_percent: u8,
     /// How many tasks it may work at once.
@@ -156,18 +72,11 @@ pub struct Member {
     pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
-    /// What it judges with (ADR 0109, 0131): a Claude its role may use, Haiku until the owner
-    /// says otherwise. It is the brain the pool's shares are reckoned on. The brain a turn runs
-    /// on is decided per turn (see [`super::turns`]); for the member of a running turn, as the
-    /// engine returns it to the team protocol and the node, this is that brain instead, so the
-    /// data tier and the relays see what the turn is.
+    /// Its model (ADR 0109, 0142): every turn of its runs on it, and the pool's shares are
+    /// reckoned on it. For the member of a running turn, as the engine returns it to the team
+    /// protocol and the node, this is the brain the turn runs on (a league side's may differ),
+    /// so the data tier and the relays see what the turn is.
     pub brain: super::brain::Brain,
-    /// What it does its work with (ADR 0131): the owner's Mac or the house's own model, never
-    /// Claude. Its turns of work run here, and cost nothing; its turns of judgment never do.
-    pub work_brain: super::brain::Brain,
-    /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
-    /// and for a member hired before anyone was there to report to.
-    pub reports_to: Option<MemberId>,
     /// When the member was furloughed (ADR 0118), if it ever was: set for the latest furlough.
     /// A furloughed member is never woken, holds no task, and is left out of every briefing's
     /// team and of the share arithmetic; it keeps its record, its name and its notebook.
@@ -177,13 +86,6 @@ pub struct Member {
 }
 
 impl Member {
-    /// The Claude the member judges with (ADR 0131). Its turns of judgment run on it and
-    /// nowhere else.
-    #[must_use]
-    pub const fn judgment_brain(&self) -> super::brain::Brain {
-        self.brain
-    }
-
     /// Whether the member is on furlough now (ADR 0118): furloughed and not yet recalled.
     #[must_use]
     pub const fn furloughed(&self) -> bool {
@@ -300,6 +202,14 @@ impl TaskStatus {
     pub const fn finished(self) -> bool {
         matches!(self, Self::Done | Self::Dropped)
     }
+
+    /// Whether a task in this status keeps its sandbox between turns (ADR 0142, amended
+    /// 2026-11-01): while it is open. Done, dropped or blocked, the runner lets it go; work worth
+    /// keeping is kept on the node as a branch.
+    #[must_use]
+    pub const fn keeps_its_sandbox(self) -> bool {
+        !self.finished() && !matches!(self, Self::Blocked)
+    }
 }
 
 /// How soon a task matters.
@@ -373,6 +283,17 @@ pub struct Task {
     pub criteria: Vec<super::evidence::Criterion>,
 }
 
+impl Task {
+    /// Who holds it: the member working it, else the member it was handed to.
+    #[must_use]
+    pub const fn holder(&self) -> Option<MemberId> {
+        match self.owner {
+            Some(owner) => Some(owner),
+            None => self.assignee,
+        }
+    }
+}
+
 /// Why something a member asked for is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -389,10 +310,13 @@ pub enum Refusal {
         /// Where it was asked to go.
         to: TaskStatus,
     },
-    /// Work is handed only to members below.
+    /// Work goes to a member through its loop, never from another member (ADR 0142).
     NotBelow,
     /// The task is over.
     Finished,
+    /// The work is in review, and work in progress kept now would void its review (ADR 0142,
+    /// amended 2026-10-31).
+    InReview,
     /// Asked to review its own work.
     OwnWork,
     /// The gate has not passed.
@@ -401,6 +325,18 @@ pub enum Refusal {
     HandBack,
     /// The member's last question or approval about the task still waits on the owner's desk.
     AlreadyAsked,
+    /// A question about the item already waits on the owner's desk, whoever asked it: an item
+    /// has one at a time (ADR 0142, amended 2026-10-31).
+    QuestionWaits {
+        /// The desk card that waits.
+        item: i64,
+    },
+    /// The owner has answered a question about the item in words: a member's further question
+    /// on it is refused with that answer, to act on (ADR 0142, amended 2026-11-01).
+    Answered {
+        /// The owner's last answer about the item.
+        words: String,
+    },
     /// The task is not one this turn may touch.
     OutOfReach,
     /// The turn has ended.
@@ -413,26 +349,23 @@ pub enum Refusal {
     NotACheck,
     /// Longer than it may be, in characters.
     TooLong(usize),
-    /// Not a brain a member in this role may think with (ADR 0109).
+    /// More of something than there may be: criteria, or references cited.
+    TooMany {
+        /// The most there may be.
+        most: usize,
+        /// Of what, in the plural.
+        of: &'static str,
+    },
+    /// Not a model Endora has (ADR 0109, 0142).
     NotABrain {
-        /// The member's role.
-        role: Role,
         /// What was asked for.
         asked: String,
     },
-    /// Not a runtime a member in this role, on its brain, may run on (ADR 0117).
+    /// Not a runtime a member on its brain may run on (ADR 0117).
     NotARuntime {
-        /// The member's role.
-        role: Role,
         /// What was asked for.
         asked: String,
     },
-    /// A goal's notes have no room for one more lesson.
-    NotesFull,
-    /// Only the CEO does that (ADR 0111).
-    OnlyTheCeo,
-    /// The house log has no room for one more line.
-    HouseLogFull,
     /// What the team's world refuses (ADR 0122): its pages, stages, stories and handovers.
     World(super::world::WorldRefusal),
     /// What the guards against how agent teams fail refuse (ADR 0124).
@@ -443,8 +376,6 @@ pub enum Refusal {
     Conversation(&'static str),
     /// Not in Endora's public library.
     NotADoc,
-    /// A decision for the board says what is to be decided, what the CEO recommends, and why.
-    NotADecision,
     /// A name another member already has, or none.
     NotAName,
     /// An open task under the same goal is already about these containers: one task a
@@ -455,10 +386,6 @@ pub enum Refusal {
         /// The containers both are about.
         names: Vec<String>,
     },
-    /// A project's lead is a lead or the CEO (ADR 0113).
-    NotAProjectLead,
-    /// Only a lead or the CEO proposes a project.
-    OnlyLeadsPropose,
     /// The project serves another goal than the task's or the routine's.
     OtherGoal,
     /// The project takes no work: it is proposed, done or dropped.
@@ -489,9 +416,6 @@ pub enum Refusal {
     NoEvidence,
     /// Evidence that is not in HQ's record.
     NoSuchEvidence(String),
-    /// A member reports to another member, never to itself, and never in a circle; the CEO
-    /// reports to the board.
-    NotAManager,
     /// Work handed to another member says what done means (ADR 0114).
     NoCriteria,
     /// Work the owner hands out says what done means too, in at least one line (ADR 0124,
@@ -526,6 +450,17 @@ pub enum Refusal {
     RefusedCall(String),
     /// The tester passes work only on readings of her own.
     NoOwnReading,
+    /// A criterion asks for a CI run, and none can be had for the item's branch: no workflow at
+    /// its head runs on a push to it (ADR 0142, amended 2026-10-31, D6).
+    NoCiRun {
+        /// The branch.
+        branch: String,
+        /// The criteria that ask for a CI run.
+        criteria: Vec<String>,
+        /// Whether the item's loop is worked alone (ADR 0142, amended 2026-11-01): its member,
+        /// with nobody to send it back to, blocks it.
+        alone: bool,
+    },
     /// That is not a step a project takes from where it is.
     NotAProjectStep {
         /// Where it is.
@@ -533,8 +468,6 @@ pub enum Refusal {
         /// What was asked.
         asked: String,
     },
-    /// The team has one CEO (ADR 0115).
-    OnlyOneCeo,
     /// Not a document on a task this turn may read.
     NotADocument,
     /// A kept branch is checked out by the work it is for and the member who submitted it
@@ -548,14 +481,15 @@ pub enum Refusal {
     /// What waits in review is a draft for the owner, not work: it is forwarded, never passed
     /// (ADR 0114, amended).
     ForwardTheDraft,
-    /// A recheck of a branch's checks is asked for by the work's lead or developer (ADR 0115).
-    NotYourToRecheck,
     /// A check of the branch is still waiting or running: one at a time (ADR 0115).
     CheckPending(i64),
+    /// No check of the lab's applies to a branch of the repository outside the lab its item
+    /// names (ADR 0115, amended 2026-11-01): the item's criteria are its gate.
+    NoLabCheck(String),
+    /// A criterion past the most one may be, said whole rather than cut (#1049).
+    Criterion(String),
     /// Work is not handed to a member on furlough.
     Furloughed(String),
-    /// The rules of the office refuse a change (ADR 0119).
-    Office(super::office::Refused),
     /// A game of chess refuses a move or a challenge (ADR 0121).
     Chess(super::chess::Refused),
     /// A scenario refuses an action, or its world is not a model's to close (the Holodeck
@@ -571,6 +505,8 @@ pub enum Refusal {
 }
 
 impl fmt::Display for Refusal {
+    // One message for each refusal: a table, not logic.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TakenBy(member) => write!(f, "member {member} has this task"),
@@ -584,10 +520,17 @@ impl fmt::Display for Refusal {
                     to.name()
                 )
             }
-            Self::NotBelow => f.write_str("work is handed only to members below you"),
+            Self::NotBelow => f.write_str(
+                "work goes to a member through its loop: you may make work for yourself, not hand \
+                 it to another member",
+            ),
             Self::Finished => f.write_str("this task is over"),
             Self::OwnWork => f.write_str("work is reviewed by a different member"),
             Self::GateNotPassed => f.write_str("the gate has not passed"),
+            Self::InReview => f.write_str(
+                "the work is in review: work in progress is not kept, since a new head would \
+                 void its review",
+            ),
             Self::HandBack => {
                 f.write_str("a member does not drop work; hand it back to your lead with a reason")
             }
@@ -609,28 +552,21 @@ impl fmt::Display for Refusal {
                  claim it first",
             ),
             Self::TooLong(most) => write!(f, "that is longer than {most} characters"),
-            Self::NotABrain { role, asked } => {
-                let may: Vec<&str> = super::brain::Brain::choices(*role)
+            Self::TooMany { most, of } => write!(
+                f,
+                "that is more than the {most} {of} there may be: give fewer, or split the work"
+            ),
+            Self::NotABrain { asked } => {
+                let may: Vec<&str> = super::brain::Brain::all()
                     .into_iter()
                     .map(super::brain::Brain::name)
                     .collect();
-                write!(
-                    f,
-                    "a {} thinks with {} only, not {asked:?}; Opus is the CEO's alone",
-                    role.name(),
-                    may.join(", ")
-                )
+                write!(f, "a member thinks with {} only, not {asked:?}", may.join(", "))
             }
-            Self::NotARuntime { role, asked } => write!(
+            Self::NotARuntime { asked } => write!(
                 f,
-                "a {} runs on the worker, not {asked:?}: Claude Code is a developer's on Claude \
-                 alone",
-                role.name()
-            ),
-            Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
-            Self::OnlyTheCeo => f.write_str("only the CEO does that"),
-            Self::HouseLogFull => f.write_str(
-                "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
+                "this member runs on the worker, not {asked:?}: Claude Code is for a member on \
+                 Claude alone"
             ),
             Self::World(refused) => refused.fmt(f),
             Self::Guard(refused) => refused.fmt(f),
@@ -642,21 +578,26 @@ impl fmt::Display for Refusal {
             Self::NotAName => f.write_str(
                 "a member's name is one to 40 characters, and no other member's",
             ),
-            Self::NotADecision => f.write_str(
-                "a decision for the board gives `decision` (what is to be decided), `recommendation` (what you recommend) and `why`, each in a sentence or two",
-            ),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting for an answer; end your turn",
+            ),
+            Self::QuestionWaits { item } => write!(
+                f,
+                "a question about this item already waits on the owner's desk (card {item}); \
+                 their answer comes to this thread and wakes whoever holds the item: post \
+                 what you would add, and end your turn"
+            ),
+            Self::Answered { words } => write!(
+                f,
+                "the owner has answered this item already: \"{words}\". Act on that answer; it \
+                 is not asked again. If your tools cannot meet it, say what you tried and set \
+                 the item blocked with the reason"
             ),
             Self::Covered { task, names } => write!(
                 f,
                 "#{task} already covers this ({}): add to it with post in #{task}, rather than a \
                  second task",
                 names.join(", ")
-            ),
-            Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
-            Self::OnlyLeadsPropose => f.write_str(
-                "only a lead proposes a project; the CEO decides proposals with decide_project",
             ),
             Self::OtherGoal => f.write_str(
                 "that project serves another goal: a task's or a routine's project serves its goal",
@@ -683,7 +624,7 @@ impl fmt::Display for Refusal {
             ),
             Self::TopUpOutOfRange { room } => write!(
                 f,
-                "a top-up is more than nothing, and a day's top-ups together are at most three \
+                "a top-up is more than nothing, and a day's top-ups together are at most five \
                  times the pool's day; {} may still be added today",
                 super::projects::dollars(*room)
             ),
@@ -736,10 +677,25 @@ impl fmt::Display for Refusal {
                 "a tester passes work on her own readings: take them this turn and cite their \
                  receipts",
             ),
+            Self::NoCiRun {
+                branch,
+                criteria,
+                alone,
+            } => write!(
+                f,
+                "no CI run can be had for {branch}: no workflow at its head runs on a push to it, \
+                 so \"{}\" cannot be met as the fork stands (HQ's checks say which). {}, for the \
+                 owner to decide",
+                criteria.join("\", \""),
+                if *alone {
+                    "You work this loop alone: block the item with the reason"
+                } else {
+                    "Send it back saying so"
+                }
+            ),
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")
             }
-            Self::Office(refused) => refused.fmt(f),
             Self::Chess(refused) => refused.fmt(f),
             Self::Scenario(why) => f.write_str(why),
             Self::InDowntime => f.write_str(
@@ -755,11 +711,6 @@ impl fmt::Display for Refusal {
             Self::NobodyHasIt => f.write_str(
                 "it was not tried again, and still waits here: no member has this task to wake",
             ),
-            Self::NotAManager => f.write_str(
-                "a member reports to another member, never itself and never in a circle; the \
-                 CEO reports to the board",
-            ),
-            Self::OnlyOneCeo => f.write_str("the team has one CEO already"),
             Self::NotADocument => f.write_str(
                 "read_document reads a document of your task, its sub-tasks or the task above: d12, as the thread names them",
             ),
@@ -774,15 +725,19 @@ impl fmt::Display for Refusal {
                  forward it with ask_owner (corrected if it needs it), or send it back with \
                  review send_back",
             ),
-            Self::NotYourToRecheck => f.write_str(
-                "a recheck is asked for by the work's lead or developer: the tester judges what \
-                 the checks found, and the CEO directs",
-            ),
             Self::CheckPending(check) => write!(
                 f,
                 "check c{check} of this branch is still waiting or running: its result comes \
                  back as a receipt, and you may ask again once it has"
             ),
+            Self::NoLabCheck(repo) => write!(
+                f,
+                "no check of the lab's applies to {repo}: the item's criteria are its gate, and \
+                 its submission opened it. Run the repository's own tests in your sandbox, then \
+                 set_status in_review citing your repo_submit's receipt (and the checkout's) for \
+                 each criterion"
+            ),
+            Self::Criterion(why) => f.write_str(why),
             Self::Furloughed(name) => write!(
                 f,
                 "{name} is on furlough and takes no work: hand it to a member at work, or ask for staff with request_staff"
@@ -836,17 +791,6 @@ pub fn may_close_check(from: TaskStatus) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Whether `from` may hand work to `to`: only to members below it.
-///
-/// # Errors
-/// [`Refusal::NotBelow`] otherwise.
-pub fn may_delegate(from: Role, to: Role) -> Result<(), Refusal> {
-    if to.rank() > from.rank() {
-        return Ok(());
-    }
-    Err(Refusal::NotBelow)
-}
-
 /// Whether work is done: the gate passed, and the member approving it is not the one who did
 /// it. A member saying it is done changes nothing.
 ///
@@ -888,20 +832,27 @@ pub fn mentions<'a>(text: &str, members: &'a [Member]) -> Vec<&'a Member> {
 mod tests {
     use super::*;
 
-    fn member(id: i64, name: &str, role: Role) -> Member {
+    fn member(id: i64, name: &str) -> Member {
         Member {
             id: MemberId(id),
             name: name.to_owned(),
-            role,
             share_percent: 25,
             slots: 2,
             look: 0,
             paused: false,
             brain: crate::domain::brain::Brain::Haiku,
-            work_brain: crate::domain::brain::Brain::Mac,
-            reports_to: None,
             furloughed_at: None,
             recalled_at: None,
+        }
+    }
+
+    #[test]
+    fn an_open_item_keeps_its_sandbox_and_a_closed_one_lets_it_go() {
+        for open in [TaskStatus::Todo, TaskStatus::Doing, TaskStatus::InReview] {
+            assert!(open.keeps_its_sandbox(), "{open:?}");
+        }
+        for closed in [TaskStatus::Done, TaskStatus::Dropped, TaskStatus::Blocked] {
+            assert!(!closed.keeps_its_sandbox(), "{closed:?}");
         }
     }
 
@@ -954,41 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn work_is_handed_down_and_never_up_or_across() {
-        assert!(may_delegate(Role::Ceo, Role::Lead).is_ok());
-        assert!(may_delegate(Role::Ceo, Role::Developer).is_ok());
-        assert_eq!(may_delegate(Role::Lead, Role::Ceo), Err(Refusal::NotBelow));
-        assert_eq!(may_delegate(Role::Ceo, Role::Ceo), Err(Refusal::NotBelow));
-        assert!(may_delegate(Role::Lead, Role::Developer).is_ok());
-        assert!(may_delegate(Role::Lead, Role::Reviewer).is_ok());
-        assert_eq!(
-            may_delegate(Role::Developer, Role::Lead),
-            Err(Refusal::NotBelow)
-        );
-        assert_eq!(
-            may_delegate(Role::Developer, Role::Researcher),
-            Err(Refusal::NotBelow)
-        );
-        assert_eq!(may_delegate(Role::Lead, Role::Lead), Err(Refusal::NotBelow));
-    }
-
-    #[test]
-    fn the_roles_weights_in_the_pool_are_the_owners() {
-        let weights: Vec<u8> = [
-            Role::Ceo,
-            Role::Lead,
-            Role::Developer,
-            Role::Reviewer,
-            Role::Researcher,
-        ]
-        .map(Role::share)
-        .to_vec();
-        assert_eq!(weights, [35, 25, 40, 20, 15]);
-        assert!(Role::Ceo.leads() && Role::Lead.leads());
-        assert!(!Role::Developer.leads() && !Role::Reviewer.leads());
-    }
-
-    #[test]
     fn done_needs_the_gate_and_a_different_reviewer() {
         let dev = Some(MemberId(1));
         assert_eq!(is_done(true, dev, MemberId(1)), Err(Refusal::OwnWork));
@@ -1001,10 +917,7 @@ mod tests {
 
     #[test]
     fn a_post_names_members_once_each() {
-        let team = [
-            member(1, "Ada", Role::Lead),
-            member(2, "Linus", Role::Developer),
-        ];
+        let team = [member(1, "Ada"), member(2, "Linus")];
         let named: Vec<i64> = mentions("@ada can you ask @Linus, then @ADA again? @nobody", &team)
             .iter()
             .map(|m| m.id.0)
@@ -1023,15 +936,6 @@ mod tests {
             TaskStatus::Dropped,
         ] {
             assert_eq!(TaskStatus::from_name(status.name()), Some(status));
-        }
-        for role in [
-            Role::Ceo,
-            Role::Lead,
-            Role::Developer,
-            Role::Researcher,
-            Role::Reviewer,
-        ] {
-            assert_eq!(Role::from_name(role.name()), Some(role));
         }
         for p in [
             Priority::Urgent,

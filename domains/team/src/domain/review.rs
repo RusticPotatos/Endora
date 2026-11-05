@@ -4,7 +4,7 @@
 //! an invented "ping test" on the owner's desk; these rules are why that is read by someone,
 //! and flagged, first.
 
-use super::work::{MemberId, Refusal};
+use super::work::MemberId;
 
 /// The team's own tools, which look like Docker's names (`word_word`) but are not containers.
 const TOOL_NAMES: &[&str] = &[
@@ -19,6 +19,7 @@ const TOOL_NAMES: &[&str] = &[
     "restart_container",
     "homelab_map",
     "ansible_nas_doc",
+    "image_tags",
     "review",
     "note_lesson",
     "note_house",
@@ -26,8 +27,57 @@ const TOOL_NAMES: &[&str] = &[
     "read_doc",
 ];
 
+/// The highest rank any review is given at (ADR 0142, amended 2026-10-31, D7): Haiku's.
+/// Sonnet's and Opus's reviews were most of round 2's spend; harder work reaches stronger models
+/// by its climb, not by review.
+pub const REVIEWS_CAPPED_AT: u8 = super::Brain::Haiku.rank();
+
+/// Who reviews the work `worker` did at `rank`, among the loops' `members` (each with its
+/// rank; 1 is the most able), never the worker itself (ADR 0142, amended 2026-10-31, D7).
+///
+/// Work done below Haiku's rank is reviewed one rank up but never above Haiku's: the nearest
+/// member above it at Haiku's rank or below, else the nearest below it, else the next member up
+/// the ranks. Work done at Haiku's rank or above is reviewed by another member at Haiku's rank,
+/// else the nearest member below Haiku's rank, else, as the last resort, the nearest above it.
+/// Ties go to the member hired first.
+#[must_use]
+pub fn reviewer_among(worker: MemberId, rank: u8, members: &[(MemberId, u8)]) -> Option<MemberId> {
+    let others: Vec<(MemberId, u8)> = members
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != worker)
+        .collect();
+    let nearest_above = |of: u8, highest: u8| {
+        others
+            .iter()
+            .filter(|(_, r)| *r < of && *r >= highest)
+            .max_by_key(|(id, r)| (*r, std::cmp::Reverse(id.0)))
+            .map(|(id, _)| *id)
+    };
+    let nearest_below = |of: u8| {
+        others
+            .iter()
+            .filter(|(_, r)| *r > of)
+            .min_by_key(|(id, r)| (*r, id.0))
+            .map(|(id, _)| *id)
+    };
+    if rank > REVIEWS_CAPPED_AT {
+        return nearest_above(rank, REVIEWS_CAPPED_AT)
+            .or_else(|| nearest_below(rank))
+            .or_else(|| nearest_above(rank, 0));
+    }
+    let at_the_cap = others
+        .iter()
+        .filter(|(_, r)| *r == REVIEWS_CAPPED_AT)
+        .min_by_key(|(id, _)| id.0)
+        .map(|(id, _)| *id);
+    at_the_cap
+        .or_else(|| nearest_below(REVIEWS_CAPPED_AT))
+        .or_else(|| nearest_above(REVIEWS_CAPPED_AT, 0))
+}
+
 /// What the reviewer is told when work is put before it.
-pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. Take your own \
+pub const REVIEW_WORK: &str = "You review another member's work: re-check it yourself. Take your own \
     readings (homelab_status, container_logs, the queues) to confirm each piece of its evidence \
     is real and still true. For a branch of the wing's, your own reading is the branch itself: \
     check it out (repo_checkout, with its name, hq/task-N-<slug>, as the thread gives it), look \
@@ -36,32 +86,39 @@ pub const REVIEW_WORK: &str = "You review it one rank up: re-check it yourself. 
     citing your receipts per criterion: your pass closes it. Send it back with exactly what does not \
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm.";
 
+/// The most of a branch's diff a reviewer's briefing carries, in characters (ADR 0142, amended
+/// 2026-10-30): a little on the house's models, which pay for every line on every call, more on
+/// Claude; the whole diff is a `read_document` away, and the branch a `repo_checkout`.
+#[must_use]
+pub const fn diff_chars_for(brain: super::Brain) -> usize {
+    if brain.cloud() { 12_000 } else { 2_400 }
+}
+
+/// The most of a branch's changed files a reviewer's briefing names.
+pub const FILES_MOST: usize = 20;
+
+/// A diff within `most` characters, cut at a line's end, and whether it was cut.
+#[must_use]
+pub fn diff_within(diff: &str, most: usize) -> (String, bool) {
+    if diff.chars().count() <= most {
+        return (diff.to_owned(), false);
+    }
+    let mut kept = String::new();
+    for line in diff.split_inclusive('\n') {
+        if kept.chars().count() + line.chars().count() > most {
+            break;
+        }
+        kept.push_str(line);
+    }
+    (kept, true)
+}
+
 /// Whether work needs the gate (tests, lint and build on a runner) before a review can close
 /// it: everything but a routine's task and work under a goal the home lab's routine serves,
 /// which change no code.
 #[must_use]
 pub const fn needs_gate(a_routines_task: bool, the_home_labs: bool) -> bool {
     !(a_routines_task || the_home_labs)
-}
-
-/// Whether a reviewer may approve work: never its own, and work that needs the gate only once
-/// the gate has passed.
-///
-/// # Errors
-/// [`Refusal::OwnWork`] or [`Refusal::GateNotPassed`].
-pub fn may_approve(
-    needs_gate: bool,
-    gate_passed: bool,
-    worker: Option<MemberId>,
-    reviewer: MemberId,
-) -> Result<(), Refusal> {
-    if worker == Some(reviewer) {
-        return Err(Refusal::OwnWork);
-    }
-    if needs_gate && !gate_passed {
-        return Err(Refusal::GateNotPassed);
-    }
-    Ok(())
 }
 
 /// The start of the post that holds a draft for the owner, in the task's thread.
@@ -218,6 +275,116 @@ pub fn checked(text: &str, lab: Option<&[String]>) -> String {
 mod tests {
     use super::*;
 
+    /// Mara (Opus), Kit (Sonnet), Ada (Haiku), Rae (DeepSeek), Mo (the Mac), Bo (the house's).
+    const MARA: MemberId = MemberId(1);
+    const KIT: MemberId = MemberId(2);
+    const ADA: MemberId = MemberId(3);
+    const RAE: MemberId = MemberId(4);
+    const MO: MemberId = MemberId(5);
+    const BO: MemberId = MemberId(6);
+
+    fn ranked(members: &[MemberId]) -> Vec<(MemberId, u8)> {
+        let rank = |id: MemberId| match id.0 {
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            _ => 6,
+        };
+        members.iter().map(|m| (*m, rank(*m))).collect()
+    }
+
+    /// Cy, Dee and Zed, on Haiku too, hired after Ada and in that order.
+    const CY: MemberId = MemberId(7);
+    const DEE: MemberId = MemberId(8);
+    const ZED: MemberId = MemberId(9);
+
+    #[test]
+    fn work_at_haiku_s_rank_or_above_is_reviewed_by_another_member_at_haiku_s_rank() {
+        let mut team = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        team.extend([(CY, 3), (DEE, 3), (ZED, 3)]);
+        // Sonnet's and Opus's work: the Haiku member hired first.
+        assert_eq!(reviewer_among(KIT, 2, &team), Some(ADA));
+        assert_eq!(reviewer_among(MARA, 1, &team), Some(ADA));
+        // Haiku's work: another member at Haiku's rank, never itself, the one hired first.
+        assert_eq!(reviewer_among(ADA, 3, &team), Some(CY));
+        assert_eq!(reviewer_among(CY, 3, &team), Some(ADA));
+        assert_eq!(reviewer_among(ZED, 3, &team), Some(ADA));
+    }
+
+    #[test]
+    fn with_nobody_else_at_haiku_s_rank_the_nearest_below_it_reviews_else_the_nearest_above() {
+        // Ada the only Haiku member: her work goes to the nearest below, Rae, not to Kit.
+        let all = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        assert_eq!(reviewer_among(ADA, 3, &all), Some(RAE));
+        let no_rae = ranked(&[MARA, KIT, ADA, MO, BO]);
+        assert_eq!(reviewer_among(ADA, 3, &no_rae), Some(MO));
+        // No Haiku member: Sonnet's and Opus's work, the nearest below Haiku's rank.
+        let no_haiku = ranked(&[MARA, KIT, RAE, MO, BO]);
+        assert_eq!(reviewer_among(KIT, 2, &no_haiku), Some(RAE));
+        assert_eq!(reviewer_among(MARA, 1, &no_haiku), Some(RAE));
+        // Nobody else at Haiku's rank or below: the nearest above, as the last resort.
+        let ada_alone = ranked(&[MARA, KIT, ADA]);
+        assert_eq!(reviewer_among(ADA, 3, &ada_alone), Some(KIT));
+        let top_two = ranked(&[MARA, KIT]);
+        assert_eq!(reviewer_among(KIT, 2, &top_two), Some(MARA));
+        assert_eq!(reviewer_among(MARA, 1, &top_two), Some(KIT));
+        assert_eq!(reviewer_among(MARA, 1, &ranked(&[MARA])), None);
+    }
+
+    #[test]
+    fn work_below_haiku_s_rank_is_reviewed_one_rank_up_when_that_is_within_the_cap() {
+        let all = ranked(&[MARA, KIT, ADA, RAE, MO, BO]);
+        assert_eq!(reviewer_among(BO, 6, &all), Some(MO));
+        assert_eq!(reviewer_among(MO, 5, &all), Some(RAE));
+        assert_eq!(reviewer_among(RAE, 4, &all), Some(ADA));
+    }
+
+    #[test]
+    fn work_below_haiku_s_rank_is_never_reviewed_above_it() {
+        // No Haiku on the team: Rae's work goes to the Mac's member below her, not to Kit.
+        let no_haiku = ranked(&[MARA, KIT, RAE, MO, BO]);
+        assert_eq!(reviewer_among(RAE, 4, &no_haiku), Some(MO));
+        // Nobody between Bo and Haiku's rank but the Mac's member: still the Mac's member.
+        assert_eq!(reviewer_among(BO, 6, &no_haiku), Some(MO));
+        // Nobody above the Mac's member within the cap: Bo, below, rather than Kit.
+        let mac_and_bo = ranked(&[MARA, KIT, MO, BO]);
+        assert_eq!(reviewer_among(MO, 5, &mac_and_bo), Some(BO));
+    }
+
+    #[test]
+    fn a_member_never_reviews_its_own_work_and_the_next_one_up_takes_it() {
+        // The only member at Haiku's rank or below is the worker: the next member up the ranks.
+        let rae_alone = ranked(&[MARA, KIT, RAE]);
+        assert_eq!(reviewer_among(RAE, 4, &rae_alone), Some(KIT));
+        // Alone on the team, nobody reviews.
+        assert_eq!(reviewer_among(BO, 6, &ranked(&[BO])), None);
+        // A second member at the worker's own rank does not count as one rank up.
+        let two_bos = [(BO, 6), (MemberId(7), 6), (MARA, 1)];
+        assert_eq!(reviewer_among(BO, 6, &two_bos), Some(MARA));
+    }
+
+    #[test]
+    fn reviews_are_capped_at_haiku_s_rank() {
+        assert_eq!(REVIEWS_CAPPED_AT, 3);
+    }
+
+    #[test]
+    fn a_diff_is_cut_at_a_line_s_end_within_its_size() {
+        let diff = "+one\n+two\n+three\n";
+        assert_eq!(diff_within(diff, 100), (diff.to_owned(), false));
+        assert_eq!(diff_within(diff, 10), ("+one\n+two\n".to_owned(), true));
+        assert_eq!(diff_within(diff, 3), (String::new(), true));
+    }
+
+    #[test]
+    fn the_house_s_models_read_less_of_a_diff_than_claude() {
+        use super::super::Brain;
+        assert!(diff_chars_for(Brain::Local) < diff_chars_for(Brain::Sonnet));
+        assert_eq!(diff_chars_for(Brain::Local), diff_chars_for(Brain::Mac));
+    }
+
     fn lab() -> Vec<String> {
         ["sonarr", "radarr", "owntone-spotify", "quirky_hopper"]
             .map(str::to_owned)
@@ -301,7 +468,7 @@ mod tests {
         // What the home lab's reviews already said stays.
         assert!(
             REVIEW_WORK.starts_with(
-                "You review it one rank up: re-check it yourself. Take your own readings \
+                "You review another member's work: re-check it yourself. Take your own readings \
                  (homelab_status, container_logs, the queues)"
             ) && REVIEW_WORK.ends_with("Send back any problem that no tool shows causing harm."),
             "{REVIEW_WORK}"
@@ -311,21 +478,10 @@ mod tests {
     }
 
     #[test]
-    fn a_review_closes_ungated_work_but_never_its_own_and_gated_work_waits_for_the_gate() {
+    fn routine_and_home_lab_work_needs_no_gate() {
         assert!(!needs_gate(true, false), "a routine's task");
         assert!(!needs_gate(false, true), "the home lab's work");
         assert!(needs_gate(false, false));
-        let (me, other) = (MemberId(1), MemberId(2));
-        assert_eq!(may_approve(false, false, Some(other), me), Ok(()));
-        assert_eq!(
-            may_approve(false, true, Some(me), me),
-            Err(Refusal::OwnWork)
-        );
-        assert_eq!(
-            may_approve(true, false, Some(other), me),
-            Err(Refusal::GateNotPassed)
-        );
-        assert_eq!(may_approve(true, true, Some(other), me), Ok(()));
     }
 
     #[test]

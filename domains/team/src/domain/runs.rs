@@ -1,6 +1,6 @@
 //! Runs: one turn of a member, from queued to how it ended.
 
-use super::work::Millis;
+use super::work::{MemberId, Millis, TaskStatus};
 
 /// At most this many retries after a turn fails.
 pub const MOST_RETRIES: u8 = 2;
@@ -133,6 +133,102 @@ pub fn fault_of(exit: Exit, ran: Millis) -> Fault {
     }
 }
 
+pub use endora_kernel::exit_code::NEVER_STARTED_EXIT;
+
+/// How a turn that never started begins its end reason, so the record knows it again.
+pub const NEVER_STARTED: &str = "never started";
+
+/// The first wait before an item whose turn never started is woken again, and the longest.
+const AGAIN_FIRST_MS: Millis = 5 * 60_000;
+const AGAIN_LONGEST_MS: Millis = 60 * 60_000;
+
+/// Whether a turn's worker never ran: its container never started (ADR 0142, amended
+/// 2026-10-31). Such a turn did nothing, well or badly: it is nobody's failure.
+#[must_use]
+pub const fn never_started(exit: Exit) -> bool {
+    matches!(exit, Exit::Code(NEVER_STARTED_EXIT))
+}
+
+/// The end reason of a turn that never started: [`NEVER_STARTED`], then what the runner said.
+#[must_use]
+pub fn never_started_said(why: &str) -> String {
+    if is_never_started(why) {
+        return why.to_owned();
+    }
+    format!("{NEVER_STARTED}: {why}")
+}
+
+/// Whether an end reason is a turn's that never started.
+#[must_use]
+pub fn is_never_started(said: &str) -> bool {
+    said.starts_with(NEVER_STARTED)
+}
+
+/// How long after the last of `in_a_row` turns in a row that never started its item is woken
+/// again for the same member: five minutes, doubling, at most an hour. Each such turn was
+/// already tried three times a minute apart, and none of it is paid for; an hour bounds how
+/// long an item waits once the runner is mended.
+#[must_use]
+pub fn wake_again_after(in_a_row: usize) -> Millis {
+    if in_a_row == 0 {
+        return 0;
+    }
+    let doublings = u32::try_from(in_a_row - 1).unwrap_or(u32::MAX).min(8);
+    (AGAIN_FIRST_MS << doublings).min(AGAIN_LONGEST_MS)
+}
+
+/// One ended turn on an item, as [`woken_again_after_failed_starts`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndedTurn {
+    /// Whose turn it was.
+    pub member: MemberId,
+    /// Whether it failed without ever starting ([`is_never_started`]).
+    pub never_started: bool,
+    /// When it ended.
+    pub ended_at: Option<Millis>,
+}
+
+/// Whether an item is woken again for the member of its newest ended turn (`ended`, newest
+/// first) after that member's turns on it never started (the runner could not start the
+/// member's runtime), at `now`: once [`wake_again_after`] has passed since the newest ended,
+/// for an item that is to do, being done or in review, while the member is at work and the
+/// item still waits on them: in review, for its reviewer (anyone but its holder); otherwise,
+/// for its holder. A turn that never started is no failure of the work: the item neither counts
+/// one nor climbs.
+#[must_use]
+pub fn woken_again_after_failed_starts(
+    ended: &[EndedTurn],
+    status: TaskStatus,
+    holder: Option<MemberId>,
+    at_work: bool,
+    now: Millis,
+) -> bool {
+    if !matches!(
+        status,
+        TaskStatus::Todo | TaskStatus::Doing | TaskStatus::InReview
+    ) {
+        return false;
+    }
+    let Some(last) = ended.first() else {
+        return false;
+    };
+    let in_a_row = ended
+        .iter()
+        .take_while(|r| r.member == last.member && r.never_started)
+        .count();
+    let Some(ended_at) = last.ended_at.filter(|_| in_a_row > 0) else {
+        return false;
+    };
+    if now < ended_at + wake_again_after(in_a_row) {
+        return false;
+    }
+    let still_its = match status {
+        TaskStatus::InReview => holder != Some(last.member),
+        _ => holder == Some(last.member),
+    };
+    still_its && at_work
+}
+
 /// How many of a run's `attempts` count against its retries, given how many times the platform
 /// `interrupted` it: all but the first interruption's.
 #[must_use]
@@ -152,6 +248,47 @@ pub fn cached_share(fresh: i64, read: i64, written: i64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_whose_turns_never_started_is_woken_again_for_its_member_after_a_wait() {
+        let bo = MemberId(1);
+        let never = |at| EndedTurn {
+            member: bo,
+            never_started: true,
+            ended_at: Some(at),
+        };
+        let ended = [never(1_000), never(500)];
+        let wait = wake_again_after(2);
+        let woken = |status, holder, at_work, now| {
+            woken_again_after_failed_starts(&ended, status, holder, at_work, now)
+        };
+        assert!(!woken(TaskStatus::Doing, Some(bo), true, 1_000 + wait - 1));
+        assert!(woken(TaskStatus::Doing, Some(bo), true, 1_000 + wait));
+        assert!(
+            !woken(TaskStatus::Doing, Some(MemberId(2)), true, 1_000 + wait),
+            "moved on"
+        );
+        assert!(
+            !woken(TaskStatus::Doing, Some(bo), false, 1_000 + wait),
+            "not at work"
+        );
+        assert!(
+            woken(TaskStatus::InReview, Some(MemberId(2)), true, 1_000 + wait),
+            "its reviewer"
+        );
+        assert!(!woken(TaskStatus::Done, Some(bo), true, 1_000 + wait));
+        let started = [EndedTurn {
+            never_started: false,
+            ..never(1_000)
+        }];
+        assert!(!woken_again_after_failed_starts(
+            &started,
+            TaskStatus::Doing,
+            Some(bo),
+            true,
+            Millis::MAX / 2
+        ));
+    }
 
     #[test]
     fn the_share_read_from_the_cache_is_of_all_the_input() {
@@ -185,6 +322,42 @@ mod tests {
         ] {
             assert_eq!(fault_of(exit, 5_000), Fault::Worker, "{exit:?}");
         }
+    }
+
+    #[test]
+    fn only_a_container_that_never_started_is_a_turn_that_never_started() {
+        assert!(never_started(Exit::Code(NEVER_STARTED_EXIT)));
+        for exit in [
+            Exit::Code(0),
+            Exit::Code(1),
+            Exit::Code(137),
+            Exit::Vanished,
+            Exit::Unsaid,
+        ] {
+            assert!(!never_started(exit), "{exit:?}");
+        }
+    }
+
+    #[test]
+    fn a_turn_that_never_started_says_so_and_is_known_by_it() {
+        let said = never_started_said("its container never started: no runtime");
+        assert!(said.starts_with(NEVER_STARTED));
+        assert!(is_never_started(&said));
+        assert!(!is_never_started("the turn failed: exit 1"));
+        assert!(!is_never_started(""));
+        // Said once, however often it is tried again.
+        assert_eq!(never_started_said(&said), said);
+    }
+
+    #[test]
+    fn an_item_whose_turn_never_started_is_woken_again_after_a_growing_wait() {
+        assert_eq!(wake_again_after(0), 0);
+        assert_eq!(wake_again_after(1), 5 * 60_000);
+        assert_eq!(wake_again_after(2), 10 * 60_000);
+        assert_eq!(wake_again_after(3), 20 * 60_000);
+        assert_eq!(wake_again_after(4), 40 * 60_000);
+        assert_eq!(wake_again_after(5), 60 * 60_000, "at most an hour");
+        assert_eq!(wake_again_after(50), 60 * 60_000);
     }
 
     #[test]

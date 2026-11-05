@@ -3,12 +3,16 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::run_ports::RunStore;
+
 use serde_json::json;
 
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, NewTask, Run, RunContext, TeamStore};
 use super::protocol::{call, tools};
-use crate::domain::{Member, MemberId, Priority, Role, TaskId};
+use crate::application::desk_ports::DeskStore;
+use crate::application::schedule_ports::ScheduleStore;
+use crate::domain::{Member, MemberId, Priority, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -32,9 +36,9 @@ fn started(clock: &Hands) -> (Hq<'_>, Setup, RunContext) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -99,6 +103,16 @@ fn my_turn_keeps_the_latest_twelve_posts_in_both_protocol_versions() {
         .unwrap();
         let (_, thread) = reply.split_once("The thread, newest last:\n").unwrap();
         assert!(!thread.contains("Fixture post 000"));
+        // The post left out is said to be, and where it is: an owner's early word that falls
+        // out of the newest twelve was gone with no sign.
+        assert!(
+            thread.contains(&format!(
+                "Left out here, kept in the record: the thread's 1 older post (ask_record with \
+                 task {} finds it by its words).",
+                setup.task.0
+            )),
+            "{thread}"
+        );
         let positions: Vec<_> = (1..13)
             .map(|n| thread.find(&format!("Fixture post {n:03}")).unwrap())
             .collect();
@@ -134,13 +148,7 @@ fn a_turns_token_opens_only_that_turn_and_only_while_it_runs() {
 #[test]
 fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
     const NEVER_BUILT: [&str; 2] = ["run_gate", "request_action"];
-    for role in [
-        Role::Ceo,
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
+    {
         let offered: Vec<String> = tools()
             .as_array()
             .unwrap()
@@ -150,7 +158,7 @@ fn tools_that_were_never_built_are_not_offered_told_of_or_known() {
         for tool in NEVER_BUILT {
             assert!(
                 !offered.contains(&tool.to_owned()),
-                "{role:?} is offered {tool}"
+                "a member is offered {tool}"
             );
         }
     }
@@ -222,64 +230,6 @@ fn question(hq: &Hq<'_>) -> crate::application::ports::DeskItem {
         .into_iter()
         .rfind(|d| d.kind == "question")
         .unwrap()
-}
-
-#[test]
-fn seeing_a_question_wakes_the_member_who_asked_not_the_tasks_owner() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let (hq, s, context) = started(&clock);
-    let (run, me) = turn(&hq, &context.token);
-    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
-    call(
-        &hq,
-        &run,
-        &me,
-        "post",
-        &json!({ "task": s.task.0, "text": "@Grace can you look at the list?" }),
-    )
-    .unwrap();
-    assert!(
-        !hq.store()
-            .wakes()
-            .unwrap()
-            .iter()
-            .any(|wake| wake.member != s.dev)
-    );
-    hq.post(Author::Owner, s.task, "@Grace please inspect the list")
-        .unwrap();
-    // The owner's explicit request waits for his turn to end. She is the tester, whose work is the
-    // Mac's (ADR 0131), and the node says it is free.
-    hq.tell_mac(true, "ready");
-    hq.runner().finish(context.run, true);
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    let grace = hq
-        .runner()
-        .started()
-        .into_iter()
-        .find(|c| c.member != s.dev)
-        .expect("Grace's turn on the task");
-    let (her_run, her) = turn(&hq, &grace.token);
-    assert_eq!(her_run.task, Some(s.task));
-    call(
-        &hq,
-        &her_run,
-        &her,
-        "ask_owner",
-        &json!({ "text": "Is the list for watches only?" }),
-    )
-    .unwrap();
-    let asked = question(&hq);
-    assert_eq!(asked.member, Some(her.id), "the desk knows who asked");
-    hq.runner().finish(grace.run, true);
-    hq.tick().unwrap();
-    hq.decide(asked.id, "seen").unwrap();
-    let woke = hq.store().wakes().unwrap().into_iter().next_back().unwrap();
-    assert_eq!(
-        (woke.member, woke.task),
-        (her.id, Some(s.task)),
-        "Grace asked, so Grace is woken, not Linus whose task it is"
-    );
 }
 
 #[test]
@@ -412,7 +362,6 @@ fn asking_the_owner_ends_the_turn_and_its_token_does_nothing_more() {
 /// A goal's tasks as a tree, with Linus's turn on `own`: `parent` above it, `child` and
 /// `grandchild` below, and `other` beside, in the same goal.
 struct Tree {
-    lead: MemberId,
     dev: MemberId,
     parent: TaskId,
     own: TaskId,
@@ -422,9 +371,9 @@ struct Tree {
 }
 
 fn tree(hq: &Hq<'_>) -> Tree {
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Grace", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
         .unwrap();
@@ -450,7 +399,6 @@ fn tree(hq: &Hq<'_>) -> Tree {
     let grandchild = add(Some(child), "Sort by brand", None);
     let other = add(None, "Write the help page", None);
     Tree {
-        lead,
         dev,
         parent,
         own,
@@ -509,37 +457,6 @@ fn a_turn_acts_on_its_own_task_and_below_and_writes_above_or_where_it_was_named(
         .unwrap();
     post(t.other).unwrap();
     assert!(use_tool("claim", json!({ "task": t.other.0 })).is_err());
-}
-
-#[test]
-fn the_lead_acts_on_any_task_in_its_goal_but_never_sets_done() {
-    let clock = Hands(AtomicI64::new(1_792_166_400_000));
-    let hq = Engine::new(
-        SqliteTeamStore::in_memory().unwrap(),
-        SimulatedRunner::new(4),
-        &clock,
-        Settings::default(),
-    );
-    let t = tree(&hq);
-    let lead = next_turn(&hq, t.lead);
-    let (run, me) = turn(&hq, &lead.token);
-    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
-    use_tool("claim", json!({ "task": t.other.0 })).unwrap();
-    use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "blocked", "reason": "waiting on the owner" }),
-    )
-    .unwrap();
-    use_tool(
-        "post",
-        json!({ "task": t.grandchild.0, "text": "Brand first." }),
-    )
-    .unwrap();
-    let done = use_tool(
-        "set_status",
-        json!({ "task": t.other.0, "status": "done", "reason": "finished" }),
-    );
-    assert!(done.unwrap_err().contains("gate"));
 }
 
 #[test]
@@ -635,15 +552,129 @@ fn evidence_written_as_objects_or_as_findings_citing_an_id_reads_as_those_ids() 
     }
 }
 
+// HQ's record to 3 Nov (48 refused calls, 14 of them on 2 Nov's held-out set): a member gives a
+// criterion's evidence as an id and a line saying what it shows, `[["r4031", "the :ro statement
+// is in the thread"]]`, and the whole call was refused for the line, though its id was good.
+// Words beside an id in one criterion's list are its gloss and are let go; a list, or a
+// criterion, holding only words is refused as before, and so is a document.
+#[test]
+fn words_beside_an_id_in_one_criterions_list_are_let_go() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    use_tool("claim", json!({ "task": s.task.0 })).unwrap();
+    let cite = |evidence: serde_json::Value| {
+        use_tool(
+            "post",
+            json!({ "task": s.task.0, "text": "Found it.", "evidence": evidence }),
+        )
+    };
+    let id = format!("task {}", s.task.0);
+
+    cite(json!([[id.clone(), "the list is there, in the thread"]])).unwrap();
+    cite(json!([["what it shows comes first", id.clone()]])).unwrap();
+    for refused in [
+        json!([["the list is there", "and so is the rest"]]),
+        json!([[id.clone()], ["the list is there"]]),
+        json!([id, "the list is there"]),
+    ] {
+        let why = cite(refused.clone()).unwrap_err();
+        assert!(why.contains("is not evidence"), "{refused}: {why}");
+    }
+}
+
+// Set 4 and HQ's record before it (161 refusals in 116 turns): a member cites the document a
+// submit or a check wrote (`d241`), which is not evidence, and was told only "cite a receipt as
+// r12, a task as task 12", so it tried again, some turns several times, and some fell back to
+// citing the task itself. The refusal names the receipt that wrote the document: the submit's,
+// whose result names the document, or the check's. The rule of what counts is unchanged.
+#[test]
+fn a_document_cited_as_evidence_is_refused_naming_the_receipt_that_wrote_it() {
+    use crate::application::receipt_ports::ReceiptStore;
+    use crate::application::wing_ports::WingStore;
+    use crate::domain::{CallReceipt, Document};
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
+    let document = |title: &str| {
+        hq.store()
+            .add_document(&Document {
+                id: 0,
+                task: s.task,
+                run: Some(run.id),
+                title: title.to_owned(),
+                text: "the diff".to_owned(),
+                at: 1,
+            })
+            .unwrap()
+    };
+    let receipt = |tool: &str, args: &str, excerpt: &str| {
+        hq.store()
+            .add_call_receipt(&CallReceipt {
+                id: 0,
+                run: run.id,
+                member: me.id,
+                task: Some(s.task),
+                tool: tool.to_owned(),
+                args: args.to_owned(),
+                excerpt: excerpt.to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
+                sandbox: false,
+                at: 1,
+            })
+            .unwrap()
+    };
+    let diff = document("branch hq/task-1-watches (1 file, +1 −1)");
+    // A document whose number begins another's is not that one's: d1 is not d12.
+    receipt(
+        "repo_checkout",
+        "branch: null",
+        &format!("checked out develop (document d{diff}0 is another task's)"),
+    );
+    let submit = receipt(
+        "repo_submit",
+        "branch: hq/task-1-watches",
+        &format!(
+            "Submitted hq/task-1-watches at a1b2c3d (1 file, +1 −1): document d{diff} on task"
+        ),
+    );
+    let check = receipt("check", "c7 hq/task-1-watches@a1b2c3d", "syntax ok");
+    let report = document("check c7: syntax ok");
+    let cite = |evidence: serde_json::Value| {
+        call(
+            &hq,
+            &run,
+            &me,
+            "post",
+            &json!({ "task": s.task.0, "text": "Done.", "evidence": evidence }),
+        )
+        .unwrap_err()
+    };
+
+    let why = cite(json!([format!("d{diff}")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    let why = cite(json!([[format!("r{submit}"), format!("d{report}")]]));
+    assert!(why.contains(&format!("cite r{check}")), "{why}");
+    let why = cite(json!([format!("the diff (document d{diff}) shows it")]));
+    assert!(why.contains(&format!("cite r{submit}")), "{why}");
+    // A document no receipt names, or none at all, is still said to be a document.
+    let loose = document("notes");
+    for unnamed in [format!("d{loose}"), "d999".to_owned()] {
+        let why = cite(json!([unnamed]));
+        assert!(why.contains("is a document, not a receipt"), "{why}");
+    }
+    // Words with no id are refused as before.
+    assert!(cite(json!(["the list is there"])).contains("is not evidence"));
+}
+
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn measure_tool_descriptions() {
-    for role in [
-        Role::Developer,
-        Role::Lead,
-        Role::Reviewer,
-        Role::Researcher,
-    ] {
+    {
         let all = tools();
         let mut sizes: Vec<(usize, String)> = all
             .as_array()
@@ -654,9 +685,93 @@ fn measure_tool_descriptions() {
         sizes.sort_by(|a, b| b.cmp(a));
         let total: usize = sizes.iter().map(|s| s.0).sum();
         println!(
-            "{role:?}: {} tools, {total} chars; top: {:?}",
+            "{} tools, {total} chars; top: {:?}",
             sizes.len(),
             &sizes[..8]
         );
+    }
+}
+
+/// The tools a house turn starts with are read on every call by a slow model (ADR 0142, amended
+/// 2026-10-30): each says its rules, briefly. Every rule is still said; the words around them
+/// are fewer.
+#[test]
+fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
+    let all = tools();
+    let tool = |name: &str| {
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name}"))
+    };
+    for (name, most, rules) in [
+        ("my_turn", 300, &["first"][..]),
+        ("claim", 300, &["Refused if another member has it"][..]),
+        (
+            "post",
+            1050,
+            &[
+                "A mention hands no work on",
+                "cites its evidence",
+                "marked unsupported",
+                "restart is coming",
+                "1,200 characters",
+                "ends your turn",
+            ][..],
+        ),
+        (
+            "set_status",
+            1200,
+            &[
+                "in_review",
+                "a reading this turn",
+                "HQ's checks and the evidence decide it",
+                "close as done yourself",
+                "met_criteria",
+                "superseded",
+                "not_needed",
+                "not evidence",
+            ][..],
+        ),
+        (
+            "ask_owner",
+            650,
+            &[
+                "only what the owner alone decides",
+                "money beyond the caps",
+                "ends your turn",
+                "HQ asks the owner itself",
+            ][..],
+        ),
+        (
+            "chess",
+            700,
+            &[
+                "board",
+                "san",
+                "refused if illegal",
+                "challenge",
+                "One game each",
+                "never on Claude",
+            ][..],
+        ),
+    ] {
+        let said = tool(name);
+        let text = said.to_string();
+        assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
+        for rule in rules {
+            assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+        }
+    }
+    // Roles, reviewers' re-checks, climbs and hand-offs to another member are retired (ADR
+    // 0142, amended 2026-11-02; every live loop is worked by one member alone): no tool's
+    // description promises one, or asks for one the engine refuses.
+    for name in ["my_turn", "set_status", "create_task", "ask_owner"] {
+        let text = tool(name).to_string();
+        for retired in ["your role", "re-checks", "rank up", "for another member"] {
+            assert!(!text.contains(retired), "{name} says {retired:?}: {text}");
+        }
     }
 }

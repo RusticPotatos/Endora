@@ -2,7 +2,8 @@
 
 ## Status
 
-Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
+Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops. Amended
+2026-10-31, below: the day's pool follows the Claude credit.
 
 Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
 [0120](0120-roles-as-an-enforced-raci.md) (2026-10-18): only a lead proposes a project, and the
@@ -159,6 +160,9 @@ while each of them got $0.52.
    and Zed on Haiku) the lead on Sonnet now has more than a developer on Haiku. The roster shows
    each member's daily share.
 
+   *Superseded 2026-11-01 by the owner (below, "Amendment (2026-11-01): most of the money to
+   Haiku").*
+
 ### Borrowing is capped at one extra share, and a member at the cap asks the owner
 
 Decided by the owner on 2026-10-18. Uncapped borrowing (rule 1 above) meant a member was out
@@ -174,7 +178,11 @@ offered. Borrowing is now limited, and the item is built.
    cap left, and `s + min(s, o) - u + allowance` (`money::may_draw`, `Engine::affordable`).
    `o` is read at the moment of the turn, so the limit moves as the others spend. Owner-asked
    turns stay outside it, charged to the pool's day alone; members on the house's model stay out
-   of it. The pool's day is the hard ceiling for everyone.
+   of it. The pool's day is the hard ceiling for everyone. *Amended 2026-10-27:* a turn's money
+   is at least what its opening call costs on the Claude it is paid on, its prompt of about
+   32,000 tokens written to the cache (`money::least_a_turn`: $0.08 on Sonnet, $0.16 on Opus,
+   and never under $0.01). Live, Kit on Sonnet was started on $0.023 twice an hour and the relay
+   refused each opening call ($0.066); with less than that it now waits and is out for today.
 5. **"Out for today".** The first time a paid member is turned away because it reached that
    limit while the pool's day (and its project's month) still has at least a turn's money, one
    desk item (`out_for_day`) is put for that member for the owner's day, and no more that day:
@@ -193,8 +201,10 @@ offered. Borrowing is now limited, and the item is built.
    {amount_micros}` on HQ (the node's `/v1/hq/pool/top-up`, signed and audited; only the node's
    token reaches it) stores the setting `pool_topup:<owner-day>`, summed if the owner tops up
    twice, so it is gone when the owner's next day begins, like an allowance. The amount is
-   above nothing, and a day's top-ups together are at most three times the base pool day
-   (`money::most_top_up`); beyond that HQ refuses and says what room is left
+   above nothing, and a day's top-ups together are at most five times the base pool day
+   (`money::most_top_up`; three times until the owner raised it on 2026-10-31: the limit is
+   there to catch a leak or a run-away spend, not to hold back a round that is using its
+   credit); beyond that HQ refuses and says what room is left
    (`Refusal::TopUpOutOfRange`). HQ records a `pool.topped_up` event (`amount`, `total`,
    `by: "owner"`, `day`); the ledger is untouched. Today's pool is the base day plus the
    top-up, and that is the pool wherever the pool's day is used: the hard ceiling in
@@ -232,19 +242,142 @@ project, which reads and acts only through its own tool. The list is kept as a s
 (`project_tools:<id>`), so nothing in the store's tables changes. Not built yet: a field for it
 on the owner's screen.
 
+## Amendment (2026-10-31): a listed tool brings the lookups that go with it
+
+Live (round 2 of the baseline experiment, defect D4) the node's `image_tags` contract shipped,
+but the ansible-nas loop's list was `team`, `shell`, `repo_checkout`, `repo_submit`; the node
+offered its members nothing it did not name, so they never found the lookup and asked the
+owner which tags exist. A list now gives its work what it names and the read-only lookups that
+go with its tools (`projects::COMES_WITH`, applied by `projects::tools_given` where HQ reads a
+turn's list): `repo_checkout` brings `image_tags`, since work on the fork pins images to tags
+that exist. Only reads are grouped, so a read-only task gains nothing that changes the lab, and
+its refusal of the lab's acts stands; the shell still comes only when named, and an empty list
+still gives nothing of the node's. The owner's list is kept as written, and the next read-only
+contract made for work on the fork is added to the group in the same change. Chosen over a
+console line naming each loop's missing tools because the grouping is one rule in the domain
+and needs no owner's step. Scenarios: `features/a-loop-is-offered-what-goes-with-its-tools.feature`.
+
 ## Amendment (2026-10-25): the pool is $95 a month
 
 The owner raised the team's pool from $70 to $95 a month, about $3.17 a day: $10 of it is the
 model league's cap (ADR 0135, amended), and the rest the agents'. The league's project draws on
 the same pool, so its cap bounds its part rather than adding to the total. The service sets it
 (`app/hq`); the engine's own default stays $70, the figure its tests and the scripted demo are
-written around. Shares, top-ups (at most three times a pool day) and the per-turn limits scale
+written around. Shares, top-ups (at most five times a pool day) and the per-turn limits scale
 with it unchanged.
 
 The owner can also move a routine into a project under its goal, or out of one
 (`POST /v1/routines/{id}/project`, through the node's `/v1/hq/routines/{id}/project`): what it
 fires from then on is the project's. A lead's standing reviews go to the lead's area project;
 the CEO's stay unscoped, paid from the pool.
+
+## Amendment (2026-10-31): the day's pool follows the Claude credit
+
+Decided by the owner on 2026-10-31 (D9 of the baseline experiment's open issues). The owner's
+plan grants $100 of Claude API credit a month, renewing on the 18th, and what is left of it on
+that day is lost. The pool was a constant ($95 a month, one thirtieth a day), so the grant could
+be spent only by topping the pool up by hand every morning: on 31 Oct, with $70.23 of the grant
+left and 18 days to go, the constant gave $3.17 a day and the grant needed $3.90.
+
+1. **Today's base pool.** With the floor `F` (the pool a month over 30 days, $3.17 today, as
+   before) and `D` the floor's part for members whose brain is not a Claude (their claims' part
+   of `F`; DeepSeek, which the grant does not pay for):
+   `base = min(3F, max(F, grant_left / days_to_renewal + D))`, where `days_to_renewal` counts
+   today (renewing tomorrow leaves one day). Equivalently, the Claude part of the day is the
+   larger of the floor's Claude part and the grant spread over the days left, and the rest of
+   the floor stays as it was. `credit_pool::sized`, in the team's domain, holds the arithmetic;
+   example: 31 Oct, $70.23 of the grant left, renewing on 18 Nov, no member on DeepSeek:
+   $70.23 / 18 = $3.90 a day.
+2. **Only grant credit counts.** Bought credit does not expire, so it never raises the pool: the
+   node sends HQ the grant's pot alone (`claude_pots`, grant spent first, as on 2026-10-30).
+3. **The ceiling is three floors**, $9.50 a day: the bound the owner already set on a day's
+   top-ups (rule 6), so a day can never reach more from the credit than the owner could already
+   give it by hand. It matters only near the renewal, when much is left (on the last day $60 left
+   would otherwise be $60 in one day).
+4. **Where the figures come from.** HQ never reaches out: the node is its only client, as for the
+   Mac's state (ADR 0130). Every five minutes the node posts `POST /v1/pool/credit`
+   `{grant_left, renews}` to HQ, signed with HQ's token (`renews` the next renewal, `YYYY-MM-DD`
+   on the owner's calendar, after any renewal due; both `null` with no plan grant). HQ keeps the
+   first grant it hears in each owner's day (`pool_credit:<day>`) and ignores later words that
+   day, so what the team spends today does not shrink today's pool under it; a day heard to have
+   no grant takes a grant heard later in it. A renewal that is not after today is out of date and
+   is not kept.
+5. **The floor otherwise.** With no word today (the node down, HQ not set up on it, or before the
+   first word of the day), or no plan grant set, today's base is the floor, as before.
+6. **Everything else stands.** Shares are their claims' part of today's pool (base plus top-up),
+   so they and the borrowing cap of rule 4 scale with it, as with a top-up. The per-turn caps,
+   rule 4's limit, project caps (the model league's $10 a month, ADR 0135, among them) and their
+   sum against the pool's month (`CapsOverPool`, still counted on the $95 month) are unchanged.
+   The owner's top-up adds on top of the sized base and is still at most three floors a day.
+7. **Shown.** The snapshot's `pool` carries `base_per_day`, and `sized` with `by` (`credit`,
+   `floor`, `ceiling`, `no_grant`, `unread`), `why`, `floor` and `ceiling`; the Money card on
+   HQ's Manage tab ([where things go](../where-things-go.md): "the money and credits") says it
+   under today's pool, for example "Sized from the Claude credit: $70.23 left, 18 days to the
+   18th." The top-up prompt is prefilled with one floor day, the unit top-ups are counted in.
+
+Scenarios: `features/the-pool-follows-the-credit.feature`. Considered and rejected: sizing the
+pool afresh on every reading (the day's own spend would shrink the day's pool under the team,
+and with it every share); counting bought credit (it does not expire, so spending it early only
+moves spending forward); a ceiling of its own (a new figure for the owner to keep, when the top-up
+bound already says how much one day may be).
+
+## Amendment (2026-10-31): the credit's figures are kept whole
+
+From the review of round 2's code (`docs/proposals/baseline-experiment-2026-10-28.md`, open
+issues; branch `r3-review-fixes`). The node's Claude estimate (grant spent first, then bought
+credit, renewed on the owner's renewal day) is what rule 2 sends HQ, so it must not drift.
+
+1. **Every renewal runs under the ledger.** The console's view (`GET /v1/credits`, and the view
+   returned after a change) renewed the plan outside the node's ledger lock, so a charge counted
+   at the same moment could be erased by the renewal's new anchor, or counted twice. It now
+   renews and reads Claude's figures under the lock, as a charge, the bench and HQ's word do.
+   DeepSeek's balance, a call over the network, is asked before the lock is taken or after it is
+   let go, never under it; and the owner's change takes the lock off the async thread.
+2. **An anchor is written in one transaction.** The figure, when it was set, what had been paid
+   by then and how much of it is bought are kept together or not at all.
+3. **A first grant always says what is bought.** A first grant entered with only a Console
+   balance counted all of it as grant, so bought credit would have been lost at the renewal. A
+   first grant (none kept before) is now refused without the bought credit left, $0 being an
+   answer; the owner's own entry (a $100 grant renewing on the 18th, $0 bought) is taken as it
+   was. A later balance, with a grant already kept, splits as before.
+
+## Amendment (2026-11-01): most of the money to Haiku, and asked again after an allowance
+
+Decided by the owner on 1 November 2026, from round 3 of the baseline experiment
+(`docs/proposals/baseline-experiment-2026-10-28.md`, D21): shares followed price, not work. Ada
+on Haiku, who did most of the work, had a share of $0.19 of a $16.60 day; at twice it and her
+$0.50 allowance she stopped, at $0.88, with $3.77 left in the pool, while Mara on Opus held the
+largest share for the few items that climbed to her. The owner's direction: **most of the money
+goes to Haiku**, the cheapest paid model and the one doing most of the work; the climbs to Sonnet
+and Opus draw on what is left.
+
+- **A claim is weighted by its brain's claim class, not its price.** A member's claim is its
+  role's weight times `Brain::claim_class`: Haiku 8, Sonnet and DeepSeek 2, Opus 1, the house's
+  models 0. Round 3's team (Mara on Opus as CEO, Kit on Sonnet and Ada on Haiku as leads, Rae on
+  DeepSeek as a developer) splits a day about 55% Ada, 22% Rae, 14% Kit and 10% Mara, where it
+  was about 1% Ada and 68% Mara. `Brain::price_class` still prices a turn's opening call
+  (`money::least_a_turn`), and each paid share still affords two of its brain's opening calls.
+- **The climbs draw on what is left.** Nothing else changes: a member past its share borrows what
+  the others left, up to one more share (rule 4); the pool's day is the hard ceiling; and a
+  member out for the day while the pool has money is asked about again after each allowance
+  (rule 5, amended the same day). An item climbs because it failed below; the money it needs at
+  Sonnet or Opus is Haiku's unused share and the top-ups, not a share sized by price.
+- **The floor's part for members not on a Claude** (the amendment of 2026-10-31, rule 2) is their claims'
+  part of the floor, now by claim class: a member on DeepSeek keeps a larger part on top of the
+  credit-sized base, which its own balance pays.
+
+- **Asked again after an allowance (rule 5, D21).** Ada had the day's allowance (approved at
+  $0.50) and reached her limit again at 22:42 UTC with $3.78 in the pool; HQ asked about a member
+  once a day, so no card came and her review and her next item waited for the owner's next day.
+  A member is now asked about once for each allowance it has had that day: the first time it is
+  out, and again after each allowance the owner gives (the key `out_for_day_asked:<member>:<day>`
+  keeps the allowance it was asked at). Never while a card waits, and not again once the owner
+  declines, since neither changes the allowance. The card says what was already given ("$0.50
+  already given today"), and its "borrowed" leaves the allowance out.
+
+Rejected: sizing shares from the work each rank did on recent days (more machinery and a figure
+that lags; the owner's direction is plain, and a class says it); no shares above Haiku's rank
+(Sonnet and Opus would then wait on every climb for the owner's card).
 
 ## Consequences
 

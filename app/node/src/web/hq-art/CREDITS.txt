@@ -13,5 +13,8 @@ Characters (characters/char_0.png to char_5.png): Pixel Agents, based on
 Not included on purpose: the Pixel Agents pet sprites (they resemble other
 companies' mascots) and its bundled pixel font (no licence stated).
 
-Everything else on the page (the ping-pong table, server rack, neon sign, burn
-gauge, kill switch, windows, whiteboard and walls) is drawn by the page itself.
+Since 4 Nov 2026 the screen is a studio. It draws the desks, screens, chairs,
+sofas, review table, coffee machine and two plants from here; its floors,
+walls, steps, shelves, bookcase, lamps, rack, lever, chess table, counter and
+stools are drawn by the page itself. The other furniture and floors here are
+no longer drawn.

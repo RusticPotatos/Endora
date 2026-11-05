@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""A stand-in for `claude -p ... --output-format stream-json --verbose`, for cc_local's tests.
+
+It runs the shell commands of its plan (FAKE_CLAUDE_PLAN, a JSON list with one entry per
+invocation: {"run": [commands], "final": text, "hang": seconds}) in its working directory,
+prints a stream like Claude Code's, and writes a session transcript under
+FAKE_CLAUDE_HOME/projects/<folder>/<session>.jsonl, as Claude Code does. With `hang`, it
+sleeps after its commands, as an agent still at work, so the runner can interrupt it."""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+args = sys.argv[1:]
+resume = args[args.index("--resume") + 1] if "--resume" in args else None
+home = Path(os.environ["FAKE_CLAUDE_HOME"])
+plan = json.loads(Path(os.environ["FAKE_CLAUDE_PLAN"]).read_text())
+counter = home / "invocations"
+n = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(n + 1))
+step = plan[n]
+session = resume or "11111111-2222-3333-4444-555555555555"
+folder = home / "projects" / "-tmp-probe"
+folder.mkdir(parents=True, exist_ok=True)
+transcript = folder / f"{session}.jsonl"
+t0 = time.time()
+
+
+def stamp(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int((t % 1) * 1000):03d}Z"
+
+
+def emit(event, line=None):
+    print(json.dumps(event), flush=True)
+    if line is not None:
+        with open(transcript, "a") as f:
+            f.write(json.dumps(line) + "\n")
+
+
+emit({"type": "system", "subtype": "init", "session_id": session, "model": "claude-sonnet-5-5"})
+prev = f"u{n}"
+emit({"type": "user"}, {"type": "user", "uuid": prev, "sessionId": session, "timestamp": stamp(t0),
+                         "message": {"role": "user", "content": "task"}})
+usage = {"input_tokens": 100, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 0,
+         "output_tokens": 20}
+for i, command in enumerate(step.get("run", [])):
+    mid, tid = f"msg_{n}_{i}", f"toolu_{n}_{i}"
+    t = time.time()
+    message = {"id": mid, "model": "claude-sonnet-5-5", "role": "assistant",
+               "stop_reason": "tool_use", "usage": usage,
+               "content": [{"type": "tool_use", "id": tid, "name": "Bash",
+                            "input": {"command": command}}]}
+    line = {"type": "assistant", "uuid": f"a{n}_{i}", "parentUuid": prev, "sessionId": session,
+            "timestamp": stamp(t), "message": message}
+    emit({"type": "assistant", "message": message, "session_id": session}, line)
+    done = subprocess.run(command, shell=True, capture_output=True, text=True)
+    out = (done.stdout + done.stderr)[-2000:]
+    error = done.returncode != 0
+    text = f"Exit code {done.returncode}\n{out}" if error else out
+    result = {"type": "tool_result", "tool_use_id": tid, "is_error": error, "content": text}
+    line = {"type": "user", "uuid": f"r{n}_{i}", "parentUuid": f"a{n}_{i}", "sessionId": session,
+            "timestamp": stamp(time.time()),
+            "toolUseResult": {"stdout": done.stdout[-2000:], "stderr": done.stderr[-2000:],
+                              "interrupted": False},
+            "message": {"role": "user", "content": [result]}}
+    emit({"type": "user", "message": line["message"], "session_id": session}, line)
+    prev = f"r{n}_{i}"
+    usage = {"input_tokens": 10, "cache_creation_input_tokens": 50,
+             "cache_read_input_tokens": 1000, "output_tokens": 20}
+if step.get("hang"):
+    time.sleep(float(step["hang"]))
+final = step.get("final", "")
+mid = f"msg_{n}_final"
+message = {"id": mid, "model": "claude-sonnet-5-5", "role": "assistant", "stop_reason": "end_turn",
+           "usage": usage, "content": [{"type": "text", "text": final}]}
+emit({"type": "assistant", "message": message, "session_id": session},
+     {"type": "assistant", "uuid": f"a{n}_final", "parentUuid": prev, "sessionId": session,
+      "timestamp": stamp(time.time()), "message": message})
+emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session,
+      "result": final,
+      "duration_ms": int((time.time() - t0) * 1000), "num_turns": len(step.get("run", [])) + 1,
+      "total_cost_usd": 0.0})

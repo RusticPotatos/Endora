@@ -1,0 +1,361 @@
+{
+  "_about": "Cases for scripts/bench-model.py. Fictional lab text only. See docs/proposals/baseline-experiment-2026-10-28.md for replacing the prompts with real HQ turns.",
+  "prompts": [
+    {
+      "name": "small",
+      "max_tokens": 300,
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a member of a small team that looks after a home lab at 192.168.1.10. You read containers' logs, find faults and report them in your task's thread, citing the lines you rely on."
+        },
+        {
+          "role": "user",
+          "content": "Task 919: something in the lab is failing. Here are the newest log lines from every container:\n\n{fill}\n\nSay which container is failing, why, and what you would check next. Cite the lines."
+        }
+      ],
+      "fill": {
+        "target_tokens": 2000,
+        "chars_per_token": 3.5,
+        "lines": [
+          "{ts} mediabox[{n}] INFO  scan: library 'shows' checked, 412 items, 0 changed",
+          "{ts} fetcher-7[{n}] WARN  http: GET http://192.168.1.10:8989/api/v3/queue took 2.4s (slow)",
+          "{ts} fetcher-7[{n}] INFO  queue: 3 items, 1 downloading, 2 waiting for the indexer",
+          "{ts} vaultbox[{n}] INFO  backup: snapshot 'nightly' 18.2 GB written to /mnt/backup/nightly",
+          "{ts} mediabox[{n}] ERROR transcode: ffmpeg exited 1 for item 'Example Show S01E0{n}' (codec not supported)",
+          "{ts} tunnel-a[{n}] INFO  vpn: handshake ok with example.com:51820, rx 1.2 MB tx 0.4 MB",
+          "{ts} indexer-2[{n}] WARN  search: provider example.com answered 429 Too Many Requests; backing off 60s",
+          "{ts} vaultbox[{n}] INFO  health: /healthz 200 in 12 ms"
+        ]
+      }
+    },
+    {
+      "name": "typical",
+      "max_tokens": 300,
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a member of a small team that looks after a home lab at 192.168.1.10. You read containers' logs, find faults and report them in your task's thread, citing the lines you rely on."
+        },
+        {
+          "role": "user",
+          "content": "Task 919: something in the lab is failing. Here are the newest log lines from every container:\n\n{fill}\n\nSay which container is failing, why, and what you would check next. Cite the lines."
+        }
+      ],
+      "fill": {
+        "target_tokens": 8000,
+        "chars_per_token": 3.5,
+        "lines": [
+          "{ts} mediabox[{n}] INFO  scan: library 'shows' checked, 412 items, 0 changed",
+          "{ts} fetcher-7[{n}] WARN  http: GET http://192.168.1.10:8989/api/v3/queue took 2.4s (slow)",
+          "{ts} fetcher-7[{n}] INFO  queue: 3 items, 1 downloading, 2 waiting for the indexer",
+          "{ts} vaultbox[{n}] INFO  backup: snapshot 'nightly' 18.2 GB written to /mnt/backup/nightly",
+          "{ts} mediabox[{n}] ERROR transcode: ffmpeg exited 1 for item 'Example Show S01E0{n}' (codec not supported)",
+          "{ts} tunnel-a[{n}] INFO  vpn: handshake ok with example.com:51820, rx 1.2 MB tx 0.4 MB",
+          "{ts} indexer-2[{n}] WARN  search: provider example.com answered 429 Too Many Requests; backing off 60s",
+          "{ts} vaultbox[{n}] INFO  health: /healthz 200 in 12 ms"
+        ]
+      }
+    },
+    {
+      "name": "large",
+      "max_tokens": 300,
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a member of a small team that looks after a home lab at 192.168.1.10. You read containers' logs, find faults and report them in your task's thread, citing the lines you rely on."
+        },
+        {
+          "role": "user",
+          "content": "Task 919: something in the lab is failing. Here are the newest log lines from every container:\n\n{fill}\n\nSay which container is failing, why, and what you would check next. Cite the lines."
+        }
+      ],
+      "fill": {
+        "target_tokens": 16000,
+        "chars_per_token": 3.5,
+        "lines": [
+          "{ts} mediabox[{n}] INFO  scan: library 'shows' checked, 412 items, 0 changed",
+          "{ts} fetcher-7[{n}] WARN  http: GET http://192.168.1.10:8989/api/v3/queue took 2.4s (slow)",
+          "{ts} fetcher-7[{n}] INFO  queue: 3 items, 1 downloading, 2 waiting for the indexer",
+          "{ts} vaultbox[{n}] INFO  backup: snapshot 'nightly' 18.2 GB written to /mnt/backup/nightly",
+          "{ts} mediabox[{n}] ERROR transcode: ffmpeg exited 1 for item 'Example Show S01E0{n}' (codec not supported)",
+          "{ts} tunnel-a[{n}] INFO  vpn: handshake ok with example.com:51820, rx 1.2 MB tx 0.4 MB",
+          "{ts} indexer-2[{n}] WARN  search: provider example.com answered 429 Too Many Requests; backing off 60s",
+          "{ts} vaultbox[{n}] INFO  health: /healthz 200 in 12 ms"
+        ]
+      }
+    }
+  ],
+  "tool_system": "You are a member of a home lab's team, working task 919. Call a tool when the request needs one, with exactly the arguments it asks for; when no tool is needed, answer in plain text.",
+  "tool_definitions": [
+    {
+      "type": "function",
+      "function": {
+        "name": "my_turn",
+        "description": "What this turn is for: your role, the task and why it exists, what is new, and its thread. Call it first.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "claim",
+        "description": "Take a task as yours: your turn's task or one under it. Refused if another member has it.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "integer",
+              "description": "the task's number"
+            }
+          },
+          "required": [
+            "task"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "post",
+        "description": "Write in a task's thread: what you did, found or need. A finding cites its evidence.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "integer",
+              "description": "the task's number"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "text"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_status",
+        "description": "Move your task on (todo, doing, in_review, blocked, done), with a reason.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "integer",
+              "description": "the task's number"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "todo",
+                "doing",
+                "in_review",
+                "blocked",
+                "done"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "status",
+            "reason"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "homelab_status",
+        "description": "Read the home lab's state: for each container its name, state, status text and health. Free.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "container_logs",
+        "description": "Read the newest 100 lines of one container's log, at most 16 KB, with secrets replaced by [redacted]. Free.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "container": {
+              "type": "string",
+              "description": "The container's name, as homelab_status lists it, e.g. sonarr."
+            }
+          },
+          "required": [
+            "container"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "restart_container",
+        "description": "Restart one container, and read back its state. Never one others run in the network of, like gluetun: ask the owner instead. Say why in a sentence.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "container": {
+              "type": "string",
+              "description": "The container's name, as homelab_status lists it, e.g. sonarr."
+            },
+            "why": {
+              "type": "string",
+              "description": "Why it needs a restart, in a sentence the owner reads."
+            }
+          },
+          "required": [
+            "container",
+            "why"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "homelab_map",
+        "description": "Read how the home lab is built: for each container its image, who manages it, what it depends on and what depends on it (e.g. which containers run in gluetun's network). Free.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "read_doc",
+        "description": "Read Endora's public library: the team's standards (docs/standards.md), a decision record or plan. A folder alone lists it.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "e.g. docs/standards.md"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "container_logs_sonarr",
+      "instruction": "Read sonarr's log.",
+      "expect": {
+        "tool": "container_logs",
+        "args": {
+          "container": "sonarr"
+        }
+      }
+    },
+    {
+      "name": "claim_task",
+      "instruction": "Claim task 919.",
+      "expect": {
+        "tool": "claim",
+        "args": {
+          "task": 919
+        }
+      }
+    },
+    {
+      "name": "post_finding",
+      "instruction": "Post the finding on task 919: the disk check on the media volume passed at 10:02.",
+      "expect": {
+        "tool": "post",
+        "args": {
+          "task": 919,
+          "text": "*"
+        }
+      }
+    },
+    {
+      "name": "health_gluetun",
+      "instruction": "Is gluetun healthy?",
+      "expect": {
+        "tool": "homelab_status",
+        "args": {}
+      }
+    },
+    {
+      "name": "no_tool",
+      "instruction": "No tool needed for this one: in one sentence, what does an HTTP 503 status mean?",
+      "expect": null
+    },
+    {
+      "name": "restart_radarr",
+      "instruction": "radarr has stopped answering its web page; restart it.",
+      "expect": {
+        "tool": "restart_container",
+        "args": {
+          "container": "radarr",
+          "why": "*"
+        }
+      }
+    },
+    {
+      "name": "set_blocked",
+      "instruction": "Move task 920 to blocked: it waits on the owner replacing a disk.",
+      "expect": {
+        "tool": "set_status",
+        "args": {
+          "task": 920,
+          "status": "blocked",
+          "reason": "*"
+        }
+      }
+    },
+    {
+      "name": "map_dependents",
+      "instruction": "Which containers run in gluetun's network?",
+      "expect": {
+        "tool": "homelab_map",
+        "args": {}
+      }
+    },
+    {
+      "name": "read_standards",
+      "instruction": "Read the team's standards, docs/standards.md.",
+      "expect": {
+        "tool": "read_doc",
+        "args": {
+          "path": "docs/standards.md"
+        }
+      }
+    },
+    {
+      "name": "start_turn",
+      "instruction": "Your turn has started. Find out what it is for.",
+      "expect": {
+        "tool": "my_turn",
+        "args": {}
+      }
+    }
+  ]
+}

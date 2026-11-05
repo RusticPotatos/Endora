@@ -7,7 +7,8 @@ rather than inventing a spot.
 
 Things landed in the wrong place because there was no map: the Mac's model setup went first
 onto the team's screen, then under Settings beside sign-in, when every other model already
-lived in AI. Each placement was reasonable on its own; none asked where models live.
+lived in AI; its card and busy switch stayed on HQ until the owner asked, on 31 Oct, why the Mac
+had its own place there. Each placement was reasonable on its own; none asked where models live.
 
 ## The console (the web app)
 
@@ -17,7 +18,7 @@ Settings.
 
 | Destination | What belongs there | What does not |
 |---|---|---|
-| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch, Mac busy) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
+| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
 | **Home lab** | The lab's containers, logs, jobs, now | Credentials (Vault), models (AI) |
 | **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
@@ -27,7 +28,7 @@ Settings.
 
 | Section | What belongs there |
 |---|---|
-| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees. A new model or model host goes here |
+| **AI** | **Every model** Endora or its team uses: which, where it runs (the NAS, the Mac, a cloud), its address and key, what it sees, and what is left with each paid provider (Claude's balance as the Console shows it, the thresholds; the balances themselves are chips on HQ). The Mac's card, beside the house's Everyday models: its state, the Mac busy switch and its setup (HQ says only a word of its state where a member's brain is named, "Mac (busy)"). A new model or model host goes here |
 | Connections | Outside services and tool servers Endora talks to (Home Assistant, the lab's services) |
 | Tools | What the team's turns may use from the house, and which ask you first (each skill's stance, ADR 0108) |
 | Your sign-in | Your password, authenticator, script tokens |
@@ -42,26 +43,79 @@ Settings.
 - One thing, one home. If two screens need it, one owns it and the other shows a line and a link.
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
 - The team is one team of loops ([ADR 0142](adr/0142-one-team-of-loops.md)): members are ranked
-  models with no roles, and each loop is a project with a plan, checks and a starting rank. A
+  models with no roles, and each loop is a project with a plan, checks, a starting rank and how many items it has in hand at once. A
   loop's plan and progress go in Work; its notes and the map go with what the team knows, in
   Team. Nothing new goes in for roles, reporting lines, conversations or office votes.
-- Inside HQ, use its four tabs (2026-10-25), and add no fifth without a reason none of them can
-  hold: **Now** (your desk, the digest of what happened while you were away, then the live
-  activity), **Team** (the people, the Mac, the office with its games, and what the team knows:
-  the world's pages and the house), **Work** (finding a task, conversations, the Holodeck, and
-  the team's health: guards and outcomes), **Manage** (every setting you own, each shown as it
-  stands). The office animation plays above every tab. The Holodeck's scenarios and trials are
-  work, so they are a card in Work, each opened step by step there, with the model league's table
-  in the same card (ADR 0135). Information conversations
-  also live in Work: one Conversations card, with nothing to set up (ADR 0139).
-  Explicit assistance requests, their results and project charges, source grants/revocation,
-  and cancellation stay inside that conversation's Work view; they add no top-level screen.
-  Something that needs your word goes on the desk; something you may want
-  to look at, but nothing waits on, goes in the digest. Fun and decoration go in the office, on
-  Team, never on Now above the desk. A switch for a guard that is tried in shadow sits on that guard's line of the
-  Guards card, in Work, and not in Settings; a turn that waits for tomorrow shows in the top bar
-  and in the outcomes, and is never a card. When HQ stops the team itself, that is a card on the
-  desk, because it needs your word.
+- A loop's lessons (ADR 0142, amended 2026-10-31) are kept with the loop in HQ's settings
+  (`loop_lessons:<project>`), and their rules (the `Lesson:` mark that starts a line of a
+  worker's last word or a reviewer's notes, and the limits) in the team's domain,
+  `domains/team/src/domain/lessons.rs`. The owner edits them whole through
+  `/v1/hq/projects/{id}/lessons`, beside the loop's rank and items; no screen yet.
+- A loop worked by one member alone (ADR 0142, amended 2026-11-01, round 4's solo arm) is a
+  setting of the loop's beside its rank and items (`loop_solo:<project>`, set through
+  `/v1/projects/{id}/solo`), and its rules are in the loops' engine
+  (`domains/team/src/application/engine/loops.rs`); no screen.
+- A round of the experiment under way (ADR 0142, amended 2026-11-01) is a setting of HQ's
+  (`round_running`, its items), set by `scripts/experiment.py start` through `/v1/round`, and its
+  rule (no downtime while an item is open) is the office's, in
+  `domains/team/src/application/engine/office.rs`; no screen.
+- A loop's repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) is a setting
+  of its project (`project_repo:<project>`), set by the owner through
+  `/v1/hq/projects/{id}/repo`; the rule of which addresses may be named is the kernel's
+  (`shared/kernel/src/lab.rs`, `outside_repo`), and the node's mirrors of such repositories sit
+  in its data folder under `outside-repos/`, beside the fork's. No screen yet.
+- Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
+  added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
+  them can hold: **Work**
+  (where every device opens: giving work, your desk, the digest of what happened while you were
+  away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
+  **Manage** (what you own and set, in this order (the owner's notes of 31 Oct): the money and
+  credits first (with what each model cost by week, a fold on the Money card), then goals and
+  their notes, then projects and their loops, with the routines among them as a kind of project
+  (still their own record, ADR 0107; the ones switched off fold away, and adding one is at the
+  foot of the Projects card); after those, the team board (a line a member: name, model, what it
+  is doing, today's money; the rest on a tap) and hiring, accepted work waiting to merge with its
+  two switches (ADR 0115, amended 2026-10-31), what the team may do on the home lab, what the
+  team knows — the world's pages and the house — and the office's games), **Health** (how
+  the team and the lab are doing: the scorecard and outcomes, the
+  turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
+  a "Running now" strip of the turns in progress, each with a Watch link to its live replay; the
+  latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
+  Older; never an endless scroll. What a line names opens where it already lives, with a way
+  back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
+  board; no new screen). The studio plays above every tab (the owner, 4 Nov; it replaced the office
+  floor; `47f-hq-studio.js`): a small research studio whose areas are told apart by their floors, glass
+  stubs and steps, not walls. Desks stand on oak planks under the board, and a desk's lamp and screen
+  are lit only while a turn runs there; a turn waiting to retry keeps its desk, dark, with an
+  hourglass. The owner's corner is one step up on blue tile: the decisions waiting on your desk as
+  papers, the kill-switch lever, the rack with today's spend, and the review table with a folder for
+  each item in review, where a stuck worker sits. The library alcove holds the week's done work as
+  spines by subject, pale when not verified; the lounge, one step down, has the sofas against a low
+  bookcase (a spine for each of the team's notes and map lines), the chess table where the live game's
+  players sit, and a kitchenette with stools for whoever else is free. Words appear only on the
+  board (the goal, open and stuck, who is on which subject), in a brief one-line bubble when a real
+  post arrives, and in what a tap opens under Looking at; a sign beside a head says stuck, a failed
+  check, waiting to retry, or recovered. Nothing is shown as progress or activity unless the record
+  says it happened, and a phone gets its own plan, the same areas stacked. Each tab shows one line per thing at rest and the rest on a tap: the
+  desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
+  project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
+  behind a fold. The console check measures each tab at rest and holds it to a budget; fold
+  something before raising one. The Holodeck's chess matches are work, so they are a card in
+  Work, each opened move by move there (ADR 0135; its other worlds and trials were retired on
+  2026-10-30). The model league has a fourth tab of its own, **Chess** (the owner's notes of
+  31 Oct: none of the three could hold a live board, a bracket and every game without breaking
+  its budget): the league's games in play with their boards, this round's bracket and
+  standings, and every finished game a page at a time with its PGN. The Work card says so in a
+  line with a way there and shows none of the league itself. The office's chess board stays: its
+  table stands in the studio's lounge, its games on Manage's Office card; it is a different game (ADR 0121). Information conversations also
+  live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
+  requests, their results and project charges, source grants/revocation, and cancellation stay
+  inside that conversation's Work view; they add no top-level screen. Something that needs your
+  word goes on the desk; something you may want to look at, but nothing waits on, goes in the
+  digest. Fun and decoration go in the office, on Manage, never in Work above the desk. A switch
+  for a guard that is tried in shadow sits on that guard's line, in Health, and not in Settings;
+  a turn that waits for tomorrow shows in the top bar and in the outcomes, and is never a card.
+  When HQ stops the team itself, that is a card on the desk, because it needs your word.
 
 ## The repository
 
@@ -72,11 +126,12 @@ Settings.
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
-| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js` |
+| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), its studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
-| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`) |
+| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi, which stops at any failing stage; `test-release.sh` holds it to that against fakes); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo); `harness-probes/` (the agentic-harness climb's rig: seeded probe families, their graders, both arms' runners and accounting; see its `PROTOCOL.md`; its runs' data stays outside the repo) |
+| `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |

@@ -5,23 +5,28 @@
 //! what the HQ screen would show.
 
 use std::collections::HashMap;
+
+use endora_team::application::office_ports::OfficeStore;
+
+use endora_team::application::run_ports::RunStore;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
+use endora_team::application::desk_ports::DeskStore;
 use endora_team::application::engine::Called;
+use endora_team::application::event_ports::EventStore;
 use endora_team::application::protocol::call;
 use endora_team::application::{
     Author, Clock, Engine, NewRoutine, NewTask, RunContext, Settings, Submission, TeamStore,
-    WingSeeded,
 };
-use endora_team::domain::money::{DAY_MS, DOLLAR};
+use endora_team::domain::money::DOLLAR;
 use endora_team::domain::routines::HOUR_MS;
 use endora_team::domain::{
-    Criterion, DeskId, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus,
-    Receipt, Role, TaskId, WakeReason,
+    Criterion, GoalId, MemberId, Micros, Pause, Priority, ProjectId, ProjectStatus, Receipt,
+    TaskId, WakeReason,
 };
 use endora_team::infrastructure::{SimulatedRunner, SqliteTeamStore};
 use serde_json::json;
@@ -46,6 +51,10 @@ mod mac;
 #[path = "scenarios/brains.rs"]
 mod brains;
 
+/// The pool follows the Claude credit (ADR 0113, amended 2026-10-31), in its own file.
+#[path = "scenarios/credit.rs"]
+mod credit;
+
 /// What the team's work came to (ADR 0132), in its own file.
 #[path = "scenarios/outcomes.rs"]
 mod outcomes;
@@ -62,6 +71,10 @@ mod caps;
 #[path = "scenarios/drains.rs"]
 mod drains;
 
+/// A turn that can go on again is taken up at once (ADR 0102, amended 2026-11-04, round 17).
+#[path = "scenarios/recovery.rs"]
+mod recovery;
+
 /// What done means comes first (ADR 0124, amended), in its own file.
 #[path = "scenarios/criteria.rs"]
 mod criteria;
@@ -73,6 +86,50 @@ mod deploys;
 /// An area's work leaves it only by its lead's hand (ADR 0120, amended), in its own file.
 #[path = "scenarios/areas.rs"]
 mod areas;
+
+/// The owner's setup of a member and a loop never strands a turn (round 2's D1 and D4), in its
+/// own file.
+#[path = "scenarios/setup.rs"]
+mod setup;
+
+/// What wakes an item in the loops (ADR 0142, amended 2026-10-31), in its own file.
+#[path = "scenarios/loops.rs"]
+mod loops;
+
+/// A long item makes progress across turns (ADR 0142, amended 2026-10-31, D12), in its own
+/// file.
+#[path = "scenarios/long_items.rs"]
+mod long_items;
+
+/// One team of loops (ADR 0142, amended 2026-10-30): items side by side, handovers, a fresh
+/// turn when one runs out of room, HQ's checks at review and briefings sized to the turn; in its
+/// own file.
+#[path = "scenarios/items.rs"]
+mod items;
+
+/// What every pass reads first (ADR 0142, amended 2026-10-31, after Ralph), in its own file.
+#[path = "scenarios/lessons.rs"]
+mod lessons;
+
+/// Who reviews an item, and a CI run HQ cannot get (ADR 0142, amended 2026-10-31), in its own
+/// file.
+#[path = "scenarios/reviews.rs"]
+mod reviews;
+
+/// Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31), in its own
+/// file.
+#[path = "scenarios/delivery.rs"]
+mod delivery;
+
+/// The judge tested on known-good and known-bad work, for its verdict's delivery and what HQ's
+/// rules find (the baseline experiment's round 4, item D), in its own file.
+#[path = "scenarios/judge.rs"]
+mod judge;
+
+/// A branch outside the lab is never given the lab's check (ADR 0115, amended 2026-11-01), in
+/// its own file.
+#[path = "scenarios/outside.rs"]
+mod outside;
 
 /// 17 October 2026, at noon UTC: the day of the live incident the first scenarios come from.
 const OCT_17: i64 = 1_792_238_400_000;
@@ -93,6 +150,8 @@ type Hq = Engine<SqliteTeamStore, SimulatedRunner, Hands>;
 #[derive(World)]
 struct Office {
     hq: Hq,
+    /// How many times the engine has asked for a pass of the tick (the owner's new work).
+    passes_asked: Arc<AtomicUsize>,
     /// Members by name, as the owner hired them.
     members: HashMap<String, MemberId>,
     /// The goal the scenario set.
@@ -104,10 +163,8 @@ struct Office {
     /// What the engine last refused, as the member or the owner reads it; `None` when the
     /// last thing asked was done.
     refused: Option<String>,
-    /// Whether HQ seeded its house log the last time it started.
-    seeded: Option<bool>,
     /// The engineering wing, once seeded (ADR 0115).
-    wing: Option<WingSeeded>,
+    wing: Option<Wing>,
     /// The clock the engine reads, for steps that let days pass.
     clock: Hands,
     /// What the record last answered a member (ADR 0129), and how many wakes there were when
@@ -148,20 +205,25 @@ impl Office {
 impl Default for Office {
     fn default() -> Self {
         let clock = Hands(Arc::new(AtomicI64::new(OCT_17)));
+        let passes_asked = Arc::new(AtomicUsize::new(0));
+        let counted = passes_asked.clone();
         Self {
             hq: Engine::new(
                 SqliteTeamStore::in_memory().expect("an in-memory store"),
                 SimulatedRunner::new(4),
                 clock.clone(),
                 Settings::default(),
-            ),
+            )
+            .with_pass_requests(Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })),
+            passes_asked,
             clock,
             members: HashMap::new(),
             goal: None,
             projects: HashMap::new(),
             turns: HashMap::new(),
             refused: None,
-            seeded: None,
             wing: None,
             answer: None,
             wakes_at_ask: 0,
@@ -310,6 +372,164 @@ impl Office {
         let made = self.hq.add_task(by, task);
         self.note(made)
     }
+
+    // ---- One helper a job, for every feature's steps (review of 31 Oct) --------------------
+
+    /// The owner's team member `name`, one model (ADR 0142).
+    fn hires_model(&mut self, name: &str, model: &str) {
+        let id = self.hq.hire(name, 10, 2, 0).expect("HQ hires");
+        self.hq.set_model(id, model).expect("a model Endora has");
+        self.members.insert(name.to_owned(), id);
+    }
+
+    /// A loop: a project of the scenario's goal, led by `lead`.
+    fn makes_loop(&mut self, title: &str, lead: MemberId) {
+        let goal = self.goal();
+        let id = self
+            .hq
+            .add_project(goal, title, "the fork's work", lead, None)
+            .expect("the owner adds the loop");
+        self.projects.insert(title.to_owned(), id);
+    }
+
+    /// A loop item: the owner puts it on the loop's plan, for nobody yet.
+    fn loop_item(&mut self, project: &str, title: &str, description: &str, criteria: &[Criterion]) {
+        let goal = self.goal();
+        let project = self.project(project).id;
+        let task = NewTask {
+            goal,
+            project: Some(project),
+            parent: None,
+            title: title.to_owned(),
+            description: description.to_owned(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        // Work with criteria is handed out as the owner's console does; without, as the plan's.
+        let added = if criteria.is_empty() {
+            self.hq.add_task(Author::Owner, task)
+        } else {
+            self.hq.add_task_with(Author::Owner, task, criteria)
+        };
+        if self.note(added).is_none() {
+            panic!("the owner puts work on a loop: {:?}", self.refused);
+        }
+    }
+
+    /// Who holds `title` now, by name, as the HQ screen shows it.
+    fn holder_of(&self, title: &str) -> Option<String> {
+        let found = self
+            .hq
+            .store()
+            .task(self.task(title))
+            .expect("the store answers")
+            .expect("a task");
+        let id = found.holder()?;
+        self.members
+            .iter()
+            .find(|(_, m)| **m == id)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// How many of its failures `title` has at its holder's rank.
+    fn failures(&self, title: &str) -> u32 {
+        self.hq
+            .loop_failures(self.task(title))
+            .expect("the store answers")
+    }
+
+    /// A reading `name`'s running turn takes, as the node records it: its receipt's id.
+    fn reads(&mut self, name: &str, tool: &str, args: &str, got: &str) -> i64 {
+        let context = self.turn_of(name);
+        self.hq
+            .record_receipt(
+                &context.token,
+                &Called {
+                    tool: tool.to_owned(),
+                    args: args.to_owned(),
+                    excerpt: got.to_owned(),
+                    ok: true,
+                    act: false,
+                    confidential: false,
+                },
+            )
+            .expect("the node's receipt")
+    }
+
+    /// `name`'s running turn ends, and HQ ticks.
+    fn ends_turn(&mut self, name: &str) {
+        let context = self.turn_of(name);
+        self.hq.runner().finish(context.run, true);
+        self.tick();
+    }
+
+    /// The worker ends `name`'s running turn at its prompt's budget: the relay has metered
+    /// `read` prompt tokens of the turn's calls, and the worker posts `text` as the turn's last
+    /// word, marked as going on (only the worker sets the mark); the turn ends. What HQ
+    /// answered is kept as the answer, and returned.
+    fn runs_out_of_room(&mut self, name: &str, read: i64, text: &str) -> String {
+        let context = self.turn_of(name);
+        let task = context.task.expect("a turn on an item");
+        self.hq
+            .note_tokens(context.run, read, 0, 0, 500)
+            .expect("the relay meters the turn's calls");
+        let said = self
+            .use_tool(
+                name,
+                "post",
+                &json!({ "task": task.0, "last_word": true, "continues": true, "text": text }),
+            )
+            .unwrap_or_else(|| panic!("the last word is posted: {:?}", self.refused));
+        self.answer = Some(said.clone());
+        self.ends_turn(name);
+        said
+    }
+
+    /// `name` asks for review of `task` in its running turn, saying `reason` and citing
+    /// `evidence` (the `set_status` tool's own), and its turn ends.
+    fn asks_for_review(
+        &mut self,
+        name: &str,
+        task: TaskId,
+        reason: &str,
+        evidence: &serde_json::Value,
+    ) {
+        let said = self
+            .use_tool(
+                name,
+                "set_status",
+                &json!({ "task": task.0, "status": "in_review", "reason": reason,
+                         "evidence": evidence }),
+            )
+            .unwrap_or_else(|| panic!("the work goes to review: {:?}", self.refused));
+        self.answer = Some(said);
+        self.ends_turn(name);
+    }
+
+    /// The reviewer's turn on `task`: it was asked to review, and gives its verdict with
+    /// `notes` (a pass citing a reading of its own), and its turn ends.
+    fn reviews(&mut self, name: &str, task: TaskId, approve: bool, notes: &str) {
+        let member = self.member(name);
+        assert!(
+            self.hq
+                .wakes()
+                .expect("the store answers")
+                .iter()
+                .any(|w| w.member == member && w.reason == WakeReason::ReviewRequested),
+            "{name} is asked to review #{}",
+            task.0
+        );
+        let mut args = json!({ "task": task.0, "notes": notes,
+            "verdict": if approve { "approve" } else { "send_back" } });
+        if approve {
+            let reading = self.reads(name, "container_logs", "gluetun", "healthy");
+            args["evidence"] = json!([[format!("r{reading}")]]);
+        }
+        self.use_tool(name, "review", &args)
+            .unwrap_or_else(|| panic!("the review is taken: {:?}", self.refused));
+        self.ends_turn(name);
+    }
 }
 
 /// Dollars as the owner writes them, in the ledger's micros.
@@ -325,48 +545,42 @@ fn alarm(w: &mut Office, said: String) {
 
 // --- The team ----------------------------------------------------------------------------
 
-/// The owner hires a member by role.
+/// The owner hires a member, its title a name only (ADR 0142): the title the scenario gives
+/// it sets the share and slots the member was hired with when titles were roles.
 #[given(expr = "{word} is the {word}")]
-fn hire(w: &mut Office, name: String, role: String) {
-    if role == "CEO" {
-        let id =
-            w.hq.hire(&name, Role::Ceo, 35, 1, 3)
-                .expect("the owner hires a CEO");
+fn hire(w: &mut Office, name: String, title: String) {
+    if title == "CEO" {
+        let id = w.hq.hire(&name, 35, 1, 3).expect("the owner hires a CEO");
         w.hq.set_brain(id, "claude-opus-5-5")
             .expect("a CEO thinks with Opus");
         w.members.insert(name, id);
         return;
     }
-    let (role, share) = match role.as_str() {
-        "lead" => (Role::Lead, 25),
-        "developer" => (Role::Developer, 40),
-        // The reviewer's role is what the owner reads as the tester (ADR 0114).
-        "reviewer" | "tester" => (Role::Reviewer, 20),
-        "researcher" => (Role::Researcher, 15),
-        other => panic!("the team has no role called {other}"),
+    let share = match title.as_str() {
+        "lead" => 25,
+        "developer" => 40,
+        "reviewer" | "tester" => 20,
+        "researcher" => 15,
+        other => panic!("the team never had a title called {other}"),
     };
-    let id = w.hq.hire(&name, role, share, 2, 0).expect("HQ hires");
+    let id = w.hq.hire(&name, share, 2, 0).expect("HQ hires");
     w.members.insert(name, id);
 }
 
 #[given(expr = "{word} thinks with Claude")]
 fn thinks_with_claude(w: &mut Office, name: String) {
     let id = w.member(&name);
-    let role =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired")
-            .role;
-    let brain = if role == Role::Researcher {
-        "claude-haiku-5-5"
-    } else {
-        "claude-sonnet-5-5"
-    };
-    w.hq.set_brain(id, brain)
-        .expect("a brain the role may think with");
+    w.hq.set_brain(id, "claude-sonnet-5-5")
+        .expect("a brain a member may think with");
+}
+
+/// A member on Claude's cheapest model, which most of the pool goes to (ADR 0113, amended
+/// 2026-11-01).
+#[given(expr = "{word} thinks with Claude Haiku")]
+fn thinks_with_claude_haiku(w: &mut Office, name: String) {
+    let id = w.member(&name);
+    w.hq.set_brain(id, "claude-haiku-5-5")
+        .expect("a brain a member may think with");
 }
 
 #[when(regex = r#"^the owner sets (\w+)'s brain to "(.+)"$"#)]
@@ -440,11 +654,12 @@ fn owner_hands_in_project(w: &mut Office, name: String, title: String, project: 
     .expect("the owner may hand out what they like");
 }
 
-#[given(expr = "{word} hands {word} the task {string} under {string}")]
-#[when(expr = "{word} hands {word} the task {string} under {string}")]
-fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent: String) {
+/// A member splits a task off one it holds: its own, since a member hands work to nobody
+/// (ADR 0142).
+#[given(expr = "{word} splits off the task {string} under {string}")]
+#[when(expr = "{word} splits off the task {string} under {string}")]
+fn member_splits_off(w: &mut Office, by: String, title: String, parent: String) {
     let by = w.member(&by);
-    let to = w.member(&to);
     let goal = w.goal();
     let parent = w.task(&parent);
     w.add_task(
@@ -455,7 +670,7 @@ fn member_hands_on(w: &mut Office, by: String, to: String, title: String, parent
             parent: Some(parent),
             title,
             description: String::new(),
-            assignee: Some(to),
+            assignee: Some(by),
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
@@ -513,6 +728,7 @@ fn last_post(w: &mut Office, post: String, title: String) {
 
 // --- Turns, tools and the chain of command ----------------------------------------------------
 
+#[given(regex = r"^(\w+)'s turn starts$")]
 #[when(regex = r"^(\w+)'s turn starts$")]
 fn turn_starts(w: &mut Office, name: String) {
     w.turn_of(&name);
@@ -622,7 +838,7 @@ fn turns_spend(w: &mut Office, name: String, title: String, first: f64, second: 
     let task = w.task(&title);
     for amount in [first, second] {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide.
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         let context = w.turn_of(&name);
         assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
@@ -682,7 +898,7 @@ fn spent_of_share(w: &mut Office, name: String, dollars: f64) {
         // Only a turn of judgment is paid for (ADR 0131): the member is asked to decide, and
         // the first of these joins the turn Endora's handing queued.
         let task = w.task(&title);
-        w.hq.wake(member, Some(task), WakeReason::Decide)
+        w.hq.wake(member, Some(task), WakeReason::ProposalDecided)
             .expect("a wake has a receipt");
         turn_spends(w, &name, &title, amount);
         left -= amount;
@@ -713,6 +929,42 @@ fn share_spent(w: &mut Office, name: String) {
     assert!(used >= share, "{name} used {used} of {share}");
 }
 
+impl Office {
+    /// `name`'s share for today, as the roster shows it.
+    fn share_today(&self, name: &str) -> Micros {
+        let member = self.member(name);
+        self.hq.snapshot().expect("the snapshot is built")["members"]
+            .as_array()
+            .expect("members")
+            .iter()
+            .find(|m| m["id"] == member.0)
+            .expect("on the team")["per_day"]
+            .as_i64()
+            .expect("a share")
+    }
+}
+
+#[then(regex = r"^(\w+)'s share for today is more than half the pool's day$")]
+fn share_over_half(w: &mut Office, name: String) {
+    let day = w.hq.snapshot().expect("the snapshot is built")["pool"]["per_day"]
+        .as_i64()
+        .expect("the pool's day");
+    let share = w.share_today(&name);
+    assert!(share * 2 > day, "{name}'s {share} of {day}");
+}
+
+#[then(
+    regex = r"^(\w+)'s share for today is more than (\w+)'s on \w+ and (\w+)'s on \w+ together$"
+)]
+fn share_over_both(w: &mut Office, name: String, one: String, other: String) {
+    let (share, one, other) = (
+        w.share_today(&name),
+        w.share_today(&one),
+        w.share_today(&other),
+    );
+    assert!(share > one + other, "{share} against {one} and {other}");
+}
+
 #[then(regex = r"^the pool shows \$(\d+\.\d\d) spent today$")]
 fn pool_spent(w: &mut Office, dollars: f64) {
     let snap = w.hq.snapshot().expect("the snapshot is built");
@@ -740,31 +992,24 @@ impl Office {
 
 #[when(regex = r"^(\w+)'s turn ends$")]
 fn turn_ends(w: &mut Office, name: String) {
-    let context = w
-        .turns
-        .get(&name)
-        .unwrap_or_else(|| panic!("{name}'s turn has not started"))
-        .clone();
-    w.hq.runner().finish(context.run, true);
-    w.tick();
+    w.ends_turn(&name);
 }
 
 /// The member takes its task and hands it in, citing the task as what counts (the owner's
 /// work gave no criteria), and its turn ends.
+#[given(expr = "{word} submits {string} for review")]
 #[when(expr = "{word} submits {string} for review")]
 fn submits(w: &mut Office, name: String, title: String) {
     let task = w.task(&title);
     w.use_tool(&name, "claim", &json!({ "task": task.0 }))
         .expect("the member takes its task");
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "in_review", "reason": "ready for a look",
-                 "evidence": [format!("task {}", task.0)] }),
-    )
-    .expect("the work goes to review");
     // Its turn is over; the tester's wake was held while it ran on the task.
-    turn_ends(w, name);
+    w.asks_for_review(
+        &name,
+        task,
+        "ready for a look",
+        &json!([format!("task {}", task.0)]),
+    );
 }
 
 #[when(expr = "the owner drops the task {string}")]
@@ -792,49 +1037,64 @@ fn scorecard_waste(w: &mut Office, dollars: f64) {
     );
 }
 
-// --- The house log --------------------------------------------------------------------------
-
-#[when("HQ starts with an empty house log")]
-#[when("the owner clears the house log and HQ starts again")]
-fn hq_starts(w: &mut Office) {
-    if w.seeded.is_some() {
-        w.hq.set_house_log("").expect("the owner clears the log");
-    }
-    w.seeded = Some(w.hq.seed_house_log().expect("HQ starts"));
-}
-
-#[then(expr = "the house log says {string}")]
-fn house_log_says(w: &mut Office, text: String) {
-    assert_eq!(w.seeded, Some(true), "HQ did not seed the log");
-    let log = w.hq.house_log().expect("the store answers");
-    assert!(log.contains(&text), "the house log:\n{log}");
-}
-
-#[then("the house log stays empty")]
-fn house_log_empty(w: &mut Office) {
-    assert_eq!(w.seeded, Some(false), "HQ seeded the log again");
-    assert_eq!(w.hq.house_log().expect("the store answers"), "");
-}
-
 // --- The engineering wing (ADR 0115) --------------------------------------------------------
 
-/// HQ seeds the wing as it does on start: Kit the lead, Rae and Zed the developers, the goal
-/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task.
-#[given("the engineering wing")]
-fn the_wing(w: &mut Office) {
-    let seeded =
-        w.hq.seed_wing()
-            .expect("HQ seeds the wing")
-            .expect("not seeded yet");
-    for m in w.hq.store().members().expect("the store answers") {
-        w.members.entry(m.name.clone()).or_insert(m.id);
-    }
-    w.projects
-        .insert("ansible-nas clean-up".to_owned(), seeded.project);
-    w.wing = Some(seeded);
+/// The wing's goal, its project, and the lead's first task, the plan.
+#[derive(Debug)]
+struct Wing {
+    goal: GoalId,
+    project: ProjectId,
+    task: TaskId,
 }
 
-/// A member's first turn, the one HQ queues when it seeds the wing (Kit's, on the plan), is over.
+/// The wing: Kit the lead on Claude Sonnet, Rae and Zed the developers on Claude Haiku, the goal
+/// "Improve the lab" and the project "ansible-nas clean-up", with Kit's first task, the plan.
+#[given("the engineering wing")]
+fn the_wing(w: &mut Office) {
+    let kit = w.hq.hire("Kit", 25, 2, 5).expect("Kit is hired");
+    w.hq.set_brain(kit, "claude-sonnet-5-5")
+        .expect("Kit thinks with Sonnet");
+    w.members.insert("Kit".to_owned(), kit);
+    for (name, look) in [("Rae", 2), ("Zed", 4)] {
+        let id =
+            w.hq.hire(name, 40, 2, look)
+                .expect("the developer is hired");
+        w.hq.set_brain(id, "claude-haiku-5-5")
+            .expect("the developer thinks with Haiku");
+        w.members.insert(name.to_owned(), id);
+    }
+    let goal =
+        w.hq.set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
+            .expect("the wing's goal is set");
+    let project =
+        w.hq.add_project(goal, endora_team::domain::wing::WING_PROJECT, "", kit, None)
+            .expect("the wing's project is made");
+    let task =
+        w.hq.add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the clean-up".to_owned(),
+                description: String::new(),
+                assignee: Some(kit),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Three branches are proposed", false)],
+        )
+        .expect("Kit is given the plan");
+    w.projects
+        .insert("ansible-nas clean-up".to_owned(), project);
+    w.wing = Some(Wing {
+        goal,
+        project,
+        task,
+    });
+}
+
+/// A member's first turn, the one the plan queues (Kit's, on the plan), is over.
 /// The Mac takes one turn at a time (ADR 0131), and the scenario is about the others'.
 #[given(expr = "{word}'s planning turn is over")]
 fn planning_turn_is_over(w: &mut Office, name: String) {
@@ -843,47 +1103,17 @@ fn planning_turn_is_over(w: &mut Office, name: String) {
     w.tick();
 }
 
-fn wing(w: &Office) -> &WingSeeded {
+fn wing(w: &Office) -> &Wing {
     w.wing.as_ref().expect("the scenario has the wing")
 }
 
-#[given(expr = "{word} hands {word} the task {string} in the wing")]
-fn wing_hands(w: &mut Office, by: String, to: String, title: String) {
-    hand_in_the_wing(
-        w,
-        &by,
-        &to,
-        title,
-        vec![Criterion::new("The branch passes its checks", false)],
-    );
-}
-
-/// As above, with what done means as the owner wrote it: a line of the step's table each.
-#[given(expr = "{word} hands {word} the task {string} in the wing, with the criteria")]
-fn wing_hands_with_criteria(
-    w: &mut Office,
-    by: String,
-    to: String,
-    title: String,
-    step: &cucumber::gherkin::Step,
-) {
-    let criteria: Vec<Criterion> = step
-        .table
-        .as_ref()
-        .expect("the criteria are the step's table")
-        .rows
-        .iter()
-        .map(|row| Criterion::new(&row[0], false))
-        .collect();
-    hand_in_the_wing(w, &by, &to, title, criteria);
-}
-
-fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria: Vec<Criterion>) {
-    let by = w.member(by);
-    let to = w.member(to);
+/// The owner hands a member of the wing a task under the plan, with the wing's criterion.
+#[given(expr = "the owner hands {word} the task {string} in the wing")]
+fn wing_hands(w: &mut Office, to: String, title: String) {
+    let to = w.member(&to);
     let (goal, project, plan) = (wing(w).goal, wing(w).project, wing(w).task);
     w.hq.add_task_with(
-        Author::Member(by),
+        Author::Owner,
         NewTask {
             goal,
             project: Some(project),
@@ -894,9 +1124,9 @@ fn hand_in_the_wing(w: &mut Office, by: &str, to: &str, title: String, criteria:
             priority: Priority::Normal,
             waits_on: Vec::new(),
         },
-        &criteria,
+        &[Criterion::new("The branch passes its checks", false)],
     )
-    .expect("the lead hands work on");
+    .expect("the owner hands work out");
 }
 
 /// The head the node's record of a submission has in these scenarios, and the base under it.
@@ -905,6 +1135,7 @@ const SUBMITTED_BASE: &str = "0123456789abcdef01234567";
 
 /// The node took the member's branch (`repo_submit`) and tells HQ, with the turn's token; and
 /// the receipt of that call, as the node writes one (an act, which the member may cite).
+#[given(expr = "{word} submits the branch {string}")]
 #[when(expr = "{word} submits the branch {string}")]
 fn submits_branch(w: &mut Office, name: String, branch: String) {
     let context = w.turn_of(&name);
@@ -920,6 +1151,9 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
             stat: " roles/deluge/tasks/main.yml | 5 ++--".to_owned(),
             diff: "-old\n+new".to_owned(),
             can_push: true,
+            changed: Vec::new(),
+            texts: Vec::new(),
+            workflows: None,
         },
     )
     .expect("the node's record is taken");
@@ -937,166 +1171,6 @@ fn submits_branch(w: &mut Office, name: String, branch: String) {
     .expect("the node's receipt of the submission");
 }
 
-// --- The check after a deploy (ADR 0115, amended) ----------------------------------------------
-
-/// The routine that takes the home lab's alarms, the member's, in a project it leads.
-#[given(expr = "the lab's routine is {word}'s, in {string}")]
-fn lab_routine_is(w: &mut Office, name: String, project: String) {
-    let lead = w.member(&name);
-    let goal = w.goal();
-    let project =
-        w.hq.add_project(goal, &project, "", lead, None)
-            .expect("the owner adds the project");
-    w.hq.add_routine(
-        Author::Owner,
-        NewRoutine {
-            title: "Check the home lab".to_owned(),
-            description: String::new(),
-            goal,
-            project: Some(project),
-            assignee: lead,
-            every_ms: 7 * DAY_MS,
-            on_lab_trouble: true,
-        },
-    )
-    .expect("the owner adds the routine");
-}
-
-/// The tester and the lead have done their part, and the owner had the branch pushed: the node
-/// says it pushed it.
-#[when(expr = "{string} is accepted and pushed")]
-fn accepted_and_pushed(w: &mut Office, title: String) {
-    let task = w.task(&title);
-    w.hq.store()
-        .set_task_status(task, endora_team::domain::TaskStatus::Done)
-        .expect("the store answers");
-    w.hq.offer_push(task).expect("the push is offered");
-    let push = newest_card(w, "push");
-    w.hq.decide(push, "approve").expect("the owner approves");
-    let branch =
-        w.hq.push_asked(push)
-            .expect("the store answers")
-            .expect("asked");
-    w.hq.push_outcome(push, true, &format!("Pushed {} to the fork.", branch.name))
-        .expect("the node's word is taken");
-}
-
-/// The newest desk item of `kind`, whatever its status.
-fn newest_card(w: &Office, kind: &str) -> DeskId {
-    w.hq.store()
-        .desk()
-        .expect("the store answers")
-        .into_iter()
-        .filter(|d| d.kind == kind)
-        .map(|d| d.id)
-        .max_by_key(|id| id.0)
-        .unwrap_or_else(|| panic!("no {kind} card"))
-}
-
-#[then(expr = "the owner's desk asks whether {string} is deployed")]
-fn desk_asks_deployed(w: &mut Office, branch: String) {
-    let items = w.waiting_on_desk("deploy");
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert!(items[0].text.contains(&branch), "{}", items[0].text);
-}
-
-#[when("the owner says it is deployed")]
-fn owner_says_deployed(w: &mut Office) {
-    let card = newest_card(w, "deploy");
-    let said = w.hq.decide(card, "deployed");
-    w.note(said);
-}
-
-/// The member's turn on that task: other turns under way end first, as the Mac takes one at a
-/// time; the worker claims the task before the model's first round.
-#[when(expr = "{word}'s turn on {string} starts")]
-fn turn_on_starts(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let id = w.member(&name);
-    for _ in 0..8 {
-        w.tick();
-        let started = w.hq.runner().started();
-        if let Some(context) = started
-            .iter()
-            .rfind(|c| c.member == id && c.task == Some(task))
-            .cloned()
-        {
-            w.turns.insert(name.clone(), context);
-            w.use_tool(&name, "claim", &json!({ "task": task.0 }));
-            return;
-        }
-        for other in started {
-            w.hq.runner().finish(other.run, true);
-        }
-    }
-    panic!("{name}'s turn on {title:?} never started");
-}
-
-#[then(expr = "{word}'s turn is offered {string} alone")]
-fn offered_alone(w: &mut Office, name: String, tools: String) {
-    let context = w.turns.get(&name).expect("the turn started").clone();
-    let (run, member) =
-        w.hq.turn_of(&context.token)
-            .expect("the store answers")
-            .expect("a running turn");
-    let mut offered: Vec<String> =
-        endora_team::application::protocol::tools_in(&w.hq, &run, &member)
-            .as_array()
-            .expect("a list")
-            .iter()
-            .filter_map(|t| t["name"].as_str().map(str::to_owned))
-            .collect();
-    offered.sort();
-    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
-    assert_eq!(offered, wanted);
-}
-
-#[then(expr = "{word}'s turn may use the lab's {string} alone, with no shell")]
-fn lab_reads_alone(w: &mut Office, name: String, tools: String) {
-    let run = w.turns.get(&name).expect("the turn started").run;
-    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
-    assert_eq!(
-        w.hq.lab_tools_of(run).expect("the store answers"),
-        Some(wanted)
-    );
-    assert!(!w.hq.may_use_a_shell(run).expect("the store answers"));
-}
-
-#[when(expr = "{word} uses {string} in her turn")]
-fn uses_in_turn(w: &mut Office, name: String, tool: String) {
-    w.use_tool(
-        &name,
-        &tool,
-        &json!({ "title": "Restart deluge", "assignee": "Dee" }),
-    );
-}
-
-/// The node's reading of the lab, kept as the turn's receipt, cited to close the check.
-#[when(expr = "{word} reads the lab and closes {string}, citing her reading")]
-fn reads_and_closes(w: &mut Office, name: String, title: String) {
-    let task = w.task(&title);
-    let context = w.turns.get(&name).expect("the turn started").clone();
-    let reading =
-        w.hq.record_receipt(
-            &context.token,
-            &Called {
-                tool: "homelab_status".to_owned(),
-                args: String::new(),
-                excerpt: "every container running (healthy)".to_owned(),
-                ok: true,
-                act: false,
-                confidential: false,
-            },
-        )
-        .expect("the node's receipt");
-    w.use_tool(
-        &name,
-        "set_status",
-        &json!({ "task": task.0, "status": "done", "reason": "the lab is healthy",
-                 "evidence": [[format!("r{reading}")]] }),
-    );
-}
-
 #[then(expr = "the last post in {string} starts {string}")]
 fn last_post_starts(w: &mut Office, title: String, start: String) {
     let task = w.task(&title);
@@ -1109,15 +1183,8 @@ fn last_post_starts(w: &mut Office, title: String, start: String) {
     assert!(last.text.starts_with(&start), "{}", last.text);
 }
 
-#[then(expr = "the owner's desk holds a {string} card saying {string}")]
-fn desk_card_saying(w: &mut Office, kind: String, text: String) {
-    let items = w.waiting_on_desk(&kind);
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert!(items[0].text.contains(&text), "{}", items[0].text);
-    assert!(!items[0].text.contains("healthy"), "{}", items[0].text);
-}
-
 /// As above, with the line the check job gives: both counts, and the verdict against develop.
+#[given(expr = "the check passes: {string}")]
 #[when(expr = "the check passes: {string}")]
 fn check_passes_saying(w: &mut Office, summary: String) {
     let check =
@@ -1175,29 +1242,13 @@ fn task_is(w: &mut Office, title: String, status: String) {
     assert_eq!(found.status.name(), status);
 }
 
-#[given(expr = "the owner hires {word} as a {word} under {word}")]
-#[when(expr = "the owner hires {word} as a {word} under {word}")]
-fn owner_hires(w: &mut Office, name: String, role: String, under: String) {
-    let role = Role::from_name(&role).unwrap_or_else(|| panic!("no role {role}"));
-    let manager = w.member(&under);
-    let hired = w.hq.hire_by_owner(&name, role, "local", Some(manager));
+#[given(expr = "the owner hires {word} as a {word}")]
+#[when(expr = "the owner hires {word} as a {word}")]
+fn owner_hires(w: &mut Office, name: String, _title: String) {
+    let hired = w.hq.hire_by_owner(&name, "local");
     if let Some(id) = w.note(hired) {
         w.members.insert(name, id);
     }
-}
-
-#[then(expr = "{word} reports to {word}")]
-fn reports_to(w: &mut Office, name: String, manager: String) {
-    let id = w.member(&name);
-    let manager = w.member(&manager);
-    let found =
-        w.hq.store()
-            .members()
-            .expect("the store answers")
-            .into_iter()
-            .find(|m| m.id == id)
-            .expect("hired");
-    assert_eq!(found.reports_to, Some(manager));
 }
 
 #[then(expr = "it is refused for {string}")]
@@ -1349,9 +1400,161 @@ fn downtime_on(w: &mut Office) {
     w.hq.set_downtime(true);
 }
 
+#[then(expr = "{word}'s turn is offered {string} alone")]
+fn offered_alone(w: &mut Office, name: String, tools: String) {
+    let context = w.turns.get(&name).expect("the turn started").clone();
+    let (run, member) =
+        w.hq.turn_of(&context.token)
+            .expect("the store answers")
+            .expect("a running turn");
+    let mut offered: Vec<String> =
+        endora_team::application::protocol::tools_in(&w.hq, &run, &member)
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+    offered.sort();
+    let wanted: Vec<String> = tools.split(", ").map(str::to_owned).collect();
+    assert_eq!(offered, wanted);
+}
+
+#[given("a tick passes")]
 #[when("a tick passes")]
 fn a_tick_passes(w: &mut Office) {
     w.tick();
+}
+
+// --- A turn's model is kept as the provider named it -------------------------------------------
+
+#[when(regex = r#"^the node says a call of (\w+)'s turn was answered by "(.+)"$"#)]
+fn node_says_served(w: &mut Office, name: String, served: String) {
+    let run = w.turn_of(&name).run;
+    w.hq.note_served_model(run, Some(&served))
+        .expect("HQ keeps what the node says");
+}
+
+#[when(regex = r"^the node says a call of (\w+)'s turn was answered without naming its model$")]
+fn node_says_unnamed(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    w.hq.note_served_model(run, None)
+        .expect("HQ keeps what the node says");
+}
+
+#[then(regex = r#"^(\w+)'s turn asked for "(.+)"$"#)]
+fn turn_asked_for(w: &mut Office, name: String, model: String) {
+    let run = w.turn_of(&name).run;
+    let asked =
+        w.hq.store()
+            .run(run)
+            .expect("the store answers")
+            .expect("the run")
+            .brain;
+    assert_eq!(asked.map(|b| b.name().to_owned()), Some(model));
+}
+
+#[then(regex = r#"^(\w+)'s turn was answered by "(.+)" in (\d+) calls?$"#)]
+fn turn_answered_by(w: &mut Office, name: String, served: String, calls: u32) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.contains(&(Some(served), calls)), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn has (\d+) calls? whose model is not known$")]
+fn turn_unknown_calls(w: &mut Office, name: String, calls: u32) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.contains(&(None, calls)), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn has no call whose model is not known$")]
+fn turn_no_unknown(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.iter().all(|(m, _)| m.is_some()), "{models:?}");
+}
+
+#[then(regex = r"^(\w+)'s turn was answered by no named model$")]
+fn turn_no_named(w: &mut Office, name: String) {
+    let run = w.turn_of(&name).run;
+    let models = w.hq.served_models(run).expect("the store answers");
+    assert!(models.iter().all(|(m, _)| m.is_none()), "{models:?}");
+}
+
+// --- The owner's new work is taken up at once ------------------------------------------------
+
+#[then(regex = r"^HQ has been asked for (\d+) pass(?:es)?$")]
+fn passes_asked(w: &mut Office, n: usize) {
+    assert_eq!(w.passes_asked.load(Ordering::SeqCst), n);
+}
+
+#[then("HQ has been asked for no pass")]
+fn no_pass_asked(w: &mut Office) {
+    assert_eq!(w.passes_asked.load(Ordering::SeqCst), 0);
+}
+
+/// The pass the engine asked for: the tick, run now rather than on its clock.
+#[given("the pass HQ was asked for runs")]
+#[when("the pass HQ was asked for runs")]
+fn the_asked_pass_runs(w: &mut Office) {
+    assert!(
+        w.passes_asked.load(Ordering::SeqCst) > 0,
+        "no pass was asked for"
+    );
+    w.tick();
+}
+
+#[then(expr = "{word} has a turn on {string}")]
+fn has_a_turn_on(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let turns: Vec<_> =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .collect();
+    assert_eq!(turns.len(), 1, "{name}'s turns on {title:?}: {turns:?}");
+}
+
+#[then(expr = "{word} has no turn on {string}")]
+fn has_no_turn_on(w: &mut Office, name: String, title: String) {
+    let member = w.member(&name);
+    let task = w.task(&title);
+    let turns: Vec<_> =
+        w.hq.store()
+            .runs()
+            .expect("the store answers")
+            .into_iter()
+            .filter(|r| r.member == member && r.task == Some(task))
+            .collect();
+    assert!(turns.is_empty(), "{name}'s turns on {title:?}: {turns:?}");
+}
+
+/// The owner's work without criteria, which HQ refuses (ADR 0124, amended).
+#[when(expr = "the owner gives {word} work with no criteria")]
+fn owner_gives_without_criteria(w: &mut Office, name: String) {
+    let to = w.member(&name);
+    let goal = w.goal();
+    let refused = w.hq.add_task_with(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: "Something vague".to_owned(),
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+        &[],
+    );
+    assert!(
+        refused.is_err(),
+        "work with no criteria was taken: {refused:?}"
+    );
 }
 
 #[then(regex = r"^(\w+) has a downtime turn that costs nothing$")]
@@ -1365,6 +1568,44 @@ fn has_a_free_downtime_turn(w: &mut Office, name: String) {
 #[then(regex = r"^(\w+) has no downtime turn$")]
 fn has_no_downtime_turn(w: &mut Office, name: String) {
     assert!(w.downtime_turns(&name).is_empty());
+}
+
+/// A round of the experiment under way (ADR 0142, amended 2026-11-01), as
+/// `scripts/experiment.py start` sets it: its item, handed to `name`.
+#[given(regex = r#"^a round of the experiment is under way, with (\w+) working its item "(.+)"$"#)]
+fn a_round_runs(w: &mut Office, name: String, title: String) {
+    let goal = match w.goal {
+        Some(goal) => goal,
+        None => {
+            let goal =
+                w.hq.set_goal("Close the gap to Claude Code", "", Author::Owner)
+                    .expect("the owner sets a goal");
+            w.goal = Some(goal);
+            goal
+        }
+    };
+    let to = w.member(&name);
+    let made = w.hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title,
+            description: String::new(),
+            assignee: Some(to),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    );
+    let task = w.note(made).expect("the owner hands it out");
+    w.hq.add_to_round(&[task]).expect("the round is set");
+}
+
+#[when(regex = r#"^the round's item "(.+)" is dropped$"#)]
+fn the_rounds_item_is_dropped(w: &mut Office, title: String) {
+    let task = w.task(&title);
+    w.hq.drop_task(task).expect("the owner drops it");
 }
 
 #[when(regex = r"^(\w+) tries to create a task in her downtime turn$")]

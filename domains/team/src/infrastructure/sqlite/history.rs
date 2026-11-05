@@ -392,6 +392,7 @@ impl HistoryStore for SqliteTeamStore {
 #[cfg(test)]
 mod tests {
     use crate::application::ports::TeamStore;
+    use crate::application::run_ports::RunStore;
     use rusqlite::Connection;
 
     use super::*;
@@ -526,6 +527,52 @@ mod tests {
                 stmt.query_row([1], super::super::wake_from).unwrap().0.id.0,
                 1
             );
+            steps.push(stmt.get_status(StatementStatus::VmStep));
+        }
+        assert_eq!(steps[0], steps[1]);
+        assert!(steps[1] < 100);
+    }
+
+    /// The tick asks every open task whether a wake is held for it (2026-11-03: 1,070 tasks
+    /// and 6,702 wakes made one tick take two seconds and hold the engine's lock while it did).
+    #[test]
+    fn held_wakes_of_a_task_do_not_decode_unrelated_retained_history() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        store.conn().unwrap().execute_batch("INSERT INTO tasks(id,goal,title,description,status,priority,depth) VALUES(2,1,'Other','','ready','normal',0);
+            INSERT INTO wakes(id,member,task,reason,receipt,at_ms) VALUES(3,2,1,'assigned','held',0),(4,2,1,'assigned','finished',0),
+                (5,2,2,'assigned','held',0),(6,2,2,'consulted','invalid historical receipt',0),(7,1,1,'retry','held',0);").unwrap();
+        let held: Vec<i64> = store
+            .held_wakes(TaskId(1))
+            .unwrap()
+            .iter()
+            .map(|w| w.id.0)
+            .collect();
+        assert_eq!(held, vec![3, 7], "this task's held wakes, oldest first");
+        assert!(store.wakes().is_err(), "whole-history negative control");
+    }
+
+    #[test]
+    fn held_wakes_work_stays_constant_as_the_archive_grows() {
+        use rusqlite::StatementStatus;
+        let store = SqliteTeamStore::in_memory().unwrap();
+        consult_fixture(&store);
+        let conn = store.conn().unwrap();
+        conn.execute("UPDATE wakes SET task=1, receipt='held' WHERE id=1", [])
+            .unwrap();
+        let mut steps = Vec::new();
+        for size in [1_000, 100_000] {
+            conn.execute("DELETE FROM wakes WHERE id>=1000", [])
+                .unwrap();
+            conn.execute("WITH RECURSIVE n(id) AS (VALUES(1000) UNION ALL SELECT id+1 FROM n WHERE id<999+?1)
+                INSERT INTO wakes(id,member,task,reason,receipt,at_ms) SELECT id,2,1,'assigned','finished',0 FROM n", [size]).unwrap();
+            let mut stmt = conn.prepare(super::super::HELD_WAKES_OF_TASK).unwrap();
+            let held = stmt
+                .query_map([1], super::super::wake_from)
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(held.len(), 1);
             steps.push(stmt.get_status(StatementStatus::VmStep));
         }
         assert_eq!(steps[0], steps[1]);
@@ -697,7 +744,7 @@ mod tests {
         assert!(measurements[1].1 < 1_000);
         // The same query loses the bound when its live-run indexes are removed.
         let conn = store.conn().unwrap();
-        conn.execute_batch("DROP INDEX runs_live_taskless;")
+        conn.execute_batch("DROP INDEX runs_live_taskless; DROP INDEX runs_live;")
             .unwrap();
         let mut unindexed = conn.prepare(LEGACY_LIVE_RUNS).unwrap();
         assert_eq!(

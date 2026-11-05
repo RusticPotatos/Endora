@@ -22,6 +22,15 @@ developer's turn in it may be Claude Code's, started by the worker, reaching Cla
 through the node's relay with the turn's token. The sandbox stays offline: with egress gone, a
 whole Claude Code turn was seen to reach nothing but the gateway's relay, HQ and the node.
 
+Amended 2026-11-01 by [0142](0142-one-team-of-loops.md) (round 4, the piping audit): ring 1's
+"a fresh container for every turn ... `/work` ... destroyed when the turn ends" now holds for the
+container, not for the work. A turn on an item has that item's `/work`, a tmpfs volume of the
+same size, owner and mount flags, held mounted between the item's turns by a keeper container
+that runs nothing and reaches no network; it is removed when HQ says the item is closed (done,
+dropped or blocked) or after three days with no turn on it. Turns on no item, a turn with no
+shell, and a second turn on an item while one runs still have a `/work` of their own, gone with
+them. The fence (the network, a read-only root, no capabilities, no resolver) is unchanged.
+
 **Ring 1 is the sandbox on the Pi, with no internet: a turn's workbench reaches the node's team
 gateway and nothing else.** Built: the team gateway on the node's team listener, published on
 the house's network on 8788 (`/team-gateway/mcp` and `/team-gateway/runner/...`, passed on to

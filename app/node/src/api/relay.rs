@@ -1,7 +1,7 @@
 //! HQ's model relay (ADR 0102, phase 4): the only way a team member's turn reaches a model.
 //! The worker presents its turn's token as its API key; the relay asks HQ whose turn that is,
-//! its member's role and what it may still spend. It passes on only a call it can meter, with
-//! a model the role may use; counts the prompt first (free) and takes its cost off; caps the
+//! its member's brain and what it may still spend. It passes on only a call it can meter, with
+//! a model the brain allows; counts the prompt first (free) and takes its cost off; caps the
 //! reply to what is left; adds the owner's Anthropic key (which never leaves the node); and
 //! tells HQ what the call cost. A turn's calls go one at a time, each after the one before was
 //! charged. A turn past its budget is stopped by HQ, and its token then opens nothing here
@@ -20,7 +20,7 @@ use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
     Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_for_claude_code,
     betas_passed, cost, counted, for_claude_code, may_use, most_a_turn, price_of, prompt_cost,
-    send, send_local, unmetered,
+    send, send_local, send_metered, served_model, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -79,11 +79,10 @@ pub(super) fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option
         .filter(|k| !k.is_empty())
 }
 
-/// Whose turn a token is: its run, its member's name and role, and what it may still spend.
+/// Whose turn a token is: its run, its member's name, and what it may still spend.
 pub(super) struct Turn {
     pub(super) run: i64,
     pub(super) member: String,
-    pub(super) role: String,
     pub(super) left: i64,
     /// The task the turn is on, as HQ says (ADR 0115): what the wing's branches are named by.
     pub(super) task: Option<i64>,
@@ -101,18 +100,28 @@ pub(super) struct Turn {
     /// nothing: Endora's worker.
     pub(super) claude_code: bool,
     /// Whether the member changes the lab, as HQ says (ADR 0120): only the engineering wing's
-    /// lead and developers are offered and run a branch's submission. An older HQ says nothing,
-    /// and its role alone decides, as before.
+    /// members are offered and run a branch's submission. An older HQ says nothing: the turn
+    /// may submit.
     pub(super) wing: Option<bool>,
     /// The node's tools the turn may use, when HQ narrows them (ADR 0115, amended: the check
-    /// after a deploy reads the lab's health, logs and metrics alone). `None`: what its role
-    /// and brain give it, as before.
+    /// after a deploy reads the lab's health, logs and metrics alone). `None`: every tool, as
+    /// its brain allows.
     pub(super) only: Option<Vec<String>>,
+    /// The node's tools HQ refuses the turn whatever else it may use: `restart_container` on
+    /// a task that says the lab is to be left as it is. Empty from an older HQ.
+    pub(super) never: Vec<String>,
+    /// The repository outside the lab the turn's work is in, as HQ says (ADR 0115, amended
+    /// 2026-11-01): `repo_checkout` and `repo_submit` work in the node's mirror of it, not the
+    /// fork's. `None` from an older HQ, or for work in the lab.
+    pub(super) repo: Option<String>,
 }
 
 impl Turn {
     /// Whether HQ lets this turn use the node's tool `name` at all.
     pub(super) fn may_use(&self, name: &str) -> bool {
+        if self.never.iter().any(|n| n == name) {
+            return false;
+        }
         self.only
             .as_ref()
             .is_none_or(|only| only.iter().any(|o| o == name))
@@ -260,7 +269,6 @@ pub(super) async fn turn_of(
         Ok(v) => Ok(Turn {
             run: v["run"].as_i64().unwrap_or(0),
             member: v["member"].as_str().unwrap_or("").to_owned(),
-            role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
             task: v["task"].as_i64(),
             token: presented,
@@ -273,6 +281,17 @@ pub(super) async fn turn_of(
                     .filter_map(|n| n.as_str().map(str::to_owned))
                     .collect()
             }),
+            never: v["never"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(str::to_owned))
+                .collect(),
+            repo: v["repo"]
+                .as_str()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
             StatusCode::UNAUTHORIZED,
@@ -288,22 +307,27 @@ pub(super) async fn turn_of(
 }
 
 /// Tells HQ what a call cost, and notes it in Endora's own use of models. A failure to tell
-/// HQ is said in the log: it is never quietly charged to nobody.
+/// HQ is said in the log: it is never quietly charged to nobody. Whether HQ accepted the post:
+/// `None` when no charge was attempted (a model with no price).
 fn charge(
     hq: &endora_infrastructure::HqClient,
     state: &AppState,
     run: i64,
     model: &str,
     used: Used,
-) {
-    let Some(price) = price_of(model, used.prompt()) else {
-        return;
-    };
+    served: Option<&str>,
+) -> Option<bool> {
+    let price = price_of(model, used.prompt())?;
     let micros = cost(price, used);
+    // What is left with the provider (the owner, 2026-10-30): counted, and told when low.
+    super::credits::after_charge(state, run, model, micros);
+    // The model the provider said answered (the agentic-harness climb, round 7): as it said,
+    // or null when it did not, never the alias asked for. HQ keeps it beside the turn.
     let reported = json!({ "run": run, "micros": micros, "input": used.input,
                            "cache_read": used.cache_read, "cache_write": used.cache_write,
-                           "output": used.output });
-    if let Err(e) = hq.post("/v1/team/usage", &reported) {
+                           "output": used.output, "served_model": served });
+    let accepted = hq.post("/v1/team/usage", &reported);
+    if let Err(e) = &accepted {
         eprintln!("relay: could not charge run {run} {micros} micros: {e}");
     }
     endora_application::UsageLog::record(
@@ -316,6 +340,7 @@ fn charge(
             cached_tokens: used.cache_read,
         },
     );
+    Some(accepted.is_ok())
 }
 
 /// Asks Anthropic how many tokens `asked` (a call's prompt, as [`counted`] makes it) comes to.
@@ -413,10 +438,6 @@ pub(super) async fn messages(
     body: Bytes,
 ) -> Response {
     let token = token_of(&headers);
-    // The bench's credential is no turn of HQ's (ADR 0123): its calls never reach HQ.
-    if let Some(bench) = super::bench::opened_by(&state, &token) {
-        return super::bench::messages(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -451,11 +472,11 @@ pub(super) async fn messages(
             &format!("{model} is not a model the team may use"),
         );
     };
-    if let Err(why) = may_use(&turn.role, &model) {
+    if let Err(why) = may_use(&turn.brain, &model) {
         return refuse(StatusCode::FORBIDDEN, "permission_error", &why);
     }
-    // Never more than the role's turn may spend (ADR 0111), whatever HQ says is left.
-    let left = turn.left.min(most_a_turn(&turn.role));
+    // Never more than a turn on its brain may spend (ADR 0111), whatever HQ says is left.
+    let left = turn.left.min(most_a_turn(&turn.brain));
     let spent = || {
         refuse(
             StatusCode::PAYMENT_REQUIRED,
@@ -513,19 +534,46 @@ pub(super) async fn messages(
     call["max_tokens"] = json!(cap);
     let state2 = state.clone();
     let sent = call.clone();
-    let settle: Settle = Box::new(move |used| {
+    // Counted only here, where the call is about to leave for the provider: one refused above
+    // (not authorized, over budget, no key) never reaches it and is not a model request.
+    let counted_as = endora_application::RelayCensus::began(state.store.as_ref(), turn.run, &model);
+    let settle: Settle = Box::new(move |used, served, ended| {
         // Held until this call is charged, so the turn's next call sees what this one cost.
         let _one_at_a_time = one_at_a_time;
+        if let Some(id) = counted_as {
+            endora_application::RelayCensus::ended(
+                state2.store.as_ref(),
+                id,
+                ended.outcome,
+                ended.status,
+                served.as_deref(),
+                ended.usage_complete,
+            );
+        }
         let Some(used) = used else { return };
-        charge(&hq, &state2, turn.run, &model, used);
+        let told = charge(&hq, &state2, turn.run, &model, used, served.as_deref());
+        if let (Some(id), Some(accepted)) = (counted_as, told) {
+            endora_application::RelayCensus::hq_told(state2.store.as_ref(), id, accepted);
+        }
         state2.relay_calls.remember(&token, &call, used);
     });
     pass_on(upstream, key, version, beta, sent, settle).await
 }
 
+/// How a call passed on ended, for the node's own count of model requests.
+pub(super) struct Ended {
+    pub(super) outcome: endora_application::RelayOutcome,
+    /// The HTTP status, when Anthropic answered at all.
+    pub(super) status: Option<u16>,
+    /// Whether the usage was fully reported (a whole reply parsed, a stream that reached its
+    /// last usage).
+    pub(super) usage_complete: bool,
+}
+
 /// What is done once a call passed on has been answered: told what it used, or `None` when it
-/// never reached Anthropic or Anthropic refused it (and so cost nothing). Called exactly once.
-pub(super) type Settle = Box<dyn FnOnce(Option<Used>) + Send>;
+/// never reached Anthropic or Anthropic refused it (and so cost nothing), the model the
+/// reply said answered, when it said, and how the call ended. Called exactly once.
+pub(super) type Settle = Box<dyn FnOnce(Option<Used>, Option<String>, Ended) + Send>;
 
 /// Sends `call` (its `max_tokens` already capped) to Anthropic with the owner's `key`, whole
 /// or streamed as it asks, passes the reply back, and [`Settle`]s it once its usage is known: a
@@ -562,15 +610,40 @@ pub(super) async fn pass_on(
                 .map_err(|e| e.to_string())?;
                 Ok((reply.status, bytes))
             });
-            let used = match &answered {
+            let (used, served) = match &answered {
                 Ok((status, bytes)) if *status < 300 => {
                     serde_json::from_slice::<serde_json::Value>(bytes)
                         .ok()
-                        .map(|v| Used::from_usage(&v["usage"]))
+                        .map_or((None, None), |v| {
+                            (Some(Used::from_usage(&v["usage"])), served_model(&v))
+                        })
                 }
-                _ => None,
+                _ => (None, None),
             };
-            settle(used);
+            // A 2xx whose body would not parse may have been a model's answer: interrupted,
+            // never failed. No response or a refusal is failed.
+            let ended = match &answered {
+                Ok((status, _)) if *status < 300 => Ended {
+                    outcome: if used.is_some() {
+                        endora_application::RelayOutcome::Answered
+                    } else {
+                        endora_application::RelayOutcome::Interrupted
+                    },
+                    status: Some(*status),
+                    usage_complete: used.is_some(),
+                },
+                Ok((status, _)) => Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: Some(*status),
+                    usage_complete: false,
+                },
+                Err(_) => Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: None,
+                    usage_complete: false,
+                },
+            };
+            settle(used, served, ended);
             answered
         })
         .await;
@@ -599,7 +672,15 @@ pub(super) async fn pass_on(
         ) {
             Ok(reply) => reply,
             Err(why) => {
-                settle(None);
+                settle(
+                    None,
+                    None,
+                    Ended {
+                        outcome: endora_application::RelayOutcome::Failed,
+                        status: None,
+                        usage_complete: false,
+                    },
+                );
                 let _ = head_tx.send(Err(why));
                 return;
             }
@@ -627,14 +708,36 @@ pub(super) async fn pass_on(
         }
         // Charged for what was used, even if the caller stopped listening part way.
         if reply.status >= 300 {
-            settle(None);
+            settle(
+                None,
+                None,
+                Ended {
+                    outcome: endora_application::RelayOutcome::Failed,
+                    status: Some(reply.status),
+                    usage_complete: false,
+                },
+            );
             return;
         }
+        let finished = usage.finished();
         let mut used = usage.used();
-        if !usage.finished() {
+        if !finished {
             used.output = used.output.max(cap);
         }
-        settle(Some(used));
+        let outcome = if finished {
+            endora_application::RelayOutcome::Answered
+        } else {
+            endora_application::RelayOutcome::Interrupted
+        };
+        settle(
+            Some(used),
+            usage.served(),
+            Ended {
+                outcome,
+                status: Some(reply.status),
+                usage_complete: finished,
+            },
+        );
     });
     let status = match head_rx.await {
         Ok(Ok(status)) => status,
@@ -664,9 +767,6 @@ pub(super) async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(bench) = super::bench::opened_by(&state, &token_of(&headers)) {
-        return super::bench::count_tokens(state, bench, headers, body).await;
-    }
     let Some(hq) = state.hq.clone() else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -773,6 +873,22 @@ pub(super) fn local_target(state: &AppState) -> Local {
     }
 }
 
+/// Where a DeepSeek member's call goes: the first enabled Everyday entry that names `model`.
+/// None when the owner's list has none: the turn is answered by nothing else.
+fn deepseek_target(state: &AppState, model: &str) -> Option<Local> {
+    use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
+    let providers = state.config.providers().unwrap_or_default();
+    let everyday = state.config.entries(Job::Everyday).unwrap_or_default();
+    let found = targets(&providers, &everyday)
+        .into_iter()
+        .find(|t| t.model == model)?;
+    Some(Local {
+        url: found.url,
+        model: found.model,
+        key: found.api_key,
+    })
+}
+
 /// `POST /team-relay/local/v1/chat/completions`: a model call of a team member's turn, to the
 /// house's own model, whole (never streamed). It is asked with the model the owner's list
 /// names, whatever the worker named. Local costs nothing, so HQ is charged nothing; the use is
@@ -794,13 +910,37 @@ pub(super) async fn chat_completions(
         );
     };
     // The token first, so a stranger cannot make the node read a body at all.
-    let turn = match turn_of(hq, token_of(&headers), refuse_openai).await {
+    let turn = match turn_of(hq.clone(), token_of(&headers), refuse_openai).await {
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
     // A member who thinks with the owner's Mac (ADR 0130) is answered by the Mac, only while it
     // is free, and by nothing else: no other model, no Claude, not the house's own.
     let on_the_mac = turn.brain == "mac";
+    // A member who thinks with DeepSeek (the owner, 2026-10-28) is answered by the DeepSeek
+    // entry on the Everyday list alone, its output held to what the turn can afford, and each
+    // call charged to HQ at DeepSeek's prices, as the Anthropic relay charges Claude's.
+    let on_deepseek = turn.brain.starts_with("deepseek");
+    let mut afford = None;
+    if on_deepseek {
+        let Some(price) = price_of(&turn.brain, 0) else {
+            return refuse_openai(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                &format!("{} is not a model the team may use", turn.brain),
+            );
+        };
+        let left = turn.left.min(most_a_turn(&turn.brain));
+        let most = affordable_output(price, left);
+        if most == 0 {
+            return refuse_openai(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_error",
+                "this turn's budget is spent",
+            );
+        }
+        afford = Some(most);
+    }
     let Ok(body) = axum::body::to_bytes(body, LARGEST_LOCAL_CALL).await else {
         return refuse_openai(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -822,8 +962,15 @@ pub(super) async fn chat_completions(
             "the local relay does not stream: ask with \"stream\": false",
         );
     }
+    let (run, brain) = (turn.run, turn.brain.clone());
     let done = tokio::task::spawn_blocking(move || {
-        let local = if on_the_mac {
+        let local = if on_deepseek {
+            let Some(found) = deepseek_target(&state, &brain) else {
+                let said = json!({ "error": { "message": format!("{brain} is not on the Everyday list"), "type": "api_error" } });
+                return Ok::<_, String>((503, said.to_string().into_bytes()));
+            };
+            found
+        } else if on_the_mac {
             let now = state.clock.now().unix_millis();
             match mac::target(&state, now) {
                 Ok(mac) => Local {
@@ -841,6 +988,13 @@ pub(super) async fn chat_completions(
             local_target(&state)
         };
         call.insert("model".to_owned(), json!(local.model));
+        if let Some(most) = afford {
+            let asked = call
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(most);
+            call.insert("max_tokens".to_owned(), json!(asked.min(most)));
+        }
         if call
             .get("reasoning_effort")
             .and_then(serde_json::Value::as_str)
@@ -849,10 +1003,78 @@ pub(super) async fn chat_completions(
             call.remove("reasoning_effort");
         }
         let sent = serde_json::Value::Object(call).to_string().into_bytes();
-        let (status, bytes) = send_local(&local.url, &local.key, &sent)?;
+        // Counted where the call is about to leave for the model: a refusal above never is.
+        let census = &state.store;
+        let counted_as = endora_application::RelayCensus::began(census.as_ref(), run, &local.model);
+        let end = |outcome, status: Option<u16>, served: Option<&str>| {
+            let Some(id) = counted_as else { return };
+            let complete = outcome == endora_application::RelayOutcome::Answered;
+            endora_application::RelayCensus::ended(
+                census.as_ref(),
+                id,
+                outcome,
+                status,
+                served,
+                complete,
+            );
+        };
+        // DeepSeek is metered and leaves the house; everything else here is free and stays.
+        let sent_to = if on_deepseek {
+            send_metered(&local.url, &local.key, &sent)
+        } else {
+            send_local(&local.url, &local.key, &sent)
+        };
+        let (status, bytes) = match sent_to {
+            Ok(answered) => answered,
+            Err(why) => {
+                end(endora_application::RelayOutcome::Failed, None, None);
+                return Err(why);
+            }
+        };
+        if status >= 300 {
+            end(endora_application::RelayOutcome::Failed, Some(status), None);
+        }
         if status < 300 {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes);
+            // A 2xx whose body would not parse may have been a model's answer: interrupted.
+            let outcome = if parsed.is_ok() {
+                endora_application::RelayOutcome::Answered
+            } else {
+                endora_application::RelayOutcome::Interrupted
+            };
+            end(
+                outcome,
+                Some(status),
+                parsed.as_ref().ok().and_then(served_model).as_deref(),
+            );
+            if let Ok(v) = parsed {
+                if on_deepseek {
+                    let served = served_model(&v);
+                    let told = charge(
+                        &hq,
+                        &state,
+                        run,
+                        &local.model,
+                        Used::from_openai(&v["usage"]),
+                        served.as_deref(),
+                    );
+                    if let (Some(id), Some(accepted)) = (counted_as, told) {
+                        endora_application::RelayCensus::hq_told(census.as_ref(), id, accepted);
+                    }
+                    return Ok((status, bytes));
+                }
                 let used = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
+                // Free, but HQ keeps the turn's tokens: it decides from them whether the turn
+                // ran out of room (ADR 0142, amended 2026-10-30).
+                let told = json!({ "run": run, "input": used("prompt_tokens"),
+                                   "output": used("completion_tokens") });
+                let told = hq.post("/v1/team/tokens", &told);
+                if let Err(e) = &told {
+                    eprintln!("relay: could not tell HQ run {run}'s tokens: {e}");
+                }
+                if let Some(id) = counted_as {
+                    endora_application::RelayCensus::hq_told(census.as_ref(), id, told.is_ok());
+                }
                 endora_application::UsageLog::record(
                     state.store.as_ref(),
                     if on_the_mac { "team-mac" } else { "team-local" },
@@ -875,12 +1097,22 @@ pub(super) async fn chat_completions(
             "api_error",
             &format!(
                 "the {} did not answer: {why}",
-                if on_the_mac { "Mac" } else { "local model" }
+                if on_the_mac {
+                    "Mac"
+                } else if on_deepseek {
+                    "DeepSeek model"
+                } else {
+                    "local model"
+                }
             ),
         ),
         Err(_) => refuse_openai(StatusCode::BAD_GATEWAY, "api_error", "the relay failed"),
     }
 }
+
+/// The owner's scenarios for the relay's own count of model requests.
+#[cfg(test)]
+mod census_scenarios;
 
 #[cfg(test)]
 pub(super) mod tests {
@@ -948,27 +1180,29 @@ pub(super) mod tests {
 
     /// HQ, knowing one turn (token `good`, run 7, a developer's thinking with Claude) with
     /// `left` micros to spend.
-    fn hq(left: i64) -> (String, Seen) {
-        hq_thinking(left, "developer", true)
+    pub(in crate::api) fn hq(left: i64) -> (String, Seen) {
+        hq_thinking(left, true)
     }
 
-    /// HQ, knowing one turn (Linus's) of a member in `role`, on the house's model.
-    pub(in crate::api) fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
-        hq_thinking(left, role, false)
+    /// HQ, knowing one turn (Linus's), on the house's model.
+    pub(in crate::api) fn hq_as(left: i64) -> (String, Seen) {
+        hq_thinking(left, false)
     }
 
-    /// HQ, knowing one turn (Linus's) of a member in `role`, thinking with Claude when
-    /// `cloud`, as HQ says it (ADR 0109).
-    pub(in crate::api) fn hq_thinking(
-        left: i64,
-        role: &'static str,
-        cloud: bool,
-    ) -> (String, Seen) {
-        fake(Arc::new(move |path, body| match path {
+    /// HQ, knowing one turn (Linus's), thinking with Claude when `cloud`, as HQ says it
+    /// (ADR 0109).
+    pub(in crate::api) fn hq_thinking(left: i64, cloud: bool) -> (String, Seen) {
+        hq_on(left, cloud, "local")
+    }
+
+    /// HQ, knowing one turn (Linus's) of a member whose brain is `brain`.
+    pub(in crate::api) fn hq_on(left: i64, cloud: bool, brain: &'static str) -> (String, Seen) {
+        fake(Arc::new(move |path, body| {
+            match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": role, "left": left, "cloud": cloud })
+                json!({ "run": 7, "member": "Linus", "left": left, "cloud": cloud, "brain": brain })
                     .to_string(),
             ),
             "/v1/team/turn" => (
@@ -977,6 +1211,7 @@ pub(super) mod tests {
                 r#"{"error":"no such turn"}"#.to_owned(),
             ),
             _ => (200, "application/json", r#"{"may_go_on":true}"#.to_owned()),
+        }
         }))
     }
 
@@ -995,8 +1230,7 @@ pub(super) mod tests {
             (
                 200,
                 "application/json",
-                json!({ "run": 7, "role": "developer", "left": left.load(SeqCst), "cloud": true })
-                    .to_string(),
+                json!({ "run": 7, "left": left.load(SeqCst), "cloud": true }).to_string(),
             )
         }))
     }
@@ -1196,6 +1430,281 @@ pub(super) mod tests {
         );
     }
 
+    /// What the node told HQ each call's model was, as the provider named it (`served_model`).
+    async fn served_told(seen: &Seen, n: usize) -> Vec<serde_json::Value> {
+        charges(seen, n).await;
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/usage")
+            .filter_map(|(_, _, b)| {
+                Some(serde_json::from_str::<serde_json::Value>(b).ok()?["served_model"].clone())
+            })
+            .collect()
+    }
+
+    /// Anthropic, answering as a model whose name is not the alias asked for.
+    pub(in crate::api) fn anthropic_serving(served: &'static str) -> (String, Seen) {
+        fake(Arc::new(move |path, body| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": 1_000 }).to_string(),
+                );
+            }
+            if body.contains("\"stream\":true") {
+                let start = json!({ "type": "message_start", "message": { "model": served,
+                    "usage": { "input_tokens": 1200, "output_tokens": 1 } } });
+                let sse = format!(
+                    "event: message_start\ndata: {start}\n\nevent: message_delta\ndata: \
+                     {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":57}}}}\n\n\
+                     event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+                );
+                return (200, "text/event-stream", sse);
+            }
+            (
+                200,
+                "application/json",
+                json!({ "type": "message", "model": served, "content": [],
+                        "usage": { "input_tokens": 1000, "output_tokens": 100 } })
+                .to_string(),
+            )
+        }))
+    }
+
+    /// The agentic-harness climb, round 7: HQ kept only the alias a turn asked for, so a
+    /// comparison could not show which model actually answered. The node now tells HQ the
+    /// provider's own name for it with each call's charge, whole or streamed, and nothing when
+    /// the provider does not say: never the alias in its place.
+    #[tokio::test]
+    async fn each_charge_says_which_model_the_provider_said_answered() {
+        for stream in [false, true] {
+            let (hq_url, to_hq) = hq(400_000);
+            let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+            let app = super::super::team_relay(node(&hq_url, &upstream));
+            let res = app
+                .oneshot(ask(
+                    "good",
+                    json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000,
+                                             "stream": stream, "messages": [] }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let _ = res.into_body().collect().await.unwrap();
+            assert_eq!(
+                served_told(&to_hq, 1).await,
+                vec![json!("claude-sonnet-5-5-20261001")],
+                "streamed: {stream}"
+            );
+        }
+        // A provider that does not say: nothing is said for it.
+        let (hq_url, to_hq) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let app = super::super::team_relay(node(&hq_url, &upstream));
+        let res = app
+            .oneshot(ask(
+                "good",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000, "messages": [] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(served_told(&to_hq, 1).await, vec![serde_json::Value::Null]);
+    }
+
+    /// Anthropic, overloaded: counting works, every message call is answered with `status`.
+    pub(in crate::api) fn anthropic_failing(status: u16) -> (String, Seen) {
+        fake(Arc::new(move |path, _| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": 1_000 }).to_string(),
+                );
+            }
+            (
+                status,
+                "application/json",
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#
+                    .to_owned(),
+            )
+        }))
+    }
+
+    /// HQ that knows the turn (token `good`) but answers every usage post with a 500.
+    pub(in crate::api) fn hq_refusing_usage(left: i64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| match path {
+            "/v1/team/usage" => (500, "application/json", r#"{"error":"down"}"#.to_owned()),
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Linus", "left": left, "cloud": true,
+                        "brain": "local" })
+                .to_string(),
+            ),
+            _ => (
+                404,
+                "application/json",
+                r#"{"error":"no such turn"}"#.to_owned(),
+            ),
+        }))
+    }
+
+    /// The census rows of run 7 once `n` of them have ended and their charge to HQ was
+    /// attempted (a failed call is never charged): a streamed call settles after its reply.
+    pub(in crate::api) async fn census(
+        state: &AppState,
+        n: usize,
+    ) -> Vec<endora_infrastructure::RelayRequestRow> {
+        let mut rows = Vec::new();
+        for _ in 0..200 {
+            rows = state.store.relay_requests(7).unwrap();
+            let settled = |r: &endora_infrastructure::RelayRequestRow| {
+                r.ended_ms.is_some() && (r.outcome == "failed" || r.hq_told.is_some())
+            };
+            if rows.len() >= n && rows.iter().all(settled) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        rows
+    }
+
+    /// Asks the relay for one call, whole or streamed, `extra` merged into the body, and reads
+    /// the reply to its end.
+    pub(in crate::api) async fn call_once(
+        state: &AppState,
+        stream: bool,
+        extra: serde_json::Value,
+    ) -> StatusCode {
+        let mut body = json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000,
+                               "stream": stream, "messages": [] });
+        if let (Some(into), Some(from)) = (body.as_object_mut(), extra.as_object()) {
+            into.extend(from.clone());
+        }
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask("good", body))
+            .await
+            .unwrap();
+        let status = res.status();
+        let _ = res.into_body().collect().await;
+        status
+    }
+
+    /// Round 9: HQ's record of a call is the usage post alone, so a lost post hid that the call
+    /// happened. The node keeps its own count of each request it passes on, with how it ended
+    /// and which model the provider said answered.
+    #[tokio::test]
+    async fn the_relay_counts_an_ordinary_and_a_streamed_call_with_the_model_that_answered() {
+        for stream in [false, true] {
+            let (hq_url, _) = hq(400_000);
+            let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+            let state = node(&hq_url, &upstream);
+            assert_eq!(call_once(&state, stream, json!({})).await, StatusCode::OK);
+            let rows = census(&state, 1).await;
+            assert_eq!(rows.len(), 1, "streamed: {stream}");
+            let row = &rows[0];
+            assert_eq!(row.run, 7);
+            assert_eq!(row.requested_model, "claude-sonnet-5-5");
+            assert_eq!(
+                row.served_model.as_deref(),
+                Some("claude-sonnet-5-5-20261001")
+            );
+            assert_eq!(
+                (row.outcome.as_str(), row.status, row.usage_complete),
+                ("answered", Some(200), true),
+                "streamed: {stream}"
+            );
+            assert_eq!(row.hq_told, Some(true));
+            assert!(row.ended_ms.unwrap() >= row.started_ms);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_whose_answer_names_no_model_is_counted_answered_with_no_model() {
+        let (hq_url, _) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        call_once(&state, false, json!({})).await;
+        let rows = census(&state, 1).await;
+        assert_eq!(rows[0].outcome, "answered");
+        assert_eq!(rows[0].served_model, None, "never the alias in its place");
+    }
+
+    #[tokio::test]
+    async fn a_529_with_no_model_response_is_counted_failed_and_never_charged() {
+        for stream in [false, true] {
+            let (hq_url, to_hq) = hq(400_000);
+            let (upstream, _) = anthropic_failing(529);
+            let state = node(&hq_url, &upstream);
+            assert_eq!(call_once(&state, stream, json!({})).await, 529);
+            let rows = census(&state, 1).await;
+            assert_eq!(rows.len(), 1, "streamed: {stream}");
+            let row = &rows[0];
+            assert_eq!(
+                (row.outcome.as_str(), row.status, row.usage_complete),
+                ("failed", Some(529), false),
+                "streamed: {stream}"
+            );
+            assert_eq!((row.served_model.as_deref(), row.hq_told), (None, None));
+            assert!(charged(&to_hq).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_before_its_last_usage_is_counted_interrupted_not_answered() {
+        let (hq_url, to_hq) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        call_once(&state, true, json!({ "stop_sequences": ["cut"] })).await;
+        let rows = census(&state, 1).await;
+        let row = &rows[0];
+        assert_eq!(
+            (row.outcome.as_str(), row.status, row.usage_complete),
+            ("interrupted", Some(200), false)
+        );
+        assert_eq!(
+            charges(&to_hq, 1).await,
+            vec![12_430],
+            "still charged its cap"
+        );
+        assert_eq!(row.hq_told, Some(true));
+    }
+
+    /// The point of the census: HQ never hearing of a call does not make it vanish.
+    #[tokio::test]
+    async fn a_call_hq_refused_to_hear_of_is_still_counted_and_says_hq_was_not_told() {
+        let (hq_url, to_hq) = hq_refusing_usage(400_000);
+        let (upstream, _) = anthropic_serving("claude-sonnet-5-5-20261001");
+        let state = node(&hq_url, &upstream);
+        assert_eq!(call_once(&state, false, json!({})).await, StatusCode::OK);
+        let rows = census(&state, 1).await;
+        let row = &rows[0];
+        assert_eq!(row.outcome, "answered");
+        assert_eq!(
+            row.served_model.as_deref(),
+            Some("claude-sonnet-5-5-20261001")
+        );
+        assert_eq!(row.hq_told, Some(false));
+        assert_eq!(
+            charges(&to_hq, 1).await,
+            vec![3_000],
+            "the charge was still attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_refused_before_it_reaches_the_provider_is_not_counted() {
+        let (hq_url, _) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let state = node(&hq_url, &upstream);
+        let status = call_once(&state, false, json!({ "model": "gpt-9" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(state.store.relay_requests(7).unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn a_streamed_turn_passes_through_and_is_charged_when_it_ends() {
         let (hq_url, to_hq) = hq(400_000);
@@ -1342,7 +1851,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn the_ceo_thinks_with_opus_a_dollar_a_turn_and_everyone_else_forty_cents() {
+    async fn the_member_who_thinks_with_opus_has_a_dollar_a_turn_and_everyone_else_forty_cents() {
         let (upstream, to_anthropic) = anthropic();
         let call = |model: &str| {
             ask(
@@ -1350,10 +1859,10 @@ pub(super) mod tests {
                 json!({ "model": model, "max_tokens": 200_000, "messages": [] }),
             )
         };
-        // HQ says two dollars are left: the CEO's call is held to one, the lead's to forty
-        // cents, each less its prompt (1k tokens in).
-        let (ceo, to_hq) = hq_thinking(2_000_000, "ceo", true);
-        let res = super::super::team_relay(node(&ceo, &upstream))
+        // HQ says two dollars are left: the Opus member's call is held to one, a Sonnet
+        // member's to forty cents, each less its prompt (1k tokens in).
+        let (opus, to_hq) = hq_on(2_000_000, true, "claude-opus-5-5");
+        let res = super::super::team_relay(node(&opus, &upstream))
             .oneshot(call("claude-opus-5-5"))
             .await
             .unwrap();
@@ -1368,13 +1877,13 @@ pub(super) mod tests {
             vec![6_000],
             "1k in at $4 and 100 out at $20 a million"
         );
-        let (lead, _) = hq_thinking(2_000_000, "lead", true);
-        let app = super::super::team_relay(node(&lead, &upstream));
+        let (sonnet, _) = hq_on(2_000_000, true, "claude-sonnet-5-5");
+        let app = super::super::team_relay(node(&sonnet, &upstream));
         let res = app.clone().oneshot(call("claude-opus-5-5")).await.unwrap();
         assert_eq!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "Opus is the CEO's alone"
+            "Opus is the Opus member's alone"
         );
         let res = app.oneshot(call("claude-sonnet-5-5")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -1386,7 +1895,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn opus_is_the_ceos_alone_and_a_researcher_thinks_with_haiku() {
+    async fn opus_is_the_opus_members_alone_and_reaches_anthropic_for_no_one_else() {
         let (upstream, to_anthropic) = anthropic();
         let call = |model: &str| {
             ask(
@@ -1394,22 +1903,20 @@ pub(super) mod tests {
                 json!({ "model": model, "max_tokens": 10, "messages": [] }),
             )
         };
-        let (developer, _) = hq_thinking(400_000, "developer", true);
-        let res = super::super::team_relay(node(&developer, &upstream))
-            .oneshot(call("claude-opus-5-5"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
-        let (researcher, _) = hq_thinking(400_000, "researcher", true);
-        let app = super::super::team_relay(node(&researcher, &upstream));
-        let res = app
-            .clone()
-            .oneshot(call("claude-sonnet-5-5"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        for brain in ["claude-haiku-5-5", "claude-sonnet-5-5", "local"] {
+            let (hq_url, _) = hq_on(400_000, true, brain);
+            let res = super::super::team_relay(node(&hq_url, &upstream))
+                .oneshot(call("claude-opus-5-5"))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{brain}");
+        }
         assert!(to_anthropic.lock().unwrap().is_empty());
-        let res = app.oneshot(call("claude-haiku-5-5")).await.unwrap();
+        let (haiku, _) = hq_on(400_000, true, "claude-haiku-5-5");
+        let res = super::super::team_relay(node(&haiku, &upstream))
+            .oneshot(call("claude-haiku-5-5"))
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
 
@@ -1453,7 +1960,7 @@ pub(super) mod tests {
     async fn a_turn_on_the_houses_model_never_reaches_anthropic() {
         // HQ says the member thinks at home: what its turn has read (a log, a queue) may be
         // Confidential, so none of it goes to Claude, whatever the worker sends.
-        let (local, _) = hq_as(400_000, "lead");
+        let (local, _) = hq_as(400_000);
         let (upstream, to_anthropic) = anthropic();
         let app = super::super::team_relay(node(&local, &upstream));
         let call = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [] });
@@ -1501,7 +2008,7 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn a_cached_call_passes_with_its_effort_and_is_charged_at_the_cache_prices() {
-        let (hq_url, to_hq) = hq_thinking(1_000_000, "ceo", true);
+        let (hq_url, to_hq) = hq_on(1_000_000, true, "claude-opus-5-5");
         let (upstream, to_anthropic) = anthropic_caching(20_000, 2_000);
         let app = super::super::team_relay(node(&hq_url, &upstream));
         let call = json!({ "model": "claude-opus-5-5", "max_tokens": 4096,
@@ -1610,7 +2117,7 @@ pub(super) mod tests {
             "/v1/team/turn" if body.contains("\"cc\"") || body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Rae", "role": "developer", "left": left,
+                json!({ "run": 7, "member": "Rae", "left": left,
                         "cloud": true, "brain": "claude-haiku-5-5",
                         "runtime": if body.contains("\"cc\"") { "claude-code" } else { "worker" } })
                 .to_string(),
@@ -1722,7 +2229,7 @@ pub(super) mod tests {
         // As `endora-worker` sends a round on a cloud brain: its bearer token, the version,
         // its instructions as `system`, the team's tools in Anthropic's form, and a tool's
         // use and result in the conversation.
-        let (hq_url, to_hq) = hq_thinking(400_000, "lead", true);
+        let (hq_url, to_hq) = hq_thinking(400_000, true);
         let (upstream, to_anthropic) = anthropic();
         let app = super::super::team_relay(node(&hq_url, &upstream));
         let round = json!({
@@ -1821,6 +2328,19 @@ pub(super) mod tests {
         json!({ "model": model, "messages": [{ "role": "user", "content": "Hi." }] })
     }
 
+    /// The tokens HQ was told of free calls, `(input, output)`, call by call.
+    fn tokens_told(seen: &Seen) -> Vec<(i64, i64)> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/tokens")
+            .map(|(_, _, b)| {
+                let v: serde_json::Value = serde_json::from_str(b).unwrap();
+                (v["input"].as_i64().unwrap(), v["output"].as_i64().unwrap())
+            })
+            .collect()
+    }
+
     /// The model a fake was asked for, call by call.
     fn models_asked(seen: &Seen) -> Vec<String> {
         seen.lock()
@@ -1831,6 +2351,168 @@ pub(super) mod tests {
                 v["model"].as_str().map(str::to_owned)
             })
             .collect()
+    }
+
+    /// HQ knowing one turn of a member who thinks with DeepSeek, with `left` micros.
+    fn hq_on_deepseek(left: i64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Sol", "left": left,
+                        "cloud": true, "brain": "deepseek-flash" })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"may_go_on":true}"#.to_owned()),
+        }))
+    }
+
+    /// The owner, 2026-10-28: DeepSeek Flash as a brain. A member who thinks with it is
+    /// answered by the DeepSeek entry on the Everyday list and nothing else, with its output
+    /// held to what the turn can afford, and the call is charged to HQ at DeepSeek's prices.
+    #[tokio::test]
+    async fn a_deepseek_turn_is_answered_by_the_deepseek_entry_capped_and_charged() {
+        let (hq_url, to_hq) = hq_on_deepseek(1_200);
+        let (house, to_house) = local_model();
+        let (deepseek, to_deepseek) = fake(Arc::new(|_path, _body| {
+            (
+                200,
+                "application/json",
+                json!({ "choices": [{ "message": { "role": "assistant", "content": "Done." } }],
+                        "usage": { "prompt_tokens": 1_000, "completion_tokens": 100,
+                                   "prompt_cache_hit_tokens": 600,
+                                   "prompt_cache_miss_tokens": 400 } })
+                .to_string(),
+            )
+        }));
+        // DeepSeek is not on the house's network: an entry like it is passed over for a house
+        // turn, and the only one a DeepSeek turn is given.
+        let state = local_node(
+            &hq_url,
+            &house,
+            &[
+                (&house, "qwen3.5:9b", "", true),
+                (
+                    &format!("{deepseek}/v1"),
+                    "deepseek-flash",
+                    "a-deepseek-key",
+                    true,
+                ),
+            ],
+        );
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            to_house.lock().unwrap().is_empty(),
+            "never the house's model"
+        );
+        let asked = to_deepseek.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1);
+        let call: serde_json::Value = serde_json::from_str(&asked[0].2).unwrap();
+        assert_eq!(call["model"], "deepseek-flash");
+        // $0.0012 left at $1.20 a million out: 1,000 tokens at most.
+        assert_eq!(call["max_tokens"], 1_000, "{call}");
+        assert!(
+            asked[0]
+                .1
+                .iter()
+                .any(|(k, v)| k == "authorization" && v == "Bearer a-deepseek-key")
+        );
+        let charged: Vec<serde_json::Value> = to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/usage")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(charged.len(), 1);
+        assert_eq!(charged[0]["micros"], 244);
+        assert_eq!(charged[0]["cache_read"], 600);
+    }
+
+    /// Round 9: the free and the DeepSeek paths are counted too, answered or failed.
+    #[tokio::test]
+    async fn the_house_and_deepseek_calls_are_counted_answered_or_failed() {
+        let (hq_url, _) = hq_on_deepseek(1_200);
+        let (house, _) = local_model();
+        let (deepseek, _) = fake(Arc::new(|_path, body| {
+            if body.contains("\"max_tokens\":0") {
+                return (500, "application/json", "{}".to_owned());
+            }
+            (
+                200,
+                "application/json",
+                json!({ "model": "deepseek-v4-0001", "choices": [],
+                        "usage": { "prompt_tokens": 1_000, "completion_tokens": 100 } })
+                .to_string(),
+            )
+        }));
+        let state = local_node(
+            &hq_url,
+            &house,
+            &[(
+                &format!("{deepseek}/v1"),
+                "deepseek-flash",
+                "a-deepseek-key",
+                true,
+            )],
+        );
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let rows = census(&state, 1).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requested_model, "deepseek-flash");
+        assert_eq!(rows[0].served_model.as_deref(), Some("deepseek-v4-0001"));
+        assert_eq!(
+            (rows[0].outcome.as_str(), rows[0].hq_told),
+            ("answered", Some(true))
+        );
+
+        // The house's own model, down: counted failed, no model.
+        let (hq_url, _) = hq_on(40_000, false, "local");
+        let state = local_node(&hq_url, "http://127.0.0.1:9/v1", &[]);
+        let res = super::super::team_relay(state.clone())
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let rows = census(&state, 1).await;
+        assert_eq!(
+            (
+                rows[0].outcome.as_str(),
+                rows[0].status,
+                rows[0].served_model.as_deref()
+            ),
+            ("failed", None, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deepseek_turn_with_nothing_left_or_no_entry_is_answered_by_nothing() {
+        let (hq_url, _) = hq_on_deepseek(0);
+        let (house, to_house) = local_model();
+        let (deepseek, to_deepseek) = local_model();
+        let state = local_node(&hq_url, &house, &[(&deepseek, "deepseek-flash", "k", true)]);
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::PAYMENT_REQUIRED);
+        let (hq_url, _) = hq_on_deepseek(400_000);
+        let state = local_node(&hq_url, &house, &[(&house, "qwen3.5:9b", "", true)]);
+        let res = super::super::team_relay(state)
+            .oneshot(ask_local("good", a_call("local")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(to_house.lock().unwrap().is_empty() && to_deepseek.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1887,6 +2569,11 @@ pub(super) mod tests {
                 .iter()
                 .all(|(p, _, _)| p != "/v1/team/usage"),
             "local is free: HQ is charged nothing, even with nothing left"
+        );
+        assert_eq!(
+            tokens_told(&to_hq),
+            vec![(120, 30)],
+            "but HQ is told the tokens, to see a turn reach its prompt's budget"
         );
         let used = store.model_usage_totals("team-local", 0).unwrap();
         assert_eq!(
@@ -2034,14 +2721,14 @@ pub(super) mod tests {
             "/v1/team/turn" if body.contains("\"mac-turn\"") => (
                 200,
                 "application/json",
-                json!({ "run": 8, "member": "Linus", "role": "developer", "left": 0,
+                json!({ "run": 8, "member": "Linus", "left": 0,
                         "cloud": false, "brain": "mac" })
                 .to_string(),
             ),
             "/v1/team/turn" if body.contains("\"home-turn\"") => (
                 200,
                 "application/json",
-                json!({ "run": 9, "member": "Rae", "role": "developer", "left": 0,
+                json!({ "run": 9, "member": "Rae", "left": 0,
                         "cloud": false, "brain": "local" })
                 .to_string(),
             ),
@@ -2113,6 +2800,7 @@ pub(super) mod tests {
                 .all(|(p, _, _)| p != "/v1/team/usage"),
             "the Mac costs nothing"
         );
+        assert_eq!(tokens_told(&to_hq), vec![(120, 30)], "its tokens are told");
         let used = store.model_usage_totals("team-mac", 0).unwrap();
         assert_eq!(
             (used.calls, used.prompt_tokens, used.completion_tokens),

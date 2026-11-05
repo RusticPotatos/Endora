@@ -87,6 +87,7 @@
         endora_ansible_nas_repo: example/ansible-nas
         endora_ansible_nas_ref: main
         endora_lab_retired: "old-box=kept for parts"
+        endora_personal_values: "John Doe,New York"
         endora_git_push_key_dir: /srv/endora/git-key
         endora_bench_token_dir: /srv/endora/bench
         endora_bench_cap_cents: 500
@@ -179,8 +180,8 @@
           - "'SOUND_AIRPLAY2_SHARED=true' in shared"
           # Parity: nothing set renders none of these (the compose defaults apply), none of
           # them in the other cases either; all set renders each exactly.
-          - "bare | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
-          - "full | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
+          - "bare | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_PERSONAL_VALUES|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
+          - "full | select('match', 'ENDORA_LAN_DNS|ENDORA_HQ_TICK_SECONDS|ENDORA_HQ_DIR|ENDORA_SOUND_DIR|ENDORA_UTC_OFFSET_MINUTES|ENDORA_ROUTER_MODEL|ENDORA_SYNTH_MODEL|ENDORA_ANSIBLE_NAS_|ENDORA_LAB_RETIRED|ENDORA_PERSONAL_VALUES|ENDORA_GIT_PUSH_KEY|ENDORA_BENCH_') | list | length == 0"
           - "'ENDORA_LAN_DNS=192.0.2.1' in all"
           - "'ENDORA_HQ_TICK_SECONDS=15' in all"
           - "'ENDORA_HQ_DIR=/srv/endora/hq' in all"
@@ -191,6 +192,7 @@
           - "'ENDORA_ANSIBLE_NAS_REPO=example/ansible-nas' in all"
           - "'ENDORA_ANSIBLE_NAS_REF=main' in all"
           - "'ENDORA_LAB_RETIRED=old-box=kept for parts' in all"
+          - "'ENDORA_PERSONAL_VALUES=John Doe,New York' in all"
           - "'ENDORA_GIT_PUSH_KEY=/srv/endora/git-key' in all"
           - "'ENDORA_BENCH_TOKEN=/srv/endora/bench' in all"
           - "'ENDORA_BENCH_CAP_CENTS=500' in all"

@@ -11,33 +11,9 @@ pub const WING_PROJECT: &str = "ansible-nas clean-up";
 /// Where the team's branches live: under `hq/`, and nowhere else (the node enforces it).
 pub const BRANCH_PREFIX: &str = "hq/";
 
-/// What every member working towards the wing's goal is told: the goal's notes from the owner,
-/// seeded once (the owner may edit them on the HQ screen).
-pub const WING_NOTE: &str = "The wing's job is the owner's public ansible-nas fork, which \
-    builds the home lab. Your base is the fork's develop branch (main only mirrors upstream): \
-    repo_checkout brings it into /work/repo in your sandbox and says so (git is set up there: \
-    commits are authored Endora HQ and carry the trailer). Never edit, cite or copy from \
-    group_vars/*.yml, host_vars or any inventory: they hold the owner's own values, and a \
-    branch touching them is refused. Work on a branch named hq/task-<N>-<slug> cut from the \
-    base, commit in small steps, then repo_submit sends the branch to Endora, which keeps it, \
-    writes its diff as a \
-    document on the task and runs the checks (ansible syntax, ansible-lint, yamllint) on the \
-    dev node; the result comes back as a receipt. The fork's develop already has findings, so \
-    the check judges your branch against develop: it passes when no check is worse than it \
-    is on develop, and the receipt says both. Then submit the task for review (set_status \
-    in_review, citing the receipts): the member one rank up reads the diff and the check, and \
-    passes it or sends it back. The owner alone pushes a passed branch to the fork and merges \
-    it there: HQ never pushes on its own, never opens a pull request, never merges. One branch \
-    per item; read the fork's docs (ansible_nas_doc) before changing a role.";
-
 /// What every member of the wing is told about the fork's own rules (ADR 0116).
 pub const FORK_RULES: &str = "The fork's own AGENTS.md, when it exists, is the repo's rules; \
     propose one if missing.\n";
-
-/// What the wing's lead is told: the same, and that the draft is the first branch (ADR 0116).
-pub const FORK_RULES_LEAD: &str = "The fork's own AGENTS.md, when it exists, is the repo's \
-    rules; propose one if missing. Until it exists it is the first branch to propose: the draft \
-    is docs/drafts/ansible-nas-AGENTS.md in Endora's library (read_doc).\n";
 
 /// A document on a task (ADR 0115): a branch's diff, a check's report. Read by the tester,
 /// the lead and the owner; never changed.
@@ -83,11 +59,19 @@ pub struct Branch {
     /// Whether the node can push it (a deploy key is set up).
     pub can_push: bool,
     /// `submitted`, `offered` (on the owner's desk), `approved`, `pushed`, `failed` or
-    /// `declined`.
+    /// `declined`; [`IN_PROGRESS`] for work a turn kept when it ran out of room.
     pub status: String,
     /// When it was submitted.
     pub at: Millis,
 }
+
+/// A branch's status when a turn submitted it: checked, then reviewed.
+pub const SUBMITTED: &str = "submitted";
+
+/// A branch's status when it is work in progress, kept by the worker as a turn ran out of room
+/// (ADR 0142, amended 2026-10-31): kept on the node for the next turn, never checked, reviewed or
+/// offered for a push.
+pub const IN_PROGRESS: &str = "in_progress";
 
 /// A check of a submitted branch (ADR 0115): the first piece of the lab, run model-free on the
 /// dev node's runner, reported back with its own token.
@@ -109,7 +93,7 @@ pub struct Check {
     pub ok: Option<bool>,
     /// The result in a line, once done: "syntax ok, ansible-lint 2 findings, yamllint ok", or,
     /// when the branch failed something its base failed too, both counts and the verdict:
-    /// "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no worse than develop".
+    /// "syntax ok, ansible-lint 25 findings (develop 25), yamllint ok: no more findings than develop: met".
     pub summary: String,
     /// When it was queued.
     pub queued_at: Millis,

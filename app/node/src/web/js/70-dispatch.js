@@ -9,7 +9,8 @@ function render() {
   // page's scroll, and each box marked data-keep-scroll. Restored before the browser paints,
   // so nothing visibly jumps.
   const kept = v === LAST_VIEW
-    ? { y: window.scrollY, boxes: [...document.querySelectorAll("[data-keep-scroll]")].map((el) => [el.dataset.keepScroll, el.scrollTop]) }
+    ? { y: window.scrollY, boxes: [...document.querySelectorAll("[data-keep-scroll]")].map((el) => [el.dataset.keepScroll, el.scrollTop]),
+        folds: [...document.querySelectorAll("details[open]")].map(foldName) }
     : null;
   app.innerHTML =
       v === "audit" ? viewAudit()
@@ -37,6 +38,10 @@ function render() {
     // A screen nobody knows any more opens HQ.
     : viewHQ();
   if (kept) {
+    // Fold-outs the person opened stay open: a live update arrives every few seconds.
+    for (const fold of document.querySelectorAll("details")) {
+      if (kept.folds.includes(foldName(fold))) fold.open = true;
+    }
     for (const [name, top] of kept.boxes) {
       const box = document.querySelector(`[data-keep-scroll="${name}"]`);
       if (box) box.scrollTop = top;
@@ -52,6 +57,12 @@ function render() {
     requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   }
   LAST_VIEW = v;
+}
+
+// A fold-out is known across redraws by its summary's words.
+function foldName(fold) {
+  const summary = fold.querySelector("summary");
+  return summary ? summary.textContent.trim() : "";
 }
 
 // ---- actions (event delegation) -------------------------------------------

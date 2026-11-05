@@ -12,6 +12,7 @@ mod hq;
 mod http;
 mod runner;
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use docker::Engine;
@@ -26,6 +27,9 @@ struct Config {
     hq: Hq,
     socket: String,
     work: Work,
+    /// The projects whose items have a side-effect observer (`OBSERVER_PROJECTS`): none unless
+    /// the runner is told, and only the runner is.
+    observer_projects: BTreeSet<u64>,
 }
 
 /// The runner's setup from its environment (`get` reads one variable), with the defaults of
@@ -86,8 +90,20 @@ fn config(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
     let check_done = hq.check_done_prefix();
     let hq_mcp = or("WORKER_HQ_MCP", &hq_mcp);
     endora_protocol::team::canonical_endpoint(&hq_mcp).map_err(str::to_owned)?;
+    // Project numbers, comma-separated. Empty is unset: no observers.
+    let mut observer_projects = BTreeSet::new();
+    let listed = or("OBSERVER_PROJECTS", "");
+    for word in listed.split(',').filter(|_| !listed.is_empty()) {
+        let Ok(project) = word.trim().parse::<u64>() else {
+            return Err(format!(
+                "OBSERVER_PROJECTS is project numbers separated by commas, not {listed:?}"
+            ));
+        };
+        observer_projects.insert(project);
+    }
     Ok(Config {
         hq,
+        observer_projects,
         socket: or("DOCKER_SOCKET", "/var/run/docker.sock"),
         work: Work {
             image: or("WORKER_IMAGE", &image),
@@ -126,7 +142,14 @@ fn main() {
         config.work.image,
         config.work.network
     );
-    let mut runner = Runner::new(Engine::new(config.socket), config.hq, config.work);
+    if !config.observer_projects.is_empty() {
+        println!(
+            "runner: side effects are observed on projects {:?}",
+            config.observer_projects
+        );
+    }
+    let mut runner = Runner::new(Engine::new(config.socket), config.hq, config.work)
+        .observing(config.observer_projects);
     runner.take_back();
     loop {
         runner.step(now());
@@ -137,6 +160,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::config;
+    use std::collections::BTreeSet;
 
     #[test]
     fn stale_worker_endpoint_overrides_require_an_explicit_upgrade() {
@@ -191,6 +215,28 @@ mod tests {
         }
         assert!(config(|name| (name == "HQ_URL").then(|| "https://hq:8790".to_owned())).is_err());
         assert!(!defaults.work.workbench, "the NAS's runner: no workbench");
+    }
+
+    /// Observers are the runner's own to allow: off unless `OBSERVER_PROJECTS` lists project
+    /// numbers, and a list that is not numbers stops the runner rather than guessing.
+    #[test]
+    fn observers_are_off_unless_the_runner_lists_projects() {
+        let off = config(|_| None).unwrap();
+        assert!(off.observer_projects.is_empty());
+        let empty = config(|name| (name == "OBSERVER_PROJECTS").then(|| " ".to_owned())).unwrap();
+        assert!(empty.observer_projects.is_empty(), "empty is unset");
+        let listed =
+            config(|name| (name == "OBSERVER_PROJECTS").then(|| "57, 58".to_owned())).unwrap();
+        assert_eq!(listed.observer_projects, BTreeSet::from([57, 58]));
+        for bad in ["57,x", "-1", "57;58", "57,,58"] {
+            let refused = config(|name| (name == "OBSERVER_PROJECTS").then(|| bad.to_owned()));
+            assert!(
+                refused
+                    .err()
+                    .is_some_and(|e| e.contains("OBSERVER_PROJECTS")),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

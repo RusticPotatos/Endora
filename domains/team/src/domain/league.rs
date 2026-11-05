@@ -36,11 +36,23 @@ pub struct Row {
     pub drawn: u32,
     /// Games lost.
     pub lost: u32,
+    /// Its rating at the start and after each of its finished games, in the order played: the
+    /// last is [`Row::rating`].
+    pub history: Vec<i64>,
 }
 
-/// The next game: the pair of different brains that has played least (finished or not), the
-/// earlier pair in `brains` on a tie; white is the one of the two that has had white less
-/// often against the other, the earlier brain on a tie. `None` with fewer than two brains.
+impl Row {
+    /// Its points in the standings: a win is one, a draw a half.
+    #[must_use]
+    pub fn points(&self) -> f64 {
+        f64::from(self.won) + f64::from(self.drawn) / 2.0
+    }
+}
+
+/// The next game: a pair of different brains that has not played yet (finished or not), the
+/// earlier pair in `brains` first; white is the earlier brain. `None` once every pair has
+/// played, or with fewer than two brains: one game a pair compares the models (the owner,
+/// 2026-10-30), and a reset, which sets the games aside, starts another round.
 #[must_use]
 pub fn next(brains: &[Brain], games: &[Played]) -> Option<(Brain, Brain)> {
     let mut best: Option<(usize, Brain, Brain)> = None;
@@ -55,7 +67,10 @@ pub fn next(brains: &[Brain], games: &[Played]) -> Option<(Brain, Brain)> {
             }
         }
     }
-    let (_, a, b) = best?;
+    let (least, a, b) = best?;
+    if least > 0 {
+        return None;
+    }
     let whites = |w: Brain, x: Brain| {
         games
             .iter()
@@ -86,8 +101,15 @@ pub fn pairs_left(brains: &[Brain], games: &[Played]) -> usize {
     left
 }
 
-/// The table: every brain in `brains`, rated from the finished games in the order played, best
-/// first (the earlier brain in `brains` on a tie).
+/// A rating as the table shows it: whole points.
+#[allow(clippy::cast_possible_truncation)]
+fn rounded(rating: f64) -> i64 {
+    rating.round() as i64
+}
+
+/// The table: every brain in `brains`, rated from the finished games in the order played, in
+/// the standings' order: most points first (a win one, a draw a half), then the higher rating,
+/// then the earlier brain in `brains` (the owner's bracket, 31 Oct).
 #[must_use]
 pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
     let mut rating: Vec<f64> = brains.iter().map(|_| START as f64).collect();
@@ -99,6 +121,7 @@ pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
             won: 0,
             drawn: 0,
             lost: 0,
+            history: vec![START],
         })
         .collect();
     let at = |b: Brain| brains.iter().position(|x| *x == b);
@@ -124,13 +147,14 @@ pub fn table(brains: &[Brain], games: &[Played]) -> Vec<Row> {
                 rows[b].drawn += 1;
             }
         }
+        rows[w].history.push(rounded(rating[w]));
+        rows[b].history.push(rounded(rating[b]));
     }
     for (row, r) in rows.iter_mut().zip(&rating) {
-        #[allow(clippy::cast_possible_truncation)]
-        let rounded = r.round() as i64;
-        row.rating = rounded;
+        row.rating = rounded(*r);
     }
-    rows.sort_by_key(|r| std::cmp::Reverse(r.rating));
+    // Points in halves, so the order is whole numbers.
+    rows.sort_by_key(|r| std::cmp::Reverse((2 * r.won + r.drawn, r.rating)));
     rows
 }
 
@@ -170,12 +194,17 @@ mod tests {
     }
 
     #[test]
-    fn a_rematch_swaps_the_colours() {
+    fn once_every_pair_has_played_the_league_is_over() {
+        // The owner, 2026-10-30: one game a pair compares the models; more only costs. A reset
+        // (which sets the games aside) starts another round.
         let games = vec![game(Brain::Local, Brain::Mac, Some(100))];
-        assert_eq!(
-            next(&[Brain::Local, Brain::Mac], &games),
-            Some((Brain::Mac, Brain::Local))
-        );
+        assert_eq!(next(&[Brain::Local, Brain::Mac], &games), None);
+        let mut games = Vec::new();
+        while let Some((w, b)) = next(&ALL, &games) {
+            games.push(game(w, b, Some(50)));
+            assert!(games.len() <= 3, "{games:?}");
+        }
+        assert_eq!(games.len(), 3, "each of the three pairs once");
     }
 
     #[test]
@@ -198,6 +227,56 @@ mod tests {
         let draw = table(&ALL, &[game(Brain::Local, Brain::Mac, Some(50))]);
         assert!(draw.iter().all(|r| r.rating == START));
         assert_eq!(draw[0].drawn + draw[1].drawn, 2);
+    }
+
+    #[test]
+    fn each_brain_keeps_its_rating_after_every_finished_game_it_played() {
+        let games = vec![
+            game(Brain::Local, Brain::Mac, Some(100)),
+            game(Brain::Mac, Brain::Haiku, None),
+            game(Brain::Haiku, Brain::Local, Some(50)),
+        ];
+        let rows = table(&ALL, &games);
+        let of = |b: Brain| rows.iter().find(|r| r.brain == b).unwrap().history.clone();
+        assert_eq!(of(Brain::Local), [START, START + 16, START + 15]);
+        assert_eq!(
+            of(Brain::Mac),
+            [START, START - 16],
+            "the live game is not in it"
+        );
+        assert_eq!(of(Brain::Haiku), [START, START + 1]);
+        for row in &rows {
+            assert_eq!(row.history.last(), Some(&row.rating), "{row:?}");
+        }
+        assert!(table(&ALL, &[]).iter().all(|r| r.history == [START]));
+    }
+
+    #[test]
+    fn the_standings_rank_points_first_and_rating_second() {
+        // The owner's bracket (31 Oct): a win is a point and a draw half of one; between equal
+        // points, the rating. Here the Mac beats a strong Local late and passes it on rating,
+        // but Local has won twice.
+        const FOUR: [Brain; 4] = [Brain::Local, Brain::Mac, Brain::Haiku, Brain::Sonnet];
+        let games = vec![
+            game(Brain::Local, Brain::Haiku, Some(100)),
+            game(Brain::Local, Brain::Sonnet, Some(100)),
+            game(Brain::Mac, Brain::Local, Some(100)),
+        ];
+        let rows = table(&FOUR, &games);
+        let order: Vec<Brain> = rows.iter().map(|r| r.brain).collect();
+        assert_eq!(
+            order,
+            [Brain::Local, Brain::Mac, Brain::Sonnet, Brain::Haiku],
+            "{rows:?}"
+        );
+        let mac = &rows[1];
+        assert!(
+            mac.rating > rows[0].rating,
+            "the Mac rates higher: {rows:?}"
+        );
+        assert_eq!((rows[0].points(), mac.points()), (2.0, 1.0));
+        let drawn = table(&FOUR, &[game(Brain::Haiku, Brain::Sonnet, Some(50))]);
+        assert_eq!(drawn[0].points(), 0.5, "{drawn:?}");
     }
 
     #[test]

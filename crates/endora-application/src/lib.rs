@@ -28,8 +28,8 @@ pub use endora_capabilities::{
     CapabilitySpec, CapabilityUse,
 };
 pub use ports::{
-    Clock, IdSource, MemorySnapshot, MemoryStore, ModelUsage, RepositoryError, UsageLog,
-    UsageTotals,
+    Clock, IdSource, MemorySnapshot, MemoryStore, ModelUsage, RelayCensus, RelayOutcome,
+    RepositoryError, UsageLog, UsageTotals,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 

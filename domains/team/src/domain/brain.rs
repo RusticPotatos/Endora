@@ -2,13 +2,13 @@
 //! house's own model, or Claude through the node's relay, set by the owner per member. Which
 //! Claude a role may think with is the plan's models by role (section 9), the same rule the
 //! relay enforces on every call: Opus or Sonnet for the CEO; Sonnet or Haiku for the lead, the
-//! developer and the reviewer; Haiku only for the researcher. Opus is the CEO's alone.
+//! developer and the reviewer; Haiku only for the researcher. Opus was the CEO's alone until one
+//! team (ADR 0142): now any member but a researcher may be given it.
 //!
-//! Every member has two (ADR 0131): a **work brain**, one of the house's models (the Mac or
-//! the NAS's), which does its reading, building and drafting for nothing, and a **judgment
-//! brain**, a Claude, which decides. A member who is given none judges with Haiku.
+//! A member is its model (ADR 0142): the two brains of ADR 0131, one to work and one to judge,
+//! are one. A member who is given none is the house's own model.
 
-use super::work::{Refusal, Role};
+use super::work::Refusal;
 
 /// What a member thinks with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -28,15 +28,20 @@ pub enum Brain {
     Haiku,
     /// Claude Opus, through the same relay: the CEO's only (ADR 0111).
     Opus,
+    /// DeepSeek Flash, through the node's local relay to the DeepSeek entry on the owner's
+    /// Everyday list (the owner, 2026-10-28): a cloud model, so it is offered nothing
+    /// Restricted (ADR 0141), and metered against the team's pool at DeepSeek's prices.
+    DeepSeek,
 }
 
 /// Every brain, in the order the owner is offered them.
-const ALL: [Brain; 5] = [
+const ALL: [Brain; 6] = [
     Brain::Local,
     Brain::Mac,
     Brain::Opus,
     Brain::Sonnet,
     Brain::Haiku,
+    Brain::DeepSeek,
 ];
 
 impl Brain {
@@ -50,8 +55,13 @@ impl Brain {
             Self::Sonnet => "claude-sonnet-5-5",
             Self::Haiku => "claude-haiku-5-5",
             Self::Opus => "claude-opus-5-5",
+            Self::DeepSeek => "deepseek-flash",
         }
     }
+
+    /// The lowest rank, the house's model's: where a loop's items start unless the owner
+    /// says otherwise.
+    pub const BOTTOM: u8 = 6;
 
     /// Its rank on the team (ADR 0142): 1 is the most able. An item that fails its checks climbs
     /// from the house's model to Opus.
@@ -61,8 +71,9 @@ impl Brain {
             Self::Opus => 1,
             Self::Sonnet => 2,
             Self::Haiku => 3,
-            Self::Mac => 4,
-            Self::Local => 5,
+            Self::DeepSeek => 4,
+            Self::Mac => 5,
+            Self::Local => Self::BOTTOM,
         }
     }
 
@@ -75,13 +86,17 @@ impl Brain {
             Self::Sonnet => "Claude Sonnet",
             Self::Haiku => "Claude Haiku",
             Self::Opus => "Claude Opus",
+            Self::DeepSeek => "DeepSeek Flash",
         }
     }
 
     /// The brain with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        // Its stored name, or the short one the owner says ("sonnet").
+        // Its stored name, or the short one the owner says ("sonnet", "deepseek").
+        if name == "deepseek" {
+            return Some(Self::DeepSeek);
+        }
         ALL.into_iter().find(|b| {
             b.name() == name
                 || b.name()
@@ -106,11 +121,22 @@ impl Brain {
         matches!(self, Self::Local | Self::Mac)
     }
 
+    /// Whether the brain is a Claude, which speaks Anthropic's API: Opus, Sonnet or Haiku. Not
+    /// every cloud brain is one: DeepSeek is reached through the node's local relay, in
+    /// OpenAI's shape, so Claude Code cannot run it (ADR 0117, amended 2026-10-31). A Claude is
+    /// also paid from the owner's Anthropic credit, and so from the plan's grant, which sizes
+    /// the day's pool (ADR 0113, amended 2026-10-31).
+    #[must_use]
+    pub const fn claude(self) -> bool {
+        matches!(self, Self::Opus | Self::Sonnet | Self::Haiku)
+    }
+
     /// Its price class (ADR 0113, amended): what a token costs on it, in thousandths of what it
     /// costs on Opus, by the relay's input prices (Opus $4, Sonnet $2, Haiku $0.10 a million;
     /// their output prices stand in the same ratios). Nothing for the house's model, which costs
-    /// nothing. A member's claim on the pool is its role's weight times this, so a cheap brain
-    /// claims a small part. `endora-infrastructure`'s relay tests hold this to its prices.
+    /// nothing. What a turn's opening call costs is reckoned from it ([`super::money::least_a_turn`]);
+    /// a member's claim on the pool is not, since 2026-11-01 ([`Self::claim_class`]).
+    /// `endora-infrastructure`'s relay tests hold this to its prices.
     #[must_use]
     pub const fn price_class(self) -> i64 {
         match self {
@@ -118,103 +144,40 @@ impl Brain {
             Self::Opus => 1_000,
             Self::Sonnet => 500,
             Self::Haiku => 25,
+            Self::DeepSeek => 75,
+        }
+    }
+
+    /// Its claim class (ADR 0113, amended 2026-11-01): what a member's claim on the day's pool is
+    /// its role's weight times. The owner, 1 Nov: most of the money goes to Haiku, the cheapest
+    /// paid model and the one doing most of the work; the climbs to Sonnet and Opus draw on what
+    /// is left. So Haiku claims four times what Sonnet or DeepSeek does, and Opus, which only an
+    /// item that failed twice below reaches, half of that. Round 3 weighted claims by price, and
+    /// Ada on Haiku had $0.19 of a $16.60 day. Nothing for the house's model, which costs nothing.
+    #[must_use]
+    pub const fn claim_class(self) -> i64 {
+        match self {
+            Self::Local | Self::Mac => 0,
+            Self::Opus => 1,
+            Self::Sonnet | Self::DeepSeek => 2,
+            Self::Haiku => 8,
         }
     }
 
     /// Every brain, in the order the owner is offered them.
     #[must_use]
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         ALL
     }
 
-    /// Whether a member in `role` may think with this.
-    #[must_use]
-    pub const fn allowed_for(self, role: Role) -> bool {
-        match self {
-            Self::Local | Self::Mac => true,
-            Self::Opus => matches!(role, Role::Ceo),
-            Self::Sonnet => !matches!(role, Role::Researcher),
-            Self::Haiku => !matches!(role, Role::Ceo),
-        }
-    }
-
-    /// The brains a member in `role` may be given, in the order the owner is offered them.
-    #[must_use]
-    pub fn choices(role: Role) -> Vec<Self> {
-        ALL.into_iter().filter(|b| b.allowed_for(role)).collect()
-    }
-
-    /// The brains a member may do its work with (ADR 0131), in the order the owner is offered
-    /// them: the house's models, the Mac first.
-    #[must_use]
-    pub const fn work_choices() -> [Self; 2] {
-        [Self::Mac, Self::Local]
-    }
-
-    /// The brains a member in `role` may be given to judge with (ADR 0131): the Claude models
-    /// the role may use, in the order the owner is offered them.
-    #[must_use]
-    pub fn judgment_choices(role: Role) -> Vec<Self> {
-        Self::choices(role)
-            .into_iter()
-            .filter(|b| b.cloud())
-            .collect()
-    }
-
-    /// The judgment brain a member in `role` has until the owner chooses another (ADR 0131):
-    /// Claude Haiku, the owner's cheap Claude; Sonnet for the CEO, who may not think with Haiku.
-    #[must_use]
-    pub const fn default_judgment(role: Role) -> Self {
-        match role {
-            Role::Ceo => Self::Sonnet,
-            _ => Self::Haiku,
-        }
-    }
-
-    /// The judgment brain the owner asked for by `name`, for a member in `role`.
+    /// The brain the owner asked for by `name`: any member may be any model (ADR 0142).
     ///
     /// # Errors
-    /// [`Refusal::NotABrain`] for a name that is not a Claude the role may use (Opus for any
-    /// role but the CEO, the house's models, anything else).
-    pub fn for_judgment(role: Role, name: &str) -> Result<Self, Refusal> {
-        let brain = Self::for_role(role, name)?;
-        if brain.house() {
-            return Err(Refusal::NotABrain {
-                role,
-                asked: name.chars().take(60).collect(),
-            });
-        }
-        Ok(brain)
-    }
-
-    /// The work brain the owner asked for by `name`.
-    ///
-    /// # Errors
-    /// [`Refusal::NotABrain`] for a name that is not one of the house's models.
-    pub fn for_work(role: Role, name: &str) -> Result<Self, Refusal> {
-        Self::from_name(name.trim())
-            .filter(|b| b.house())
-            .ok_or_else(|| Refusal::NotABrain {
-                role,
-                asked: name.chars().take(60).collect(),
-            })
-    }
-
-    /// The brain the owner asked for by `name`, for a member in `role`.
-    ///
-    /// # Errors
-    /// [`Refusal::NotABrain`] for a name that is not one, or one the role may not use (Opus
-    /// for any role but the CEO).
-    pub fn for_role(role: Role, name: &str) -> Result<Self, Refusal> {
-        let refused = || Refusal::NotABrain {
-            role,
+    /// [`Refusal::NotABrain`] for a name that is not one.
+    pub fn named(name: &str) -> Result<Self, Refusal> {
+        Self::from_name(name.trim()).ok_or_else(|| Refusal::NotABrain {
             asked: name.chars().take(60).collect(),
-        };
-        let brain = Self::from_name(name.trim()).ok_or_else(refused)?;
-        if !brain.allowed_for(role) {
-            return Err(refused());
-        }
-        Ok(brain)
+        })
     }
 }
 
@@ -243,113 +206,51 @@ mod tests {
     }
 
     #[test]
-    fn the_roles_brains_are_the_plans_models_by_role_and_opus_is_refused() {
-        for role in [Role::Lead, Role::Developer, Role::Reviewer] {
-            assert_eq!(
-                Brain::choices(role),
-                [Brain::Local, Brain::Mac, Brain::Sonnet, Brain::Haiku]
-            );
-            assert_eq!(
-                Brain::for_role(role, "claude-sonnet-5-5"),
-                Ok(Brain::Sonnet)
-            );
+    fn any_member_may_be_any_model_endora_has_and_nothing_else() {
+        // A title is a name only (ADR 0142): the owner may give anyone any of the models.
+        for brain in ALL {
+            assert_eq!(Brain::named(brain.name()), Ok(brain));
         }
-        assert_eq!(
-            Brain::choices(Role::Researcher),
-            [Brain::Local, Brain::Mac, Brain::Haiku]
-        );
-        assert_eq!(
-            Brain::for_role(Role::Researcher, "claude-haiku-5-5"),
-            Ok(Brain::Haiku)
-        );
-        // The owner's decision of 2026-10-17 (ADR 0111): the CEO thinks with Opus, Sonnet or
-        // the house's model, and Opus is nobody else's.
-        assert_eq!(
-            Brain::choices(Role::Ceo),
-            [Brain::Local, Brain::Mac, Brain::Opus, Brain::Sonnet]
-        );
-        assert_eq!(
-            Brain::for_role(Role::Ceo, "claude-opus-5-5"),
-            Ok(Brain::Opus)
-        );
-        for (role, asked) in [
-            (Role::Researcher, "claude-sonnet-5-5"),
-            (Role::Lead, "claude-opus-5-5"),
-            (Role::Developer, "claude-opus-5-5"),
-            (Role::Reviewer, "claude-opus-5-5"),
-            (Role::Researcher, "claude-opus-5-5"),
-            (Role::Ceo, "claude-haiku-5-5"),
-            (Role::Ceo, "deepseek-chat"),
-            (Role::Lead, "gpt-5"),
-            (Role::Lead, ""),
-            (Role::Developer, "claude-sonnet-5-5-20261001"),
-        ] {
-            let refused = Brain::for_role(role, asked).unwrap_err();
+        assert_eq!(Brain::named(" claude-opus-5-5 "), Ok(Brain::Opus));
+        for asked in ["gpt-5", "", "claude-sonnet-5-5-20261001"] {
             assert!(
-                matches!(refused, Refusal::NotABrain { .. }),
-                "{role:?} {asked}"
+                matches!(Brain::named(asked), Err(Refusal::NotABrain { .. })),
+                "{asked}"
             );
         }
-        let said = Brain::for_role(Role::Lead, "claude-opus-5-5")
-            .unwrap_err()
-            .to_string();
-        assert!(said.contains("Opus is the CEO's alone"), "{said}");
+        let said = Brain::named("gpt-5").unwrap_err().to_string();
+        assert!(
+            said.contains("thinks with") && said.contains("claude-haiku-5-5"),
+            "{said}"
+        );
     }
 
     #[test]
-    fn a_member_judges_with_haiku_unless_the_owner_says_otherwise_and_the_ceo_with_sonnet() {
-        for role in [
-            Role::Lead,
-            Role::Developer,
-            Role::Reviewer,
-            Role::Researcher,
-        ] {
-            assert_eq!(Brain::default_judgment(role), Brain::Haiku, "{role:?}");
-        }
-        // The relay refuses Haiku for the CEO, so its cheapest Claude is Sonnet.
-        assert_eq!(Brain::default_judgment(Role::Ceo), Brain::Sonnet);
-        // And the default is always one its role may use, and always a Claude.
-        for role in [
-            Role::Ceo,
-            Role::Lead,
-            Role::Developer,
-            Role::Reviewer,
-            Role::Researcher,
-        ] {
-            let default = Brain::default_judgment(role);
-            assert!(default.allowed_for(role) && default.cloud(), "{role:?}");
-            assert!(Brain::judgment_choices(role).contains(&default), "{role:?}");
-        }
-    }
-
-    #[test]
-    fn a_judgment_brain_is_a_claude_its_role_may_use_and_a_work_brain_a_house_model() {
+    fn deepseek_flash_is_a_cheap_cloud_brain_ranked_between_haiku_and_the_mac() {
+        // The owner, 2026-10-28: DeepSeek's API, as long as nothing above Confidential goes to it
+        // (a cloud turn is offered nothing Restricted, ADR 0141) and its tokens are cheap.
+        let deep = Brain::from_name("deepseek-flash").unwrap();
+        assert_eq!(deep, Brain::DeepSeek);
         assert_eq!(
-            Brain::for_judgment(Role::Lead, "claude-sonnet-5-5"),
-            Ok(Brain::Sonnet)
+            Brain::from_name("deepseek"),
+            Some(Brain::DeepSeek),
+            "its short name"
         );
-        assert_eq!(
-            Brain::for_judgment(Role::Ceo, "claude-opus-5-5"),
-            Ok(Brain::Opus)
-        );
-        for (role, asked) in [
-            (Role::Lead, "local"),
-            (Role::Lead, "mac"),
-            (Role::Lead, "none"),
-            (Role::Lead, "claude-opus-5-5"),
-            (Role::Researcher, "claude-sonnet-5-5"),
-            (Role::Ceo, "claude-haiku-5-5"),
-        ] {
-            assert!(
-                matches!(
-                    Brain::for_judgment(role, asked),
-                    Err(Refusal::NotABrain { .. })
-                ),
-                "{role:?} {asked}"
-            );
-        }
-        assert_eq!(Brain::for_work(Role::Lead, "mac"), Ok(Brain::Mac));
-        assert_eq!(Brain::for_work(Role::Lead, " local "), Ok(Brain::Local));
-        assert!(Brain::for_work(Role::Lead, "claude-haiku-5-5").is_err());
+        assert!(deep.cloud() && !deep.house());
+        assert_eq!(deep.label(), "DeepSeek Flash");
+        assert!(deep.price_class() > 0 && deep.price_class() < Brain::Sonnet.price_class());
+        let ranks: Vec<u8> = [
+            Brain::Opus,
+            Brain::Sonnet,
+            Brain::Haiku,
+            Brain::DeepSeek,
+            Brain::Mac,
+            Brain::Local,
+        ]
+        .iter()
+        .map(|b| b.rank())
+        .collect();
+        assert_eq!(ranks, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(Brain::BOTTOM, 6);
     }
 }

@@ -5,13 +5,15 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::run_ports::RunStore;
+
 use serde_json::{Value, json};
 
 use super::engine::{Author, Engine, Settings};
 use super::map_ports::MapStore;
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
-use crate::domain::{GoalId, MemberId, Priority, ProjectId, Role, TaskId};
+use crate::domain::{GoalId, MemberId, Priority, ProjectId, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -46,12 +48,12 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Mara the CEO; Ada and Bo, two leads; Linus a developer and Dee the tester, both under Ada;
 /// one goal and the project "Upkeep", Ada's.
 fn team(hq: &Hq<'_>) -> Team {
-    let mara = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+    let mara = hq.hire("Mara", 35, 1, 3).unwrap();
     hq.set_brain(mara, "claude-opus-5-5").unwrap();
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    hq.hire("Bo", Role::Lead, 25, 2, 3).unwrap();
-    let linus = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    hq.hire("Bo", 25, 2, 3).unwrap();
+    let linus = hq.hire("Linus", 40, 2, 4).unwrap();
+    let dee = hq.hire("Dee", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -243,12 +245,30 @@ fn every_briefing_opens_with_a_map_of_the_pages_that_matter_to_its_member() {
         "{}",
         linus.told
     );
-    assert!(at < 120, "right after who it is: {}", linus.told);
+    // Who it is comes after the briefing's fixed opening (ADR 0142, amended 2026-10-31).
+    let who = linus.told.find("You are ").unwrap();
+    assert!(
+        who < at && at < who + 120,
+        "right after who it is: {}",
+        linus.told
+    );
     // The run records it was told.
     let briefed = hq.briefed(linus.run).unwrap().unwrap();
     assert_eq!(briefed.briefed.first().map(String::as_str), Some("map"));
     let _ = task;
     end(&hq, &clock, &linus);
+}
+
+/// Many projects, for a wide map.
+const WIDE: [&str; 14] = [
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+    "kilo", "lima", "mike", "november",
+];
+
+/// An item that names every one of them: a turn on an item is told only the pages it names
+/// (ADR 0142, amended 2026-10-30), so a wide map is one whose item names many.
+fn wide_item() -> String {
+    format!("Fix the proxy of {}", WIDE.join(", "))
 }
 
 #[test]
@@ -258,14 +278,15 @@ fn a_turn_on_the_mac_has_a_longer_map_and_a_bigger_briefing_than_one_on_the_nas(
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);
     let t = team(&hq);
-    for n in 0..14 {
-        hq.add_project(t.goal, &format!("Project {n}"), "", t.ada, None)
+    for name in WIDE {
+        hq.add_project(t.goal, &format!("Project {name}"), "", t.ada, None)
             .unwrap();
     }
     hq.migrate_map().unwrap();
-    // The node says the Mac is free, so Linus's work runs on it: a large context, its own limits.
+    // Linus is the Mac, and the node says it is free: a large context, its own limits.
+    hq.set_brain(t.linus, "mac").unwrap();
     hq.tell_mac(true, "ready");
-    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    let (linus, _) = working(&hq, t.goal, t.linus, &wide_item());
     assert_eq!(
         hq.store().run(linus.run).unwrap().unwrap().brain,
         Some(crate::domain::Brain::Mac),
@@ -294,12 +315,12 @@ fn a_tight_map_leaves_off_the_least_and_names_it() {
     let t = team(&hq);
     // Many projects, so the map is wide; the node has not said the Mac is free, so Linus works on
     // the NAS's model, whose context is small: its map is short and its briefing small.
-    for n in 0..14 {
-        hq.add_project(t.goal, &format!("Project {n}"), "", t.ada, None)
+    for name in WIDE {
+        hq.add_project(t.goal, &format!("Project {name}"), "", t.ada, None)
             .unwrap();
     }
     hq.migrate_map().unwrap();
-    let (linus, _) = working(&hq, t.goal, t.linus, "Fix the proxy");
+    let (linus, _) = working(&hq, t.goal, t.linus, &wide_item());
     assert_eq!(
         hq.store().run(linus.run).unwrap().unwrap().brain,
         Some(crate::domain::Brain::Local),

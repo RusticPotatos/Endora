@@ -235,14 +235,8 @@ pub(super) fn tell_hq(state: &AppState, now: i64) -> bool {
 /// Keeps HQ told, every twenty seconds: a Mac that stops reporting becomes "not heard from"
 /// here, and so for HQ, without anyone calling the node.
 pub(crate) fn spawn(state: AppState) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(20));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let (state, now) = (state.clone(), state.clock.now().unix_millis());
-            let _ = tokio::task::spawn_blocking(move || tell_hq(&state, now)).await;
-        }
+    super::every(state, 20, |state| {
+        tell_hq(state, state.clock.now().unix_millis());
     });
 }
 

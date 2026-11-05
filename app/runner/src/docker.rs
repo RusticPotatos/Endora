@@ -5,6 +5,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use endora_kernel::exit_code::{NEVER_STARTED_EXIT, UNREADABLE_EXIT};
 use serde_json::Value;
 
 use crate::http::{self, Answer};
@@ -17,6 +18,19 @@ pub const LEASE_LABEL: &str = "endora.lease";
 
 /// The label a check job's container carries: its check (ADR 0115).
 pub const CHECK_LABEL: &str = "endora.check";
+
+/// The label an item's keeper carries (ADR 0142, amended 2026-11-01): the item (its task) whose
+/// sandbox it keeps between turns.
+pub const ITEM_LABEL: &str = "endora.item";
+
+/// The label a side-effect observer carries (ADR 0102, amended 2026-11-04): the item (its task)
+/// whose tool's side effects it records.
+pub const OBSERVER_LABEL: &str = "endora.observer";
+
+/// The label that keeps a container out of Watchtower, which every container the runner starts
+/// carries, set to `"false"`: Endora's image is built, not pulled, and a check or a turn
+/// recreated at night would be cut (D11).
+pub const WATCHTOWER_LABEL: &str = "com.centurylinklabs.watchtower.enable";
 
 /// How long one call to Docker may take. Starting a container on a busy NAS is the slowest.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(30);
@@ -42,6 +56,27 @@ pub struct Left {
     pub lease: String,
     /// Its check label, as it is written; empty for a turn's container.
     pub check: String,
+    /// When it was made, in seconds since the Unix epoch.
+    pub created: u64,
+}
+
+/// An item's keeper, as Docker lists it: the container that holds the item's sandbox mounted
+/// between its turns, so what is in it stays (ADR 0142, amended 2026-11-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Keeper {
+    /// The container.
+    pub id: String,
+    /// Its item label, as it is written.
+    pub item: String,
+}
+
+/// An item's side-effect observer, as Docker lists it: what a runner that restarts takes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watcher {
+    /// The container.
+    pub id: String,
+    /// Its observer label, as it is written: the item.
+    pub item: String,
     /// When it was made, in seconds since the Unix epoch.
     pub created: u64,
 }
@@ -79,6 +114,12 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String>;
+    /// The last `lines` lines a container wrote to stdout, as one text: how an observer says it
+    /// is serving.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn stdout_tail(&self, id: &str, lines: usize) -> Result<String, String>;
     /// Removes a container and the anonymous volumes it was given. One gone is no failure.
     ///
     /// # Errors
@@ -89,6 +130,21 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn left(&self) -> Result<Vec<Left>, String>;
+    /// Every container labelled with an item: the items' keepers, running or not.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn keepers(&self) -> Result<Vec<Keeper>, String>;
+    /// Every container labelled as an item's side-effect observer, running or not.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn observers(&self) -> Result<Vec<Watcher>, String>;
+    /// Removes a named volume. One gone is no failure.
+    ///
+    /// # Errors
+    /// What Docker said (one still in use stays), or that it could not be reached.
+    fn remove_volume(&self, name: &str) -> Result<(), String>;
 }
 
 /// Docker's Engine API on its unix socket.
@@ -155,6 +211,15 @@ fn checked(id: &str) -> Result<&str, String> {
     Ok(id)
 }
 
+/// A volume's name, as the runner makes one (`endora-item-12`), so it goes into a path as
+/// nothing else.
+fn checked_volume(name: &str) -> Result<&str, String> {
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err("not a volume's name".to_owned());
+    }
+    Ok(name)
+}
+
 impl Docker for Engine {
     fn ping(&self) -> Result<(), String> {
         let answer = self.call("GET", "/_ping", None)?;
@@ -198,10 +263,11 @@ impl Docker for Engine {
         }
         // Made but never started: its exit code is 0, and it succeeded at nothing.
         if state["Status"] == "created" {
-            return Ok(Some(State::Exited(-1)));
+            return Ok(Some(State::Exited(NEVER_STARTED_EXIT)));
         }
+        // Ended with no code Docker says: it ran, so it is not one that never started.
         Ok(Some(State::Exited(
-            state["ExitCode"].as_i64().unwrap_or(-1),
+            state["ExitCode"].as_i64().unwrap_or(UNREADABLE_EXIT),
         )))
     }
 
@@ -216,6 +282,15 @@ impl Docker for Engine {
 
     fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String> {
         let path = format!("/containers/{}/logs?stderr=1&tail={lines}", checked(id)?);
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("give its log", &answer));
+        }
+        Ok(demuxed(&answer.body))
+    }
+
+    fn stdout_tail(&self, id: &str, lines: usize) -> Result<String, String> {
+        let path = format!("/containers/{}/logs?stdout=1&tail={lines}", checked(id)?);
         let answer = self.call("GET", &path, None)?;
         if answer.status != 200 {
             return Err(refusal("give its log", &answer));
@@ -274,6 +349,64 @@ impl Docker for Engine {
         let mut seen = std::collections::BTreeSet::new();
         all.retain(|left| seen.insert(left.id.clone()));
         Ok(all)
+    }
+
+    fn keepers(&self) -> Result<Vec<Keeper>, String> {
+        // `filters={"label":["endora.item"]}`, written for a URL.
+        let path = format!(
+            "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{ITEM_LABEL}%22%5D%7D"
+        );
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("list them", &answer));
+        }
+        Ok(answer
+            .json()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(Keeper {
+                    id: c["Id"].as_str()?.to_owned(),
+                    item: c["Labels"][ITEM_LABEL].as_str()?.to_owned(),
+                })
+            })
+            .collect())
+    }
+
+    fn observers(&self) -> Result<Vec<Watcher>, String> {
+        // `filters={"label":["endora.observer"]}`, written for a URL.
+        let path = format!(
+            "/containers/json?all=true&filters=%7B%22label%22%3A%5B%22{OBSERVER_LABEL}%22%5D%7D"
+        );
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("list them", &answer));
+        }
+        Ok(answer
+            .json()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                Some(Watcher {
+                    id: c["Id"].as_str()?.to_owned(),
+                    item: c["Labels"][OBSERVER_LABEL].as_str()?.to_owned(),
+                    // Unknown is as old as can be.
+                    created: c["Created"].as_u64().unwrap_or(0),
+                })
+            })
+            .collect())
+    }
+
+    fn remove_volume(&self, name: &str) -> Result<(), String> {
+        let path = format!("/volumes/{}", checked_volume(name)?);
+        let answer = self.call("DELETE", &path, None)?;
+        // 404: gone already. 409 (in use) is a failure: it stays, and is tried again.
+        if matches!(answer.status, 204 | 404) {
+            return Ok(());
+        }
+        Err(refusal("remove the volume", &answer))
     }
 }
 
@@ -363,6 +496,9 @@ mod tests {
             "GET /containers/never/json HTTP/1.1" => {
                 chunked(r#"{"State":{"Status":"created","Running":false,"ExitCode":0}}"#)
             }
+            "GET /containers/unread/json HTTP/1.1" => {
+                chunked(r#"{"State":{"Status":"exited","Running":false}}"#)
+            }
             "GET /containers/going/json HTTP/1.1" => {
                 chunked(r#"{"State":{"Status":"running","Running":true,"ExitCode":0}}"#)
             }
@@ -380,6 +516,11 @@ mod tests {
             "GET /containers/c0ffee/logs?stderr=1&tail=8 HTTP/1.1" => whole(
                 "200 OK",
                 "\u{2}\0\0\0\0\0\0\u{15}worker: round 1 done\n\u{2}\0\0\0\0\0\0\u{1a}worker: the model said no\n",
+            ),
+            // One frame of stdout (stream 1): how an observer says it is serving.
+            "GET /containers/c0ffee/logs?stdout=1&tail=8 HTTP/1.1" => whole(
+                "200 OK",
+                "\u{1}\0\0\0\0\0\0\u{1e}serving http://127.0.0.1:8799\n",
             ),
             "GET /containers/tty/logs?stderr=1&tail=8 HTTP/1.1" => {
                 whole("200 OK", "plain words from a tty\n")
@@ -401,9 +542,15 @@ mod tests {
         assert_eq!(engine.inspect("ended").unwrap(), Some(State::Exited(0)));
         assert_eq!(
             engine.inspect("never").unwrap(),
-            Some(State::Exited(-1)),
+            Some(State::Exited(NEVER_STARTED_EXIT)),
             "made but never started is no success"
         );
+        assert_eq!(
+            engine.inspect("unread").unwrap(),
+            Some(State::Exited(UNREADABLE_EXIT)),
+            "an exit code that cannot be read is not one of a container that never started"
+        );
+        assert_ne!(UNREADABLE_EXIT, NEVER_STARTED_EXIT);
         assert_eq!(engine.inspect("going").unwrap(), Some(State::Running));
         assert_eq!(engine.inspect("gone").unwrap(), None);
         engine.kill("c0ffee").unwrap();
@@ -416,6 +563,11 @@ mod tests {
             engine.stderr_tail("tty", 8).unwrap(),
             "plain words from a tty\n",
             "a tty container's log is not framed"
+        );
+        assert_eq!(
+            engine.stdout_tail("c0ffee", 8).unwrap(),
+            "serving http://127.0.0.1:8799\n",
+            "stdout, not stderr"
         );
         engine.remove("c0ffee").unwrap();
         assert_eq!(
@@ -444,6 +596,50 @@ mod tests {
             ],
             "only the runner's own containers, turns and checks, stopped ones too"
         );
+    }
+
+    /// An item's keeper (ADR 0142, amended 2026-11-01): listed by its label, and its volume
+    /// removed by name; one still in use stays and is a failure, one gone is none.
+    #[test]
+    fn the_items_keepers_are_listed_and_their_volumes_removed() {
+        let (engine, asked) = docker("keepers", |line| match line {
+            l if l.starts_with("GET /containers/json?") => whole(
+                "200 OK",
+                r#"[{"Id":"k1","Labels":{"endora.item":"12"}},{"Id":"odd","Labels":{}}]"#,
+            ),
+            "DELETE /volumes/endora-item-12 HTTP/1.1" => {
+                "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+            }
+            "DELETE /volumes/endora-item-13 HTTP/1.1" => {
+                whole("404 Not Found", r#"{"message":"no such volume"}"#)
+            }
+            _ => whole("409 Conflict", r#"{"message":"volume is in use"}"#),
+        });
+        assert_eq!(
+            engine.keepers().unwrap(),
+            vec![Keeper {
+                id: "k1".to_owned(),
+                item: "12".to_owned()
+            }]
+        );
+        engine.remove_volume("endora-item-12").unwrap();
+        engine.remove_volume("endora-item-13").unwrap();
+        let in_use = engine.remove_volume("endora-item-14").unwrap_err();
+        assert!(in_use.contains("in use"), "{in_use}");
+        for odd in ["../x", "a b", "", "v?force=1"] {
+            assert!(engine.remove_volume(odd).is_err(), "{odd}");
+        }
+        let lines: Vec<String> = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(l, _)| l.clone())
+            .collect();
+        assert_eq!(
+            lines[0],
+            "GET /containers/json?all=true&filters=%7B%22label%22%3A%5B%22endora.item%22%5D%7D HTTP/1.1"
+        );
+        assert_eq!(lines.len(), 4, "no odd name was sent: {lines:?}");
     }
 
     #[test]

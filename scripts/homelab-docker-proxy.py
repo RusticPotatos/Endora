@@ -12,6 +12,9 @@ ALLOWED = {'/version', '/containers/json?all=true'}
 # (ADR 0112): only its id, name, image, state, restart policy, network mode and three compose
 # labels are passed on. Never its environment, mounts, binds or any other label.
 INSPECT = re.compile(r'/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/json')
+# Each container in the list: its name, state and status, and when it was created and its image
+# id, which tell an update (Watchtower's, at night) from a restart. Never a label or anything else.
+LISTED = ('Names', 'State', 'Status', 'Created', 'ImageID')
 COMPOSE_LABELS = ('com.docker.compose.service', 'com.docker.compose.project', 'com.docker.compose.depends_on')
 
 def inspected(value):
@@ -61,7 +64,7 @@ def handler(socket_path):
                 if INSPECT.fullmatch(self.path):
                     value = inspected(value)
                 elif self.path.startswith('/containers/'):
-                    value = [{key: item.get(key) for key in ('Names', 'State', 'Status')} for item in value[:100]]
+                    value = [{key: item.get(key) for key in LISTED} for item in value[:100]]
                 else:
                     value = {key: value.get(key) for key in ('ApiVersion', 'Version')}
                 body = json.dumps(value).encode()

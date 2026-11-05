@@ -18,6 +18,7 @@ pub mod outcomes;
 use super::ports::{DeskItem, Run};
 use crate::domain::money::{self, DAY_MS, Micros};
 use crate::domain::{Event, MemberId, Millis, Task, TaskId, TaskStatus};
+use crate::domain::{by_model, runs};
 
 /// A span of time, `from` inclusive to `until` exclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,9 +74,24 @@ pub struct Record<'a> {
     pub tasks: &'a [Task],
     /// Every desk item, waiting or decided.
     pub desk: &'a [DeskItem],
-    /// Every event kept, oldest first.
+    /// The events kept of the [`KINDS_READ`], oldest first.
     pub events: &'a [Event],
+    /// When the kept feed begins, its oldest event of any kind: pruning drops the oldest.
+    pub kept_from: Option<Millis>,
 }
+
+/// The kinds of event the scorecard and its outcomes read. Only these are handed to them:
+/// ticks and the rest are most of the feed, and parsing them was most of the card's cost.
+/// A measure that reads another kind adds it here.
+pub const KINDS_READ: [&str; 7] = [
+    "task.changed",
+    "routine.fired",
+    "routine.posted",
+    "desk.added",
+    "branch.pushed",
+    "task.sent_back",
+    "record.asked",
+];
 
 /// One member's turns in a window, and what they cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +141,9 @@ pub struct Review {
 pub struct Finished {
     /// Tasks that reached done.
     pub done: usize,
+    /// Of those, how many HQ closed with nothing checked (a loop worked alone, no branch):
+    /// completed, not verified (ADR 0124, amended 2026-11-03).
+    pub unverified: usize,
     /// Everything ever spent on turns on those tasks.
     pub done_spent: Micros,
     /// Tasks that were dropped.
@@ -230,11 +249,7 @@ pub fn score(record: &Record<'_>, window: &Window) -> Scorecard {
     Scorecard {
         from: window.from,
         until: window.until,
-        since: record
-            .events
-            .first()
-            .map(|e| e.at)
-            .filter(|at| *at > window.from),
+        since: record.kept_from.filter(|at| *at > window.from),
         turns: with_done(turns(record.runs, window), record, window),
         review: review(record.events, window),
         finished: finished(record, window),
@@ -331,6 +346,7 @@ fn spent_on(runs: &[Run], task: TaskId) -> Micros {
 
 fn finished(record: &Record<'_>, window: &Window) -> Finished {
     let mut done = HashSet::new();
+    let mut unverified = HashSet::new();
     let mut dropped = HashSet::new();
     for event in record.events.iter().filter(|e| window.holds(e.at)) {
         let Some(task) = task_of(event) else {
@@ -339,6 +355,9 @@ fn finished(record: &Record<'_>, window: &Window) -> Finished {
         match status_of(event) {
             Some(TaskStatus::Done) => {
                 done.insert(task);
+                if event.data["unverified"] == true {
+                    unverified.insert(task);
+                }
             }
             Some(TaskStatus::Dropped) => {
                 dropped.insert(task);
@@ -348,6 +367,7 @@ fn finished(record: &Record<'_>, window: &Window) -> Finished {
     }
     Finished {
         done: done.len(),
+        unverified: unverified.len(),
         done_spent: done.iter().map(|t| spent_on(record.runs, *t)).sum(),
         dropped: dropped.len(),
         dropped_spent: dropped.iter().map(|t| spent_on(record.runs, *t)).sum(),
@@ -394,7 +414,7 @@ fn median(mut values: Vec<Millis>) -> Option<Millis> {
     if values.len() % 2 == 1 {
         return Some(values[mid]);
     }
-    Some((values[mid - 1] + values[mid]) / 2)
+    Some(i64::midpoint(values[mid - 1], values[mid]))
 }
 
 fn alarms(record: &Record<'_>, window: &Window) -> Alarms {
@@ -431,6 +451,12 @@ fn alarms(record: &Record<'_>, window: &Window) -> Alarms {
 
 fn desk(record: &Record<'_>, window: &Window) -> Desk {
     let mut desk = Desk::default();
+    let waiting: HashSet<i64> = record
+        .desk
+        .iter()
+        .filter(|d| d.status == "waiting")
+        .map(|d| d.id.0)
+        .collect();
     for event in record
         .events
         .iter()
@@ -444,11 +470,7 @@ fn desk(record: &Record<'_>, window: &Window) -> Desk {
             _ => desk.other += 1,
         }
         let item = event.data["item"].as_i64();
-        let waiting = record
-            .desk
-            .iter()
-            .any(|d| Some(d.id.0) == item && d.status == "waiting");
-        desk.waiting += usize::from(waiting);
+        desk.waiting += usize::from(item.is_some_and(|i| waiting.contains(&i)));
     }
     desk
 }
@@ -462,6 +484,44 @@ fn cache(runs: &[Run], window: &Window) -> Cache {
         cache.read += run.cache_read_tokens;
     }
     cache
+}
+
+// ---- what each model cost (the owner, 2026-10-31) -----------------------------------------
+
+/// What each model cost over the owner's last seven days ending with `day` and the seven before
+/// them, for the Money card: a row per brain a turn ran on ([`by_model::by_model`]), and each
+/// week's totals.
+#[must_use]
+pub fn by_model_shown(runs: &[Run], day: i64, offset_minutes: i64) -> Value {
+    let now = Window::days_ending(day, 7, offset_minutes);
+    let before = Window::days_ending(day - 7, 7, offset_minutes);
+    let table = by_model::by_model(&ran_on(runs, &now), &ran_on(runs, &before));
+    let week = |w: &by_model::Week, all: Micros| json!({ "turns": w.turns, "spent": w.spent, "per_turn": w.per_turn(), "share": w.share(all) });
+    let total = |w: &by_model::Week, window: &Window| {
+        json!({ "from": window.from, "until": window.until, "turns": w.turns, "spent": w.spent,
+                "per_turn": w.per_turn() })
+    };
+    json!({
+        "now": total(&table.now, &now),
+        "before": total(&table.before, &before),
+        "rows": table.rows.iter().map(|r| json!({
+            "brain": r.brain.name(),
+            "now": week(&r.now, table.now.spent),
+            "before": week(&r.before, table.before.spent),
+            "trend": r.trend().name(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// The turns that ran in the window, each as the brain it ran on and what it spent: started and
+/// ended in it ([`ended_in`]: one the guards or the kill switch turned away never started), and
+/// not a start that never happened ([`runs::is_never_started`]: the runner could not start it).
+/// A turn from before turns recorded their brain is left out: which it ran on cannot be told.
+fn ran_on(runs: &[Run], window: &Window) -> Vec<(crate::domain::Brain, Micros)> {
+    ended_in(runs, window)
+        .filter(|r| !runs::is_never_started(&r.end_reason))
+        .filter_map(|r| Some((r.brain?, r.spent)))
+        .collect()
 }
 
 // ---- each team's measures (ADR 0120) ------------------------------------------------------
@@ -735,6 +795,7 @@ impl Scorecard {
             },
             "finished": {
                 "done": self.finished.done,
+                "unverified": self.finished.unverified,
                 "done_spent": self.finished.done_spent,
                 "per_done": self.finished.per_done(),
                 "dropped": self.finished.dropped,

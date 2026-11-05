@@ -10,6 +10,11 @@
 //! deploy key, never with force, never to the default branch. HQ opens no pull request and
 //! merges nothing.
 //!
+//! Upstream ansible-nas is kept beside the fork, read-only (ADR 0106, amended 2026-10-31): its
+//! default branch is fetched into `refs/upstream/<branch>` on the fork's schedule and carried in
+//! every checkout, so an offline sandbox can compare the two. It is never a base and never a
+//! push target: no remote names it, and a branch named for it or carrying its commits is refused.
+//!
 //! Every refusal here is a rule in code: the model proposes a branch, this decides it.
 
 use std::path::{Path, PathBuf};
@@ -26,6 +31,9 @@ pub const FILES_MOST: usize = 200;
 pub const DIFF_MOST: usize = 1024 * 1024;
 /// The most of a diff shown in the task's document.
 pub const SHOWN_MOST: usize = 64 * 1024;
+/// The most of one file at a submission's head handed to HQ's mechanical checks, in bytes: a
+/// longer one is not handed over, never cut.
+pub const CHECKED_TEXT_MOST: usize = 32 * 1024;
 /// How often the mirror is refreshed from the fork, at most.
 pub const REFRESH_MS: i64 = 5 * 60 * 1000;
 /// Where the team's branches live: under `hq/`, and nowhere else.
@@ -81,25 +89,52 @@ pub fn branch_for(task: i64, title: &str) -> String {
     format!("{BRANCH_PREFIX}task-{task}-{}", slug(title))
 }
 
-/// Whether a path is one the team may never touch (ADR 0115): the owner's values live in
-/// `group_vars/*.yml`, `host_vars/` and every inventory, and anything named for a vault. A
-/// branch that changes one is refused whole; the briefing says never to edit, cite or copy
-/// from them.
+pub use endora_kernel::lab::forbidden_path;
+
+/// The files at a submission's head HQ's mechanical checks read (ADR 0142, amended
+/// 2026-10-30): each role README the branch changes (`roles/x/README.md`) and that role's
+/// `defaults/main.yml`, each once, and never a forbidden path.
 #[must_use]
-pub fn forbidden_path(path: &str) -> bool {
-    let lower = path.trim().trim_start_matches("./").to_ascii_lowercase();
-    let parts: Vec<&str> = lower.split('/').collect();
-    parts.iter().any(|p| {
-        matches!(
-            *p,
-            "group_vars"
-                | "host_vars"
-                | "inventories"
-                | "inventory"
-                | "inventory.yml"
-                | "inventory.ini"
-        ) || p.contains("vault")
-    })
+pub fn read_for_checks(changed: &[String]) -> Vec<String> {
+    let mut wanted: Vec<String> = Vec::new();
+    for file in changed {
+        let Some((dir, name)) = file.rsplit_once('/') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("readme.md") || !dir.starts_with("roles/") {
+            continue;
+        }
+        for path in [file.clone(), format!("{dir}/defaults/main.yml")] {
+            if !forbidden_path(&path) && !wanted.contains(&path) {
+                wanted.push(path);
+            }
+        }
+    }
+    wanted
+}
+
+/// Where GitHub keeps a repository's Actions workflows.
+pub const WORKFLOWS_DIR: &str = ".github/workflows/";
+
+/// The most workflows a submission hands HQ.
+pub const WORKFLOWS_MOST: usize = 12;
+
+/// The workflows at a submission's head HQ's check of a CI criterion reads (ADR 0142, amended
+/// 2026-10-31), from `git ls-tree -z --name-only` of [`WORKFLOWS_DIR`]: its `.yml` and `.yaml`
+/// files, never a forbidden path, at most [`WORKFLOWS_MOST`].
+#[must_use]
+pub fn workflow_paths(listing: &str) -> Vec<String> {
+    listing
+        .split('\0')
+        .filter(|p| p.starts_with(WORKFLOWS_DIR))
+        .filter(|p| {
+            let p = p.to_ascii_lowercase();
+            p.ends_with(".yml") || p.ends_with(".yaml")
+        })
+        .filter(|p| !forbidden_path(p))
+        .take(WORKFLOWS_MOST)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// A branch name as the team may use one: a plain name under `hq/`, nothing else.
@@ -164,6 +199,68 @@ pub fn plain_remote(url: &str) -> Result<(), String> {
     Err("a remote with a credential in its address is refused".to_owned())
 }
 
+/// Whether `name` names upstream ansible-nas rather than a branch of the fork: `upstream`,
+/// `upstream/<branch>`, or that under `refs/`, `refs/heads/` or `refs/remotes/`. Upstream is
+/// read-only (ADR 0106, amended 2026-10-31): never checked out alone, submitted or pushed.
+#[must_use]
+pub fn names_upstream(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let bare = ["refs/remotes/", "refs/heads/", "refs/"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p))
+        .unwrap_or(&lower);
+    bare == "upstream" || bare.starts_with("upstream/")
+}
+
+/// The one rule of which repositories outside the lab may be named: a public
+/// `https://github.com/<owner>/<name>`, the kernel's, which HQ holds the owner to as well.
+pub use endora_kernel::lab::outside_repo;
+
+/// Why a branch of a repository outside the lab is not pushed or merged (ADR 0115, amended
+/// 2026-11-01).
+pub const OUTSIDE_KEPT: &str = "a branch of a repository outside the lab is kept on the node for \
+     judging and is never pushed anywhere";
+
+/// The default branch of the repository at `url`, asked of it (`git ls-remote --symref`), with
+/// `dir` as git's working folder.
+///
+/// # Errors
+/// What git said, or a repository that names no plain default branch.
+pub fn default_branch(dir: &Path, url: &str) -> Result<String, String> {
+    plain_remote(url)?;
+    let said = text(git(dir, &["ls-remote", "--symref", url, "HEAD"], &[])?);
+    said.lines()
+        .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+        .and_then(|r| r.split('\t').next())
+        .filter(|b| crate::ansible_nas::plain_branch(b))
+        .map(str::to_owned)
+        .ok_or_else(|| "the repository names no default branch".to_owned())
+}
+
+/// A remote's address as one key, so the same repository is known by any of its addresses:
+/// GitHub's HTTPS and SSH forms of `owner/name` are the same key; any other address is itself.
+fn repo_key(url: &str) -> String {
+    let lower = url.trim().to_ascii_lowercase();
+    let bare = [
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|p| lower.strip_prefix(p))
+    .unwrap_or(&lower)
+    .trim_end_matches('/');
+    bare.strip_suffix(".git").unwrap_or(bare).to_owned()
+}
+
+/// Whether two remotes' addresses name the same repository.
+#[must_use]
+pub fn same_repo(a: &str, b: &str) -> bool {
+    repo_key(a) == repo_key(b)
+}
+
 /// One `git` run: its stdout, or its stderr as the error.
 fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
@@ -212,6 +309,27 @@ pub struct Bundle {
     pub head: String,
     /// The bundle itself.
     pub bytes: Vec<u8>,
+    /// Upstream's default branch, carried in the bundle as `refs/upstream/<branch>` to be read
+    /// in the sandbox as `upstream/<branch>`; `None` when the node has not fetched it.
+    pub upstream: Option<Upstream>,
+}
+
+/// Upstream ansible-nas's default branch as the node last fetched it (ADR 0106, amended
+/// 2026-10-31): read-only, never a base and never a push target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream {
+    /// Upstream's default branch, e.g. `master`.
+    pub branch: String,
+    /// Its head.
+    pub head: String,
+}
+
+impl Upstream {
+    /// What the sandbox calls it: `upstream/<branch>`.
+    #[must_use]
+    pub fn named(&self) -> String {
+        format!("upstream/{}", self.branch)
+    }
 }
 
 /// A branch the team submitted, once it passed every check.
@@ -235,6 +353,15 @@ pub struct Submitted {
     pub diff: String,
     /// Where the bundle is kept.
     pub path: PathBuf,
+    /// Every file it changes (`git diff --name-only`).
+    pub changed: Vec<String>,
+    /// `(path, text)` at its head of what [`read_for_checks`] names, for HQ's mechanical
+    /// checks: what exists there and fits [`CHECKED_TEXT_MOST`].
+    pub texts: Vec<(String, String)>,
+    /// `(path, text)` at its head of each workflow [`workflow_paths`] names, for HQ's check of
+    /// a CI criterion; one that cannot be read or does not fit [`CHECKED_TEXT_MOST`] is handed
+    /// over empty, so HQ cannot tell rather than think it is not there.
+    pub workflows: Vec<(String, String)>,
 }
 
 impl Submitted {
@@ -258,6 +385,10 @@ pub struct Mirror {
     submissions: PathBuf,
     url: String,
     base: String,
+    upstream: Option<String>,
+    /// A repository outside the lab (ADR 0115, amended 2026-11-01): its branches are kept for
+    /// judging and never pushed or merged anywhere.
+    outside: bool,
     refreshed: Mutex<Option<i64>>,
 }
 
@@ -272,8 +403,116 @@ impl Mirror {
             submissions: root.join("submissions"),
             url: url.to_owned(),
             base: base.to_owned(),
+            upstream: None,
+            outside: false,
             refreshed: Mutex::new(None),
         }
+    }
+
+    /// The mirror of a repository outside the lab at `url`, worked from `base` (its default
+    /// branch), kept under `data_dir/outside-repos/<its address as a folder name>` beside the
+    /// fork's (ADR 0115, amended 2026-11-01: round 4's F4). Checked out and submitted to as the
+    /// fork is, with no upstream; what is submitted stays in it, since [`Self::push`] and
+    /// [`Self::merge_into_base`] refuse every branch of it. The caller has held `url` to
+    /// `endora_kernel::lab::outside_repo`.
+    #[must_use]
+    pub fn outside(data_dir: &Path, url: &str, base: &str) -> Self {
+        let folder: String = repo_key(url)
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let root = data_dir.join("outside-repos").join(folder);
+        Self {
+            dir: root.join("mirror.git"),
+            submissions: root.join("submissions"),
+            url: url.trim().to_owned(),
+            base: base.to_owned(),
+            upstream: None,
+            outside: true,
+            refreshed: Mutex::new(None),
+        }
+    }
+
+    /// Whether this is the mirror of a repository outside the lab, whose branches stay here.
+    #[must_use]
+    pub fn is_outside(&self) -> bool {
+        self.outside
+    }
+
+    /// With upstream at `url` kept beside the fork, read-only (ADR 0106, amended 2026-10-31):
+    /// its default branch is fetched into `refs/upstream/<branch>` on the fork's schedule, and
+    /// every checkout carries it. An upstream that is the fork itself is not kept twice.
+    #[must_use]
+    pub fn with_upstream(mut self, url: &str) -> Self {
+        if !url.trim().is_empty() && !same_repo(url, &self.url) {
+            self.upstream = Some(url.trim().to_owned());
+        }
+        self
+    }
+
+    /// Upstream's default branch as last fetched, if it has been.
+    #[must_use]
+    pub fn upstream(&self) -> Option<Upstream> {
+        let said = git(
+            &self.dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname:strip=2) %(objectname)",
+                "refs/upstream/",
+            ],
+            &[],
+        )
+        .map(text)
+        .ok()?;
+        let (branch, head) = said.lines().next()?.split_once(' ')?;
+        Some(Upstream {
+            branch: branch.to_owned(),
+            head: head.to_owned(),
+        })
+    }
+
+    /// Fetches upstream's default branch (asked of upstream each time, so a renamed default is
+    /// followed) into `refs/upstream/<branch>`, the only ref kept under `refs/upstream/`. No
+    /// remote is configured for it: there is nothing named to push to.
+    fn fetch_upstream(&self, url: &str) -> Result<(), String> {
+        plain_remote(url)?;
+        let said = text(git(
+            &self.dir,
+            &["ls-remote", "--symref", url, "HEAD"],
+            &[],
+        )?);
+        let branch = said
+            .lines()
+            .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+            .and_then(|r| r.split('\t').next())
+            .filter(|b| crate::ansible_nas::plain_branch(b))
+            .ok_or_else(|| "upstream names no default branch".to_owned())?;
+        let kept = format!("refs/upstream/{branch}");
+        git(
+            &self.dir,
+            &[
+                "fetch",
+                "--no-tags",
+                url,
+                &format!("+refs/heads/{branch}:{kept}"),
+            ],
+            &[],
+        )?;
+        let refs = text(git(
+            &self.dir,
+            &["for-each-ref", "--format=%(refname)", "refs/upstream/"],
+            &[],
+        )?);
+        for old in refs.lines().filter(|r| *r != kept) {
+            git(&self.dir, &["update-ref", "-d", old], &[])?;
+        }
+        Ok(())
     }
 
     /// The base branch the wing works from: `ENDORA_ANSIBLE_NAS_REF` when the owner set it
@@ -292,7 +531,9 @@ impl Mirror {
     }
 
     /// Clones the fork as a bare mirror, or fetches what changed, at most once in
-    /// [`REFRESH_MS`]; the first call makes it.
+    /// [`REFRESH_MS`]; the first call makes it. Upstream, when kept, is fetched with it, and an
+    /// upstream that cannot be reached leaves what was last fetched (or nothing) without
+    /// failing the fork's refresh.
     ///
     /// # Errors
     /// What git said, in a line.
@@ -331,8 +572,22 @@ impl Mirror {
                 &[],
             )?;
         }
+        if let Some(url) = &self.upstream {
+            if let Err(why) = self.fetch_upstream(url) {
+                eprintln!("team repo: upstream ansible-nas was not fetched: {why}");
+            }
+        }
         *last = Some(now);
         Ok(())
+    }
+
+    /// The bundle's refs: `refs`, and upstream's when it is kept, with what upstream is.
+    fn with_upstream_ref(&self, mut refs: Vec<String>) -> (Vec<String>, Option<Upstream>) {
+        let upstream = self.upstream();
+        if let Some(up) = &upstream {
+            refs.push(format!("refs/upstream/{}", up.branch));
+        }
+        (refs, upstream)
     }
 
     /// The whole history of a stored submission, as one bundle the check's sandbox can fetch
@@ -398,14 +653,26 @@ impl Mirror {
     }
 
     /// A bundle of `branch` (the default branch when `None`): the default branch, or one of the
-    /// team's under `hq/`, with its whole history, at most [`BUNDLE_MOST`].
+    /// team's under `hq/`, with its whole history, at most [`BUNDLE_MOST`]. Upstream's default
+    /// branch comes with it as `refs/upstream/<branch>`, when the node keeps it.
     ///
     /// # Errors
-    /// A branch that is neither, one the fork does not have, or git failing.
+    /// A branch that is neither (upstream among them), one the fork does not have, or git
+    /// failing.
     pub fn bundle(&self, branch: Option<&str>, now: i64) -> Result<Bundle, String> {
         let branch = match branch.map(str::trim).filter(|b| !b.is_empty()) {
             None => self.base.clone(),
             Some(named) if named == self.base => named.to_owned(),
+            Some(named) if names_upstream(named) => {
+                let _ = self.refresh(now);
+                let upstream = self
+                    .upstream()
+                    .map_or_else(|| "upstream/<its default branch>".to_owned(), |u| u.named());
+                return Err(format!(
+                    "upstream ansible-nas is not checked out on its own: every checkout of {base} carries it as {upstream}, read-only. Check out {base} and read it there, e.g. git log --oneline {base}..{upstream}",
+                    base = self.base
+                ));
+            }
             Some(named) => hq_branch(named)
                 .map_err(|_| {
                     format!(
@@ -417,11 +684,10 @@ impl Mirror {
         };
         self.refresh(now)?;
         let head = self.head_of(&branch)?;
-        let bytes = git(
-            &self.dir,
-            &["bundle", "create", "-", &format!("refs/heads/{branch}")],
-            &[],
-        )?;
+        let (refs, upstream) = self.with_upstream_ref(vec![format!("refs/heads/{branch}")]);
+        let mut args = vec!["bundle", "create", "-"];
+        args.extend(refs.iter().map(String::as_str));
+        let bytes = git(&self.dir, &args, &[])?;
         if bytes.len() > BUNDLE_MOST {
             return Err(format!(
                 "the bundle of {branch} is {} MB, more than the {} MB a checkout may be",
@@ -433,6 +699,7 @@ impl Mirror {
             branch,
             head,
             bytes,
+            upstream,
         })
     }
 
@@ -477,17 +744,11 @@ impl Mirror {
             ));
         }
         self.head_of(&self.base)?;
-        let bytes = git(
-            &self.dir,
-            &[
-                "bundle",
-                "create",
-                "-",
-                &format!("refs/heads/{}", self.base),
-                &kept,
-            ],
-            &[],
-        )?;
+        let (refs, upstream) =
+            self.with_upstream_ref(vec![format!("refs/heads/{}", self.base), kept]);
+        let mut args = vec!["bundle", "create", "-"];
+        args.extend(refs.iter().map(String::as_str));
+        let bytes = git(&self.dir, &args, &[])?;
         if bytes.len() > BUNDLE_MOST {
             return Err(format!(
                 "the bundle of {branch} is {} MB, more than the {} MB a checkout may be",
@@ -499,6 +760,7 @@ impl Mirror {
             branch: branch.to_owned(),
             head: stored,
             bytes,
+            upstream,
         })
     }
 
@@ -533,6 +795,12 @@ impl Mirror {
         task: i64,
         now: i64,
     ) -> Result<Submitted, String> {
+        if names_upstream(branch) {
+            return Err(format!(
+                "upstream ansible-nas is read-only: nothing is submitted or pushed to it. Work on hq/task-{task}-<slug> from {}, and make what you take from upstream your own commits",
+                self.base
+            ));
+        }
         let branch = task_branch(branch, task)?.to_owned();
         if bytes.is_empty() {
             return Err("the bundle is empty".to_owned());
@@ -646,6 +914,7 @@ impl Mirror {
             ));
         }
         let range = format!("{base_ref}..{staged}");
+        self.not_upstreams(&range, branch)?;
         let commits = text(git(
             &self.dir,
             &["log", "--format=%H%x1f%ae%x1f%B%x1e", &range],
@@ -667,13 +936,36 @@ impl Mirror {
                 ));
             }
         }
-        let names = text(git(&self.dir, &["diff", "--name-only", &base, &head], &[])?);
-        if let Some(touched) = names.lines().find(|l| forbidden_path(l)) {
+        // Both sides of a move (a rename is listed by its new name alone otherwise), and every
+        // name as it is (git quotes one outside ASCII otherwise), so no owner's file is missed.
+        let names = text(git(
+            &self.dir,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                &base,
+                &head,
+            ],
+            &[],
+        )?);
+        let changed: Vec<String> = names
+            .split('\0')
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if let Some(touched) = changed
+            .iter()
+            .find(|l| endora_kernel::lab::refused_as_owners_values(l, self.outside))
+        {
             return Err(format!(
                 "{branch} touches {touched}, which holds the owner's own values: never edit, cite or copy from group_vars/*.yml, host_vars or an inventory. Drop that change and submit again"
             ));
         }
-        let files = names.lines().filter(|l| !l.is_empty()).count();
+        let files = changed.len();
         // Commits that change nothing (an empty one, a change undone) are no branch to review:
         // a probe with no file in it was accepted, checked, and would have been offered.
         if files == 0 {
@@ -702,6 +994,33 @@ impl Mirror {
             minus += cols.next().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
         }
         let stat = text(git(&self.dir, &["diff", "--stat=100", &base, &head], &[])?);
+        // A file the head does not have (a role with no defaults) is simply not handed over.
+        let texts = read_for_checks(&changed)
+            .into_iter()
+            .filter_map(|path| {
+                let bytes = git(&self.dir, &["show", &format!("{head}:{path}")], &[]).ok()?;
+                (bytes.len() <= CHECKED_TEXT_MOST)
+                    .then(|| (path, String::from_utf8_lossy(&bytes).into_owned()))
+            })
+            .collect();
+        let listing = git(
+            &self.dir,
+            &["ls-tree", "-z", "--name-only", &head, WORKFLOWS_DIR],
+            &[],
+        )
+        .map(text)
+        .unwrap_or_default();
+        let workflows = workflow_paths(&listing)
+            .into_iter()
+            .map(|path| {
+                let bytes =
+                    git(&self.dir, &["show", &format!("{head}:{path}")], &[]).unwrap_or_default();
+                if bytes.len() > CHECKED_TEXT_MOST {
+                    return (path, String::new());
+                }
+                (path, String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .collect();
         let path = self.submission_path(task, branch, &head);
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)
@@ -719,7 +1038,34 @@ impl Mirror {
             stat,
             diff: shown(&diff),
             path,
+            changed,
+            texts,
+            workflows,
         })
+    }
+
+    /// Refuses a branch built on upstream (ADR 0106, amended 2026-10-31): any commit of `range`
+    /// that upstream has (a merge of it, a branch cut from it) makes upstream a base, which it
+    /// never is. A change read from upstream and made as HQ's own commit is not upstream's.
+    fn not_upstreams(&self, range: &str, branch: &str) -> Result<(), String> {
+        let Some(up) = self.upstream() else {
+            return Ok(());
+        };
+        let count = |extra: &[&str]| -> Result<i64, String> {
+            let mut args = vec!["rev-list", "--count", range];
+            args.extend(extra);
+            Ok(text(git(&self.dir, &args, &[])?).parse().unwrap_or(0))
+        };
+        let not_upstream = format!("^refs/upstream/{}", up.branch);
+        let carried = count(&[])? - count(&[&not_upstream])?;
+        if carried > 0 {
+            return Err(format!(
+                "{branch} carries upstream's commits ({carried} of {}): upstream ansible-nas is read-only and never a base. Branch from {} and make what you take from upstream your own commits (copy the change, then commit it)",
+                up.named(),
+                self.base
+            ));
+        }
+        Ok(())
     }
 
     /// Pushes the stored submission of `branch` at `head` to `remote`, as that branch: only a
@@ -737,6 +1083,19 @@ impl Mirror {
         remote: &str,
         key: Option<&Path>,
     ) -> Result<String, String> {
+        if self.outside {
+            return Err(OUTSIDE_KEPT.to_owned());
+        }
+        if self
+            .upstream
+            .as_deref()
+            .is_some_and(|up| same_repo(up, remote))
+        {
+            return Err(
+                "upstream ansible-nas is read-only: HQ never pushes to it, only to the fork"
+                    .to_owned(),
+            );
+        }
         let branch = hq_branch(branch)?;
         if branch == self.base || branch.starts_with('+') {
             return Err(format!("{branch} is never pushed by HQ"));
@@ -756,6 +1115,22 @@ impl Mirror {
                 &stored[..12.min(stored.len())]
             ));
         }
+        let env = self.push_env(remote, key)?;
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // The refspec carries no `+` and the command no `--force`: a branch the fork has moved
+        // is refused by git, and the owner hears why.
+        let refspec = format!("{kept}:refs/heads/{branch}");
+        git(&self.dir, &["push", "--no-tags", remote, &refspec], &env)?;
+        Ok(format!(
+            "pushed {branch} ({}) to {}",
+            &stored[..12.min(stored.len())],
+            remote
+        ))
+    }
+
+    /// What a push to `remote` runs with: over SSH, the deploy key at `key` and GitHub's own host
+    /// keys, nothing else trusted.
+    fn push_env(&self, remote: &str, key: Option<&Path>) -> Result<Vec<(String, String)>, String> {
         let over_ssh = remote.starts_with("git@") || remote.starts_with("ssh://");
         let mut env: Vec<(String, String)> = Vec::new();
         if over_ssh {
@@ -777,17 +1152,173 @@ impl Mirror {
                 ),
             ));
         }
+        Ok(env)
+    }
+
+    /// The stored submission of `branch`, if it is at `head`.
+    fn stored_at(&self, branch: &str, head: &str) -> Result<String, String> {
+        let kept = format!("refs/submissions/{branch}");
+        let stored = git(
+            &self.dir,
+            &["rev-parse", "--verify", &format!("{kept}^{{commit}}")],
+            &[],
+        )
+        .map(text)
+        .map_err(|_| format!("no submission of {branch} is stored"))?;
+        if !stored.starts_with(head.trim()) || head.trim().len() < 7 {
+            return Err(format!(
+                "the stored submission of {branch} is {}, not {head}",
+                &stored[..12.min(stored.len())]
+            ));
+        }
+        Ok(stored)
+    }
+
+    /// What a stored submission would carry out of the house (ADR 0115, amended 2026-10-31):
+    /// its whole diff against where it left the base (no renames, so both sides of a move are
+    /// read), and each of its commits' messages, for the privacy scan before a push.
+    ///
+    /// # Errors
+    /// No such submission at `head`, or git failing.
+    pub fn outgoing(&self, branch: &str, head: &str) -> Result<Outgoing, String> {
+        let branch = hq_branch(branch)?;
+        let stored = self.stored_at(branch, head)?;
+        let base = format!("refs/heads/{}", self.base);
+        let diff = git(
+            &self.dir,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                "--no-renames",
+                "--no-color",
+                &format!("{base}...{stored}"),
+            ],
+            &[],
+        )?;
+        let log = git(
+            &self.dir,
+            &["log", "--format=%H%x00%B%x1e", &format!("{base}..{stored}")],
+            &[],
+        )?;
+        let messages = String::from_utf8_lossy(&log)
+            .split('\x1e')
+            .filter_map(|entry| {
+                let (sha, message) = entry.trim_start().split_once('\0')?;
+                Some((sha.to_owned(), message.trim().to_owned()))
+            })
+            .collect();
+        Ok(Outgoing {
+            diff: String::from_utf8_lossy(&diff).into_owned(),
+            messages,
+        })
+    }
+
+    /// Merges a pushed submission into the fork's base branch (its develop) and pushes the base
+    /// (ADR 0115, amended 2026-10-31, behind the owner's setting): a fast-forward when the base
+    /// has not moved past where the branch left it, else one merge commit authored by HQ, never
+    /// a force. A conflict merges nothing. `main` and `master` are never the target, nor is
+    /// upstream. Call after [`Self::refresh`], so the base is the fork's as it stands.
+    ///
+    /// # Errors
+    /// Which rule refused it, a conflict, or what git said.
+    pub fn merge_into_base(
+        &self,
+        branch: &str,
+        head: &str,
+        remote: &str,
+        key: Option<&Path>,
+    ) -> Result<String, String> {
+        if self.outside {
+            return Err(OUTSIDE_KEPT.to_owned());
+        }
+        if self
+            .upstream
+            .as_deref()
+            .is_some_and(|up| same_repo(up, remote))
+        {
+            return Err("upstream ansible-nas is read-only: HQ never merges into it".to_owned());
+        }
+        if matches!(self.base.as_str(), "main" | "master") {
+            return Err(format!(
+                "{} mirrors upstream: HQ merges into develop only",
+                self.base
+            ));
+        }
+        let branch = hq_branch(branch)?;
+        plain_remote(remote)?;
+        let stored = self.stored_at(branch, head)?;
+        let base_ref = format!("refs/heads/{}", self.base);
+        let tip = git(&self.dir, &["rev-parse", "--verify", &base_ref], &[]).map(text)?;
+        let is_ancestor =
+            |a: &str, b: &str| git(&self.dir, &["merge-base", "--is-ancestor", a, b], &[]).is_ok();
+        if is_ancestor(&stored, &tip) {
+            return Ok(format!(
+                "{branch} is already in {} ({})",
+                self.base,
+                &tip[..12.min(tip.len())]
+            ));
+        }
+        let (target, how) = if is_ancestor(&tip, &stored) {
+            (stored.clone(), "fast-forward")
+        } else {
+            let tree = git(
+                &self.dir,
+                &["merge-tree", "--write-tree", "--no-messages", &tip, &stored],
+                &[],
+            )
+            .map(text)
+            .map_err(|_| {
+                format!(
+                    "{branch} does not merge cleanly into {}: nothing was merged; merge it on GitHub",
+                    self.base
+                )
+            })?;
+            let tree = tree.lines().next().unwrap_or("").to_owned();
+            let message = format!("Merge {branch} into {}\n\n{TRAILER} (merge)", self.base);
+            let identity = [
+                ("GIT_AUTHOR_NAME", AUTHOR_NAME),
+                ("GIT_AUTHOR_EMAIL", AUTHOR_EMAIL),
+                ("GIT_COMMITTER_NAME", AUTHOR_NAME),
+                ("GIT_COMMITTER_EMAIL", AUTHOR_EMAIL),
+            ];
+            let commit = git(
+                &self.dir,
+                &[
+                    "commit-tree",
+                    &tree,
+                    "-p",
+                    &tip,
+                    "-p",
+                    &stored,
+                    "-m",
+                    &message,
+                ],
+                &identity,
+            )
+            .map(text)?;
+            (commit, "merge commit")
+        };
+        let env = self.push_env(remote, key)?;
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        // The refspec carries no `+` and the command no `--force`: a branch the fork has moved
-        // is refused by git, and the owner hears why.
-        let refspec = format!("{kept}:refs/heads/{branch}");
+        // No `+` and no `--force`: a develop that moved since the refresh is refused by git.
+        let refspec = format!("{target}:{base_ref}");
         git(&self.dir, &["push", "--no-tags", remote, &refspec], &env)?;
         Ok(format!(
-            "pushed {branch} ({}) to {}",
-            &stored[..12.min(stored.len())],
-            remote
+            "merged {branch} into {} ({how}, now {})",
+            self.base,
+            &target[..12.min(target.len())]
         ))
     }
+}
+
+/// What a submission would carry out of the house: its diff and its commits' messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outgoing {
+    /// The unified diff against where it left the base.
+    pub diff: String,
+    /// `(sha, message)` of each of its commits.
+    pub messages: Vec<(String, String)>,
 }
 
 /// Bytes as base64, for a bundle carried in JSON.
@@ -869,9 +1400,15 @@ mod tests {
         fork: PathBuf,
         mirror: Mirror,
         work: PathBuf,
+        base: String,
     }
 
     fn scene(name: &str) -> Scene {
+        scene_on(name, "main")
+    }
+
+    /// As [`scene`], with the fork's line on `base`.
+    fn scene_on(name: &str, base: &str) -> Scene {
         let root = std::env::temp_dir().join(format!(
             "endora-repo-{name}-{}-{}",
             std::process::id(),
@@ -883,23 +1420,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let fork = root.join("fork.git");
-        run(&root, &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        run(&root, &["init", "-q", "--bare", "-b", base, "fork.git"]);
         let seed = root.join("seed");
         run(&root, &["clone", "-q", fork.to_str().unwrap(), "seed"]);
         std::fs::write(seed.join("nas.yml"), "---\n- hosts: all\n").unwrap();
         std::fs::create_dir_all(seed.join("roles/deluge")).unwrap();
         std::fs::write(seed.join("roles/deluge/README.md"), "# deluge\n").unwrap();
+        std::fs::create_dir_all(seed.join("roles/deluge/defaults")).unwrap();
+        std::fs::write(
+            seed.join("roles/deluge/defaults/main.yml"),
+            "---\ndeluge_port: 8112\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(seed.join(".github/workflows")).unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/ci.yml"),
+            "on:\n  push:\n    branches: [main, develop]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/README.txt"),
+            "not a workflow\n",
+        )
+        .unwrap();
         run(&seed, &["add", "."]);
         commit(&seed, "the lab", "John Doe <john@example.com>");
-        run(&seed, &["push", "-q", "origin", "HEAD:main"]);
-        let mirror = Mirror::new(&root.join("data"), fork.to_str().unwrap(), "main");
+        run(&seed, &["push", "-q", "origin", &format!("HEAD:{base}")]);
+        let mirror = Mirror::new(&root.join("data"), fork.to_str().unwrap(), base);
         let bundle = mirror.bundle(None, 0).unwrap();
-        assert_eq!(bundle.branch, "main");
+        assert_eq!(bundle.branch, base);
         let file = root.join("checkout.bundle");
         std::fs::write(&file, &bundle.bytes).unwrap();
         run(
             &root,
-            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+            &["clone", "-q", "-b", base, file.to_str().unwrap(), "work"],
         );
         let work = root.join("work");
         run(&work, &["remote", "remove", "origin"]);
@@ -908,13 +1462,14 @@ mod tests {
             fork,
             mirror,
             work,
+            base: base.to_owned(),
         }
     }
 
     impl Scene {
         /// A branch of one commit in the working clone, changing `file`, authored `author`.
         fn branch(&self, name: &str, file: &str, message: &str, author: &str) {
-            run(&self.work, &["checkout", "-q", "-B", name, "main"]);
+            run(&self.work, &["checkout", "-q", "-B", name, &self.base]);
             std::fs::write(self.work.join(file), format!("# {name}\n")).unwrap();
             run(&self.work, &["add", "."]);
             commit(&self.work, message, author);
@@ -928,7 +1483,7 @@ mod tests {
                     "bundle",
                     "create",
                     out.to_str().unwrap(),
-                    &format!("main..{name}"),
+                    &format!("{}..{name}", self.base),
                 ],
             );
             std::fs::read(out).unwrap()
@@ -965,6 +1520,75 @@ mod tests {
         assert!(plain_remote("/tmp/fork.git").is_ok());
         assert!(plain_remote("https://user:token@example.com/owner/x.git").is_err());
         assert!(plain_remote("").is_err());
+    }
+
+    #[test]
+    fn upstream_is_known_by_its_name_and_by_any_of_its_addresses() {
+        for named in [
+            "upstream",
+            "upstream/master",
+            "Upstream/main",
+            "refs/remotes/upstream/master",
+            "refs/heads/upstream/master",
+            "refs/upstream/master",
+        ] {
+            assert!(names_upstream(named), "{named}");
+        }
+        for not in [
+            "develop",
+            "hq/task-936-upstream-diff",
+            "upstreamish",
+            "main",
+        ] {
+            assert!(!names_upstream(not), "{not}");
+        }
+        let up = "https://github.com/davestephens/ansible-nas.git";
+        for same in [
+            "https://github.com/davestephens/ansible-nas",
+            "git@github.com:davestephens/ansible-nas.git",
+            "ssh://git@github.com/DaveStephens/ansible-nas.git/",
+        ] {
+            assert!(same_repo(up, same), "{same}");
+        }
+        assert!(!same_repo(up, "git@github.com:example/ansible-nas.git"));
+        // The fork is never kept twice as its own upstream.
+        let fork = Mirror::new(Path::new("/nowhere"), up, "master").with_upstream(up);
+        assert_eq!(fork.upstream, None);
+    }
+
+    #[test]
+    fn the_checks_read_each_role_readme_and_its_defaults_and_nothing_forbidden() {
+        let changed: Vec<String> = [
+            "roles/media/README.md",
+            "roles/media/tasks/main.yml",
+            "docs/README.md",
+            "roles/vault-thing/README.md",
+            "roles/media/readme.md",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            read_for_checks(&changed),
+            [
+                "roles/media/README.md",
+                "roles/media/defaults/main.yml",
+                "roles/media/readme.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_workflows_handed_over_are_the_yaml_files_in_github_s_folder_alone() {
+        let listing = ".github/workflows/ci.yml\0.github/workflows/docs.yaml\0\
+                       .github/workflows/README.md\0.github/workflows/vault.yml\0";
+        assert_eq!(
+            workflow_paths(listing),
+            [".github/workflows/ci.yml", ".github/workflows/docs.yaml"]
+        );
+        let many: String = (0..30)
+            .map(|i| format!(".github/workflows/w{i}.yml\0"))
+            .collect();
+        assert_eq!(workflow_paths(&many).len(), WORKFLOWS_MOST);
     }
 
     #[test]
@@ -1028,6 +1652,31 @@ mod tests {
         assert_eq!(taken.title(), "branch hq/task-3-tidy (1 file, +1 −1)");
         assert!(taken.stat.contains("README.md"), "{}", taken.stat);
         assert!(taken.diff.contains("+# hq/task-3-tidy"), "{}", taken.diff);
+        // HQ's mechanical checks are handed the file names and the role's README and
+        // defaults as they are at the head (ADR 0142, amended 2026-10-30).
+        assert_eq!(taken.changed, ["roles/deluge/README.md"]);
+        assert_eq!(
+            taken.texts,
+            [
+                (
+                    "roles/deluge/README.md".to_owned(),
+                    "# hq/task-3-tidy\n".to_owned()
+                ),
+                (
+                    "roles/deluge/defaults/main.yml".to_owned(),
+                    "---\ndeluge_port: 8112\n".to_owned()
+                ),
+            ]
+        );
+        // And every GitHub Actions workflow at the head, for the check of a CI criterion
+        // (ADR 0142, amended 2026-10-31), whether the branch changes it or not.
+        assert_eq!(
+            taken.workflows,
+            [(
+                ".github/workflows/ci.yml".to_owned(),
+                "on:\n  push:\n    branches: [main, develop]\n".to_owned()
+            )]
+        );
         assert!(taken.path.exists() && taken.path.to_string_lossy().contains("task-3"));
         assert_eq!(
             s.mirror.stored(3, "hq/task-3-tidy", &taken.head),
@@ -1188,6 +1837,40 @@ mod tests {
             s.mirror.stored(3, "hq/task-3-a", "0000000").is_none(),
             "nothing refused is kept"
         );
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// The owner's values may not leave by a side door (ADR 0115): a branch that moves
+    /// `group_vars/all.yml` elsewhere touches it, though git lists a move by its new name, and a
+    /// file under `group_vars/` with a name outside ASCII is still under `group_vars/`, though
+    /// git quotes such a name.
+    #[test]
+    fn a_branch_that_moves_an_owners_file_or_names_one_outside_ascii_is_refused() {
+        let s = scene("side-door");
+        run(&s.work, &["checkout", "-q", "main"]);
+        std::fs::create_dir_all(s.work.join("group_vars")).unwrap();
+        std::fs::write(s.work.join("group_vars/all.yml"), "---\nlab_domain: x\n").unwrap();
+        run(&s.work, &["add", "."]);
+        commit(&s.work, "the owner's values", "John Doe <john@example.com>");
+        run(
+            &s.work,
+            &["push", "-q", s.fork.to_str().unwrap(), "HEAD:main"],
+        );
+        let later = 2 * REFRESH_MS;
+        run(&s.work, &["checkout", "-q", "-B", "hq/task-3-move", "main"]);
+        run(&s.work, &["mv", "group_vars/all.yml", "roles/all.yml"]);
+        commit(&s.work, TRAILED, HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-move"), "hq/task-3-move", 3, later)
+            .unwrap_err();
+        assert!(why.contains("touches group_vars/all.yml"), "{why}");
+        s.branch("hq/task-3-accent", "group_vars/\u{e9}.yml", TRAILED, HQ);
+        let why = s
+            .mirror
+            .submit(&s.delta("hq/task-3-accent"), "hq/task-3-accent", 3, later)
+            .unwrap_err();
+        assert!(why.contains("touches group_vars/\u{e9}.yml"), "{why}");
         let _ = std::fs::remove_dir_all(&s.root);
     }
 
@@ -1461,6 +2144,105 @@ mod tests {
             .unwrap_err();
         assert!(why.contains("Rebase it on main"), "{why}");
         let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// What a branch would carry out: its diff against where it left develop, and its commits'
+    /// messages, for the privacy scan (ADR 0115, amended 2026-10-31).
+    #[test]
+    fn what_a_branch_carries_out_is_its_diff_and_its_messages() {
+        let s = scene_on("outgoing", "develop");
+        s.branch("hq/task-6-out", "roles/deluge/x.yml", TRAILED, HQ);
+        let taken = s
+            .mirror
+            .submit(&s.delta("hq/task-6-out"), "hq/task-6-out", 6, 0)
+            .unwrap();
+        let out = s.mirror.outgoing("hq/task-6-out", &taken.head).unwrap();
+        assert!(
+            out.diff.contains("+++ b/roles/deluge/x.yml"),
+            "{}",
+            out.diff
+        );
+        assert!(out.diff.contains("+# hq/task-6-out"), "{}", out.diff);
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0].0, taken.head);
+        assert_eq!(out.messages[0].1, TRAILED);
+        assert!(s.mirror.outgoing("hq/task-6-out", "0000000").is_err());
+        let _ = std::fs::remove_dir_all(&s.root);
+    }
+
+    /// Merging into develop (ADR 0115, amended 2026-10-31): a fast-forward when develop has not
+    /// moved, a merge commit by HQ when it has, nothing on a conflict, never main, never a force.
+    #[test]
+    fn a_pushed_branch_is_merged_into_develop_by_fast_forward_or_merge_never_force() {
+        let s = scene_on("merge", "develop");
+        let fork = s.fork.to_str().unwrap();
+        // Two branches cut from the same develop; a third that clashes with the first.
+        let mut taken = Vec::new();
+        for (name, file, task) in [
+            ("hq/task-7-ff", "a.yml", 7),
+            ("hq/task-8-merge", "b.yml", 8),
+            ("hq/task-9-clash", "a.yml", 9),
+        ] {
+            s.branch(name, file, TRAILED, HQ);
+            taken.push(s.mirror.submit(&s.delta(name), name, task, 0).unwrap());
+        }
+        let said = s
+            .mirror
+            .merge_into_base("hq/task-7-ff", &taken[0].head, fork, None)
+            .unwrap();
+        assert!(said.contains("fast-forward"), "{said}");
+        assert_eq!(
+            run(&s.fork, &["rev-parse", "refs/heads/develop"]),
+            taken[0].head
+        );
+        // Develop moved past the second branch's base: one merge commit, by HQ, both parents.
+        s.mirror.refresh(REFRESH_MS * 2).unwrap();
+        let said = s
+            .mirror
+            .merge_into_base("hq/task-8-merge", &taken[1].head, fork, None)
+            .unwrap();
+        assert!(said.contains("merge commit"), "{said}");
+        let parents = run(&s.fork, &["rev-list", "--parents", "-n", "1", "develop"]);
+        assert!(
+            parents.contains(&taken[0].head) && parents.contains(&taken[1].head),
+            "{parents}"
+        );
+        let author = run(&s.fork, &["log", "-1", "--format=%an <%ae>", "develop"]);
+        assert_eq!(author, HQ);
+        // Again: already in develop, nothing pushed.
+        s.mirror.refresh(REFRESH_MS * 3).unwrap();
+        let again = s
+            .mirror
+            .merge_into_base("hq/task-8-merge", &taken[1].head, fork, None)
+            .unwrap();
+        assert!(again.contains("already in develop"), "{again}");
+        // A clash merges nothing.
+        let before = run(&s.fork, &["rev-parse", "refs/heads/develop"]);
+        let why = s
+            .mirror
+            .merge_into_base("hq/task-9-clash", &taken[2].head, fork, None)
+            .unwrap_err();
+        assert!(why.contains("does not merge cleanly"), "{why}");
+        assert_eq!(run(&s.fork, &["rev-parse", "refs/heads/develop"]), before);
+        // The refusals: a head not stored, and main, which mirrors upstream.
+        assert!(
+            s.mirror
+                .merge_into_base("hq/task-7-ff", "0000000", fork, None)
+                .is_err()
+        );
+        let on_main = scene("merge-main");
+        on_main.branch("hq/task-9-m", "c.yml", TRAILED, HQ);
+        let m = on_main
+            .mirror
+            .submit(&on_main.delta("hq/task-9-m"), "hq/task-9-m", 9, 0)
+            .unwrap();
+        let why = on_main
+            .mirror
+            .merge_into_base("hq/task-9-m", &m.head, on_main.fork.to_str().unwrap(), None)
+            .unwrap_err();
+        assert!(why.contains("develop only"), "{why}");
+        let _ = std::fs::remove_dir_all(&s.root);
+        let _ = std::fs::remove_dir_all(&on_main.root);
     }
 
     #[test]

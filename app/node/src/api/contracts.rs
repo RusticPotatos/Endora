@@ -16,10 +16,12 @@ use axum::http::HeaderMap;
 use endora_capabilities::ansible_nas::{self, Docs};
 use endora_capabilities::application::HomelabObserver as _;
 use endora_capabilities::contracts::{
-    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS, REPO_CHECKOUT,
-    REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
+    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS, IMAGE_TAGS,
+    REPO_CHECKOUT, REPO_SUBMIT, RESTART_CONTAINER, RestartLedger,
 };
 use endora_capabilities::lab_map;
+use endora_capabilities::lab_updates;
+use endora_capabilities::registry;
 use endora_capabilities::repo::{self, Mirror};
 use std::path::PathBuf;
 
@@ -71,16 +73,11 @@ fn offered(switches: Switches) -> Vec<Contract> {
         .collect()
 }
 
-/// Whether a turn may be given what a contract returns: a Confidential one (a container's
-/// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
-/// (ADR 0109); and an act never to the CEO, which takes no step on the house (ADR 0111).
+/// Whether a turn is offered a contract: every one (ADR 0142, one team; no contract is
+/// Restricted), but a branch's submission to a member outside the engineering wing (ADR 0120),
+/// who reads a branch and submits none.
 fn may_see(contract: &Contract, turn: &Turn) -> bool {
-    // Changing the lab is the engineering wing's (ADR 0120): a lead outside it reads a branch
-    // and submits none, so nothing is kept for it.
-    if contract.name == REPO_SUBMIT && turn.wing == Some(false) {
-        return false;
-    }
-    contract.offered_to(&turn.role, turn.cloud)
+    !(contract.name == REPO_SUBMIT && turn.wing == Some(false))
 }
 
 /// The switches as the HQ screen shows them.
@@ -110,6 +107,7 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
     };
     let switches = switches_of(&state);
     let only = turn.only.clone();
+    let never = turn.never.clone();
     let mut tools: Vec<serde_json::Value> = offered(switches)
         .iter()
         .filter(|c| may_see(c, &turn))
@@ -144,6 +142,12 @@ pub(super) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
                 .is_some_and(|n| only.iter().any(|o| o == n))
         });
     }
+    // And never what HQ refuses it: the restart on a task that leaves the lab as it is.
+    tools.retain(|t| {
+        t["name"]
+            .as_str()
+            .is_none_or(|n| !never.iter().any(|o| o == n))
+    });
     Json(json!({ "tools": tools })).into_response()
 }
 
@@ -244,8 +248,13 @@ pub(super) async fn call(
 /// A contract's answer with the receipt's id after its text, or its error.
 async fn with_receipt(response: Response, receipt: &str) -> Response {
     let status = response.status();
-    let Ok(bytes) = axum::body::to_bytes(response.into_body(), 1 << 24).await else {
-        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed");
+    let most = endora_protocol::team::CONTRACT_ANSWER_MOST;
+    let Ok(bytes) = axum::body::to_bytes(response.into_body(), most).await else {
+        let why = format!(
+            "the contract's answer is more than the {} MB one may be",
+            most >> 20
+        );
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", &why);
     };
     let mut answer: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     for key in ["text", "error"] {
@@ -341,28 +350,11 @@ async fn called(
         return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
-        let why = if name == REPO_SUBMIT && turn.wing == Some(false) && turn.role != "reviewer" {
-            "changing the lab is the engineering wing's: its lead and developers submit the \
-             branches. Ask for the change with propose_project, with its criteria and evidence; \
-             the CEO decides and the wing builds it. Read a branch with repo_checkout"
-                .to_owned()
-        } else if name == REPO_SUBMIT && turn.role == "reviewer" {
-            "a tester reads a branch by checking it out (repo_checkout) and submits none: only a \
-             lead or a developer submits one"
-                .to_owned()
-        } else if name == REPO_CHECKOUT || name == REPO_SUBMIT {
-            "the wing's git is a lead's or a developer's, and a tester may check a branch out: \
-             read the branch's document (read_document) and the check's receipt instead"
-                .to_owned()
-        } else if contract.may_be_seen_by(&turn.role, turn.cloud) {
-            "the CEO reads the house and takes no step on it itself: direct the lead of the \
-             task's area with direct, who decides; or hand it to the lead"
-                .to_owned()
-        } else {
-            super::bridge::confidential(&name)
-        };
-        refused_for(&why);
-        return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
+        let why = "changing the lab is the engineering wing's: its members submit the branches. \
+                   Ask for the change with propose_project, with its criteria and evidence; the \
+                   wing builds it. Read a branch with repo_checkout";
+        refused_for(why);
+        return (refuse(StatusCode::FORBIDDEN, "", why), came(why, false));
     }
     let state2 = state.clone();
     let name2 = name.clone();
@@ -372,7 +364,8 @@ async fn called(
         HOMELAB_STATUS => Ok(homelab_status(&state2)),
         HOMELAB_MAP => homelab_map(&state2),
         ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
-        CONTAINER_LOGS => container_logs(&state2, &args),
+        IMAGE_TAGS => image_tags(&state2, &args),
+        CONTAINER_LOGS => container_logs(&state2, &turn, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
         REPO_CHECKOUT => repo_checkout(&state2, &turn, &args),
         REPO_SUBMIT => repo_submit(&state2, &turn, &args),
@@ -512,7 +505,11 @@ fn homelab_status(state: &AppState) -> Done {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let seen = compact(&snapshot, state.clock.now().unix_millis());
+    let seen = compact(
+        &snapshot,
+        state.clock.now().unix_millis(),
+        state.clock.utc_offset_minutes(),
+    );
     Done {
         text: seen.to_string(),
         said: "read the home lab's state".to_owned(),
@@ -521,8 +518,10 @@ fn homelab_status(state: &AppState) -> Done {
 
 /// The home lab as a turn reads it: each service's state and its items, the containers by
 /// name, state, status text, health and exit code, and whether it is all stale (unseen for a
-/// minute, or never seen). Ids are left out: a contract names a container.
-fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
+/// minute, or never seen). Ids are left out: a contract names a container. A container last
+/// created again on a new image says when (`updated`), and the docker service has one line of
+/// the last day's updates (`updates`, D11); its creation time and image id are left out.
+fn compact(snapshot: &serde_json::Value, now: i64, offset: i64) -> serde_json::Value {
     let observed = snapshot["observed_at_ms"].as_i64().unwrap_or(0);
     let stale = observed == 0 || now - observed > STALE_AFTER_MS;
     let services: Vec<serde_json::Value> = snapshot["services"]
@@ -556,6 +555,9 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
                     if let Some(code) = item["exit"].as_i64() {
                         container["exit_code"] = code.into();
                     }
+                    if let Some(when) = lab_updates::updated_at(item, offset) {
+                        container["updated"] = when.into();
+                    }
                     container
                 })
                 .collect();
@@ -565,6 +567,12 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
             }
             if let Some(error) = service["error"].as_str() {
                 out["error"] = error.into();
+            }
+            if let Some(line) = docker
+                .then(|| lab_updates::summary(service, now, offset))
+                .flatten()
+            {
+                out["updates"] = line.into();
             }
             out
         })
@@ -586,22 +594,19 @@ pub(crate) struct LabKnowledge {
     /// Where an approved branch is pushed: the fork over SSH, unless a test says a path.
     push_remote: Option<String>,
     /// The deploy key (`ENDORA_GIT_PUSH_KEY_FILE`), if one is set up.
-    push_key: Option<PathBuf>,
+    pub(crate) push_key: Option<PathBuf>,
+    /// How the image registries are asked, for `image_tags`: the real ones, unless a test
+    /// fakes them.
+    registries: Box<dyn registry::Fetch>,
+    /// The mirrors of repositories outside the lab, by address (ADR 0115, amended 2026-11-01),
+    /// each made the first time a turn's work names it.
+    outside: std::sync::Mutex<std::collections::HashMap<String, Arc<Mirror>>>,
+    /// Where a test's outside repository is fetched from instead of GitHub: a local bare
+    /// repository, by the address it stands in for. Empty on a running node.
+    outside_from: std::collections::HashMap<String, String>,
 }
 
 impl LabKnowledge {
-    /// Where a team branch named in `text` opens on GitHub, against the base the team works
-    /// from: the first `hq/task-` name in it, on the configured fork; `None` without either.
-    pub(crate) fn branch_url(&self, text: &str) -> Option<String> {
-        let start = text.find("hq/task-")?;
-        let branch: String = text[start..]
-            .chars()
-            .take_while(|c| !c.is_whitespace() && *c != ',' && *c != ':')
-            .collect();
-        let branch = branch.trim_end_matches('.');
-        self.docs.fork()?.compare_url(branch)
-    }
-
     /// The docs and the retired list as given; no mirror until a fork and a data folder are.
     pub(crate) fn new(docs: Docs, retired: Vec<(String, String)>) -> Self {
         Self {
@@ -612,7 +617,65 @@ impl LabKnowledge {
             repo: std::sync::Mutex::new(None),
             push_remote: None,
             push_key: None,
+            registries: Box::new(registry::Web),
+            outside: std::sync::Mutex::new(std::collections::HashMap::new()),
+            outside_from: std::collections::HashMap::new(),
         }
+    }
+
+    /// With the outside repository `url` fetched from the local repository at `from`: a test's.
+    #[cfg(test)]
+    pub(crate) fn with_outside(mut self, url: &str, from: &str) -> Self {
+        self.outside_from.insert(url.to_owned(), from.to_owned());
+        self
+    }
+
+    /// The node's mirror of the repository outside the lab at `url` (ADR 0115, amended
+    /// 2026-11-01: round 4's F4), made the first time it is asked for, worked from the default
+    /// branch the repository names then. Only a public `https://github.com/<owner>/<name>` is
+    /// mirrored, whatever HQ said: the one rule is held here again. What is submitted to it is
+    /// kept in it and never pushed anywhere ([`Mirror::outside`]).
+    ///
+    /// # Errors
+    /// An address that is not allowed, or the repository not answering for its default branch.
+    pub(crate) fn outside_mirror(&self, url: &str) -> Result<Arc<Mirror>, String> {
+        let plain = repo::outside_repo(url)?;
+        // The owner's values are guarded in the fork, not outside it (ADR 0115, amended
+        // 2026-11-05): the fork named as an outside repository would escape that guard.
+        if self
+            .docs
+            .fork()
+            .is_some_and(|fork| repo::same_repo(&fork.https_url(), &plain))
+        {
+            return Err(format!(
+                "{plain} is the lab's own fork: its work is done in the fork, never as a repository outside the lab"
+            ));
+        }
+        let mut kept = self
+            .outside
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(mirror) = kept.get(&plain) {
+            return Ok(mirror.clone());
+        }
+        let from = self
+            .outside_from
+            .get(&plain)
+            .cloned()
+            .unwrap_or_else(|| plain.clone());
+        std::fs::create_dir_all(&self.repo_dir).map_err(|e| format!("no data folder: {e}"))?;
+        let base = repo::default_branch(&self.repo_dir, &from)
+            .map_err(|why| format!("{plain} did not say its default branch: {why}"))?;
+        let mirror = Arc::new(Mirror::outside(&self.repo_dir, &from, &base));
+        kept.insert(plain, mirror.clone());
+        Ok(mirror)
+    }
+
+    /// With the image registries asked through `fetch`: a test's fake.
+    #[cfg(test)]
+    pub(crate) fn with_registries(mut self, fetch: Box<dyn registry::Fetch>) -> Self {
+        self.registries = fetch;
+        self
     }
 
     /// No fork, nothing retired and no deploy key: what a node has until `main` reads its
@@ -681,17 +744,40 @@ impl LabKnowledge {
         }
         let fork = self.docs.fork()?;
         let branch = self.docs.branch(now)?;
-        let mirror = Arc::new(Mirror::new(&self.repo_dir, &fork.https_url(), &branch));
+        // Upstream is kept beside the fork, read-only (ADR 0106, amended 2026-10-31).
+        let mirror = Arc::new(
+            Mirror::new(&self.repo_dir, &fork.https_url(), &branch)
+                .with_upstream(&ansible_nas::upstream_https_url()),
+        );
         *kept = Some(mirror.clone());
         Some(mirror)
     }
 
     /// Where an approved branch is pushed: the fork over SSH.
-    fn push_remote(&self) -> Option<String> {
+    pub(crate) fn push_remote(&self) -> Option<String> {
         self.push_remote
             .clone()
             .or_else(|| self.docs.fork().map(ansible_nas::Fork::ssh_url))
     }
+}
+
+/// The mirror a turn's git works in: the repository outside the lab its work names (ADR 0115,
+/// amended 2026-11-01), else the fork's. An address that is not allowed is refused, never
+/// fetched.
+fn mirror_for(state: &AppState, turn: &Turn, now: i64) -> Result<Arc<Mirror>, Refused> {
+    let Some(url) = turn.repo.as_deref() else {
+        return state
+            .lab
+            .mirror(now)
+            .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
+    };
+    if let Err(why) = repo::outside_repo(url) {
+        return Err((StatusCode::FORBIDDEN, why));
+    }
+    state
+        .lab
+        .outside_mirror(url)
+        .map_err(|why| (StatusCode::BAD_GATEWAY, why))
 }
 
 /// What the team is told when no fork is configured for the wing.
@@ -705,9 +791,7 @@ const NO_FORK: &str = "the lab's ansible-nas fork is not configured on the node 
 /// recorded (see [`kept_checkout`]).
 fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
     let branch = args["branch"]
         .as_str()
         .map(str::trim)
@@ -719,21 +803,51 @@ fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Res
             return kept_checkout(state, &mirror, turn, named, now);
         }
     }
-    let bundle = mirror
-        .bundle(branch, now)
-        .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+    // Upstream alone is the member's mistake, not the fork's failing: it is said so.
+    let status = if branch.is_some_and(repo::names_upstream) {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    let bundle = mirror.bundle(branch, now).map_err(|why| (status, why))?;
     let said = format!(
-        "checked out {} at {} ({} KB)",
+        "checked out {} at {} ({} KB){}",
         bundle.branch,
         &bundle.head[..12.min(bundle.head.len())],
-        bundle.bytes.len() >> 10
+        bundle.bytes.len() >> 10,
+        upstream_said(&bundle)
     );
-    let text = json!({
-        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(),
-        "bundle": repo::to_base64(&bundle.bytes),
-    })
-    .to_string();
+    let text = handed(&bundle, mirror.base(), false);
     Ok(Done { text, said })
+}
+
+/// What a checkout says of upstream, after the rest: where it is and that it is only read.
+fn upstream_said(bundle: &repo::Bundle) -> String {
+    bundle.upstream.as_ref().map_or_else(String::new, |up| {
+        format!(
+            "; upstream ansible-nas's {} at {} as {}, read-only",
+            up.branch,
+            &up.head[..12.min(up.head.len())],
+            up.named()
+        )
+    })
+}
+
+/// The checkout as the worker reads it: the branch, its head, the base, whether it is the team's
+/// kept branch, upstream's name in the sandbox (`upstream/<branch>`) when it came with it, and
+/// the bundle as base64.
+fn handed(bundle: &repo::Bundle, base: &str, kept: bool) -> String {
+    let mut text = json!({
+        "branch": bundle.branch, "head": bundle.head, "base": base,
+        "bundle": repo::to_base64(&bundle.bytes),
+    });
+    if kept {
+        text["kept"] = json!(true);
+    }
+    if let Some(up) = &bundle.upstream {
+        text["upstream"] = json!(up.named());
+    }
+    text.to_string()
 }
 
 /// HQ's no to a kept checkout of `branch`, as the turn is told it. HQ answers 404 both for a
@@ -793,24 +907,24 @@ fn kept_checkout(
         .kept_bundle(branch, head, now)
         .map_err(|why| (StatusCode::CONFLICT, why))?;
     let said = format!(
-        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB)",
+        "checked out the team's kept branch {} at {} (task #{}'s, on top of {}; {} KB){}",
         bundle.branch,
         &bundle.head[..12.min(bundle.head.len())],
         kept["task"].as_i64().unwrap_or(0),
         mirror.base(),
-        bundle.bytes.len() >> 10
+        bundle.bytes.len() >> 10,
+        upstream_said(&bundle)
     );
-    let text = json!({
-        "branch": bundle.branch, "head": bundle.head, "base": mirror.base(), "kept": true,
-        "bundle": repo::to_base64(&bundle.bytes),
-    })
-    .to_string();
+    let text = handed(&bundle, mirror.base(), true);
     Ok(Done { text, said })
 }
 
 /// `repo_submit` (ADR 0115): a bundle of one `hq/` branch from the sandbox, taken by the
 /// mirror's rules (one branch, on top of the default branch, within the limits, every commit
 /// HQ's), kept under the task, and told to HQ, which writes its document and queues its check.
+/// With `wip` (ADR 0142, amended 2026-10-31), set by the worker alone as a turn runs out of
+/// room, it is taken by the same rules and told to HQ as work in progress: kept for the next
+/// turn to check out, and neither checked nor offered. Nothing goes to the fork either way.
 fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Result<Done, Refused> {
     let Some(task) = turn.task else {
         return Err((
@@ -833,9 +947,9 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
         ));
     };
     let now = state.clock.now().unix_millis();
-    let Some(mirror) = state.lab.mirror(now) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_FORK.to_owned()));
-    };
+    let mirror = mirror_for(state, turn, now)?;
+    let outside = mirror.is_outside();
+    let wip = args["wip"] == true;
     let taken = mirror
         .submit(&bytes, branch, task, now)
         .map_err(|why| (StatusCode::UNPROCESSABLE_ENTITY, why))?;
@@ -852,7 +966,14 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
                 "token": turn.token, "branch": taken.branch, "head": taken.head,
                 "base": taken.base, "files": taken.files, "plus": taken.plus,
                 "minus": taken.minus, "stat": taken.stat, "diff": taken.diff,
-                "can_push": state.lab.can_push(),
+                // A branch of a repository outside the lab is never pushed (ADR 0115, amended
+                // 2026-11-01): HQ is told so, and which repository it is.
+                "can_push": !outside && state.lab.can_push(),
+                "repo": turn.repo.as_deref().filter(|_| outside),
+                // For HQ's mechanical checks at review (ADR 0142, amended 2026-10-30).
+                "changed": taken.changed, "texts": taken.texts, "wip": wip,
+                // For the check of a CI criterion (ADR 0142, amended 2026-10-31).
+                "workflows": taken.workflows,
             }),
         )
         .map_err(|e| {
@@ -862,6 +983,49 @@ fn repo_submit(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Resul
             )
         })?;
     let short = &taken.head[..12.min(taken.head.len())];
+    if wip {
+        return Ok(Done {
+            text: format!(
+                "Kept {} at {short} as work in progress ({} file{}, +{} −{}): the next turn on \
+                 task #{task} is told to check it out. Nothing is checked or pushed.",
+                taken.branch,
+                taken.files,
+                if taken.files == 1 { "" } else { "s" },
+                taken.plus,
+                taken.minus
+            ),
+            said: format!(
+                "kept work in progress {} at {short} ({} files, +{} −{}) for task {task}: {why}",
+                taken.branch, taken.files, taken.plus, taken.minus
+            ),
+        });
+    }
+    if outside {
+        return Ok(Done {
+            text: format!(
+                "Submitted {} at {short} ({} file{}, +{} −{}) in {}: document d{} on task \
+                 #{task}. It is kept on the node for judging and never pushed anywhere; no check \
+                 of the lab's applies to it. Now submit the task for review with set_status \
+                 in_review, citing this receipt.",
+                taken.branch,
+                taken.files,
+                if taken.files == 1 { "" } else { "s" },
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or(""),
+                recorded["document"].as_i64().unwrap_or(0),
+            ),
+            said: format!(
+                "submitted branch {} at {short} ({} files, +{} −{}) in {} for task {task}, kept \
+                 on the node: {why}",
+                taken.branch,
+                taken.files,
+                taken.plus,
+                taken.minus,
+                turn.repo.as_deref().unwrap_or("")
+            ),
+        });
+    }
     Ok(Done {
         text: format!(
             "Submitted {} at {short} ({} file{}, +{} −{}): document d{} on task #{task}, \
@@ -950,7 +1114,7 @@ pub(super) async fn check_bundle(
                         named["branch"].as_str().unwrap_or("").to_owned(),
                     ),
                     // The default branch's head the submission sits on: what the job judges
-                    // the branch against ("no worse than develop").
+                    // the branch against ("no more findings than develop").
                     (
                         axum::http::HeaderName::from_static("x-endora-base"),
                         named["base"].as_str().unwrap_or("").to_owned(),
@@ -1199,6 +1363,29 @@ fn ansible_nas_doc(state: &AppState, args: &serde_json::Value) -> Result<Done, R
     }
 }
 
+/// `image_tags`: an image's newest tags, and whether one exists, read by the node from the
+/// image's public registry (a sandbox is offline). Another registry is refused before anything
+/// is asked, and so is anything that is not an image reference.
+fn image_tags(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+    let asked = registry::asked_of(args).map_err(|why| {
+        let status = if why == registry::ONLY_THESE {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, why)
+    })?;
+    let shown = asked.image.shown();
+    match registry::look_up(state.lab.registries.as_ref(), &asked) {
+        Ok(answer) => Ok(Done {
+            text: answer.to_string(),
+            said: format!("read the tags of {shown}"),
+        }),
+        Err(registry::Failed::NotFound(why)) => Err((StatusCode::NOT_FOUND, why)),
+        Err(registry::Failed::Unreachable(why)) => Err((StatusCode::BAD_GATEWAY, why)),
+    }
+}
+
 /// Why Portainer could not be used, as the model reads it.
 fn portainer(code: &str) -> Refused {
     match code {
@@ -1209,6 +1396,10 @@ fn portainer(code: &str) -> Refused {
         "authentication" => (
             StatusCode::BAD_GATEWAY,
             "Portainer refused Endora's key".to_owned(),
+        ),
+        "too_large" => (
+            StatusCode::BAD_GATEWAY,
+            "Portainer's answer was over 2 MB, more than Endora reads".to_owned(),
         ),
         other => (
             StatusCode::BAD_GATEWAY,
@@ -1273,14 +1464,42 @@ fn container_named(
     Ok((id.to_owned(), name))
 }
 
-/// `container_logs`: the newest lines of a container's log, scrubbed of secrets.
-fn container_logs(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+/// `container_logs`: the newest lines of a container's log, scrubbed of secrets. A turn on the
+/// house's own model (the NAS's or the Mac, `cloud` false) reads fewer unless it asks with
+/// `lines` (ADR 0142, amended 2026-10-30), and is told how to ask when some were left out.
+fn container_logs(
+    state: &AppState,
+    turn: &Turn,
+    args: &serde_json::Value,
+) -> Result<Done, Refused> {
     let (id, name) = container_named(state, args)?;
     let read = state.console.read("logs", &id).map_err(portainer)?;
     let scrubbed = endora_capabilities::scrub_secrets(read["summary"].as_str().unwrap_or(""));
-    let log = contracts::newest_of(&scrubbed);
+    let asked = args["lines"].as_u64();
+    let (lines, bytes) = contracts::log_size(!turn.cloud, asked);
+    let log = contracts::newest_within(&scrubbed, lines, bytes);
+    let shown = log.lines().count();
+    let read = scrubbed.lines().count();
+    // The console reads at most the newest LOG_LINES: a read that long may have left older
+    // lines out, as a cut here does, and a turn is told either way (run 5316).
+    let left_out = read > shown || read >= contracts::LOG_LINES;
     let text = if log.trim().is_empty() {
         format!("{name}'s log is empty.")
+    } else if left_out {
+        let more = if shown < contracts::LOG_LINES {
+            format!(
+                "; ask with `lines`, up to {}, for more",
+                contracts::LOG_LINES
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "The newest {shown} lines of {name}'s log, with secrets replaced by [redacted] (older \
+             lines left out: this tool reads at most a log's newest {} lines, so it cannot show \
+             what came before the first line here{more}):\n{log}",
+            contracts::LOG_LINES
+        )
     } else {
         format!("The newest lines of {name}'s log, with secrets replaced by [redacted]:\n{log}")
     };
@@ -1332,6 +1551,19 @@ fn restart_container(
         return Err((
             StatusCode::CONFLICT,
             format!("{name} was not restarted: {}.", contracts::RESTART_STOPPED),
+        ));
+    }
+    // Restarted alone, a container others run in the network of leaves them with none (gluetun
+    // and its downloaders, 29 Oct): the owner restarts them together.
+    let inside = runs_in_network_of(state, &name);
+    if !inside.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "{name} was not restarted: {} run in its network and would be left without one. \
+                 Put it on the owner's desk with ask_owner, to restart them together.",
+                inside.join(", ")
+            ),
         ));
     }
     let ledger = RestartLedger::new(state.store.db()).map_err(|_| {
@@ -1395,6 +1627,24 @@ fn restart_container(
             "the restart of {name} did not confirm ({failed}). Check homelab_status before anything else; the owner has been told."
         ),
     ))
+}
+
+/// The containers that run in `name`'s network, by the lab's map (kept a minute, or read
+/// afresh). None when the map cannot be read: the restart's other limits still hold.
+fn runs_in_network_of(state: &AppState, name: &str) -> Vec<String> {
+    let Ok(map) = homelab_map(state) else {
+        return Vec::new();
+    };
+    let Ok(map) = serde_json::from_str::<serde_json::Value>(&map.text) else {
+        return Vec::new();
+    };
+    map["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["in_network_of"] == name)
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// Puts a notice on the owner's desk in HQ. One that cannot be put there is said in the log:
@@ -1461,6 +1711,39 @@ mod tests {
     use http_body_util::BodyExt as _;
     use std::sync::Mutex;
     use tower::ServiceExt as _;
+
+    /// D13 (ADR 0106, amended 2026-10-31): a checkout that carries upstream names it for the
+    /// worker, as the sandbox will call it, and says so to the turn; one without says nothing.
+    #[test]
+    fn a_checkout_names_upstream_for_the_worker_when_it_carries_it() {
+        let mut bundle = repo::Bundle {
+            branch: "develop".to_owned(),
+            head: "ee878f7".repeat(5),
+            bytes: b"bundle".to_vec(),
+            upstream: None,
+        };
+        let plain: serde_json::Value =
+            serde_json::from_str(&handed(&bundle, "develop", false)).unwrap();
+        assert_eq!(plain["upstream"], serde_json::Value::Null);
+        assert_eq!(plain["kept"], serde_json::Value::Null);
+        assert_eq!(upstream_said(&bundle), "");
+        bundle.upstream = Some(repo::Upstream {
+            branch: "master".to_owned(),
+            head: "0123456789abcdef".to_owned(),
+        });
+        let with: serde_json::Value =
+            serde_json::from_str(&handed(&bundle, "develop", true)).unwrap();
+        assert_eq!(with["upstream"], "upstream/master");
+        assert_eq!(with["kept"], true);
+        assert_eq!(
+            upstream_said(&bundle),
+            "; upstream ansible-nas's master at 0123456789ab as upstream/master, read-only"
+        );
+        assert_eq!(
+            ansible_nas::upstream_https_url(),
+            "https://github.com/davestephens/ansible-nas.git"
+        );
+    }
 
     #[test]
     fn hqs_no_to_a_kept_checkout_says_whether_the_turn_or_the_branch_is_missing() {
@@ -1579,7 +1862,7 @@ mod tests {
     /// The node with HQ knowing one turn (token `good`, run 7, Linus's) and `lab` as its
     /// console. What HQ was sent is the second.
     fn with(lab: Arc<Lab>) -> (AppState, super::super::relay::tests::Seen) {
-        let (hq_url, seen) = hq_as(40_000, "developer");
+        let (hq_url, seen) = hq_as(40_000);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab;
         (state, seen)
@@ -1667,18 +1950,54 @@ mod tests {
             .collect()
     }
 
-    /// The check after a deploy (ADR 0115, amended): HQ names the lab's three reads as all the
-    /// turn may use, and the node offers and runs those alone. An act, a branch, the fork's
-    /// docs, the lab's map or any bridged tool is refused here, before it runs, whatever the
-    /// model was told; a refusal is kept as a receipt that failed.
+    /// A task that leaves the lab as it is (baseline 28-29 Oct: two read-only tasks restarted
+    /// containers): HQ refuses its turns the restart, and the node neither offers nor runs it,
+    /// while the reads and the branch stay theirs.
     #[tokio::test]
-    async fn a_deploy_checks_turn_is_given_the_lab_reads_and_refused_everything_else() {
+    async fn a_turn_hq_refuses_the_restart_is_neither_offered_nor_runs_it() {
+        use super::super::relay::tests::fake;
+        let (hq_url, _) = fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Bo", "left": 0, "cloud": false,
+                        "brain": "local", "task": 9, "wing": true,
+                        "never": ["restart_container"] })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let names = listed(&state).await;
+        assert!(
+            !names.contains(&"restart_container".to_owned()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"homelab_status".to_owned()), "{names:?}");
+        assert!(names.contains(&"repo_submit".to_owned()), "{names:?}");
+        let (status, said) = use_contract(
+            &state,
+            "restart_container",
+            json!({ "container": "sonarr", "why": "look" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+    }
+
+    /// A turn on a project that lists its tools (the Holodeck plan's phase 4): HQ names the
+    /// lab's three reads as all the turn may use, and the node offers and runs those alone. An
+    /// act, a branch, the fork's docs, the lab's map or any bridged tool is refused here, before
+    /// it runs, whatever the model was told; a refusal is kept as a receipt that failed.
+    #[tokio::test]
+    async fn a_turn_narrowed_to_the_lab_reads_is_refused_everything_else() {
         use super::super::relay::tests::fake;
         let (hq_url, seen) = fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Ada", "role": "lead", "left": 0, "cloud": false,
+                json!({ "run": 7, "member": "Ada", "left": 0, "cloud": false,
                         "brain": "local", "task": 9, "wing": false,
                         "only": ["homelab_status", "container_logs", "nas_status"] })
                 .to_string(),
@@ -1704,6 +2023,7 @@ mod tests {
             "repo_submit",
             "ansible_nas_doc",
             "homelab_map",
+            "image_tags",
             "sonarr_queue",
             "read_file",
         ] {
@@ -1724,7 +2044,7 @@ mod tests {
             .filter(|(p, _, _)| p == "/v1/team/receipt")
             .map(|(_, _, b)| serde_json::from_str(b).unwrap())
             .collect();
-        assert_eq!(refusals.len(), 7, "each refusal is kept: {refusals:?}");
+        assert_eq!(refusals.len(), 8, "each refusal is kept: {refusals:?}");
         assert!(
             refusals
                 .iter()
@@ -1817,9 +2137,50 @@ mod tests {
         );
     }
 
+    /// What Watchtower did (D11, ADR 0106 amended 2026-10-31): a container recreated on a new
+    /// image says when, and one line says what was updated in the last day. Nothing else of the
+    /// observer's (its creation time, its image id) reaches the turn.
+    #[tokio::test]
+    async fn the_home_lab_says_what_was_updated_on_a_new_image() {
+        let (state, _) = with(lab());
+        let now = state.clock.now().unix_millis();
+        let at = now - 4 * 60 * 60 * 1000;
+        *state.homelab.lock().unwrap() = json!({ "observed_at_ms": now, "services": [
+            { "name": "docker", "state": "healthy", "total": 3, "observed_at_ms": now,
+              "updates_since_ms": now - 48 * 60 * 60 * 1000, "items": [
+                { "name": "sonarr", "state": "running", "health": "unknown", "status": "Up 4 hours",
+                  "created_ms": at, "image": "abababababab", "updated_at_ms": at },
+                { "name": "radarr", "state": "running", "health": "unknown", "status": "Up 2 days",
+                  "created_ms": now - 172_800_000, "image": "cdcdcdcdcdcd" },
+                { "name": "watchtower", "state": "running", "health": "unknown", "status": "Up 9 days" }] },
+        ] });
+        let (status, said) = use_contract(&state, "homelab_status", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let seen: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        let docker = &seen["services"][0];
+        let offset = state.clock.utc_offset_minutes();
+        let when = endora_capabilities::lab_updates::when(at, offset);
+        assert_eq!(docker["items"][0]["updated"], when.as_str());
+        assert!(docker["items"][1]["updated"].is_null(), "{docker}");
+        let line = docker["updates"].as_str().unwrap();
+        assert!(
+            line.starts_with("Updated ")
+                && line.contains("by Watchtower")
+                && line.contains("sonarr"),
+            "{line}"
+        );
+        assert!(!line.contains("radarr"), "{line}");
+        for never in ["abab", "cdcd", "created", "updated_at_ms", "since"] {
+            assert!(
+                !said["text"].as_str().unwrap().contains(never),
+                "{never}: {said}"
+            );
+        }
+    }
+
     /// The node with HQ knowing one turn of a member in `role`, thinking with Claude.
-    fn on_claude(role: &'static str) -> AppState {
-        let (hq_url, _) = hq_thinking(40_000, role, true);
+    fn on_claude() -> AppState {
+        let (hq_url, _) = hq_thinking(40_000, true);
         let mut state = node(&hq_url, "http://127.0.0.1:9");
         state.console = lab();
         state
@@ -1836,49 +2197,151 @@ mod tests {
             .collect()
     }
 
+    /// Every member reads the lab and is offered its acts alike (ADR 0142, one team): the
+    /// CEO who read and never acted is gone, and a title no longer keeps a restart from a turn.
     #[tokio::test]
-    async fn the_cloud_ceo_reads_the_home_lab_as_the_lead_does_and_never_restarts_anything() {
-        // The owner's word of 2026-10-18 (ADR 0120): reading is open to the CEO, whose system
-        // it is; acting on the lab is the areas' own.
-        let state = on_claude("ceo");
-        let offered = listed(&state).await;
-        for read in ["homelab_status", "container_logs", "homelab_map"] {
-            assert!(offered.contains(&read.to_owned()), "{read}: {offered:?}");
-        }
-        assert!(
-            !offered.contains(&"restart_container".to_owned()),
-            "{offered:?}"
-        );
-        let (status, said) = use_contract(
-            &state,
+    async fn a_cloud_turn_reads_the_home_lab_and_is_offered_its_restart() {
+        let offered = listed(&on_claude()).await;
+        for name in [
+            "homelab_status",
+            "container_logs",
+            "homelab_map",
             "restart_container",
-            json!({ "container": "sonarr", "why": "it is unhealthy" }),
+        ] {
+            assert!(offered.contains(&name.to_owned()), "{name}: {offered:?}");
+        }
+    }
+
+    /// The node with HQ knowing one turn (token `good`), as HQ says it (`turn`'s fields beside
+    /// its run and member), and a lab whose sonarr log is 150 lines long.
+    fn with_a_long_log(turn: serde_json::Value) -> AppState {
+        with_a_log(turn, 150)
+    }
+
+    /// [`with_a_long_log`], with a sonarr log `lines` long.
+    fn with_a_log(turn: serde_json::Value, lines: usize) -> AppState {
+        use super::super::relay::tests::fake;
+        let (hq_url, _) = fake(Arc::new(move |path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => {
+                let mut said = json!({ "run": 7, "member": "Ada", "left": 0 });
+                for (k, v) in turn.as_object().unwrap() {
+                    said[k] = v.clone();
+                }
+                (200, "application/json", said.to_string())
+            }
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            _ => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        let long: Vec<String> = (0..lines).map(|i| format!("10:00 line {i:03}")).collect();
+        state.console = Arc::new(Lab {
+            containers: lab().containers.clone(),
+            log: long.join("\n"),
+            acted: Mutex::new(Vec::new()),
+        });
+        state
+    }
+
+    /// A turn on the house's own model (the NAS's or the Mac) reads a log's newest 40 lines and
+    /// at most 6 KB, and is told how to ask for more: one 16 KB log was a quarter of what the
+    /// Mac reads in a turn before its relay times out (ADR 0142, amended 2026-10-30). Asked, it
+    /// reads up to 100, as a Claude turn always does. The size is never a way past HQ's
+    /// narrowing: a turn not given the log is refused it, however much it asks for.
+    #[tokio::test]
+    async fn a_house_turn_reads_a_shorter_log_unless_it_asks_and_a_claude_turn_reads_it_all() {
+        let read = |state: AppState, args: serde_json::Value| async move {
+            let (status, said) = use_contract(&state, "container_logs", args).await;
+            (status, said["text"].as_str().unwrap_or("").to_owned())
+        };
+        let sonarr = json!({ "container": "sonarr" });
+        for brain in ["local", "mac"] {
+            let house = || with_a_long_log(json!({ "cloud": false, "brain": brain }));
+            let (status, text) = read(house(), sonarr.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            assert!(
+                text.contains("line 149") && text.contains("line 110"),
+                "{brain}: {text}"
+            );
+            assert!(!text.contains("line 109"), "{brain}: 40 lines: {text}");
+            assert!(text.contains("`lines`"), "{brain}: told how to ask: {text}");
+            let (_, more) = read(house(), json!({ "container": "sonarr", "lines": 100 })).await;
+            assert!(
+                more.contains("line 050") && !more.contains("line 049"),
+                "{brain}: {more}"
+            );
+            let (_, fewer) = read(house(), json!({ "container": "sonarr", "lines": 5 })).await;
+            assert!(
+                fewer.contains("line 145") && !fewer.contains("line 144"),
+                "{brain}: {fewer}"
+            );
+        }
+        let claude = with_a_long_log(json!({ "cloud": true, "brain": "claude-sonnet-5-5" }));
+        let (_, text) = read(claude, sonarr.clone()).await;
+        assert!(
+            text.contains("line 050") && !text.contains("line 049"),
+            "today's 100 lines: {text}"
+        );
+        assert!(!text.contains("`lines`"), "{text}");
+        let narrowed = with_a_long_log(
+            json!({ "cloud": false, "brain": "local", "only": ["homelab_status"] }),
+        );
+        let (status, said) = read(narrowed, json!({ "container": "sonarr", "lines": 100 })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+    }
+
+    /// The lab's console reads at most a log's newest [`contracts::LOG_LINES`] lines, so a read
+    /// that comes back that long may have left older lines out, however the turn asked: a
+    /// Claude turn that asked for 100 of gluetun's lines read its last hour as "since its last
+    /// start" and was never told (run 5316, 3 Nov). A shorter log is whole, and says nothing.
+    #[tokio::test]
+    async fn a_log_read_to_the_consoles_most_says_older_lines_may_be_left_out() {
+        let read = |state: AppState, args: serde_json::Value| async move {
+            let (status, said) = use_contract(&state, "container_logs", args).await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+            said["text"].as_str().unwrap_or("").to_owned()
+        };
+        let claude = || json!({ "cloud": true, "brain": "claude-haiku-5-5" });
+        let house = || json!({ "cloud": false, "brain": "local" });
+        let asked = json!({ "container": "sonarr", "lines": 100 });
+        let unasked = json!({ "container": "sonarr" });
+        for (turn, args) in [
+            (claude(), asked.clone()),
+            (claude(), unasked.clone()),
+            (house(), asked.clone()),
+        ] {
+            let text = read(with_a_log(turn.clone(), contracts::LOG_LINES), args.clone()).await;
+            assert!(text.contains("line 000"), "{turn} {args}: {text}");
+            assert!(
+                text.contains("older lines left out") && text.contains("at most"),
+                "{turn} {args}: {text}"
+            );
+            assert!(!text.contains("`lines`"), "nothing more to ask for: {text}");
+        }
+        let five = read(
+            with_a_log(claude(), contracts::LOG_LINES),
+            json!({ "container": "sonarr", "lines": 5 }),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
         assert!(
-            said["error"]
-                .as_str()
-                .unwrap()
-                .contains("direct the lead of the task's area"),
-            "{said}"
+            five.contains("older lines left out") && five.contains("`lines`"),
+            "{five}"
         );
+        for (turn, args) in [(claude(), asked), (house(), unasked)] {
+            let whole = read(with_a_log(turn.clone(), 30), args.clone()).await;
+            assert!(whole.contains("line 029"), "{whole}");
+            assert!(!whole.contains("left out"), "{turn} {args}: {whole}");
+        }
     }
 
     #[tokio::test]
-    async fn a_cloud_turn_reads_logs_whatever_its_role() {
+    async fn a_cloud_turn_reads_logs() {
         // ADR 0141: Confidential is open to Claude; a log is read by any member on it.
-        for role in ["reviewer", "developer", "researcher"] {
-            let state = on_claude(role);
-            assert!(
-                listed(&state).await.contains(&"container_logs".to_owned()),
-                "a cloud {role} is offered logs"
-            );
-            let (status, said) =
-                use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
-            assert_eq!(status, StatusCode::OK, "{role}: {said}");
-        }
-        let state = on_claude("lead");
+        let state = on_claude();
+        assert!(listed(&state).await.contains(&"container_logs".to_owned()));
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let state = on_claude();
         let offered = listed(&state).await;
         assert!(
             offered.contains(&"container_logs".to_owned()),
@@ -1902,7 +2365,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Linus", "role": "developer", "left": 0,
+                json!({ "run": 7, "member": "Linus", "left": 0,
                         "cloud": false })
                 .to_string(),
             ),
@@ -2018,6 +2481,35 @@ mod tests {
                 .contains("Portainer is not set up"),
             "{said}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_container_others_run_in_the_network_of_is_not_restarted_alone() {
+        // Baseline 29 Oct: Bo restarted gluetun, and deluge, nzbget and prowlarr, which run in
+        // its network, were left with none until someone restarted them too.
+        let lab = lab();
+        let (state, _) = with(lab.clone());
+        let now = state.clock.now().unix_millis();
+        *state.lab.map.lock().unwrap() = Some((
+            now,
+            json!({ "containers": [
+                { "name": "sonarr", "needed_by": ["bazarr"] },
+                { "name": "bazarr", "in_network_of": "sonarr", "depends_on": ["sonarr"] },
+            ] }),
+        ));
+        let (status, said) = use_contract(
+            &state,
+            "restart_container",
+            json!({ "container": "sonarr", "why": "DNS warnings" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        let error = said["error"].as_str().unwrap();
+        assert!(
+            error.contains("bazarr") && error.contains("network"),
+            "{error}"
+        );
+        assert!(lab.acted.lock().unwrap().is_empty(), "nothing restarted");
     }
 
     #[tokio::test]
@@ -2295,16 +2787,99 @@ mod tests {
         );
         let (status, _) = use_contract(&state, "ansible_nas_doc", json!({ "path": 7 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        // Every role on any brain is offered both (names and wiring, Internal).
-        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-            let offered = listed(&on_claude(role)).await;
-            for name in ["homelab_map", "ansible_nas_doc"] {
-                assert!(
-                    offered.contains(&name.to_owned()),
-                    "{name} to a cloud {role}"
-                );
-            }
+        // Every member on any brain is offered both (names and wiring, Internal).
+        let offered = listed(&on_claude()).await;
+        for name in ["homelab_map", "ansible_nas_doc"] {
+            assert!(offered.contains(&name.to_owned()), "{name} to a cloud turn");
         }
+    }
+
+    /// ghcr.io, faked for `image_tags`: one public image, and every URL asked kept.
+    #[derive(Clone, Default)]
+    struct Ghcr {
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl registry::Fetch for Ghcr {
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<(u16, String), &'static str> {
+            self.asked.lock().unwrap().push(url.to_owned());
+            Ok(match (url, bearer) {
+                (
+                    "https://ghcr.io/token?service=ghcr.io&scope=repository:gethomepage/homepage:pull",
+                    None,
+                ) => (200, json!({ "token": "anon" }).to_string()),
+                ("https://ghcr.io/v2/gethomepage/homepage/tags/list?n=1000", Some("anon")) => (
+                    200,
+                    json!({ "tags": ["latest", "v1.4.5", "v1.10.0", "main"] }).to_string(),
+                ),
+                _ => (404, "{}".to_owned()),
+            })
+        }
+    }
+
+    /// Live (rounds 0 and 1 of "Pin the homepage and stats roles off the latest image tag"):
+    /// the sandbox is offline, so HQ could not show a release exists. The node asks the
+    /// registry, and nothing but the four registries is ever asked.
+    #[tokio::test]
+    async fn an_images_tags_are_read_from_its_registry_and_no_other_host_is_asked() {
+        let (mut state, _) = with(lab());
+        let ghcr = Ghcr::default();
+        state.lab = Arc::new(LabKnowledge::unconfigured().with_registries(Box::new(ghcr.clone())));
+        assert!(listed(&state).await.contains(&"image_tags".to_owned()));
+        let (status, said) = use_contract(
+            &state,
+            "image_tags",
+            json!({ "image": "ghcr.io/gethomepage/homepage", "tag": "v1.4.5", "semver_only": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let read: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        assert_eq!(read["newest"], json!(["v1.10.0", "v1.4.5"]));
+        assert_eq!(read["exists"], true);
+        assert!(
+            audit(&state)
+                .iter()
+                .any(|a| a.ends_with("Linus (run 7) read the tags of ghcr.io/gethomepage/homepage"))
+        );
+        let (status, said) = use_contract(
+            &state,
+            "image_tags",
+            json!({ "image": "ghcr.io/gethomepage/nothing" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
+        let asked_before = ghcr.asked.lock().unwrap().len();
+        for (image, status) in [
+            ("registry.example.com/team/app", StatusCode::FORBIDDEN),
+            ("192.168.1.10:5000/app", StatusCode::FORBIDDEN),
+            (
+                "https://ghcr.io/gethomepage/homepage",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "ghcr.io/gethomepage/homepage@sha256:00",
+                StatusCode::BAD_REQUEST,
+            ),
+            ("../../etc/passwd", StatusCode::FORBIDDEN),
+            ("grafana/../../etc", StatusCode::BAD_REQUEST),
+        ] {
+            let (got, said) = use_contract(&state, "image_tags", json!({ "image": image })).await;
+            assert_eq!(got, status, "{image}: {said}");
+        }
+        let (status, _) = use_contract(&state, "image_tags", json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            ghcr.asked.lock().unwrap().len(),
+            asked_before,
+            "a refused reference asks nothing"
+        );
+        assert!(
+            ghcr.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|url| registry::allowed(url))
+        );
     }
 
     /// One `git` in a test's repository.
@@ -2387,17 +2962,17 @@ mod tests {
             match (path, body["token"].as_str().unwrap_or("")) {
                 ("/v1/team/turn", "rae") => said(
                     200,
-                    json!({ "run": 7, "member": "Rae", "role": "developer", "left": 40_000,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", "dee") => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", "zed") => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
@@ -2535,8 +3110,26 @@ mod tests {
             "the base it sits on: develop's head"
         );
         assert_eq!(told_hq["files"], 1);
+        assert_eq!(told_hq["wip"], false, "submitted to be checked");
+        // 3b. The worker keeps a turn's work in progress the same way as the turn runs out of
+        //     room (ADR 0142, amended 2026-10-31): taken by the same rules, and told to HQ as
+        //     work in progress, to be checked out next turn and not checked.
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-7-add-pages", "why": "work in progress", "bundle": delta,
+                    "wip": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(told_hq["wip"], true);
+        let text = said["text"].as_str().unwrap();
+        assert!(text.contains("work in progress"), "{text}");
+        assert!(!text.contains("check c"), "nothing is checked: {text}");
         // 4. The check job fetches the branch's whole history with its token, and the base HQ
-        //    recorded rides in the header and is in that history: what "no worse than develop"
+        //    recorded rides in the header and is in that history: what "no more findings than develop"
         //    needs to run the same checks there.
         let job = "a-check-jobs-token-of-thirty-two-chars-x";
         let res = team_relay(state.clone())
@@ -2699,22 +3292,22 @@ mod tests {
                 "/v1/team/turn" if body["token"] == "good" => (
                     200,
                     "application/json",
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 3 })
                     .to_string(),
                 ),
                 "/v1/team/turn" if body["token"] == "dee" => (
                     200,
                     "application/json",
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 0,
-                            "cloud": false, "task": 3 })
+                    json!({ "run": 8, "member": "Dee", "left": 0,
+                            "cloud": false, "task": 3, "wing": false })
                     .to_string(),
                 ),
                 // The Ops lead: a lead, outside the engineering wing (ADR 0120).
                 "/v1/team/turn" if body["token"] == "ada" => (
                     200,
                     "application/json",
-                    json!({ "run": 10, "member": "Ada", "role": "lead", "left": 40_000,
+                    json!({ "run": 10, "member": "Ada", "left": 40_000,
                             "cloud": true, "task": 4, "wing": false })
                     .to_string(),
                 ),
@@ -2798,9 +3391,9 @@ mod tests {
             .collect();
         assert!(
             names.contains(&REPO_CHECKOUT) && !names.contains(&REPO_SUBMIT),
-            "a tester is offered checkout, never submit: {names:?}"
+            "a member not at work is offered checkout, never submit: {names:?}"
         );
-        // Dee's refusal of a submission says the tester's rule, not the CEO's.
+        // Dee's refusal of a submission says the wing's rule.
         let (refused, why) = answer(
             &state,
             ask(
@@ -2816,7 +3409,7 @@ mod tests {
             why["error"]
                 .as_str()
                 .unwrap()
-                .contains("reads a branch by checking it out"),
+                .contains("Read a branch with repo_checkout"),
             "{why}"
         );
         // A lead outside the wing is offered no submission, and one she asks for is refused
@@ -3111,19 +3704,19 @@ mod tests {
                 // Kit leads task 7; Zed is a developer on task 9.
                 ("/v1/team/turn", Some("kit" | "late")) => said(
                     200,
-                    json!({ "run": 7, "member": "Kit", "role": "lead", "left": 40_000,
+                    json!({ "run": 7, "member": "Kit", "left": 40_000,
                             "cloud": true, "task": 7 }),
                 ),
                 ("/v1/team/turn", Some("zed")) => said(
                     200,
-                    json!({ "run": 9, "member": "Zed", "role": "developer", "left": 40_000,
+                    json!({ "run": 9, "member": "Zed", "left": 40_000,
                             "cloud": true, "task": 9 }),
                 ),
                 // Dee, the tester, is on task 7 too, on Haiku: a turn of judgment.
                 ("/v1/team/turn", Some("dee")) => said(
                     200,
-                    json!({ "run": 8, "member": "Dee", "role": "reviewer", "left": 40_000,
-                            "cloud": true, "task": 7 }),
+                    json!({ "run": 8, "member": "Dee", "left": 40_000,
+                            "cloud": true, "task": 7, "wing": false }),
                 ),
                 ("/v1/team/turn", _) => said(404, json!({})),
                 ("/v1/team/branch", _) => {
@@ -3458,8 +4051,7 @@ mod tests {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "member": "Kit", "role": "lead", "left": 0, "cloud": false })
-                    .to_string(),
+                json!({ "run": 7, "member": "Kit", "left": 0, "cloud": false }).to_string(),
             ),
             _ => (404, "application/json", "{}".to_owned()),
         }));
@@ -3530,7 +4122,8 @@ mod tests {
                 "homelab_map",
                 "ansible_nas_doc",
                 "repo_checkout",
-                "repo_submit"
+                "repo_submit",
+                "image_tags"
             ]
         );
         let (status, said) = use_contract(
@@ -3573,5 +4166,342 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("you switched the team's restarts off"))
         );
+    }
+
+    /// The owner's values are guarded in the lab's fork and not in a repository outside the lab
+    /// (ADR 0115, amended 2026-11-05), so the fork itself is never mirrored as one: under any of
+    /// its addresses it is refused before anything is fetched.
+    #[test]
+    fn the_labs_own_fork_is_never_mirrored_as_an_outside_repository() {
+        let lab = LabKnowledge::new(
+            Docs::new(
+                ansible_nas::Fork::of("example/ansible-nas", ""),
+                Box::new(ansible_nas::Web),
+            ),
+            Vec::new(),
+        )
+        // Offline even if the guard is missing: GitHub is never asked.
+        .with_outside(
+            "https://github.com/example/ansible-nas",
+            "/nonexistent/fork.git",
+        )
+        .with_outside(
+            "https://github.com/Example/Ansible-NAS",
+            "/nonexistent/fork.git",
+        );
+        for named in [
+            "https://github.com/example/ansible-nas",
+            "https://github.com/Example/Ansible-NAS.git",
+        ] {
+            let Err(why) = lab.outside_mirror(named) else {
+                panic!("{named} was mirrored as outside the lab");
+            };
+            assert!(why.contains("is the lab's own fork"), "{why}");
+        }
+    }
+
+    /// Round 4's F4 (ADR 0115, amended 2026-11-01): an item whose project names a public
+    /// repository outside the lab is checked out from the node's mirror of that repository, and
+    /// what is submitted is kept there for judging; HQ is told it cannot be pushed, and delivery,
+    /// asked to push it all the same, puts it nowhere. A turn whose work names any other
+    /// address is refused before anything is fetched. GitHub is played by a local bare
+    /// repository standing in for the address.
+    #[tokio::test]
+    async fn an_outside_repository_is_checked_out_and_its_branch_kept_on_the_node_never_pushed() {
+        use super::super::relay::tests::fake;
+        const TINY: &str = "https://github.com/example/tiny";
+        let (root, fork) = a_fork_on("outside-fork", "develop", "---\n- hosts: all\n");
+        let (_, tiny) = a_fork_on("outside-tiny", "main", "print('tiny')\n");
+        let recorded: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let told = recorded.clone();
+        let (hq_url, seen) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
+                            "cloud": true, "task": 940, "repo": TINY }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/tiny" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/branch", _) => {
+                    *told.lock().unwrap() = Some(body);
+                    said(200, json!({ "branch": 1, "document": 5, "check": 0 }))
+                }
+                ("/v1/team/deliveries", _) => {
+                    // An HQ that, wrongly, says the branch is due: the node still pushes nothing.
+                    let branch = told.lock().unwrap().clone().unwrap_or_default();
+                    said(
+                        200,
+                        json!({ "push": [{ "branch": 1, "task": 940, "name": branch["branch"],
+                                           "head": branch["head"], "base": branch["base"],
+                                           "scan": false }],
+                                "merge": [] }),
+                    )
+                }
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        state.lab = Arc::new(
+            LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+                .with_repo(
+                    root.join("data"),
+                    fork.to_str().unwrap(),
+                    "develop",
+                    fork.to_str().unwrap(),
+                )
+                .with_push_key(root.join("fork.git").join("HEAD"))
+                .with_outside(TINY, tiny.to_str().unwrap()),
+        );
+        // 1. The checkout is of the outside repository's default branch, not the fork's.
+        let (status, said) = as_turn(&state, "rae", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let (payload, _) = said["text"]
+            .as_str()
+            .unwrap()
+            .rsplit_once(" (receipt ")
+            .unwrap();
+        let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            (handed["branch"].as_str(), handed["head"].as_str()),
+            (
+                Some("main"),
+                Some(git_in(&tiny, &["rev-parse", "refs/heads/main"]).as_str())
+            )
+        );
+        // 2. A fix on the item's branch, HQ's own commit, submitted.
+        let file = root.join("tiny.bundle");
+        std::fs::write(
+            &file,
+            repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        git_in(
+            &root,
+            &["clone", "-q", "-b", "main", file.to_str().unwrap(), "work"],
+        );
+        let work = root.join("work");
+        git_in(&work, &["checkout", "-q", "-b", "hq/task-940-fix", "main"]);
+        std::fs::write(work.join("nas.yml"), "print('tiny, fixed')\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(
+            &work,
+            &[
+                "-c",
+                "user.name=Endora HQ",
+                "-c",
+                "user.email=hq@endora.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fix tiny\n\nMade-by: Endora HQ (Rae) for task #940",
+            ],
+        );
+        let head = git_in(&work, &["rev-parse", "HEAD"]);
+        let delta = root.join("delta.bundle");
+        git_in(
+            &work,
+            &[
+                "bundle",
+                "create",
+                delta.to_str().unwrap(),
+                "main..hq/task-940-fix",
+            ],
+        );
+        let delta = repo::to_base64(&std::fs::read(&delta).unwrap());
+        let (status, said) = as_turn(
+            &state,
+            "rae",
+            REPO_SUBMIT,
+            json!({ "branch": "hq/task-940-fix", "why": "fixes tiny", "bundle": delta }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        assert!(text.contains("never pushed anywhere"), "{text}");
+        let told_hq = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (
+                told_hq["head"].as_str(),
+                told_hq["can_push"].clone(),
+                told_hq["repo"].clone()
+            ),
+            (Some(head.as_str()), json!(false), json!(TINY))
+        );
+        // Kept on the node, in the outside repository's own mirror; not in the fork's.
+        let mirror = state.lab.outside_mirror(TINY).unwrap();
+        assert_eq!(
+            git_in(
+                mirror.dir(),
+                &["rev-parse", "refs/submissions/hq/task-940-fix"]
+            ),
+            head
+        );
+        assert!(
+            state
+                .lab
+                .mirror(0)
+                .unwrap()
+                .head_of("hq/task-940-fix")
+                .is_err()
+        );
+        // 3. Delivery, told (wrongly) that it is due, pushes it nowhere.
+        super::super::delivery::deliver(&state, &[]);
+        for remote in [&tiny, &fork] {
+            assert_eq!(
+                git_in(remote, &["branch", "--list", "hq/task-940-fix"]),
+                "",
+                "{remote:?} has the branch"
+            );
+        }
+        let outcome = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/deliveries/1")
+            .map(|(_, _, b)| serde_json::from_str::<serde_json::Value>(b).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(outcome.len(), 1, "{outcome:?}");
+        assert_eq!(outcome[0]["ok"], false, "{outcome:?}");
+        // 4. Work naming an address that is not allowed is refused before anything is fetched.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "start" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository whose history is `size` bytes of noise, which no compression shrinks: a
+    /// checkout's bundle of it is about as big.
+    fn a_big_repository(name: &str, size: usize) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (root, fork) = a_fork_on(name, "master", "print('big')\n");
+        let seed = root.join("seed");
+        let mut noise = Vec::with_capacity(size);
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        while noise.len() < size {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            noise.extend_from_slice(&x.to_le_bytes());
+        }
+        std::fs::write(seed.join("noise.bin"), &noise).unwrap();
+        git_in(&seed, &["add", "."]);
+        git_in(
+            &seed,
+            &[
+                "-c",
+                "user.name=John Doe",
+                "-c",
+                "user.email=john@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "noise",
+            ],
+        );
+        git_in(&seed, &["push", "-q", "origin", "HEAD:master"]);
+        (root, fork)
+    }
+
+    /// Set 3 of HQ's experiment (tasks 1051-1053): pyparsing's checkout is a 14.3 MB bundle,
+    /// about 19 MB as base64 in the answer's JSON, and the node read a contract's answer at
+    /// most 16 MiB to put its receipt after it: every checkout came back "the contract
+    /// failed". A checkout of that size now reaches the turn whole, with its receipt; the turn
+    /// still has only its own repository, and a stranger nothing. With
+    /// `ENDORA_PYPARSING_MIRROR` naming a copy of the node's pyparsing mirror, the real one is
+    /// checked out too.
+    #[tokio::test]
+    async fn a_checkout_the_size_of_pyparsings_reaches_the_turn_whole_and_only_its_own() {
+        use super::super::relay::tests::fake;
+        const BIG: &str = "https://github.com/example/big";
+        let (root, big) = a_big_repository("outside-big", 15 << 20);
+        let real = std::env::var("ENDORA_PYPARSING_MIRROR").ok();
+        let (hq_url, _) = fake(Arc::new(move |path, body| {
+            let body: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            let said =
+                |status: u16, v: serde_json::Value| (status, "application/json", v.to_string());
+            match (path, body["token"].as_str().unwrap_or("")) {
+                ("/v1/team/turn", "rae") => said(
+                    200,
+                    json!({ "run": 7, "member": "Rae", "left": 40_000,
+                            "cloud": true, "task": 1051, "repo": BIG }),
+                ),
+                ("/v1/team/turn", "ann") => said(
+                    200,
+                    json!({ "run": 9, "member": "Ann", "left": 40_000, "cloud": true,
+                            "task": 1052, "repo": "https://github.com/pyparsing/pyparsing" }),
+                ),
+                ("/v1/team/turn", "eve") => said(
+                    200,
+                    json!({ "run": 8, "member": "Eve", "left": 40_000,
+                            "cloud": true, "task": 941,
+                            "repo": "https://gitlab.com/example/big" }),
+                ),
+                ("/v1/team/turn", _) => said(404, json!({})),
+                ("/v1/team/receipt", _) => said(200, json!({ "receipt": 41 })),
+                _ => said(200, json!({})),
+            }
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let mut lab = LabKnowledge::new(Docs::new(None, Box::new(ansible_nas::Web)), Vec::new())
+            .with_repo(
+                root.join("data"),
+                big.to_str().unwrap(),
+                "master",
+                big.to_str().unwrap(),
+            )
+            .with_outside(BIG, big.to_str().unwrap());
+        if let Some(real) = &real {
+            lab = lab.with_outside("https://github.com/pyparsing/pyparsing", real);
+        }
+        state.lab = Arc::new(lab);
+        let mut turns = vec![("rae", git_in(&big, &["rev-parse", "refs/heads/master"]))];
+        if let Some(real) = &real {
+            let real = std::path::Path::new(real);
+            turns.push(("ann", git_in(real, &["rev-parse", "refs/heads/master"])));
+        }
+        for (token, head) in turns {
+            let (status, said) =
+                as_turn(&state, token, REPO_CHECKOUT, json!({ "why": "start" })).await;
+            assert_eq!(status, StatusCode::OK, "{token}: {}", said["error"]);
+            let (payload, receipt) = said["text"]
+                .as_str()
+                .unwrap()
+                .rsplit_once(" (receipt ")
+                .unwrap();
+            assert_eq!(receipt, "r41)");
+            let handed: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(handed["head"].as_str(), Some(head.as_str()), "{token}");
+            let bundle = repo::from_base64(handed["bundle"].as_str().unwrap()).unwrap();
+            assert!(bundle.len() > 13 << 20, "{token}: {} bytes", bundle.len());
+            let file = root.join(format!("{token}.bundle"));
+            std::fs::write(&file, &bundle).unwrap();
+            let into = format!("{token}-work");
+            git_in(&root, &["clone", "-q", file.to_str().unwrap(), &into]);
+            assert_eq!(git_in(&root.join(&into), &["rev-parse", "HEAD"]), head);
+        }
+        // Only a public GitHub repository, and only the turn's own: a stranger has nothing.
+        let (status, said) = as_turn(&state, "eve", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        let (status, said) = as_turn(&state, "mallory", REPO_CHECKOUT, json!({ "why": "x" })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{said}");
+        assert!(said["text"].is_null(), "{said}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

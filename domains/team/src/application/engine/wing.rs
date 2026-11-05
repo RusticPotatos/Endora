@@ -1,21 +1,17 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and a check job queued for the dev node; the check's result as a receipt that
 //! wakes the submitter (or sends failed work back); the owner's push offered on the desk once
-//! the work passes review, and what came of it; hiring by the owner; the wing seeded once; and
-//! documents members read. Every rule is code: branch names, who is woken, what closes.
+//! the work passes review, and what came of it; hiring by the owner; and documents members read. Every rule is code: branch names, who is woken, what closes.
 
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError};
-use crate::application::ports::{Clock, DeskItem, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::wing::{self, WING_GOAL, WING_NOTE, WING_PROJECT};
+use crate::application::ports::{Clock, DeskItem, Run, TeamStore, WorkerAdapter};
+use crate::domain::wing::{self, IN_PROGRESS, WING_GOAL};
 use crate::domain::{
-    Brain, Branch, CallReceipt, Check, Criterion, Document, EventKind, GoalId, GoalStatus,
-    MemberId, Priority, ProjectId, Refusal, Role, RunId, TaskId, TaskStatus, WakeReason,
+    A_MEMBERS_SHARE, Brain, Branch, CallReceipt, Check, Document, EventKind, GoalId, MemberId,
+    Refusal, RunId, TaskId, TaskStatus, WakeReason,
 };
-
-/// Set once HQ has seeded the wing, so it is never seeded again.
-const WING_SEEDED: &str = "wing_seeded";
 
 /// The most a document holds: the diff shown (64 KB) and its stat.
 pub const DOCUMENT_MOST: usize = 72 * 1024;
@@ -36,10 +32,6 @@ fn document_part(document: &Document, part: usize) -> String {
         document.id, document.task, document.title
     )
 }
-
-/// The wing's first task, for its lead.
-pub const WING_FIRST_TASK: &str =
-    "Plan the clean-up: read the fork's docs and propose the first three branches";
 
 /// A branch as the node took it (ADR 0115), told to HQ with the turn's token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +54,15 @@ pub struct Submission {
     pub diff: String,
     /// Whether the node can push it (a deploy key is set up).
     pub can_push: bool,
+    /// Every file it changes (`git diff --name-only`), for HQ's check of its scope; empty from
+    /// a node that does not tell them, when they are read from the diff.
+    pub changed: Vec<String>,
+    /// Files as they are at its head that HQ's mechanical checks read, as `(path, text)`: each
+    /// role README it changes and the role's `defaults/main.yml`.
+    pub texts: Vec<(String, String)>,
+    /// `(path, text)` of each GitHub Actions workflow at its head, for HQ's check of a CI
+    /// criterion (ADR 0142, amended 2026-10-31); `None` from a node that does not tell them.
+    pub workflows: Option<Vec<(String, String)>>,
 }
 
 /// What recording a submission made: the branch, its document, and its check job.
@@ -87,21 +88,6 @@ pub struct KeptBranch {
     pub task: TaskId,
 }
 
-/// What seeding the wing made.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WingSeeded {
-    /// The wing's goal.
-    pub goal: GoalId,
-    /// Its first project.
-    pub project: ProjectId,
-    /// Its lead.
-    pub lead: MemberId,
-    /// Its developers.
-    pub developers: Vec<MemberId>,
-    /// Its first task, for the lead.
-    pub task: TaskId,
-}
-
 /// A short hash, as the thread shows one.
 fn short(sha: &str) -> &str {
     &sha[..12.min(sha.len())]
@@ -117,15 +103,8 @@ fn held_to(text: &str, most: usize) -> String {
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
-    /// Records a branch the node took from a turn (ADR 0115): the branch, a document with its
-    /// stat and diff, a line in the task's thread, and a check job queued for the dev node's
-    /// runner. Named by the turn's own token, while it runs.
-    ///
-    /// # Errors
-    /// [`EngineError::Unknown`] for a token that opens no running turn, a turn on no task, or a
-    /// branch not under `hq/`; a store failure.
-    pub fn record_branch(&self, token: &str, s: &Submission) -> Done<Recorded> {
-        let _held = self.held();
+    /// The running turn whose `token` submits `s`, and its task, for a branch under `hq/`.
+    fn submitting(&self, token: &str, s: &Submission) -> Done<(Run, TaskId)> {
         let Some(id) = self.store.run_of_token(token)? else {
             return Err(EngineError::Unknown("running turn with that token"));
         };
@@ -135,6 +114,98 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let task = run.task.ok_or(EngineError::Unknown("task"))?;
         if !s.branch.starts_with(wing::BRANCH_PREFIX) || s.head.len() < 7 {
             return Err(EngineError::Unknown("branch under hq/"));
+        }
+        Ok((run, task))
+    }
+
+    /// The newest submission of `task`'s work offered as finished: work kept in progress, which
+    /// may share its head, never hides it.
+    pub(super) fn newest_finished(&self, task: TaskId) -> Done<Option<crate::domain::Branch>> {
+        let work = self.work_of(task)?;
+        Ok(self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| work.contains(&b.task) && b.status != IN_PROGRESS)
+            .max_by_key(|b| b.id))
+    }
+
+    /// What HQ recorded when the newest finished submission of `task`'s work is already `s`'s
+    /// branch at `s`'s full head: that branch, its document and its newest check.
+    fn already_recorded(&self, task: TaskId, s: &Submission) -> Done<Option<Recorded>> {
+        let Some(newest) = self.newest_finished(task)? else {
+            return Ok(None);
+        };
+        if newest.name != s.branch || newest.head != s.head {
+            return Ok(None);
+        }
+        let title = format!("branch {} (", s.branch);
+        let document = self
+            .store
+            .documents_of(newest.task)?
+            .into_iter()
+            .filter(|d| d.title.starts_with(&title))
+            .map(|d| d.id)
+            .max()
+            .unwrap_or(0);
+        let check = self
+            .store
+            .checks()?
+            .into_iter()
+            .filter(|c| c.branch == newest.id)
+            .map(|c| c.id)
+            .max()
+            .unwrap_or(0);
+        Ok(Some(Recorded {
+            branch: newest.id,
+            document,
+            check,
+        }))
+    }
+
+    /// Keeps the branch `s` of `run`'s on `task` as `status`, with its files.
+    fn keep_branch(
+        &self,
+        run: &Run,
+        task: TaskId,
+        s: &Submission,
+        status: &str,
+        at: crate::domain::Millis,
+    ) -> Done<i64> {
+        let branch = self.store.add_branch(&Branch {
+            id: 0,
+            task,
+            run: run.id,
+            member: run.member,
+            name: s.branch.clone(),
+            head: s.head.clone(),
+            base: s.base.clone(),
+            files: s.files,
+            plus: s.plus,
+            minus: s.minus,
+            can_push: s.can_push,
+            status: status.to_owned(),
+            at,
+        })?;
+        self.keep_branch_files(branch, &s.changed, &s.texts, s.workflows.as_deref())?;
+        Ok(branch)
+    }
+
+    /// Records a branch the node took from a turn (ADR 0115): the branch, a document with its
+    /// stat and diff, a line in the task's thread, and a check job queued for the dev node's
+    /// runner. Named by the turn's own token, while it runs.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn, a turn on no task, or a
+    /// branch not under `hq/`; a store failure.
+    pub fn record_branch(&self, token: &str, s: &Submission) -> Done<Recorded> {
+        let _held = self.held();
+        let (run, task) = self.submitting(token, s)?;
+        // One revision is one submission (defect remediation, C): a turn unsure whether its
+        // submission arrived (interrupted after the node took it, or before the answer came
+        // back) may submit it again, and that records nothing new.
+        if let Some(kept) = self.already_recorded(task, s)? {
+            return Ok(kept);
         }
         let now = self.clock.now();
         let title = format!(
@@ -153,21 +224,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             text: held_to(&format!("{}\n\n{}", s.stat.trim(), s.diff), DOCUMENT_MOST),
             at: now,
         })?;
-        let branch = self.store.add_branch(&Branch {
-            id: 0,
-            task,
-            run: run.id,
-            member: run.member,
-            name: s.branch.clone(),
-            head: s.head.clone(),
-            base: s.base.clone(),
-            files: s.files,
-            plus: s.plus,
-            minus: s.minus,
-            can_push: s.can_push,
-            status: "submitted".to_owned(),
-            at: now,
-        })?;
+        let branch = self.keep_branch(&run, task, s, wing::SUBMITTED, now)?;
+        if let Some(repo) = self.outside_repo_of_task(task)? {
+            return self.record_outside_branch(&run, task, s, &repo, branch, document, &title);
+        }
         let (check, _) = self.store.add_check(&Check {
             id: 0,
             task,
@@ -225,7 +285,82 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         })
     }
 
-    /// A lead or a developer asks for the newest kept branch of a piece of work to be checked
+    /// A branch of the repository outside the lab its item names (ADR 0115, amended 2026-11-01:
+    /// round 4's F4), recorded with its document (the lock held). The dev node's check is
+    /// ansible's and says nothing of another repository, so none is queued: the item's criteria
+    /// are its gate, judged by its reviewer, who checks the branch out and runs its tests. The
+    /// branch stays on the node and is never pushed (see [`Self::accept_branch`]).
+    #[allow(clippy::too_many_arguments)]
+    fn record_outside_branch(
+        &self,
+        run: &Run,
+        task: TaskId,
+        s: &Submission,
+        repo: &str,
+        branch: i64,
+        document: i64,
+        title: &str,
+    ) -> Done<Recorded> {
+        self.post_held_lock(
+            Author::Endora,
+            task,
+            &format!(
+                "Submitted {title} at {} in {repo}: document d{document}. It is kept on the node \
+                 for judging and never pushed anywhere. No check of the lab's applies to it: the \
+                 item's criteria are its gate, so check it out and run its own tests.",
+                short(&s.head)
+            ),
+        )?;
+        self.store.set_gate(task, true)?;
+        self.emit(
+            EventKind::BranchSubmitted,
+            json!({ "task": task.0, "branch": branch, "name": s.branch, "head": s.head,
+                    "files": s.files, "member": run.member.0, "run": run.id.0,
+                    "document": document, "repo": repo }),
+        )?;
+        Ok(Recorded {
+            branch,
+            document,
+            check: 0,
+        })
+    }
+
+    /// The node kept a turn's work in progress (ADR 0142, amended 2026-10-31): the worker
+    /// committed what the sandbox had to the item's branch as the turn ran out of room, and the
+    /// node took it by the rules of a submission and keeps it. HQ records the branch as
+    /// [`IN_PROGRESS`], so the next turn on the item may check it out and is told to; it writes
+    /// no document, queues no check and posts nothing, since the work is not offered as done.
+    /// The item's gate is the newest head's, so it is shut until a check of a later head passes;
+    /// a head the newest branch already holds leaves it as it is (D23, amended 2026-11-01).
+    /// Work in review is refused: a new head would void its review. Returns the branch's id.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a token that opens no running turn on a task, or a branch
+    /// not under `hq/`; [`Refusal::InReview`] for work in review; a store failure.
+    pub fn keep_work_in_progress(&self, token: &str, s: &Submission) -> Done<i64> {
+        let _held = self.held();
+        let (run, task) = self.submitting(token, s)?;
+        if self.task(task)?.status == TaskStatus::InReview {
+            return Err(EngineError::Refused(Refusal::InReview));
+        }
+        // The gate belongs to the head (D23): keeping the head the newest branch already holds
+        // leaves its check's word standing, which no other route could reopen.
+        let same_head = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == task)
+            .max_by_key(|b| b.id)
+            .is_some_and(|b| b.head == s.head);
+        let branch = self.keep_branch(&run, task, s, IN_PROGRESS, self.clock.now())?;
+        if same_head {
+            return Ok(branch);
+        }
+        self.store.set_gate(task, false)?;
+        Ok(branch)
+    }
+
+    /// A member asks for the newest kept branch of a piece of work to be checked
     /// again (ADR 0115, amended), without submitting it again: a check queued for the branch the
     /// node still keeps, with no sandbox and no new submission, whose result comes back as the
     /// first's did (a receipt, a document, the task's gate). A check was queued only by
@@ -234,27 +369,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// One at a time: refused while a check of that branch waits or runs. Returns the check.
     ///
     /// # Errors
-    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYourToRecheck`] for the
-    /// tester or the CEO; [`EngineError::Unknown`] for work with no submitted branch;
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`EngineError::Unknown`] for work with
+    /// no submitted branch; [`Refusal::NoLabCheck`] for a repository outside the lab;
     /// [`Refusal::CheckPending`].
     pub fn recheck_in(&self, run: RunId, task: TaskId, why: &str) -> Done<i64> {
         let _held = self.held();
         let turn = self.running(run)?;
         self.reach(&turn, task, false)?;
         let member = self.member(turn.member)?;
-        if !matches!(member.role, Role::Lead | Role::Developer) {
-            return Err(EngineError::Refused(Refusal::NotYourToRecheck));
-        }
         let work = self.work_of(task)?;
         let Some(branch) = self
             .store
             .branches()?
             .into_iter()
-            .filter(|b| work.contains(&b.task) && b.status == "submitted")
+            .filter(|b| work.contains(&b.task) && b.status == wing::SUBMITTED)
             .max_by_key(|b| b.id)
         else {
             return Err(EngineError::Unknown("submitted branch on that work"));
         };
+        // The lab's check is ansible's, and its box fetches the lab's branches: one queued on
+        // an outside branch could only fail, shutting the gate its submission opened (#1048).
+        if let Some(repo) = self.outside_repo_of_task(branch.task)? {
+            return Err(EngineError::Refused(Refusal::NoLabCheck(repo)));
+        }
         if let Some(pending) = self
             .store
             .checks()?
@@ -367,9 +504,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The next check job for the runner: the oldest waiting, now running. A check running
     /// longer than [`wing::CHECK_LOST_AFTER_MS`] is given up first, as failed. Nothing while
     /// the kill switch is pulled.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn next_check(&self) -> Done<Option<Check>> {
         let _held = self.held();
         if self.store.stopped()? {
@@ -400,9 +534,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The check a job token names, while it waits or runs: how the node knows which bundle
     /// to hand the check's sandbox.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn check_by_token(&self, token: &str) -> Done<Option<(Check, Branch)>> {
         let _held = self.held();
         if token.len() < 32 {
@@ -475,29 +606,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         done.summary.clone_from(&summary);
         done.done_at = Some(now);
         self.store.save_check(&done)?;
-        // The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
-        // once it has passed, and the lab's own checks are what passes it. The gate is the
-        // newest head's: a check of an older head that reports late (two heads in flight) is
-        // recorded below, and sets nothing (ADR 0115, amended).
-        let newer = self
-            .store
-            .branches()?
-            .into_iter()
-            .filter(|b| b.task == check.task)
-            .max_by_key(|b| b.id)
-            .filter(|newest| newest.head != branch.head);
-        if newer.is_none() {
-            // In the loops a failed check is one of the item's failures (ADR 0142).
-            if !ok {
-                self.loop_failed(check.task)?;
-            }
-            self.store.set_gate(check.task, ok)?;
-            self.emit(
-                EventKind::GateResult,
-                json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary.as_str() },
-                        "check": check.id }),
-            )?;
-        }
+        let newer = self.gate_from(check, &branch, ok, &summary)?;
         // The turn that asked for the check: the member who submitted the branch, unless a lead
         // or another developer asked for it to be checked again.
         let asked = self
@@ -553,23 +662,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let task = self.task(check.task)?;
         if !ok && task.status == TaskStatus::InReview {
-            // A branch that fails its checks is sent back (ADR 0115): the tester need not read
-            // what the lab's own checks already refused.
-            self.store.set_task_status(task.id, TaskStatus::Doing)?;
-            self.post_held_lock(
-                Author::Endora,
-                task.id,
-                &format!(
-                    "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
-                     right, submit the branch again and then the task. If the line says the \
-                     check box could not run, ask for the same branch to be checked again with \
-                     recheck, and submit nothing new.",
-                    check.id
-                ),
-            )?;
-            self.emit_status(&task, TaskStatus::Doing)?;
-            self.wake_held_lock(branch.member, Some(task.id), WakeReason::SentBack)?;
-            return Ok(());
+            return self.send_back_failed(&task, check, &branch, &summary, document);
         }
         if task.status.finished() {
             return Ok(());
@@ -579,18 +672,67 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if asked != branch.member && self.member(asked)?.at_work() {
             self.wake_held_lock(asked, Some(task.id), WakeReason::CheckDone)?;
         }
-        // The tester only for work already in review, which she may be waiting on, and only
-        // the one review wakes: before it, a pass gave her nothing to judge (18-19 Oct, eight
-        // such turns, five asking the lead what to do).
-        if task.status != TaskStatus::InReview {
-            return Ok(());
+        Ok(())
+    }
+
+    /// The check is the wing's gate (tests, lint and build, ADR 0114): code work closes only
+    /// once it has passed, and the lab's own checks are what passes it. The gate is the newest
+    /// head's: a check of an older head that reports late (two heads in flight) is recorded,
+    /// and sets nothing (ADR 0115, amended). Returns the newer branch, if there is one.
+    fn gate_from(
+        &self,
+        check: &Check,
+        branch: &Branch,
+        ok: bool,
+        summary: &str,
+    ) -> Done<Option<Branch>> {
+        let newer = self
+            .store
+            .branches()?
+            .into_iter()
+            .filter(|b| b.task == check.task)
+            .max_by_key(|b| b.id)
+            .filter(|newest| newest.head != branch.head);
+        if newer.is_some() {
+            return Ok(newer);
         }
-        if let Some(tester) = self
-            .reviewer()?
-            .filter(|m| m.at_work() && m.id != branch.member)
-        {
-            self.wake_held_lock(tester.id, Some(task.id), WakeReason::CheckDone)?;
+        // In the loops a failed check is one of the item's failures (ADR 0142).
+        if !ok {
+            self.loop_failed(check.task)?;
         }
+        self.store.set_gate(check.task, ok)?;
+        self.emit(
+            EventKind::GateResult,
+            json!({ "task": check.task.0, "passed": ok, "failed": if ok { "" } else { summary },
+                    "check": check.id }),
+        )?;
+        Ok(None)
+    }
+
+    /// A branch that fails its checks is sent back (ADR 0115): the tester need not read what
+    /// the lab's own checks already refused.
+    fn send_back_failed(
+        &self,
+        task: &crate::domain::Task,
+        check: &Check,
+        branch: &Branch,
+        summary: &str,
+        document: i64,
+    ) -> Done<()> {
+        self.store.set_task_status(task.id, TaskStatus::Doing)?;
+        self.post_held_lock(
+            Author::Endora,
+            task.id,
+            &format!(
+                "Sent back: check c{} failed ({summary}). Read document d{document}, put it \
+                 right, submit the branch again and then the task. If the line says the \
+                 check box could not run, ask for the same branch to be checked again with \
+                 recheck, and submit nothing new.",
+                check.id
+            ),
+        )?;
+        self.emit_status(task, TaskStatus::Doing)?;
+        self.wake_held_lock(branch.member, Some(task.id), WakeReason::SentBack)?;
         Ok(())
     }
 
@@ -598,19 +740,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// saying the branch, its size and how its checks went; or, when the node has no deploy
     /// key, that pushing is not set up and where the bundle is. Called when a task reaches
     /// done; nothing for a task with no branch, or one offered already.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn offer_push(&self, task: TaskId) -> Done<()> {
         let Some(branch) = self
             .store
             .branches()?
             .into_iter()
-            .filter(|b| b.task == task && b.status == "submitted")
+            .filter(|b| b.task == task && b.status == wing::SUBMITTED)
             .max_by_key(|b| b.id)
         else {
             return Ok(());
         };
+        // No card unless the owner put them back: listed, and pushed by rule (ADR 0115,
+        // amended 2026-10-31). A branch of a repository outside the lab is listed, never carded.
+        if !self.cards_back()? || self.outside_repo_of_task(task)?.is_some() {
+            return self.accept_branch(branch);
+        }
         let checks = self.checks_said(branch.id)?;
         let files = format!(
             "{} file{}",
@@ -704,9 +848,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The branch a push item the owner approved asks the node to push, if that is what the
     /// item is.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn push_asked(&self, item: crate::domain::DeskId) -> Done<Option<Branch>> {
         let _held = self.held();
         let Some(found) = self
@@ -782,114 +923,56 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     "receipt": receipt, "member": branch.member.0 }),
         )?;
         self.wake_held_lock(branch.member, Some(task), WakeReason::ProposalDecided)?;
-        // Pushed: the owner says when it is deployed, and the lab is checked (ADR 0115, amended).
-        if ok {
-            self.offer_deploy(task, &branch)?;
-        }
         Ok(())
     }
 
     // ---- hiring (ADR 0115) ---------------------------------------------------------------
 
-    /// The owner hires a member: a name, a role, a brain its role may think with, and whom it
-    /// reports to (its role's default when `None`). The brain named goes to the slot it belongs
-    /// to (ADR 0131): a Claude is the brain it judges with, a house model the brain it works
-    /// with; the other has its default (Haiku to judge with, the Mac to work with). The team
-    /// has one CEO. Said in the feed as the owner's.
+    /// The owner hires a member: a name and its model (ADR 0142). Nobody reports to anyone. Said in the feed as the owner's.
     ///
     /// # Errors
-    /// [`Refusal::OnlyOneCeo`], [`Refusal::NotAName`], [`Refusal::NotABrain`],
-    /// [`EngineError::Unknown`] for a manager that is no member; a store failure.
-    pub fn hire_by_owner(
-        &self,
-        name: &str,
-        role: Role,
-        brain: &str,
-        reports_to: Option<MemberId>,
-    ) -> Done<MemberId> {
-        self.hire_by_owner_with(name, role, Some(brain), None, None, reports_to)
+    /// [`Refusal::NotAName`], [`Refusal::NotABrain`]; a store failure.
+    pub fn hire_by_owner(&self, name: &str, brain: &str) -> Done<MemberId> {
+        self.hire_by_owner_with(name, Some(brain))
     }
 
-    /// As [`Self::hire_by_owner`], naming each brain apart as well (ADR 0131): the one it works
-    /// with, the Mac or the house's model, and the Claude it judges with. Each slot not named is
-    /// its default.
+    /// As [`Self::hire_by_owner`], the brain named or not: one not named is the house's model.
     ///
     /// # Errors
-    /// As [`Self::hire_by_owner`]; [`Refusal::NotABrain`] for a work brain that is not a house
-    /// model, or a judgment brain that is not a Claude the role may use.
-    pub fn hire_by_owner_with(
-        &self,
-        name: &str,
-        role: Role,
-        brain: Option<&str>,
-        work: Option<&str>,
-        judgment: Option<&str>,
-        reports_to: Option<MemberId>,
-    ) -> Done<MemberId> {
+    /// As [`Self::hire_by_owner`].
+    pub fn hire_by_owner_with(&self, name: &str, brain: Option<&str>) -> Done<MemberId> {
         let _held = self.held();
-        // Each is checked for the slot it is named for, then set like any brain named.
-        if let Some(w) = work {
-            Brain::for_work(role, w).map_err(EngineError::Refused)?;
-        }
-        if let Some(j) = judgment {
-            Brain::for_judgment(role, j).map_err(EngineError::Refused)?;
-        }
-        let named: Vec<&str> = [brain, work, judgment].into_iter().flatten().collect();
-        self.hire_held_lock(name, role, &named, reports_to, "owner")
+        self.hire_held_lock(name, brain, "owner")
     }
 
-    /// Hires a member (the lock held), with the brains named: each goes to the slot it belongs
-    /// to, and the slot not named has its default. A blank name is none.
-    fn hire_held_lock(
-        &self,
-        name: &str,
-        role: Role,
-        brains: &[&str],
-        reports_to: Option<MemberId>,
-        by: &str,
-    ) -> Done<MemberId> {
+    /// Hires a member (the lock held), on the brain named. A blank name or brain is none.
+    fn hire_held_lock(&self, name: &str, brain: Option<&str>, by: &str) -> Done<MemberId> {
         let members = self.store.members()?;
-        if role == Role::Ceo && members.iter().any(|m| m.role == Role::Ceo) {
-            return Err(EngineError::Refused(Refusal::OnlyOneCeo));
-        }
         let name = super::one_line(name, 41);
         let taken = members.iter().any(|m| m.name.eq_ignore_ascii_case(&name));
         if name.is_empty() || name.chars().count() > 40 || taken {
             return Err(EngineError::Refused(Refusal::NotAName));
         }
-        let named = brains
-            .iter()
+        let named = brain
             .filter(|b| !b.trim().is_empty())
-            .map(|b| Brain::for_role(role, b))
-            .collect::<Result<Vec<Brain>, _>>()
+            .map(Brain::named)
+            .transpose()
             .map_err(EngineError::Refused)?;
-        if let Some(to) = reports_to {
-            if role == Role::Ceo || !members.iter().any(|m| m.id == to) {
-                return Err(EngineError::Refused(Refusal::NotAManager));
-            }
-        }
-        let manager = reports_to;
         let look = u8::try_from(members.len() % 6).unwrap_or(0);
-        let id = self.store.add_member(&name, role, role.share(), 2, look)?;
-        for brain in named {
+        let id = self.store.add_member(&name, A_MEMBERS_SHARE, 2, look)?;
+        if let Some(brain) = named {
             self.store.set_brain(id, brain)?;
         }
-        self.store.set_reports_to(id, manager)?;
         let hired = self.member(id)?;
         self.emit(
             EventKind::MemberHired,
-            json!({ "member": id.0, "name": name, "role": role.name(),
-                    "brain": hired.brain.name(), "work_brain": hired.work_brain.name(),
-                    "reports_to": manager.map(|m| m.0), "by": by }),
+            json!({ "member": id.0, "name": name, "brain": hired.brain.name(), "by": by }),
         )?;
         Ok(id)
     }
 
     /// The members of the wing: whoever leads one of its projects, and whoever reports up to
     /// them.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn wing_members(&self) -> Done<Vec<MemberId>> {
         // With nobody reporting to anyone (ADR 0142), the wing is its projects' leads.
         let leads = self.wing_leads()?;
@@ -897,7 +980,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .store
             .members()?
             .iter()
-            .filter(|m| m.role != Role::Ceo && leads.contains(&m.id))
+            .filter(|m| leads.contains(&m.id))
             .map(|m| m.id)
             .collect())
     }
@@ -906,18 +989,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// repository's rules when it exists, and one is proposed when it is missing; its lead is
     /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
     /// for anyone outside the wing.
-    ///
-    /// # Errors
-    /// A store failure.
     pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
-        if !matches!(member.role, Role::Lead | Role::Developer) {
-            return Ok("");
-        }
         if !self.wing_members()?.contains(&member.id) {
             return Ok("");
-        }
-        if member.role == Role::Lead {
-            return Ok(wing::FORK_RULES_LEAD);
         }
         Ok(wing::FORK_RULES)
     }
@@ -925,9 +999,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a member changes the lab (ADR 0120): a lead or a developer in the engineering
     /// wing, who may submit a branch and ask for it to be checked again. What the node asks
     /// before it offers or runs a submission, so nothing is kept for anyone else.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn changes_the_lab(&self, member: MemberId) -> Done<bool> {
         // Any member at work may change the lab (ADR 0142): checks and review stop bad work.
         Ok(self.member(member)?.at_work())
@@ -948,124 +1019,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|p| goals.contains(&p.goal))
             .map(|p| p.lead)
             .collect())
-    }
-
-    // ---- the wing, seeded once (ADR 0115) --------------------------------------------------
-
-    /// Seeds the wing, once (a setting remembers it), for HQ started with the demo off: the
-    /// owner's goal "Improve the lab" with the wing's notes for the team, the project
-    /// "ansible-nas clean-up" led by Kit, Kit (a lead on Claude Sonnet, reporting to the
-    /// CEO), Rae and Zed (developers on Claude Haiku, reporting to Kit), and Kit's first task,
-    /// to plan the clean-up. What is already there (by name or title) is kept, not made again.
-    ///
-    /// # Errors
-    /// What the engine refuses, or a store failure.
-    pub fn seed_wing(&self) -> Done<Option<WingSeeded>> {
-        if self.store.setting(WING_SEEDED)?.is_some() {
-            return Ok(None);
-        }
-        let goal = match self
-            .store
-            .goals()?
-            .into_iter()
-            .find(|g| g.title.trim().eq_ignore_ascii_case(WING_GOAL) && g.status != GoalStatus::Dropped)
-        {
-            Some(goal) => goal.id,
-            None => self.set_generated_goal(
-                WING_GOAL,
-                "The wing cleans up the lab's ansible-nas fork, one reviewed branch at a time; the owner merges.",
-            )?,
-        };
-        if self.store.goal_note(goal)?.trim().is_empty() {
-            self.set_goal_note(goal, WING_NOTE)?;
-        }
-        let named = |name: &str| -> Done<Option<MemberId>> {
-            Ok(self
-                .store
-                .members()?
-                .into_iter()
-                .find(|m| m.name.eq_ignore_ascii_case(name))
-                .map(|m| m.id))
-        };
-        let lead = match named("Kit")? {
-            Some(id) => id,
-            None => {
-                let id = self.hire("Kit", Role::Lead, Role::Lead.share(), 2, 5)?;
-                self.set_brain(id, Brain::Sonnet.name())?;
-                id
-            }
-        };
-        let mut developers = Vec::new();
-        for (name, look) in [("Rae", 2), ("Zed", 4)] {
-            let id = match named(name)? {
-                Some(id) => id,
-                None => {
-                    let id = self.hire(name, Role::Developer, Role::Developer.share(), 2, look)?;
-                    self.set_brain(id, Brain::Haiku.name())?;
-                    id
-                }
-            };
-            developers.push(id);
-        }
-        let project = match self
-            .store
-            .projects()?
-            .into_iter()
-            .find(|p| p.goal == goal && p.title.eq_ignore_ascii_case(WING_PROJECT))
-        {
-            Some(p) => p.id,
-            None => self.add_project(
-                goal,
-                WING_PROJECT,
-                "The fork's roles and docs, tidied one branch at a time; the owner merges each.",
-                lead,
-                None,
-            )?,
-        };
-        let task = match self
-            .store
-            .tasks()?
-            .into_iter()
-            .find(|t| t.project == Some(project) && t.title == WING_FIRST_TASK)
-        {
-            Some(t) => t.id,
-            None => self.add_task_with(
-                Author::Owner,
-                NewTask {
-                    goal,
-                    project: Some(project),
-                    parent: None,
-                    title: WING_FIRST_TASK.to_owned(),
-                    description: "Read the fork's docs (ansible_nas_doc: roles, website/docs) and \
-                        check out its default branch (repo_checkout) to see how it is laid out. \
-                        Then post a plan: the first three branches, each named hq/task-N-<slug>, \
-                        what each changes and why it is safe. Hand each to a developer as a \
-                        sub-task with criteria once the owner has read the plan."
-                        .to_owned(),
-                    assignee: Some(lead),
-                    priority: Priority::Normal,
-                    waits_on: Vec::new(),
-                },
-                &[
-                    Criterion::new(
-                        "The plan cites the fork's files it read, by receipt (ansible_nas_doc or repo_checkout)",
-                        false,
-                    ),
-                    Criterion::new(
-                        "Three branches are proposed, each named hq/task-N-<slug>, with what each changes and why",
-                        false,
-                    ),
-                ],
-            )?,
-        };
-        self.store.set_setting(WING_SEEDED, "1")?;
-        Ok(Some(WingSeeded {
-            goal,
-            project,
-            lead,
-            developers,
-            task,
-        }))
     }
 
     // ---- documents ---------------------------------------------------------------------
@@ -1092,9 +1045,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         {
             reach.push(parent);
         }
-        // The CEO and a lead read any document: they accept the work.
-        let member = self.member(turn.member)?;
-        if !member.role.leads() && !reach.contains(&document.task) {
+        if !reach.contains(&document.task) {
             return Err(EngineError::Refused(Refusal::NotADocument));
         }
         self.inherit_input_from(run, document.run)?;
@@ -1109,6 +1060,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.inherit_input_from(run, document.run)?;
         }
         Ok(())
+    }
+
+    /// The receipt that wrote document `id`, for a member who cited the document: the submit
+    /// whose result names it (`document d241`), or the check it reports (`check c7: …`), both
+    /// kept by the turn the document came from. None for a document no receipt names.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn receipt_of_document(&self, id: i64) -> Done<Option<i64>> {
+        let Some(document) = self.store.document(id)? else {
+            return Ok(None);
+        };
+        let Some(run) = document.run else {
+            return Ok(None);
+        };
+        let named = format!("document d{id}");
+        let names = |text: &str| {
+            text.match_indices(&named)
+                .any(|(at, _)| !text[at + named.len()..].starts_with(|c: char| c.is_ascii_digit()))
+        };
+        let check = document
+            .title
+            .strip_prefix("check ")
+            .and_then(|t| t.split(':').next())
+            .map(|c| format!("{c} "));
+        Ok(self
+            .store
+            .call_receipts_of(run)?
+            .into_iter()
+            .filter(|r| r.task == Some(document.task))
+            .find(|r| {
+                names(&r.excerpt)
+                    || check
+                        .as_deref()
+                        .is_some_and(|c| r.tool == "check" && r.args.starts_with(c))
+            })
+            .map(|r| r.id))
     }
 
     pub(super) fn documents_said(&self, task: TaskId) -> Done<String> {
@@ -1144,36 +1132,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(told)
     }
 
-    /// A task's documents and branches, as the HQ screen shows them.
-    pub(super) fn documents_shown(
-        &self,
-        task: TaskId,
-    ) -> Done<(serde_json::Value, serde_json::Value)> {
+    /// A task's documents, as the HQ screen shows them.
+    pub(super) fn documents_shown(&self, task: TaskId) -> Done<serde_json::Value> {
         let documents: Vec<serde_json::Value> = self
             .store
             .documents_of(task)?
             .iter()
             .map(|d| json!({ "id": d.id, "title": d.title, "at": d.at, "text": d.text }))
             .collect();
-        let checks = self.store.checks()?;
-        let branches: Vec<serde_json::Value> = self
-            .store
-            .branches()?
-            .iter()
-            .filter(|b| b.task == task)
-            .map(|b| {
-                let check = checks
-                    .iter()
-                    .filter(|c| c.branch == b.id)
-                    .max_by_key(|c| c.id);
-                json!({ "id": b.id, "name": b.name, "head": b.head, "files": b.files,
-                        "plus": b.plus, "minus": b.minus, "status": b.status, "at": b.at,
-                        "can_push": b.can_push,
-                        "check": check.map(|c| json!({ "id": c.id, "status": c.status,
-                                                        "ok": c.ok, "summary": c.summary })) })
-            })
-            .collect();
-        Ok((json!(documents), json!(branches)))
+        Ok(json!(documents))
     }
 
     /// The wing as the HQ screen shows it: its goal, its projects' leads and its members.
@@ -1189,4 +1156,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "members": wing.iter().map(|m| m.id.0).collect::<Vec<_>>(),
         }))
     }
+}
+
+/// A task's branches as the HQ screen shows them, each with its latest check, from the
+/// branches and checks read once for the whole board.
+pub(super) fn branches_shown(
+    task: TaskId,
+    branches: &[wing::Branch],
+    checks: &[wing::Check],
+) -> serde_json::Value {
+    let shown: Vec<serde_json::Value> = branches
+        .iter()
+        .filter(|b| b.task == task)
+        .map(|b| {
+            let check = checks
+                .iter()
+                .filter(|c| c.branch == b.id)
+                .max_by_key(|c| c.id);
+            json!({ "id": b.id, "name": b.name, "head": b.head, "files": b.files,
+                    "plus": b.plus, "minus": b.minus, "status": b.status, "at": b.at,
+                    "can_push": b.can_push,
+                    "check": check.map(|c| json!({ "id": c.id, "status": c.status,
+                                                    "ok": c.ok, "summary": c.summary })) })
+        })
+        .collect();
+    json!(shown)
 }

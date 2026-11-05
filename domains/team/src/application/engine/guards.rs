@@ -27,9 +27,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// What the diagnosis reads of `task`, from the record now.
     fn task_facts(&self, task: &Task) -> Done<TaskFacts> {
-        let runs = self.store.runs()?;
-        let on_it: Vec<&Run> = runs.iter().filter(|r| r.task == Some(task.id)).collect();
-        let holder = task.owner.or(task.assignee);
+        let runs = self.store.runs_of(task.id)?;
+        let on_it: Vec<&Run> = runs.iter().collect();
+        let holder = task.holder();
         let members = self.store.members()?;
         let holder_at_work = holder.map(|h| members.iter().any(|m| m.id == h && m.at_work()));
         let last_turn_failed = on_it
@@ -99,9 +99,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The stopped diagnosis of `task` as the record stands now (ADR 0124); `None` for a task
     /// that is finished, or gone.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn diagnosis(&self, task: TaskId) -> Done<Option<Diagnosis>> {
         let Some(task) = self.store.task(task)? else {
             return Ok(None);
@@ -122,12 +119,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .count();
         let cited = self.store.cited(task.id)?.len();
         let mut receipt = 0;
-        for run in self
-            .store
-            .runs()?
-            .iter()
-            .filter(|r| r.task == Some(task.id))
-        {
+        for run in self.store.runs_of(task.id)? {
             for r in self.store.call_receipts_of(run.id)? {
                 receipt = receipt.max(r.id);
             }
@@ -283,7 +275,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .set_task_status(waiting.id, TaskStatus::Blocked)?;
                 self.emit_status(&waiting, TaskStatus::Blocked)?;
             }
-            if let Some(holder) = waiting.owner.or(waiting.assignee) {
+            if let Some(holder) = waiting.holder() {
                 self.wake_held_lock(holder, Some(waiting.id), WakeReason::WaitDropped)?;
             }
         }

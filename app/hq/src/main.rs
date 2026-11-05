@@ -9,6 +9,7 @@ mod api;
 mod drain_cli;
 mod runner;
 mod team;
+mod ticker;
 mod time_zone;
 
 /// Endora's public library, embedded at build time for every member's `read_doc`.
@@ -31,57 +32,10 @@ const SHORTEST_TOKEN: usize = 32;
 /// How many events the feed keeps, not counting the ticks.
 const KEEP_EVENTS: i64 = 20_000;
 
-/// The owner's goal for the home lab, as they set it.
-pub(crate) const LAB_GOAL: &str = "Keep the home lab healthy";
-
 /// What the home lab's routine asks of its member each time.
 const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of anything \
     unhealthy, fix what a restart can fix, check back after a fix, and put anything else to the \
     owner as a plan.";
-
-/// The owner's routine for the home lab (ADR 0107), made once: with no routine yet but the
-/// CEO's, an active goal called "Keep the home lab healthy" and a lead, the lead checks the
-/// home lab every 6 hours, and takes its alarms. It is the owner's to switch off or run, like
-/// any other; nothing about it is in the schema. Returns the routine, if it made one.
-pub(crate) fn seed_routine(
-    hq: &Hq,
-) -> Result<Option<endora_team::domain::RoutineId>, endora_team::application::EngineError> {
-    use endora_team::application::ports::{NewRoutine, TeamStore as _};
-    use endora_team::domain::{GoalStatus, Role};
-    let store = hq.store();
-    let members = store.members()?;
-    let the_ceos = |assignee| {
-        members
-            .iter()
-            .any(|m| m.id == assignee && m.role == Role::Ceo)
-    };
-    if store.routines()?.iter().any(|r| !the_ceos(r.assignee)) {
-        return Ok(None);
-    }
-    let Some(goal) = store
-        .goals()?
-        .into_iter()
-        .find(|g| g.status == GoalStatus::Active && g.title.trim().eq_ignore_ascii_case(LAB_GOAL))
-    else {
-        return Ok(None);
-    };
-    let Some(lead) = store.members()?.into_iter().find(|m| m.role == Role::Lead) else {
-        return Ok(None);
-    };
-    let made = hq.add_routine(
-        endora_team::application::Author::Endora,
-        NewRoutine {
-            title: "Check the home lab".to_owned(),
-            description: LAB_CHECK.to_owned(),
-            goal: goal.id,
-            project: None,
-            assignee: lead.id,
-            every_ms: 6 * 60 * 60 * 1000,
-            on_lab_trouble: true,
-        },
-    )?;
-    Ok(Some(made))
-}
 
 /// The owner's distance from UTC in minutes, for where their day starts: the zone the node is
 /// given (`ENDORA_TIME_ZONE`, e.g. `America/New_York`), else the fixed
@@ -232,6 +186,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool_per_month: THE_HOUSES_POOL,
         ..Settings::default()
     };
+    // The owner's new work asks the ticker for a pass at once (ADR 0102, amended 2026-11-04).
+    let pass_asked = Arc::new(ticker::PassAsked::default());
+    let asks = pass_asked.clone();
     let hq: Arc<Hq> = Arc::new(
         Engine::new(
             SqliteTeamStore::open(&db)?,
@@ -239,33 +196,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api::SystemClock,
             settings,
         )
-        .with_docs(public_docs::PUBLIC_DOCS),
+        .with_docs(public_docs::PUBLIC_DOCS)
+        .with_pass_requests(Arc::new(move || asks.ask())),
     );
     // Before seeding work, publishing HTTP or starting ticks: no v1 peer work
     // may execute in this process. Failure aborts startup; the next startup
     // repeats the bounded cleanup and settles only still-live legacy turns.
     hq.retire_legacy_peer_work()?;
     {
-        match seed_routine(&hq) {
-            Ok(None) => {}
-            Ok(Some(id)) => {
-                println!("hq: made the home lab's routine ({id}): the lead checks it every 6 hours")
-            }
-            Err(e) => eprintln!("hq: could not make the home lab's routine: {e}"),
-        }
-        match hq.migrate_projects() {
-            Ok(None) => {}
-            Ok(Some(id)) => {
-                println!("hq: put the home lab's routines and open work in project {id}")
-            }
-            Err(e) => eprintln!("hq: could not make the home lab's project: {e}"),
-        }
-        // How this lab is built, in the house log, once and only when it is empty (ADR 0112).
-        match hq.seed_house_log() {
-            Ok(true) => println!("hq: put how this lab is built in the house log"),
-            Ok(false) => {}
-            Err(e) => eprintln!("hq: could not seed the house log: {e}"),
-        }
         // The team's map (ADR 0126): a page for every project and goal, made once each from the
         // team as it stands. Nothing is changed or deleted.
         match hq.migrate_map() {
@@ -282,19 +220,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(false) => {}
             Err(e) => eprintln!("hq: could not seed the office: {e}"),
         }
-        // The engineering wing (ADR 0115), once: its goal, project, lead, developers and first task.
-        match hq.seed_wing() {
-            Ok(Some(wing)) => println!(
-                "hq: seeded the engineering wing: goal {}, project {}, lead {} with {} developers, task {}",
-                wing.goal,
-                wing.project,
-                wing.lead,
-                wing.developers.len(),
-                wing.task
-            ),
-            Ok(None) => {}
-            Err(e) => eprintln!("hq: could not seed the wing: {e}"),
-        }
         // Routines from before their origin was kept, whose words are exactly HQ's own: their
         // tasks are HQ's words, not unknown ones (ADR 0138 A2b).
         match hq.vouch_template_routines(&[("Check the home lab", LAB_CHECK)]) {
@@ -302,50 +227,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(n) => println!("hq: {n} routines are HQ's own words"),
             Err(e) => eprintln!("hq: could not vouch for HQ's routines: {e}"),
         }
-        // The Claude Code pilot (ADR 0117), once: one wing developer on it, the other on the
-        // worker, for the scorecard to compare.
-        match hq.seed_claude_code_pilot() {
-            Ok(Some(member)) => println!("hq: member {} runs on Claude Code (the pilot)", member.0),
-            Ok(None) => {}
-            Err(e) => eprintln!("hq: could not seed the Claude Code pilot: {e}"),
-        }
     }
 
-    // The tick: every `tick_every` seconds; a late one runs once. When each one finished is
-    // kept for `/health` (ADR 0124).
+    // The tick: every `tick_every` seconds, a late one run once, and one more whenever the
+    // engine asks (the owner's new work, ADR 0102, amended 2026-11-04); one pass at a time. When
+    // each one finished is kept for `/health` (ADR 0124).
     let ticking = hq.clone();
     let last_tick: Arc<std::sync::atomic::AtomicI64> = Arc::default();
     let ticked = last_tick.clone();
     let mut ticks: u64 = 0;
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(tick_every));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
+    tokio::spawn(ticker::run(
+        std::time::Duration::from_secs(tick_every),
+        pass_asked,
+        move || {
             let hq = ticking.clone();
             let ticked = ticked.clone();
             ticks += 1;
             let prune = ticks % 100 == 0;
-            let _ = tokio::task::spawn_blocking(move || {
-                match hq.tick() {
-                    Ok(_) => ticked.store(
-                        endora_team::application::Clock::now(&api::SystemClock),
-                        std::sync::atomic::Ordering::SeqCst,
-                    ),
-                    Err(e) => eprintln!("hq: the tick failed: {e}"),
-                }
-                // The feed is for display: the newest 20,000 events that are not ticks are kept
-                // (and the ticks among the newest 20,000 of all), and a reader further behind
-                // than that starts again from a snapshot.
-                if prune {
-                    if let Err(e) = hq.prune_events(KEEP_EVENTS) {
-                        eprintln!("hq: could not prune the event feed: {e}");
+            async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    match hq.tick() {
+                        Ok(_) => ticked.store(
+                            endora_team::application::Clock::now(&api::SystemClock),
+                            std::sync::atomic::Ordering::SeqCst,
+                        ),
+                        Err(e) => eprintln!("hq: the tick failed: {e}"),
                     }
-                }
-            })
-            .await;
-        }
-    });
+                    // The feed is for display: the newest 20,000 events that are not ticks are kept
+                    // (and the ticks among the newest 20,000 of all), and a reader further behind
+                    // than that starts again from a snapshot.
+                    if prune {
+                        if let Err(e) = hq.prune_events(KEEP_EVENTS) {
+                            eprintln!("hq: could not prune the event feed: {e}");
+                        }
+                    }
+                })
+                .await;
+            }
+        },
+    ));
 
     let app = api::app(api::State {
         hq,
@@ -361,7 +281,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The team's pool a month (ADR 0113): the owner raised it from $70 to $95 on 2026-10-25, $10
-/// of it the model league's cap (ADR 0135) and the rest the agents'. The engine's own default
+/// of it the model league's cap (ADR 0135) and the rest the agents'. Since 2026-10-31 it is the
+/// floor: each day's pool is sized from the Claude grant left, between this over 30 days and
+/// three times that (ADR 0113, amended). The engine's own default
 /// stays $70, the figure its tests and the scripted demo are written around.
 const THE_HOUSES_POOL: money::Micros = 95 * money::DOLLAR;
 

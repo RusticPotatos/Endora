@@ -251,7 +251,8 @@ RUN set -eu; \
 # endora-workbench:latest:
 #   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
 # It is not the node's image: the node keeps the last stage. Run with a read-only root and /work
-# as a tmpfs owned by the workbench user. The sandbox is offline (ADR 0110): it reaches the
+# as a tmpfs owned by the workbench user: the turn's own, or its item's, kept between the item's
+# turns by a keeper (this image asleep, ADR 0142, amended 2026-11-01). The sandbox is offline (ADR 0110): it reaches the
 # node's team gateway and nothing else, so everything a turn may need is in this image; the
 # egress proxy is designed and deferred. The same image runs the wing's check jobs (ADR 0115,
 # ENDORA_CHECK=1): no model, a job token, the lab's own checks on a submitted branch.
@@ -287,8 +288,8 @@ RUN install -d -m 755 /etc/claude-code
 COPY --chmod=444 deploy/workbench/managed-settings.json /etc/claude-code/managed-settings.json
 COPY --from=builder /endora-worker /usr/local/bin/endora-worker
 ENV HOME=/work
-# Claude Code keeps its state in the turn's own /work (a tmpfs, gone with the turn), and is
-# told the same as its settings say before it reads them.
+# Claude Code keeps its state in the turn's /work (a tmpfs: the turn's own, or its item's, kept
+# between the item's turns), and is told the same as its settings say before it reads them.
 ENV CLAUDE_CONFIG_DIR=/work/.claude
 ENV DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 \

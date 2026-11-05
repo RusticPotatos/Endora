@@ -85,6 +85,22 @@ CREATE TABLE IF NOT EXISTS model_usage (
     completion INTEGER NOT NULL,
     cached     INTEGER NOT NULL
 ) STRICT;
+-- The node's own count of the model requests its relay passes on (round 9 of the agentic-harness
+-- climb): when it began and ended, the model asked for and the one the provider named, how it
+-- ended, and whether HQ was told. Never a prompt, body, key, tool argument or token.
+CREATE TABLE IF NOT EXISTS relay_requests (
+    id              INTEGER PRIMARY KEY,
+    run             INTEGER NOT NULL,
+    started_ms      INTEGER NOT NULL,
+    ended_ms        INTEGER,
+    requested_model TEXT NOT NULL,
+    served_model    TEXT,
+    outcome         TEXT NOT NULL,
+    status          INTEGER,
+    usage_complete  INTEGER NOT NULL,
+    hq_told         INTEGER
+) STRICT;
+CREATE INDEX IF NOT EXISTS relay_requests_by_run ON relay_requests(run);
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
@@ -151,6 +167,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 CREATE TABLE IF NOT EXISTS bench_spend (
     day    INTEGER PRIMARY KEY,
     micros INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS provider_spend (
+    provider TEXT PRIMARY KEY,
+    micros   INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -787,17 +807,137 @@ impl endora_application::UsageLog for SqliteStore {
     }
 }
 
+/// One row of the node's own count of model requests (`relay_requests`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayRequestRow {
+    /// The local request id.
+    pub id: i64,
+    /// The run the request was made for.
+    pub run: i64,
+    /// When the relay passed it on, in Unix milliseconds.
+    pub started_ms: i64,
+    /// When it ended; `None` until it does.
+    pub ended_ms: Option<i64>,
+    /// The model the call asked for.
+    pub requested_model: String,
+    /// The model the provider said answered; `None` when it named none.
+    pub served_model: Option<String>,
+    /// `unfinished`, `answered`, `interrupted` or `failed`.
+    pub outcome: String,
+    /// The HTTP status, when known.
+    pub status: Option<i64>,
+    /// Whether the usage was fully reported.
+    pub usage_complete: bool,
+    /// Whether HQ accepted the usage post; `None` until the charge was attempted.
+    pub hq_told: Option<bool>,
+}
+
+impl endora_application::RelayCensus for SqliteStore {
+    fn began(&self, run: i64, requested_model: &str) -> Option<i64> {
+        // Best effort: counting must never fail or slow the call it describes.
+        let conn = self.lock().ok()?;
+        conn.execute(
+            "INSERT INTO relay_requests (run, started_ms, requested_model, outcome, usage_complete)
+             VALUES (?1, ?2, ?3, 'unfinished', 0)",
+            params![run, now_ms(), requested_model],
+        )
+        .ok()?;
+        Some(conn.last_insert_rowid())
+    }
+
+    fn ended(
+        &self,
+        id: i64,
+        outcome: endora_application::RelayOutcome,
+        status: Option<u16>,
+        served_model: Option<&str>,
+        usage_complete: bool,
+    ) {
+        if let Ok(conn) = self.lock() {
+            let _ = conn.execute(
+                "UPDATE relay_requests SET ended_ms=?2, outcome=?3, status=?4, served_model=?5,
+                        usage_complete=?6 WHERE id=?1",
+                params![
+                    id,
+                    now_ms(),
+                    outcome.as_str(),
+                    status.map(i64::from),
+                    served_model,
+                    i64::from(usage_complete)
+                ],
+            );
+        }
+    }
+
+    fn hq_told(&self, id: i64, accepted: bool) {
+        if let Ok(conn) = self.lock() {
+            let _ = conn.execute(
+                "UPDATE relay_requests SET hq_told=?2 WHERE id=?1",
+                params![id, i64::from(accepted)],
+            );
+        }
+    }
+}
+
 impl SqliteStore {
-    /// What the bench credential (ADR 0123) has spent on `day` (days since the epoch, UTC), in
-    /// micros: kept apart from HQ's pool, so its daily cap holds across a restart.
+    /// Lets go of the census rows that began before `before_ms` (Unix milliseconds): the
+    /// node keeps its count of model requests for a while, not for ever. How many went.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be written.
+    pub fn prune_relay_requests(&self, before_ms: i64) -> Result<usize, RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM relay_requests WHERE started_ms < ?1",
+            params![before_ms],
+        )
+        .map_err(|e| RepositoryError::Backend(e.to_string()))
+    }
+
+    /// The relay's own count of `run`'s model requests, oldest first.
     ///
     /// # Errors
     /// [`RepositoryError`] if the database cannot be read.
-    pub fn bench_spent(&self, day: i64) -> Result<i64, RepositoryError> {
+    pub fn relay_requests(&self, run: i64) -> Result<Vec<RelayRequestRow>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, run, started_ms, ended_ms, requested_model, served_model, outcome,
+                        status, usage_complete, hq_told
+                 FROM relay_requests WHERE run=?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![run], |r| {
+                Ok(RelayRequestRow {
+                    id: r.get(0)?,
+                    run: r.get(1)?,
+                    started_ms: r.get(2)?,
+                    ended_ms: r.get(3)?,
+                    requested_model: r.get(4)?,
+                    served_model: r.get(5)?,
+                    outcome: r.get(6)?,
+                    status: r.get(7)?,
+                    usage_complete: r.get::<_, i64>(8)? != 0,
+                    hq_told: r.get::<_, Option<i64>>(9)?.map(|v| v != 0),
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+}
+
+impl SqliteStore {
+    /// What Endora has paid `provider` (`anthropic`, `deepseek`) in all, in micros: what a
+    /// balance the owner read at one moment has lost since.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be read.
+    pub fn provider_spent(&self, provider: &str) -> Result<i64, RepositoryError> {
         let conn = self.lock()?;
         conn.query_row(
-            "SELECT micros FROM bench_spend WHERE day=?1",
-            params![day],
+            "SELECT micros FROM provider_spend WHERE provider=?1",
+            params![provider],
             |r| r.get(0),
         )
         .optional()
@@ -805,16 +945,17 @@ impl SqliteStore {
         .map_err(backend)
     }
 
-    /// Adds `micros` to what the bench has spent on `day`.
+    /// Adds `micros` to what Endora has paid `provider`, at once, so two calls charged together
+    /// both count.
     ///
     /// # Errors
     /// [`RepositoryError`] if the database cannot be written.
-    pub fn add_bench_spent(&self, day: i64, micros: i64) -> Result<(), RepositoryError> {
+    pub fn add_provider_spent(&self, provider: &str, micros: i64) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT INTO bench_spend (day, micros) VALUES (?1, ?2)
-             ON CONFLICT(day) DO UPDATE SET micros = micros + excluded.micros",
-            params![day, micros],
+            "INSERT INTO provider_spend (provider, micros) VALUES (?1, ?2)
+             ON CONFLICT(provider) DO UPDATE SET micros = micros + excluded.micros",
+            params![provider, micros],
         )
         .map(|_| ())
         .map_err(backend)
@@ -1151,20 +1292,78 @@ mod tests {
         endora_platform::EventStore::new(store.db())
     }
 
+    /// The census is kept for a while, not for ever (round 10's review): rows that began
+    /// before the cut-off go, the rest stay as they were.
     #[test]
-    fn the_benchs_spending_is_kept_by_day_and_adds_up() {
+    fn old_census_rows_are_let_go_and_recent_ones_kept() {
+        use endora_application::RelayCensus;
         let store = store();
-        assert_eq!(store.bench_spent(20_000).unwrap(), 0, "nothing spent yet");
-        store.add_bench_spent(20_000, 1_500).unwrap();
-        store.add_bench_spent(20_000, 2_500).unwrap();
-        store.add_bench_spent(20_001, 7).unwrap();
-        assert_eq!(store.bench_spent(20_000).unwrap(), 4_000);
-        assert_eq!(
-            store.bench_spent(20_001).unwrap(),
-            7,
-            "a new day starts again"
+        let old = store.began(7, "claude-haiku-5-5").unwrap();
+        let recent = store.began(8, "claude-haiku-5-5").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE relay_requests SET started_ms = 1000 WHERE id = ?1",
+                rusqlite::params![old],
+            )
+            .unwrap();
+        assert_eq!(store.prune_relay_requests(5_000).unwrap(), 1);
+        assert!(store.relay_requests(7).unwrap().is_empty());
+        assert_eq!(store.relay_requests(8).unwrap()[0].id, recent);
+    }
+
+    /// A request begun and never ended (the node stopped, the call hung) is counted as
+    /// unfinished: never as answered, never with a model, never as having reached HQ.
+    #[test]
+    fn a_request_begun_and_never_ended_reads_unfinished_not_complete() {
+        use endora_application::{RelayCensus, RelayOutcome};
+        let store = store();
+        let id = store.began(7, "claude-sonnet-5-5").unwrap();
+        let rows = store.relay_requests(7).unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.id, id);
+        assert_eq!(row.requested_model, "claude-sonnet-5-5");
+        assert_eq!(row.outcome, "unfinished");
+        assert!(!row.usage_complete);
+        assert_eq!((row.ended_ms, row.status), (None, None));
+        assert_eq!((row.served_model.as_deref(), row.hq_told), (None, None));
+        assert!(store.relay_requests(8).unwrap().is_empty());
+
+        // Ending it fills what is known and leaves the rest alone.
+        store.ended(
+            id,
+            RelayOutcome::Answered,
+            Some(200),
+            Some("claude-sonnet-5-5-20261001"),
+            true,
         );
-        assert_eq!(store.bench_spent(19_999).unwrap(), 0);
+        store.hq_told(id, false);
+        let row = &store.relay_requests(7).unwrap()[0];
+        assert_eq!(row.outcome, "answered");
+        assert_eq!(row.status, Some(200));
+        assert_eq!(
+            row.served_model.as_deref(),
+            Some("claude-sonnet-5-5-20261001")
+        );
+        assert!(row.usage_complete && row.ended_ms.is_some());
+        assert_eq!(row.hq_told, Some(false));
+    }
+
+    #[test]
+    fn what_each_provider_was_paid_adds_up_for_its_balance() {
+        let store = store();
+        assert_eq!(
+            store.provider_spent("anthropic").unwrap(),
+            0,
+            "nothing paid yet"
+        );
+        store.add_provider_spent("anthropic", 1_500).unwrap();
+        store.add_provider_spent("anthropic", 2_500).unwrap();
+        store.add_provider_spent("deepseek", 7).unwrap();
+        assert_eq!(store.provider_spent("anthropic").unwrap(), 4_000);
+        assert_eq!(store.provider_spent("deepseek").unwrap(), 7);
     }
 
     #[test]

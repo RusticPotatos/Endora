@@ -70,6 +70,56 @@ pub trait UsageLog: Send + Sync {
     fn record(&self, role: &str, model: &str, usage: ModelUsage);
 }
 
+/// How a model request the node's relay passed on ended, as the node's own census records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayOutcome {
+    /// Begun and not ended: never treated as complete.
+    Unfinished,
+    /// A 2xx response whose usage was fully reported (a whole reply parsed, or a stream that
+    /// reached its last usage).
+    Answered,
+    /// A 2xx response that did not complete (a stream cut before its final usage, or a body
+    /// that could not be read): a model may have answered part.
+    Interrupted,
+    /// No model response: the send failed, or the status was not 2xx.
+    Failed,
+}
+
+impl RelayOutcome {
+    /// The word the census keeps.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unfinished => "unfinished",
+            Self::Answered => "answered",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// The node's own count of the model requests its relay passes on: independent of what HQ is
+/// told, so a lost usage report cannot hide that a call was made. It keeps no prompt, body,
+/// key, tool argument or token count of the turn. Every method is best effort: it must never
+/// fail or slow the call it describes.
+pub trait RelayCensus: Send + Sync {
+    /// Notes that a request for `requested_model` in `run` is about to be passed on; the id
+    /// to end it by, or `None` if it could not be noted.
+    fn began(&self, run: i64, requested_model: &str) -> Option<i64>;
+    /// Notes how request `id` ended, the HTTP `status` when known, the model the provider
+    /// named (when it did), and whether its usage was fully reported.
+    fn ended(
+        &self,
+        id: i64,
+        outcome: RelayOutcome,
+        status: Option<u16>,
+        served_model: Option<&str>,
+        usage_complete: bool,
+    );
+    /// Notes whether HQ accepted the usage post that charged request `id`.
+    fn hq_told(&self, id: i64, accepted: bool);
+}
+
 // `Clock` and `IdSource` are shared-kernel ports (time and identity enter the
 // pure layers through them), re-exported here so `endora_application::{Clock,
 // IdSource}` and `ports::…` paths are unchanged. See ADR 0050.

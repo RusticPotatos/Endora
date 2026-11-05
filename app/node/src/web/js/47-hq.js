@@ -1,5 +1,6 @@
-// ---- Endora HQ: the office (ADR 0102, spec section 13) ---------------------------------------
-// The team as a pixel startup office, drawn from HQ's snapshot and the events after it. The
+// ---- Endora HQ (ADR 0102, spec section 13) ---------------------------------------------------
+// The team at work in a small studio, drawn from HQ's snapshot and the events after it (the studio
+// itself is in 47f-hq-studio.js). The
 // console talks to the node only; the node signs every request to HQ and records the owner's
 // actions in Endora's own audit log. Approvals and the kill switch are buttons here that call
 // the node's routes, never anything the office view decides.
@@ -13,101 +14,38 @@ const HQ = {
   last: 0,             // the last event id seen: the stream resumes after it
   log: [],             // what happened, newest first, in words
   selected: null,      // { type: "member" | "task", id }
-  people: {},          // member id → where they are and what they are doing on screen
-  envelopes: [],       // wakes in flight
-  lastWord: {},        // task id → the member who last wrote in its thread
+  said: {},            // member id → { text, t }: a real post just made, said for t seconds
   roster: {},          // member id → its controls are open on the Team card
   deskNote: {},
   more: {},            // list key → the owner asked to see all of it        // desk item id → why the owner's last decision on it was refused
-  logShown: 60,        // how many lines of the activity log are on screen
-  tab: null,           // the screen's tab: desk, team, work, knowledge or office (read from storage)
+  feed: null,          // the paged activity, full screen: { at, starts, lines, next, busy, error }
+  tab: null,           // the screen's tab: work, manage, health or activity (read from storage)
   working: false,      // the "Give work" form is open
   workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
-  oldest: 0,           // the oldest event id the log has been told of
-  logDone: false,      // HQ has nothing older to give
-  logBusy: false,      // older lines are being fetched
+  back: null,          // where Activity was when one of its links was taken: { y, feed }
   allTurns: {},        // "task-N" / "member-N" → every turn shown, not only the last five
-  pods: [],            // one pod of desks per team, laid out from the snapshot (ADR 0119)
-  seats: {},           // member id → its desk, where it works and where a visitor stands
-  world: null,         // the cells nobody walks through, and the walls between cells
-  rand: Math.random,   // where idle members drift: replaceable, so a check can fix it
-  settled: false,      // set once the first snapshot has put everyone at a desk
+  whole: {},           // task id → a finished task opened whole (the snapshot has it in brief), or "asking"
+  scene: null,         // the studio as last drawn: where everything stands, for taps
   t: 0,                // seconds of animation
   polling: null,
   looping: false,
   mac: null,           // the owner's Mac as the node knows it (ADR 0130): state, switch, settings
   macToken: "",        // a helper token the owner just made, shown once and then forgotten
   macTick: 0,          // polls since the Mac was last read
+  landing: {},         // task id → { owner, unverified }: closed live, waiting for the snapshot to say how
+  fresh: {},           // task id → seconds its spine still shines on the week's shelf, after it closed live
+  weekNow: 0,          // the time the week's shelf counts back from; 0 is now (a check fixes it)
+  recovered: {},       // member id → { task, why, t }: a recovery the record just showed, ticked for t seconds
 };
 
-const HQ_T = 16, HQ_COLS = 32, HQ_ROWS = 20, HQ_W = HQ_COLS * HQ_T, HQ_H = HQ_ROWS * HQ_T;
-const HQ_C = {
-  wall: "#efece6", wallTop: "#e2ddd3", trim: "#c9c1b3", glass: "rgba(150,205,235,.22)", glassEdge: "#9cc7de",
-  board: "#fbfbf8", boardEdge: "#b9c2c9", rack: "#232833", neon: "#ff4fa3", lamp: "#ffb347", red: "#ef5a5f",
-  green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", sticky: "#fff2a8", text: "#1f1d29", shadow: "rgba(60,40,20,.18)",
-};
-const HQ_STATUS_COL = { todo: HQ_C.sticky, doing: HQ_C.lamp, in_review: HQ_C.blue, done: HQ_C.green, blocked: HQ_C.red, dropped: "#cfcac0" };
-// The open office (ADR 0119), in tiles; a person stands on a tile (a cell), and `hqAt` says
-// where their sprite goes. Along the back wall: the board room (the owner's), the task board,
-// Mara's office with its door open, and the server closet. The open floor under them holds
-// one pod of desks for each team, side by side with no walls (row 8 down, laid out from the
-// snapshot); under that, ping-pong, the meeting room, and the kitchen and lounge that
-// everyone shares. The things that can move are not here: they come from the snapshot.
-function hqAt(cx, cy, extra) { return { cx, cy, x: cx, y: cy - 0.5, ...extra }; }
-const HQ_P = {
-  board: { x: 8, y: 0, w: 12, h: 2 }, owner: { x: 2, y: 3 }, lever: { x: 6.1, y: 2.3 },
-  boardRoom: { x: 0, y: 2, w: 7, h: 5 }, boardDoor: hqAt(6, 7, { dir: "up" }),
-  engine: { x: 27, y: 2, w: 5, h: 5 }, rack: { x: 30.2, y: 2.4 }, jar: { x: 27.8, y: 2.8 },
-  door: { x: 30, y: 10.5 }, lobby: hqAt(29, 12, { dir: "left" }), pong: { x: 3, y: 17 }, tap: { x: 16.4, y: 15.6 },
-  // The games (ADR 0121): a pool table three tiles by two at the lounge's far side, and a chess
-  // table one tile square. The rules of the office keep these tiles, and the row below the pool
-  // table and the tiles above and below the chess table where their players stand, free.
-  pool: { x: 29, y: 15, w: 3, h: 2 }, chess: { x: 23, y: 17 },
-};
-// The pods' ground: the band the teams' desks stand in, each desk three tiles by two, two
-// desks to a row with a two-tile aisle between them where their members stand facing each
-// other. Nothing else is ever put there (the rules of the office say so too).
-const HQ_POD = { top: 8, left: 1, right: 28, bottom: 14, desk: { w: 3, h: 2 }, aisle: 2, between: 1 };
-// The two rooms people walk into, each with its door open: a member goes through the gap in
-// the wall (cells `from` to `to` on that side), `out` the step outside it and `in` inside.
-const HQ_ROOMS = {
-  ceo: { x: 20, y: 2, w: 7, h: 5, door: { side: "bottom", from: 20, to: 22 }, out: hqAt(21, 7, { dir: "up" }), in: hqAt(21, 6, { room: "ceo", dir: "down" }) },
-  meeting: { x: 9, y: 15, w: 7, h: 5, door: { side: "top", from: 9, to: 11 }, out: hqAt(10, 14, { dir: "down" }), in: hqAt(10, 15, { room: "meeting", dir: "down" }) },
-};
-// Where people sit in the meeting room: the CEO at the head, behind the table; the others on
-// the chairs before it, their backs to us.
-const HQ_MEETING = {
-  table: { x: 12, y: 16 },
-  head: hqAt(12, 16, { room: "meeting", dir: "down" }),
-  chairs: [hqAt(12, 18, { room: "meeting", dir: "up" }), hqAt(13, 18, { room: "meeting", dir: "up" })],
-};
-// The CEO's desk in its own office, where it works, and the sofa where it rests.
-const HQ_CEO = {
-  desk: { x: 21, y: 3 },
-  work: hqAt(22, 3, { room: "ceo", dir: "down", desk: true }),
-  rest: hqAt(25, 5, { room: "ceo", dir: "down" }),
-};
-// Where idle members drift, picking one at random so the teams mix: the ping-pong table's two
-// ends, the kitchen table's chairs, the tap. The couches, the coffee machine and the rest come
-// from what stands on the floor now (`hqWanderSpots`).
-const HQ_WANDER = [
-  hqAt(2, 17, { dir: "right", pong: "L" }), hqAt(7, 17, { dir: "left", pong: "R" }),
-  hqAt(26, 18, { dir: "up" }), hqAt(27, 18, { dir: "up" }), hqAt(17, 17, { dir: "up" }),
-  // The pool table's two sides and the chess table's two seats: two idle members at a pair play.
-  hqAt(29, 17, { dir: "up", pool: "L" }), hqAt(31, 17, { dir: "up", pool: "R" }),
-  hqAt(23, 16, { dir: "down", chess: "W" }), hqAt(23, 18, { dir: "up", chess: "B" }),
-];
-const HQ_ART = {
-  floors: { plank: "floors/floor_5.png", grid: "floors/floor_3.png", plain: "floors/floor_1.png", check: "floors/floor_7.png" },
-  f: ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "CUSHIONED_CHAIR_BACK",
-    "SOFA_FRONT", "PLANT", "PLANT_2", "LARGE_PLANT", "COFFEE", "BIN", "BOOKSHELF", "SMALL_TABLE_FRONT",
-    "LARGE_PAINTING", "HANGING_PLANT", "CACTUS"],
-};
+const HQ_C = { neon: "#ff4fa3", lamp: "#ffb347", red: "#ef5a5f", green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", text: "#1f1d29" };
+// The furniture the studio draws (Pixel Agents, MIT): desks and their screens, chairs, the sofas,
+// the review table, the coffee machine, and decor that stands for nothing (plants, a cactus, a bin).
+const HQ_ART = ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "CUSHIONED_CHAIR_BACK",
+  "SOFA_FRONT", "PLANT", "PLANT_2", "LARGE_PLANT", "HANGING_PLANT", "CACTUS", "BIN", "COFFEE", "SMALL_TABLE_FRONT"];
 const HQ_IMG = {};
 let HQ_ART_READY = null;
-let HQ_BG = null;
-let HQ_FURN = [];
 
 function hqLoadArt() {
   if (HQ_ART_READY) return HQ_ART_READY;
@@ -116,9 +54,8 @@ function hqLoadArt() {
     const i = new Image(); i.onload = () => { HQ_IMG[key] = i; ok(); }; i.onerror = () => ok(); i.src = "/hq-art/" + src;
   }));
   for (let i = 0; i < 6; i++) one("char" + i, `characters/char_${i}.png`);
-  for (const [k, s] of Object.entries(HQ_ART.floors)) one("floor_" + k, s);
-  for (const f of HQ_ART.f) one(f, `furniture/${f}.png`);
-  HQ_ART_READY = Promise.all(jobs).then(() => { HQ_BG = hqPaintRoom(); HQ_FURN = hqFurniture(); });
+  for (const f of HQ_ART) one(f, `furniture/${f}.png`);
+  HQ_ART_READY = Promise.all(jobs);
   return HQ_ART_READY;
 }
 
@@ -130,16 +67,14 @@ async function loadHQ() {
     const first = !HQ.snap;
     HQ.snap = snap; HQ.error = "";
     await hqLoadMac();
+    await hqLoadCredits();
     if (first) {
-      // The recent past, in words, without replaying it on screen.
-      const from = Math.max(0, (snap.last_event || 0) - 60);
-      try {
-        const back = await api("GET", `/v1/hq/events?after=${from}`);
-        for (const e of back.events || []) hqTell(e, false);
-      } catch (_) { /* the log starts empty */ }
+      // The recent past, in words, without replaying it on screen: the Activity tab's twenty.
+      try { HQ.log = (await hqLogPage((snap.last_event || 0) + 1, HQ_LOG_SHOWN)).lines; }
+      catch (_) { /* the log starts empty */ }
       HQ.last = snap.last_event || 0;
     }
-    hqPlacePeople();
+    hqLandings();
   } catch (e) {
     HQ.snap = null;
     const said = String((e && e.message) || e);
@@ -157,9 +92,15 @@ function hqStartPolling() {
     // twelve seconds, and redraw only when it moved.
     HQ.macTick += 1;
     if (HQ.macTick % 4 === 0) {
-      const before = JSON.stringify(HQ.mac);
+      const before = JSON.stringify([HQ.mac, HQ.credits]);
       await hqLoadMac();
-      if (JSON.stringify(HQ.mac) !== before && NAV.v === "hq" && !hqTyping()) render();
+      // The balances move with each paid call; DeepSeek's is read afresh every ten minutes.
+      if (HQ.macTick % 20 === 0) await hqLoadCredits();
+      if (JSON.stringify([HQ.mac, HQ.credits]) !== before && NAV.v === "hq" && !hqTyping()) render();
+    }
+    // A game being watched moves on its own, every six seconds.
+    if (HQ.macTick % 2 === 0) {
+      try { if (await hqHoloRefresh() && NAV.v === "hq" && !hqTyping()) render(); } catch (_) { /* the next poll tries again */ }
     }
     try {
       const got = await api("GET", `/v1/hq/events?after=${HQ.last}`);
@@ -167,7 +108,7 @@ function hqStartPolling() {
       if (!events.length) return;
       for (const e of events) { hqTell(e, true); HQ.last = Math.max(HQ.last, e.id); }
       HQ.snap = await api("GET", "/v1/hq");
-      hqPlacePeople();
+      hqLandings();
       if (NAV.v === "hq" && !hqTyping()) render();
     } catch (_) { /* the next poll tries again */ }
   }, 3000);
@@ -180,7 +121,18 @@ function hqTyping() {
 }
 
 function hqMember(id) { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.id === id); }
-function hqTask(id) { return ((HQ.snap && HQ.snap.tasks) || []).find((t) => t.id === id); }
+function hqTask(id) {
+  const t = ((HQ.snap && HQ.snap.tasks) || []).find((x) => x.id === id), whole = HQ.whole[id];
+  return t && whole && whole !== "asking" ? Object.assign({}, t, whole, { status: t.status }) : t;
+}
+// A finished task comes in brief in the snapshot; opened, it is asked of HQ whole, once.
+async function hqAskWhole(id) {
+  if (HQ.whole[id]) return;
+  HQ.whole[id] = "asking";
+  try { HQ.whole[id] = await api("GET", `/v1/hq/tasks/${Number(id)}`); }
+  catch (e) { delete HQ.whole[id]; flash("Couldn't open the task: " + e.message, "err"); return; }
+  render();
+}
 function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
@@ -213,6 +165,97 @@ function hqClamp(key, text, cls = "") {
 function hqOpenRow(key, title, meta, body) {
   const open = !!HQ.more[key];
   return `<li class="hq-open-row${open ? " open" : ""}"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${meta}</small></button>${open ? `<div class="hq-row-body">${body}</div>` : ""}</li>`;
+}
+
+// A big card or a rare part of a tab, folded to one line until tapped (the density audit of
+// 2026-10-25): open, `body` (whole cards) follows the line. What is opened is kept across HQ's
+// redraws in `HQ.more`; `key` has no colon.
+function hqFold(key, title, meta, body) {
+  const open = !!HQ.more[key];
+  // One grid item, heading and body together: apart, an opened body landed in the other column
+  // (tabs climb, round 0).
+  // Open, a body with a heading carries the fold control in it, so the title shows once and no
+  // second card is spent on the fold (tabs climb, round 2).
+  const fold = `<button class="hq-link hq-fold-x" aria-expanded="true" data-act="hq:more:${key}:toggle">fold</button>`;
+  if (open && /<\/h2>/.test(body)) return `<div class="hq-foldset">${body.replace(/<\/h2>/, `</h2>${fold}`)}</div>`;
+  return `<div class="hq-foldset"><section class="hq-card hq-fold"><button class="hq-line" aria-expanded="${open}" data-act="hq:more:${key}:toggle"><b>${title}</b> <small>${open ? "tap to fold" : meta}</small></button></section>${open ? body : ""}</div>`;
+}
+
+// A form inside a card that is used now and then (a new project, a routine, a hire): a button
+// until it is wanted.
+function hqFormFold(key, label, body) {
+  const open = !!HQ.more[key];
+  return `<div class="hq-row"><button class="hq-btn" aria-expanded="${open}" data-act="hq:more:${key}:toggle">${open ? "Close" : label}</button></div>${open ? body : ""}`;
+}
+
+// The work in flight (Work tab): one line for each task that is not finished, newest first,
+// each opening the task and its thread under Looking at; and finding any task, finished too.
+function hqInFlight(s) {
+  const goals = s.goals || [];
+  const dropped = new Set(goals.filter((g) => g.status === "dropped").map((g) => g.id));
+  const rank = { blocked: 0, doing: 1, in_review: 2, todo: 3 };
+  const open = (s.tasks || []).filter((t) => t.status in rank && !dropped.has(t.goal)).reverse()
+    .sort((a, b) => rank[a.status] - rank[b.status]);
+  const rows = open.map((t) => hqLine(`hq:pick:task:${Number(t.id)}`, `${hqKey(t.id)} ${esc(t.title)}`,
+    `${esc(String(t.status).replace(/_/g, " "))}${t.owner ? ` · ${esc(hqName(t.owner))}` : ""}`));
+  const list = hqMore("inflight", rows, 5);
+  return `<section class="hq-card"><h2>Open tasks <span class="hq-count">${open.length}</span></h2>
+    ${rows.length ? `<ul class="hq-lines hq-open">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing open.</p>`}
+    <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
+    <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>`;
+}
+
+// The money (Manage tab): today's pool with its top-up, which figure today's base is and why
+// (sized from the Claude credit, or the floor: ADR 0113, amended 2026-10-31), and what is left
+// with each paid provider; the credits and their thresholds are set up in Settings → AI.
+//
+// What each model cost (the owner, 2026-10-31) folds under the pool, with the way to AI's
+// credits: the Manage tab is at its budget of rows, so the top-up sits at the end of the pool's
+// line rather than on a row of its own, and the fold's one line takes that row's place.
+function hqMoneyCard(s) {
+  const pool = s.pool || {}, credits = hqCreditChips();
+  const left = pool.per_day == null ? null : Math.max(0, pool.per_day - (pool.committed || 0));
+  const topUp = s.scorecard && s.scorecard.pool ? `<button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button>` : "";
+  if (left == null && !credits.length && !topUp) return "";
+  const toAi = `<button class="hq-link" data-act="go:models">Credits and thresholds in AI</button>`;
+  const byModel = hqByModel(s.scorecard && s.scorecard.by_model, toAi);
+  const line = left == null ? (topUp ? `<p class="hq-who">${topUp}</p>` : "")
+    : `<p class="hq-who">Today's pool: ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left of ${hqDollars(pool.per_day)}${pool.sized && pool.sized.why ? `<br><span class="hq-note">${esc(pool.sized.why)}</span>` : ""} ${topUp}</p>`;
+  return `<section class="hq-card"><h2>Money</h2>
+    ${line}
+    ${credits.length ? `<div class="hq-chips">${credits.join("")}</div>` : ""}
+    ${byModel || `<div class="hq-row">${toAi}</div>`}</section>`;
+}
+
+// What each model cost (the owner, 2026-10-31), as HQ's scorecard computed it: a row per brain a
+// turn ran on, the most spent first, with the owner's last 7 days, the 7 before and which way it
+// went. Each week is one cell, its spend over its turns, cost a turn and share of that week's
+// spend, so the table is four columns and wraps on a phone. One line until tapped; `after` is
+// markup to end it with once open. "" without a table.
+function hqByModel(t, after) {
+  if (!t || !Array.isArray(t.rows)) return "";
+  const perTurn = (m) => (m === 0 ? "$0" : "$" + (m / 1e6).toFixed(3));
+  const spent = (m) => (m ? hqDollars(m) : "$0");
+  const week = (w) => {
+    if (!w || !w.turns) return `<td class="n"><small>no turns</small></td>`;
+    return `<td class="n">${spent(w.spent)}<small>${w.turns}&nbsp;${w.turns === 1 ? "turn" : "turns"} · ${w.per_turn == null ? "—" : perTurn(w.per_turn)}&nbsp;a&nbsp;turn${w.spent ? ` · ${Number(w.share)}%` : ""}</small></td>`;
+  };
+  const marks = { up: "↑", down: "↓", same: "=" };
+  const rows = t.rows.map((r) => `<tr><th scope="row">${esc(hqBrainTag(r.brain))}</th>${week(r.now)}${week(r.before)}
+    <td title="${r.trend === "same" ? "the same as" : esc(String(r.trend))} on the week before">${marks[r.trend] || ""}</td></tr>`).join("");
+  const body = `${rows ? `<table class="hq-board hq-cost"><thead><tr><th scope="col">Model</th><th scope="col" class="n">7 days</th><th scope="col" class="n">7 before</th><th scope="col" aria-label="Trend"></th></tr></thead>
+    <tbody>${rows}</tbody></table>` : `<p class="hq-empty">No turns in the last two weeks.</p>`}
+    <div class="hq-row">${after}</div>`;
+  return `<ul class="hq-lines hq-by-model">${hqOpenRow("bymodel", "By model", `${spent((t.now || {}).spent)} in 7 days · ${spent((t.before || {}).spent)} the 7 before`, body)}</ul>`;
+}
+
+// What went wrong lately (Health tab): the team's recent turns that did not succeed, each
+// opening its replay.
+function hqFailures() {
+  const failed = (r) => r.status && r.status !== "succeeded" && r.status !== "running" && r.status !== "queued";
+  const turns = hqTurns(failed, "failed");
+  return `<section class="hq-card"><h2>What failed</h2>${turns || `<p class="hq-empty">No recent turn failed.</p>`}
+    <div class="hq-row"><button class="hq-link" data-act="go:lab">The home lab's containers and logs</button></div></section>`;
 }
 
 // A table of numbers by day and by week, as one-line rows (the owner, 2026-10-25: too long to
@@ -251,16 +294,10 @@ function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
 // What was really spent apart from what is only held for turns: a free local turn holds money
 // while it runs and spends none.
 function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars(m.held)} held ${perDay}`; }
-// What a member spends. With two brains (ADR 0131) only its judgment, on Claude, is paid from the
-// pool; its work, on the Mac or the house's model, costs nothing. (An HQ before that named one
-// brain, and a member on a house model took no share of the pool, ADR 0111.)
+// What a member spends: a member is its model (ADR 0142), and the house's models cost nothing.
 function hqMemberMoney(m) {
-  if (m.work_brain) return `${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)} · its work costs nothing`;
   return m.brain === "mac" ? "the owner's Mac: costs nothing, runs only while the Mac is free" : m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`);
 }
-// A role as the owner reads it.
-// The reviewer's role is shown as the tester (ADR 0114).
-function hqRole(role) { return role === "ceo" ? "CEO" : role === "reviewer" ? "Tester" : String(role || ""); }
 
 // A moment as the activity log says it: hours and minutes.
 function hqClock(at) { return new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }); }
@@ -287,36 +324,105 @@ function hqEvidence(t) {
 // The turns that ended last on a task, or of a member, with what each came to (ADR 0114): in
 // reading order, oldest first like the thread below them, the last five unless the owner asks
 // for all. `key` names the card, so "show all" is remembered for it alone.
+// How a turn ended, then what it left (its label), in plain words; "" for a plain finish.
+const HQ_TURN_ENDED = { failed: "failed", timed_out: "ran out of time", timeout: "ran out of time", cancelled: "was stopped", retry_waiting: "waits to retry", succeeded: "" };
+const HQ_TURN_LEFT = { empty: "gave nothing back", advanced: "made progress", nothing: "showed nothing", checked: "checked", talk_only: "talk only" };
+function hqTurnSaid(status, label) {
+  const words = (map, v) => (v in map ? map[v] : String(v || "").replace(/_/g, " "));
+  return [status ? words(HQ_TURN_ENDED, status) : "", label ? words(HQ_TURN_LEFT, label) : ""].filter(Boolean).join(", ");
+}
 function hqTurns(match, key) {
   const all = ((HQ.snap && HQ.snap.recent_runs) || []).filter(match).reverse();
   if (!all.length) return "";
   const every = !!HQ.allTurns[key], runs = every ? all : all.slice(-5);
   const toggle = all.length > 5
     ? `<div class="hq-row"><button class="hq-btn" aria-expanded="${every ? "true" : "false"}" data-act="hq:turns:${key}:toggle">${every ? "Show the last 5" : `Show all ${all.length}`}</button></div>` : "";
-  return `${toggle}<ul class="hq-thread">${runs.map((r) => `<li>${replayRunLink(r.id, `R${r.id} ${esc(hqName(r.member))}${r.task ? " · " + hqKey(r.task) : ""} · ${esc(r.label || String(r.status || "").replace(/_/g, " "))}`)}</li>`).join("")}</ul>`;
+  // On a task, each turn also opens what it was given (the owner's notes of 31 Oct).
+  const given = (r) => key.startsWith("task-") ? ` · ${replayGivenLink(r.id)}` : "";
+  // The task leads and the outcome is in plain words; the turn's number is the link's last word,
+  // and Show all sits under the list (tabs climb, round 1).
+  // Each row leads with its task's title, the member, outcome and turn number muted under it; the
+  // same task and outcome turn after turn is one row "×N", its link the latest turn (round 6).
+  const rows = [];
+  for (const r of runs) {
+    const last = rows[rows.length - 1], said = hqTurnSaid(r.status, r.label);
+    if (!key.startsWith("task-") && last && last.r.task && last.r.task === r.task && last.said === said && last.r.member === r.member) { last.n += 1; last.r = r; continue; }
+    rows.push({ r, said, n: 1 });
+  }
+  const title = (r) => { const t = r.task && ((HQ.snap && HQ.snap.tasks) || []).find((x) => x.id === r.task); return r.task ? `${hqKey(r.task)}${t && t.title ? " " + esc(t.title) : ""}` : "No task"; };
+  return `<ul class="hq-thread">${rows.map(({ r, said, n }) => `<li>${replayRunLink(r.id, `<b class="hq-turn-title">${title(r)}</b> <small>${esc(hqName(r.member))} <span class="hq-turn-id">R${r.id}</span> ${esc(said)}${n > 1 ? ` · ×${n}` : ""}</small>`)}${given(r)}</li>`).join("")}</ul>${toggle}`;
 }
 
 // A line of the activity log in full: a post is read whole from its task's thread when the
-// snapshot has it, and is otherwise its preview, which says "…" where it was cut. A finished
-// task's thread is only its last posts, each with its place in the whole thread (`n`).
+// screen has it, and is otherwise its preview, which says "…" where it was cut. A finished
+// task's thread is there only once the task is opened, each post with its place (`n`).
 const HQ_LONG_LINE = 240;
 function hqLogText(l) {
   const w = l.whole, t = w && hqTask(w.task), p = t && (t.thread || []).find((q, i) => (q.n ?? i) === w.post);
   return p && p.author === w.author ? `${w.author}: ${p.text}` : l.text;
 }
 // One line as a list item. A long one is shown to its first 240 characters, with "more" to
-// open it in place and "less" to fold it again; nothing is lost either way.
+// open it in place and "less" to fold it again; nothing is lost either way. A post HQ cut in
+// its event has "more" too, which asks HQ for the post whole.
+// The engine's own posts ("endora: …") are its records: shown to a short first line, the rest a
+// "more" away; and one that repeats the line beside it (the same minute, the same branch) is not
+// told twice (tabs climb, round 3). Nothing is reworded, only shortened or left out.
+const HQ_ENGINE_LINE = 90;
+const hqEnginePost = (t) => /^endora: /i.test(String(t || ""));
+function hqLogLines(lines) {
+  const branch = (t) => (String(t).match(/\bhq\/task-\d+[\w-]*/) || [""])[0];
+  // The same action too (its verb: "pushed", "submitted"), not only the same branch and minute,
+  // so a different record is never hidden (round 6).
+  const verb = (t) => (String(t).replace(/^endora: /i, "").match(/^\w+/) || [""])[0].toLowerCase();
+  const repeats = (l, i) => hqEnginePost(l.text) && branch(l.text) && verb(l.text) && [lines[i - 1], lines[i + 1]].some((n) => n && !hqEnginePost(n.text) && n.at === l.at && branch(n.text) === branch(l.text) && new RegExp(`\\b${verb(l.text)}\\b`, "i").test(n.text));
+  // The same words in the same minute, line after line, are one line ending "×N" (round 4).
+  const kept = [];
+  for (const [i, l] of lines.entries()) {
+    if (repeats(l, i)) continue;
+    const last = kept[kept.length - 1];
+    if (last && last.l.at === l.at && last.l.text === l.text) { last.n += 1; continue; }
+    kept.push({ l, n: 1 });
+  }
+  return kept.map(({ l, n }) => n > 1 ? hqLogLine(l).replace(/<\/span><\/li>$/, ` <small class="hq-times">×${n}</small></span></li>`) : hqLogLine(l)).join("");
+}
 function hqLogLine(l) {
-  const full = hqLogText(l), long = full.length > HQ_LONG_LINE, open = !!HQ.logOpen[l.key];
-  const shown = long && !open ? full.slice(0, HQ_LONG_LINE) + "…" : full;
-  const toggle = long ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
-  return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(shown)}${toggle}</span></li>`;
+  const full = hqLogText(l), open = !!HQ.logOpen[l.key], most = hqEnginePost(full) ? HQ_ENGINE_LINE : HQ_LONG_LINE;
+  const long = full.length > most, cut = !!l.whole && full === l.text && /…$/.test(full);
+  const shown = long && !open ? full.slice(0, most) + "…" : full;
+  const toggle = long || cut ? ` <button class="hq-more" aria-expanded="${open ? "true" : "false"}" data-act="hq:logmore:${l.key}:toggle">${open ? "less" : "more"}</button>` : "";
+  return `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${hqLogLinks(esc(shown), l.refs)}${toggle}</span></li>`;
 }
 
-// One event, in words for the activity log, and on screen if it is live.
-function hqTell(e, live, older) {
+// What a line of Activity names, as links that open it (the owner, 1 Nov): any item (EL-955)
+// as Work's "Looking at" does; the turn its event names (R4952) in its replay, with what it was
+// given; and the members its event names, on the team board. `html` is the line escaped; a
+// name matches only as a whole word, and only those the event names, so a routine called "R100"
+// is no turn.
+function hqLogLinks(html, refs) {
+  const r = refs || {}, members = (HQ.snap && HQ.snap.members) || [];
+  const named = new Map();
+  for (const m of members) {
+    if (m.name && ((r.ids || []).includes(m.id) || (r.names || []).includes(m.name))) named.set(esc(m.name), m.id);
+  }
+  const quote = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const names = [...named.keys()].sort((a, b) => b.length - a.length).map(quote);
+  // Each group is always there, matching nothing when the event names nothing of its kind.
+  const run = r.run ? Number(r.run) : "(?!)", who = names.length ? names.join("|") : "(?!)";
+  const pattern = new RegExp(`(?<![\\w&#])(?:EL-(\\d+)|R(${run})|(${who}))(?![\\w-])`, "g");
+  return html.replace(pattern, (all, task, turn, name) => {
+    const [kind, id] = task ? ["task", task] : turn ? ["run", turn] : ["member", named.get(name)];
+    return `<button class="hq-link" data-act="hq:from:${kind}:${Number(id)}">${all}</button>`;
+  });
+}
+
+// The line of Activity with this key, from the tab or the paged view.
+function hqLogFind(key) {
+  return HQ.log.concat((HQ.feed && HQ.feed.lines) || []).find((l) => String(l.key) === String(key));
+}
+
+// One event as a line of the activity log, or null for one it does not tell (a tick).
+function hqLogEntry(e) {
   const d = e.data || {}, key = hqKey(d.task), on = key ? ` (${key})` : "";
-  if (e.id && (!HQ.oldest || e.id < HQ.oldest)) HQ.oldest = e.id;
   const name = hqName(d.member), reason = String(d.reason || "").replace(/_/g, " ");
   const result = String(d.result || "").replace(/_/g, " ");
   const said = {
@@ -336,10 +442,12 @@ function hqTell(e, live, older) {
     "wake.held": ["wake", `${name} waits: ${key} is being worked (${reason})`],
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
+    // How the turn ended and what it left, in the same plain words as What failed; its tokens and
+    // cache share are the replay's, not the log line's (tabs climb, round 2).
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
-      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.result !== "succeeded" && d.why ? `: ${d.why}` : ""}${d.label ? " · " + d.label : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.input != null ? ` · in ${d.input} / out ${d.output || 0}` : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
+      `R${d.run} ${name} ${d.result === "succeeded" ? ["finished", hqTurnSaid("", d.label)].filter(Boolean).join(", ") : hqTurnSaid(d.result, d.label)}${d.result !== "succeeded" && d.why && !/^(timed_out|timeout)$/.test(d.result) ? `: ${d.why}` : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
-    "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : ""}a ${hqRole(d.role)} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
+    "desk.added": ["you", d.kind === "push" ? `On your desk: push ${d.branch || "a branch"}${on}` : d.kind === "hire" ? `On your desk: ${d.name ? d.name + ", " : "a member"} to hire${on}` : `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
     "budget.crossed": ["bad", `${name} crossed its limit; R${d.run} stopped`],
     "stopped": ["bad", d.by === "tripwire"
@@ -353,9 +461,9 @@ function hqTell(e, live, older) {
     "routine.posted": ["wake", `Alarm into ${key}: ${d.said}`],
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
-    "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : "works"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
-    // The CEO and the chain of command (ADR 0111).
-    "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
+    "member.brain": ["you", `${d.name || name} now ${d.slot === "judgment" ? "judges" : d.slot === "work" ? "works" : "thinks"} with ${d.brain === "local" ? "the house's model" : d.brain === "mac" ? "the owner's Mac" : d.brain}`],
+    // Members joining and renamed, and the house's notes (ADR 0111).
+    "member.hired": ["you", `${d.name} joined the team`],
     "member.renamed": ["you", `${d.was} is now ${d.name}`],
     "house.noted": ["you", d.entry ? `${d.by} noted ${d.page ? "on the house page" : "in the house log"}: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
     // The team's world (ADR 0122): sections, canon, stories and handovers.
@@ -381,7 +489,8 @@ function hqTell(e, live, older) {
     "project.changed": [d.status === "paused" || d.status === "dropped" ? "warn" : "you", `Project ${d.title} is ${d.status}: ${d.what || ""}${d.by && d.by !== "owner" ? ", by " + d.by : ""}`],
     "project.budget": [d.level === "spent" ? "bad" : "warn", `Project ${d.title} ${d.said || ""}`],
     // The engineering wing (ADR 0115): branches, their checks and the owner's pushes.
-    "branch.submitted": ["run", `${name} submitted ${d.name} (${d.files} files) on ${key}: check c${d.check} queued`],
+    // The check clause only when there is a check: it read "check cundefined" (tabs climb, round 1).
+    "branch.submitted": ["run", `${name} submitted ${d.name}${d.files != null ? ` (${d.files} files)` : ""} on ${key}${typeof d.check === "number" ? `: check c${d.check} queued` : ""}`],
     "check.done": [d.ok ? "done" : "bad", `Check c${d.check} on ${d.branch}: ${d.summary || (d.ok ? "passed" : "failed")}`],
     // Elastic staffing (ADR 0118): nobody is fired; they are put on furlough and recalled.
     "member.furloughed": ["you", `${d.name} is on furlough`],
@@ -404,813 +513,94 @@ function hqTell(e, live, older) {
     "chess.ended": ["done", d.text || ""],
     "area.reported": ["run", `${hqName(d.lead)} reported on their area`],
   }[e.kind];
-  if (said) {
-    const at = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    // A post in a thread is told whole in the feed: the line names its place in the task's
-    // thread, and the words are read from there when the line is drawn (the snapshot that has
-    // them may arrive just after the event does). The preview stands in until then.
-    const line = { key: e.id, at, kind: said[0], text: said[1],
-      whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
-    if (older) HQ.log.push(line); else HQ.log.unshift(line);
-    HQ.log.length = Math.min(HQ.log.length, 500);
-  }
-  if (e.kind === "tick") HQ.spark = 1;
+  if (!said) return null;
+  // A post in a thread is told whole in the feed: the line names its place in the task's
+  // thread, and the words are read from there when the line is drawn (the snapshot that has
+  // them may arrive just after the event does). The preview stands in until then.
+  // The turn and the members the event names, by id or by name, for the line's links.
+  const refs = { run: d.run, ids: [d.member, d.expert, d.lead, d.by].filter((x) => typeof x === "number"),
+    names: [d.author, d.name, d.by].filter((x) => typeof x === "string") };
+  return { key: e.id, at: hqClock(e.at), kind: said[0], text: said[1], refs,
+    whole: e.kind === "thread.posted" && d.post != null ? { task: d.task, post: d.post, author: d.author } : null };
+}
+
+// One event, in words for the activity log, and in the studio if it is live: a real post is said
+// briefly over its author's head, an item closed waits for the snapshot to say how, and a check that
+// passes where the item's last one failed is its member's recovery, read against the snapshot from
+// before this event (ADR 0115).
+function hqTell(e, live) {
+  const d = e.data || {};
+  const line = hqLogEntry(e);
+  if (line) { HQ.log.unshift(line); HQ.log.length = Math.min(HQ.log.length, 500); }
   if (!live) return;
-  const p = HQ.people[d.member];
-  if (e.kind.startsWith("wake.") && e.kind !== "wake.refused" && p) {
-    HQ.envelopes.push({ x: HQ_P.rack.x * HQ_T + 8, y: HQ_P.rack.y * HQ_T + 10, who: d.member, t: 0 });
-  }
   if (e.kind === "thread.posted") {
     const author = ((HQ.snap && HQ.snap.members) || []).find((m) => m.name === d.author);
-    if (author && HQ.people[author.id]) hqSay(HQ.people[author.id], d.preview);
-    if (author) HQ.lastWord[d.task] = author.id;
+    if (author && d.preview) HQ.said[author.id] = { text: hqSaid(d.preview), t: HQ_SAY_SECONDS };
   }
-  if (e.kind === "task.claimed" && p) hqSay(p, "checkout " + key);
-  if (e.kind === "run.ended" && p) hqSay(p, d.result === "succeeded" ? "done" : result);
-  if (e.kind === "stopped" || e.kind === "resumed") HQ.doorFlash = 1.5;
-  const ceo = hqCeo(), boss = ceo && HQ.people[ceo.id];
-  // A member's question woke the one it went to: the one who asked, if between turns, goes to
-  // them (the CEO's open door, or the desk of someone on a team) and waits there until their
-  // turn on it is over.
-  if (e.kind === "wake.queued" && d.reason === "question_asked") {
-    const task = hqTask(d.task), who = HQ.lastWord[d.task] || (task && task.owner);
-    const asker = who !== d.member && HQ.people[who], there = HQ.seats[d.member] && HQ.seats[d.member].visit;
-    if (asker && there && !asker.working) {
-      asker.errand = { kind: "ask", task: d.task, to: d.member, hold: 40, spot: { ...there, dir: "up" } };
-      hqSay(asker, "a question for " + hqName(d.member)); hqGo(asker);
-    }
-  }
-  if (e.kind === "run.ended") {
-    for (const q of Object.values(HQ.people)) if (q.errand && q.errand.kind === "ask" && q.errand.task === d.task && q.errand.to === d.member) { q.errand = null; hqGo(q); }
-  }
-  // Someone proposed a change to the office: they say so over their head.
-  if (e.kind === "office.proposed" && p) hqSay(p, "an idea for the office");
-  // A match of ping-pong or pool was played: the two walk to the table and say how it went.
-  if (e.kind === "game.played") hqPlayMatch(d);
-  // The CEO's decision for the board: it takes it to the board room's door, and back.
-  if (e.kind === "desk.added" && d.kind === "decision" && boss) {
-    boss.errand = { kind: "board", hold: 2.5, say: "for the board", spot: { ...HQ_P.boardDoor, dir: "up" } };
-    hqGo(boss);
+  if (e.kind === "task.changed" && d.status === "done" && d.task) HQ.landing[d.task] = { owner: d.owner, unverified: d.unverified === true, troubled: hqTroubled(hqTask(d.task)) };
+  if (e.kind === "check.done" && d.task) {
+    const t = hqTask(d.task), was = t && hqLastCheck(t);
+    if (d.ok === true && was && was.ok === false) HQ.recovered[d.member] = { task: d.task, why: "check", t: HQ_RECOVERED_SECONDS };
   }
 }
 
-function hqCeo() { return ((HQ.snap && HQ.snap.members) || []).find((m) => m.role === "ceo"); }
 
-// A bubble holds a few words: a status change keeps only what was said about it.
-function hqShort(text) { return String(text || "").replace(/^[a-z_]+ → [a-z_]+: /, "").toLowerCase().slice(0, 26); }
-function hqSay(p, text) { p.bubble = hqShort(text); p.bubbleT = 3.2; }
-
-// A team's name, on the roster and over its pod alike: Engineering for the engineering wing's
-// lead, Ops for any other.
-function hqTeamLabel(lead, wingLeads) {
-  return `${(wingLeads || []).includes(lead.id) ? "Engineering" : "Ops"} · ${lead.name}`;
-}
-
-// The teams, from the snapshot alone (ADR 0119): a lead and those who report to it, up the
-// chain; members with no lead above them but the CEO join the first team; the CEO sits in its
-// office, outside every team. Within a team the lead first, then those at work, then those on
-// furlough, whose desks stay and are drawn empty. With no lead at all there is one team.
-function hqTeams(members) {
-  const wingLeads = ((HQ.snap && HQ.snap.wing) || {}).leads || [];
-  // One team of loops (ADR 0142): the retired leave the floor, and the rest sit by rank.
-  members = members.filter((m) => !m.furloughed).slice().sort((a, b) => (Number(a.rank) || 9) - (Number(b.rank) || 9));
-  const leads = members.filter((m) => m.role === "lead");
-  const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
-  if (!leads.length) return rest.length ? [{ lead: null, label: "Team", people: rest }] : [];
-  const teams = leads.map((l) => ({ lead: l, label: hqTeamLabel(l, wingLeads), people: [] }));
-  for (const m of rest) {
-    const lead = hqLeadOf(m, members);
-    (teams.find((t) => lead && t.lead.id === lead.id) || teams[0]).people.push(m);
+// Items closed live, once the snapshot says how: one closed as met its criteria or as completed and
+// not verified shines on the week's shelf for a few seconds, and one that had a problem and closed
+// as met its criteria is its owner's recovery. Any other closing shows nothing.
+function hqLandings() {
+  for (const [id, l] of Object.entries(HQ.landing)) {
+    delete HQ.landing[id];
+    const t = hqTask(Number(id));
+    if (!t || !t.closure || !(t.closure.why in HQ_DONE_KINDS)) continue;
+    HQ.fresh[t.id] = 8;
+    if (HQ_DONE_KINDS[t.closure.why] && !l.unverified && l.troubled && l.owner) HQ.recovered[l.owner] = { task: t.id, why: "closed", t: HQ_RECOVERED_SECONDS };
   }
-  for (const t of teams) {
-    t.people = [t.lead].concat(t.people.filter((m) => !m.furloughed), t.people.filter((m) => m.furloughed));
-  }
-  return teams;
 }
 
-// The pods and the seats (ADR 0119): one pod for each team, side by side from the left of the
-// open floor with no walls between, each a cluster of desks two to a row, a desk for every
-// member of the team. A desk is three tiles by two; between the two desks of a row is an
-// aisle where their members stand facing each other, one above the other's visitors. A pod
-// that would not fit in the row starts a new one below; none ever leaves the band the rules
-// of the office keep clear. Everything comes from the members: no name is in this.
-function hqLayout(members) {
-  const P = HQ_POD, seats = {}, pods = [];
-  // Two to a row; a team of more than six, whose third row would leave the band, three.
-  const sized = hqTeams(members || []).map((team) => {
-    const n = team.people.length, cols = n > 6 ? 3 : n > 1 ? 2 : 1;
-    return { team, cols, rows: Math.ceil(n / cols), width: cols > 1 ? cols * P.desk.w + (cols - 1) * P.aisle : P.desk.w + 1 };
-  });
-  // When all the pods fit in one row they are spread across the floor, centred, with room
-  // between them, so that two small teams do not leave the other half of the floor bare.
-  const total = sized.reduce((sum, s) => sum + s.width, 0), span = P.right - P.left;
-  const fits = total + P.between * Math.max(0, sized.length - 1) <= span, free = fits ? span - total : 0;
-  const between = fits && sized.length > 1 ? Math.max(P.between, Math.min(4, Math.floor(free / (sized.length + 1)))) : P.between;
-  let x = fits ? P.left + Math.floor((free - between * (sized.length - 1)) / 2) : P.left, y = P.top, shelf = 0;
-  for (const { team, cols, rows, width } of sized) {
-    if (x > P.left && x + width > P.right) { x = P.left; y += shelf; shelf = 0; }
-    const top = Math.max(P.top, Math.min(y, P.bottom - rows * P.desk.h));
-    const pod = { label: team.label, lead: team.lead ? team.lead.id : null, x, y: top, cols, rows, width, desks: [] };
-    team.people.forEach((m, i) => {
-      const col = i % cols, row = Math.floor(i / cols);
-      const dx = x + col * (P.desk.w + P.aisle), dy = top + row * P.desk.h;
-      const stand = cols === 1 ? dx + P.desk.w : col === 0 ? dx + P.desk.w : dx - 1;
-      const dir = cols === 1 ? "down" : col === 0 ? "right" : "left";
-      seats[m.id] = {
-        desk: { x: dx, y: dy, w: P.desk.w, h: P.desk.h, member: m.id },
-        // A visitor stands on the desk's outer side, away from where its member sits.
-        work: hqAt(stand, dy + 1, { dir, desk: true }),
-        visit: cols === 1 || col === 0 ? hqAt(dx - 1, dy + 1, { dir: "right" }) : hqAt(dx + P.desk.w, dy + 1, { dir: "left" }),
-        pod: pods.length,
-      };
-      pod.desks.push(seats[m.id].desk);
-    });
-    pods.push(pod);
-    x += width + between; shelf = Math.max(shelf, rows * P.desk.h);
-  }
-  const ceo = (members || []).find((m) => m.role === "ceo");
-  if (ceo) {
-    seats[ceo.id] = { desk: { ...HQ_CEO.desk, w: 3, h: 2, member: ceo.id }, work: HQ_CEO.work, visit: HQ_ROOMS.ceo.out, rest: HQ_CEO.rest, pod: -1 };
-  }
-  return { pods, seats };
-}
-
-// Each member's seat, by id.
-function hqSeats(members) { return hqLayout(members).seats; }
-
-// The CEO's daily review: its turn on the task of a routine of its own. The CEO takes the
-// head of the meeting table for it.
-function hqReview(members) {
-  const ceo = (members || []).find((m) => m.role === "ceo");
-  const run = ceo && (ceo.running || [])[0], task = run && run.task ? hqTask(run.task) : null;
-  if (!task || !task.routine) return false;
-  const routine = ((HQ.snap && HQ.snap.routines) || []).find((r) => r.id === task.routine);
-  return !!routine && routine.assignee === ceo.id;
-}
-
-// Where a working member goes when its turn's work is not at its own desk (ADR 0119): a tester
-// on someone's task goes to whose it is; work in another team's project goes to that project
-// lead's desk (the CEO's door, for a project the CEO leads). Otherwise nowhere: its own desk.
-function hqVisit(m, task) {
-  if (!task || m.role === "ceo") return null;
-  const seats = HQ.seats, mine = seats[m.id], owner = task.owner || task.assignee;
-  if (m.role === "reviewer" && owner && owner !== m.id && seats[owner]) return seats[owner].visit;
-  const project = task.project ? ((HQ.snap && HQ.snap.projects) || []).find((x) => x.id === task.project) : null;
-  const there = project && project.lead !== m.id ? seats[project.lead] : null;
-  return there && mine && there.pod !== mine.pod ? there.visit : null;
-}
-
-// Where each member is, kept across redraws: on an errand, in the review, at their desk (or
-// where its work is) while a turn runs, drifting about the office otherwise. A furloughed
-// member is not there: its desk stands empty. Someone who joins after the office has been
-// seen walks in at the front door.
-function hqPlacePeople() {
-  const members = (HQ.snap && HQ.snap.members) || [], review = hqReview(members);
-  const layout = hqLayout(members);
-  HQ.pods = layout.pods; HQ.seats = layout.seats; HQ.world = hqWorld(); HQ_FURN = hqFurniture();
-  for (const m of members) {
-    const seat = HQ.seats[m.id];
-    if (m.furloughed) { delete HQ.people[m.id]; continue; }
-    let p = HQ.people[m.id];
-    const fresh = !p;
-    if (!p) {
-      const from = HQ.settled ? HQ_P.lobby : seat.work;
-      p = HQ.people[m.id] = { id: m.id, x: from.x * HQ_T, y: from.y * HQ_T, path: [], frame: 0, bubble: "", bubbleT: 0,
-        working: false, errand: null, spotKey: "", at: from, wander: null, idleT: 8 + HQ.rand() * 12 };
-    }
-    p.look = m.look || 0; p.name = m.name; p.role = m.role; p.paused = m.paused; p.seat = seat;
-    const run = (m.running || [])[0];
-    const task = run && run.task ? hqTask(run.task) : null;
-    // What a working member is doing, said above their head: their latest word on the task.
-    const last = task && (task.thread || []).filter((t) => t.author === m.name).pop();
-    p.doing = task ? (last ? last.text : "on " + hqKey(task.id)) : "";
-    const was = p.working;
-    p.working = !!run;
-    p.visit = p.working ? hqVisit(m, task) : null;
-    if (p.working) p.wander = null;
-    if (was && !p.working) p.idleT = 3 + HQ.rand() * 5;
-    // The review: the CEO at the head of the table, the lead on a chair if between turns.
-    p.meeting = !review ? null : m.role === "ceo" ? HQ_MEETING.head : m.role === "lead" && !p.working ? HQ_MEETING.chairs[0] : null;
-    // One who went to ask the CEO and has since been woken goes back to work.
-    if (p.working && p.errand && p.errand.kind === "ask") p.errand = null;
-    // On the page's first drawing everyone is simply where the record says they are: at work at
-    // their desk, or idle somewhere they might rest. Nobody walks out from one spot as the page
-    // opens, which looked as if they had been gathered, waiting to be watched.
-    if (fresh && !HQ.settled) hqArrive(p, Object.keys(HQ.people).length);
-    hqGo(p);
-  }
-  for (const id of Object.keys(HQ.people)) if (!members.some((m) => String(m.id) === id)) delete HQ.people[id];
-  HQ.settled = true;
-}
-
-// Where a member should be now, as a spot: its cell, the room it is in, and which way they face.
-function hqSpot(p) {
-  if (p.errand) return p.errand.spot;
-  if (p.meeting) return p.meeting;
-  const s = p.seat;
-  if (p.working) return p.visit || s.work;
-  if (p.paused) return s.work;
-  return p.wander || s.rest || s.work;
-}
-
-// Puts a member straight where they should be, without walking: an idle one at a resting spot
-// (the `nth` one free, so two never share), a working one at their desk or visit.
-function hqArrive(p, nth) {
-  if (!p.working && !p.paused && !p.meeting && !p.errand && !hqCalm()) {
-    const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
-    // Never at the ping-pong table: the page does not open on a game.
-    const spots = hqWanderSpots().filter((s) => !s.pong && !taken.has(s.cx + "," + s.cy));
-    if (spots.length) p.wander = spots[nth % spots.length];
-  }
-  const spot = hqSpot(p);
-  p.x = spot.x * HQ_T; p.y = spot.y * HQ_T; p.path = [];
-  p.at = spot; p.spotKey = spot.cx + "," + spot.cy;
-}
-
-// Sets a member walking to where they should be, if that is not where they are going already.
-function hqGo(p) {
-  if (!p.seat) return;
-  const spot = hqSpot(p), key = spot.cx + "," + spot.cy;
-  p.at = spot;
-  if (key === p.spotKey) return;
-  p.spotKey = key;
-  hqWalk(p, spot);
-}
-
-// Whether the person asked their device for calm: then nobody drifts about the office.
+// ---- problems and recoveries (the owner, 3 Nov) ---------------------------------------------
+// One sign beside a worker's head, and only what the record says: a red "!" while its work is
+// blocked, a dark tile with a red cross while that work's latest check failed, and a green tick
+// for a while after a recovery: a check that passed where the item's last one failed, or an item
+// that was blocked or failing closing as met its criteria. A retry, a turn that ended, an item
+// only unblocked, or a closing nothing verified is never a recovery. Working, the badge is its
+// current item's; between turns, its open items'.
+const HQ_RECOVERED_SECONDS = 12;
+// Whether the person asked their device for calm: then nothing in the studio blinks or types.
 function hqCalm() {
   try { return typeof matchMedia === "function" && !!matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_) { return false; }
 }
-
-// The places an idle member may drift to: the fixed ones, and by what stands on the floor now
-// (the couches' seats, the bean bag, a spot before the coffee machine, the fish tank, the
-// whiteboard and the shelf), so a thing the team moved moves where people gather.
-function hqWanderSpots() {
-  const spots = HQ_WANDER.slice();
-  for (const it of hqItems()) {
-    if (it.kind === "couch") spots.push(hqAt(it.x, it.y, { dir: "down" }), hqAt(it.x + 1, it.y, { dir: "down" }));
-    else if (it.kind === "bean_bag") spots.push(hqAt(it.x, it.y, { dir: "down" }));
-    else if (["coffee_machine", "fish_tank", "whiteboard", "bookshelf"].includes(it.kind)) spots.push(hqAt(it.x, it.y + 1, { dir: "up" }));
-  }
-  return spots;
+const HQ_OPEN = ["todo", "doing", "in_review", "blocked"];
+// An item's latest check, or null: the newest branch that has one.
+function hqLastCheck(t) {
+  const checked = (t && t.branches || []).filter((b) => b.check).sort((a, b) => (a.at || 0) - (b.at || 0) || a.id - b.id);
+  return checked.length ? checked[checked.length - 1].check : null;
 }
-
-// An idle member at rest picks somewhere else to be, now and then, at random: so the teams mix.
-function hqIdle(p, dt) {
-  if (p.working || p.errand || p.meeting || p.paused || !p.seat || hqCalm()) return;
-  p.idleT -= dt;
-  if (p.idleT > 0) return;
-  // Not where somebody else is going already: two do not take the same couch seat.
-  const taken = new Set(Object.values(HQ.people).filter((q) => q !== p).map((q) => q.spotKey));
-  const spots = hqWanderSpots().filter((s) => !taken.has(s.cx + "," + s.cy));
-  p.idleT = 8 + HQ.rand() * 12;
-  if (!spots.length) return;
-  p.wander = spots[Math.floor(HQ.rand() * spots.length)];
-  hqGo(p);
+function hqTroubled(t) { return !!t && (t.status === "blocked" || (hqLastCheck(t) || {}).ok === false); }
+// -> { kind: "recovered" | "blocked" | "check", task } or null.
+function hqTrouble(id) {
+  const r = HQ.recovered[id];
+  if (r && r.t > 0) return { kind: "recovered", task: r.task, why: r.why };
+  const m = hqMember(id);
+  if (!m) return null;
+  const run = (m.running || [])[0];
+  const items = run && run.task ? [hqTask(run.task)].filter(Boolean)
+    : ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.owner === id && HQ_OPEN.includes(t.status));
+  const blocked = items.find((t) => t.status === "blocked");
+  if (blocked) return { kind: "blocked", task: blocked.id };
+  const failing = items.find((t) => HQ_OPEN.includes(t.status) && (hqLastCheck(t) || {}).ok === false);
+  return failing ? { kind: "check", task: failing.id } : null;
 }
-
-// The cells nobody walks into, and the glass between cells (ADR 0119): the back wall, the rooms
-// nobody enters, the desks and everything that stands on the floor, and the walls of the two
-// rooms people walk into, but for their open doors. Where a person is going is always allowed:
-// they sit at a desk, on a couch and on a chair.
-function hqWorld() {
-  const blocked = new Set(), edges = new Set(), key = (x, y) => x + "," + y;
-  const block = (x, y, w = 1, h = 1) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) blocked.add(key(i, j)); };
-  const wall = (a, b) => { edges.add(key(a[0], a[1]) + ">" + key(b[0], b[1])); edges.add(key(b[0], b[1]) + ">" + key(a[0], a[1])); };
-  block(0, 0, HQ_COLS, 2);
-  const B = HQ_P.boardRoom, E = HQ_P.engine;
-  block(B.x, B.y, B.w, B.h); block(E.x, E.y, E.w, E.h);
-  for (const r of Object.values(HQ_ROOMS)) {
-    for (let j = r.y; j < r.y + r.h; j++) { wall([r.x - 1, j], [r.x, j]); wall([r.x + r.w - 1, j], [r.x + r.w, j]); }
-    for (let i = r.x; i < r.x + r.w; i++) {
-      if (i >= r.door.from && i < r.door.to) continue;
-      if (r.door.side === "bottom") wall([i, r.y + r.h - 1], [i, r.y + r.h]); else wall([i, r.y - 1], [i, r.y]);
-    }
-  }
-  const c = HQ_CEO.desk, m = HQ_MEETING.table;
-  block(c.x, c.y, 3, 2); block(24, 2, 2, 1); block(24, 5, 2, 1); block(26, 4); block(22, 5);
-  block(m.x, m.y, 2, 2); block(12, 18); block(13, 18); block(14, 17, 2, 1);
-  block(26, 16, 2, 2); block(26, 18); block(27, 18); block(28, 16);
-  block(HQ_P.pong.x, HQ_P.pong.y, 4, 1); block(16, 15, 4, 2);
-  block(HQ_P.pool.x, HQ_P.pool.y, HQ_P.pool.w, HQ_P.pool.h); block(HQ_P.chess.x, HQ_P.chess.y);
-  for (const pod of HQ.pods) for (const d of pod.desks) block(d.x, d.y, d.w, d.h);
-  for (const it of hqItems()) if (it.kind !== "rug" && !it.wall) block(it.x, it.y, it.w, it.h);
-  return { blocked, edges };
+// What the badge means, in words, for the worker's panel. "" without one.
+function hqTroubleSaid(id) {
+  const b = hqTrouble(id);
+  if (!b) return "";
+  const t = hqTask(b.task), title = t ? ` ${esc(t.title)}` : "";
+  if (b.kind === "recovered") return b.why === "check" ? `Check passed on ${hqKey(b.task)} after a failed one${title ? ":" + title : ""}` : `${hqKey(b.task)} closed as met its criteria after a problem${title ? ":" + title : ""}`;
+  if (b.kind === "blocked") return `${hqKey(b.task)} is blocked${title ? ":" + title : ""}`;
+  const c = hqLastCheck(t) || {};
+  return `The latest check on ${hqKey(b.task)} failed${c.summary ? ": " + esc(c.summary) : ""}`;
 }
-
-// The cells from where a member stands to a spot, the way round what is in the way: a search
-// over the floor's cells a step at a time. `null` if there is no way; empty if already there.
-function hqPathCells(from, to) {
-  const W = HQ.world || hqWorld(), key = (x, y) => x + "," + y, goal = key(to.cx, to.cy);
-  const prev = new Map([[key(from.cx, from.cy), null]]), queue = [[from.cx, from.cy]];
-  for (let at = 0; at < queue.length && !prev.has(goal); at++) {
-    const [x, y] = queue[at];
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy, k = key(nx, ny);
-      if (nx < 0 || ny < 2 || nx >= HQ_COLS || ny >= HQ_ROWS || prev.has(k)) continue;
-      if (W.edges.has(key(x, y) + ">" + k) || (W.blocked.has(k) && k !== goal)) continue;
-      prev.set(k, [x, y]); queue.push([nx, ny]);
-    }
-  }
-  if (!prev.has(goal)) return null;
-  const cells = [];
-  for (let c = [to.cx, to.cy]; prev.get(key(c[0], c[1])); c = prev.get(key(c[0], c[1]))) cells.unshift({ cx: c[0], cy: c[1] });
-  return cells;
-}
-
-// The way from where a member is to a spot, out of the room they are in by its open door,
-// round the desks and the furniture, in by the door of the room the spot is in. Nobody walks
-// through glass. Where there is no way, they go straight.
-function hqWalk(p, spot) {
-  const T = HQ_T, from = { cx: Math.round(p.x / T), cy: Math.round(p.y / T + 0.5) };
-  const cells = hqPathCells(from, spot);
-  p.path = cells ? cells.map((c) => ({ x: c.cx * T, y: (c.cy - 0.5) * T })) : [{ x: spot.x * T, y: spot.y * T }];
-}
-
-// An errand's end: once there, a member says what they came to say, waits, and goes back.
-function hqErrand(p, dt) {
-  const e = p.errand;
-  if (!e || p.path.length || p.spotKey !== e.spot.cx + "," + e.spot.cy) return;
-  if (!e.arrived) { e.arrived = true; if (e.say) hqSay(p, e.say); }
-  e.hold -= dt;
-  if (e.hold > 0) return;
-  p.errand = null; hqGo(p);
-}
-
-// ---- drawing ---------------------------------------------------------------------------
-
-function hqTinted(img, color) {
-  const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
-  const g = c.getContext("2d"); g.drawImage(img, 0, 0);
-  g.globalCompositeOperation = "multiply"; g.fillStyle = color; g.fillRect(0, 0, c.width, c.height);
-  g.globalCompositeOperation = "destination-in"; g.drawImage(img, 0, 0);
-  return c;
-}
-
-const HQ_PIXEL = "8px Silkscreen, monospace";
-
-function hqPaintRoom() {
-  const T = HQ_T, P = HQ_P, C = HQ_C, W = HQ_W, H = HQ_H;
-  const bg = document.createElement("canvas"); bg.width = W; bg.height = H;
-  const g = bg.getContext("2d"); g.imageSmoothingEnabled = false;
-  const floor = (key, color, x0, y0, x1, y1) => {
-    const img = HQ_IMG["floor_" + key]; if (!img) return;
-    const t = hqTinted(img, color);
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) g.drawImage(t, x * T, y * T);
-  };
-  g.fillStyle = "#d6b07a"; g.fillRect(0, 0, W, H);
-  floor("plank", "#e2b57a", 0, 2, HQ_COLS, HQ_ROWS);
-  floor("grid", "#d9e1ea", 0, 2, 7, 7);
-  floor("plain", "#d9b9a0", 20, 2, 27, 7);
-  floor("plain", "#c3c8d0", 27, 2, HQ_COLS, 7);
-  // The ping-pong corner, the meeting room, the lounge and the kitchen along the bottom.
-  floor("grid", "#8fa6c7", 0, 15, 9, HQ_ROWS);
-  floor("grid", "#d9e1ea", 9, 15, 16, HQ_ROWS);
-  floor("plain", "#d9c3a5", 16, 15, 24, HQ_ROWS);
-  floor("check", "#efe9de", 24, 15, HQ_COLS, HQ_ROWS);
-  // The wall.
-  g.fillStyle = C.wall; g.fillRect(0, 0, W, 2 * T); g.fillStyle = C.wallTop; g.fillRect(0, 0, W, 5); g.fillStyle = C.trim; g.fillRect(0, 2 * T - 3, W, 3);
-  // A window onto the bay, with the bridge.
-  const wx = 6, wy = 6; g.fillStyle = "#9fd3f0"; g.fillRect(wx, wy, 52, 20); g.fillStyle = "#cfeaf8"; g.fillRect(wx, wy, 52, 8);
-  g.fillStyle = "#4f7fa3"; g.fillRect(wx, wy + 15, 52, 5); g.fillStyle = "#c8452e"; g.fillRect(wx + 14, wy + 4, 2, 12); g.fillRect(wx + 34, wy + 4, 2, 12); g.fillRect(wx + 6, wy + 12, 40, 1);
-  for (let i = 0; i < 9; i++) { g.fillRect(wx + 15 + i * 2, wy + 5 + Math.round(Math.abs(i - 4) * 1.4), 1, 1); g.fillRect(wx + 35 - i * 2, wy + 5 + Math.round(Math.abs(i - 4) * 1.4), 1, 1); }
-  g.fillStyle = "#ffffff"; g.fillRect(wx + 25, wy, 2, 20); g.strokeStyle = C.trim; g.strokeRect(wx - 0.5, wy - 0.5, 53, 21);
-  // The whiteboard: the task board.
-  g.fillStyle = C.boardEdge; g.fillRect(P.board.x * T - 2, 3, P.board.w * T + 4, 26); g.fillStyle = C.board; g.fillRect(P.board.x * T, 5, P.board.w * T, 22);
-  g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
-  if (HQ_IMG.HANGING_PLANT) g.drawImage(HQ_IMG.HANGING_PLANT, 7 * T - 2, 1);
-  // The CEO's painting, on the wall of its office.
-  if (HQ_IMG.LARGE_PAINTING) g.drawImage(HQ_IMG.LARGE_PAINTING, 22.2 * T, 0);
-  // Glass rooms: the board room, the CEO's office and the server closet along the wall, the
-  // meeting room by the lounge. Each has a gap in its glass for a door; the two people walk
-  // into have the door itself swung open.
-  const glass = (r, tint) => { g.fillStyle = tint || C.glass; g.fillRect(r.x * T, r.y * T, r.w * T, r.h * T); };
-  const edge = (x, y, w, h) => { g.fillStyle = C.glassEdge; g.fillRect(x, y, w, h); };
-  const swung = (x, y, dir) => {
-    const y0 = dir < 0 ? y - 18 : y;
-    g.fillStyle = "rgba(150,205,235,.5)"; g.fillRect(x, y0, 3, 18); g.fillStyle = C.glassEdge; g.fillRect(x + 2, y0, 1, 18);
-    g.fillStyle = C.trim; g.fillRect(x, y0 + (dir < 0 ? 3 : 13), 2, 2);
-  };
-  const B = P.boardRoom, O = HQ_ROOMS.ceo, M = HQ_ROOMS.meeting, E = P.engine;
-  glass(B); edge((B.x + B.w) * T - 2, B.y * T, 2, B.h * T); edge(0, (B.y + B.h) * T - 2, (B.x + B.w) * T - 22, 2);
-  // Mara's office: its door stands open, a two-tile gap in the glass with the leaf swung in.
-  glass(O); edge(O.x * T, O.y * T, 2, O.h * T);
-  edge((O.x + 2) * T, (O.y + O.h) * T - 2, (O.w - 2) * T, 2);
-  swung((O.x + 2) * T - 3, (O.y + O.h) * T - 2, -1);
-  glass(E, "rgba(60,70,90,.08)"); edge(E.x * T, E.y * T, 2, E.h * T); edge(E.x * T + 22, (E.y + E.h) * T - 2, E.w * T - 22, 2);
-  glass(M); edge(M.x * T, M.y * T, 2, M.h * T); edge((M.x + M.w) * T - 2, M.y * T, 2, M.h * T);
-  edge((M.x + 2) * T, M.y * T, (M.w - 2) * T, 2);
-  swung((M.x + 2) * T - 3, M.y * T + 2, 1);
-  // Ping-pong: the table, with a player at each end.
-  const px = P.pong.x * T, py = P.pong.y * T;
-  g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
-  g.fillStyle = "#3b4048"; g.fillRect(px + 4, py + 13, 2, 4); g.fillRect(px + 60, py + 13, 2, 4);
-  // Pool (ADR 0121): a wooden rail round green cloth, six pockets, the rack of balls and the cue ball.
-  const lx = P.pool.x * T, ly = P.pool.y * T, lw = P.pool.w * T, lh = P.pool.h * T;
-  g.fillStyle = C.shadow; g.fillRect(lx + 2, ly + 3, lw, lh); g.fillStyle = "#6b4423"; g.fillRect(lx, ly, lw, lh - 2);
-  g.fillStyle = "#1d6b46"; g.fillRect(lx + 3, ly + 3, lw - 6, lh - 8);
-  g.fillStyle = "#12261c";
-  for (const [qx, qy] of [[0, 0], [lw / 2 - 2, -1], [lw - 5, 0], [0, lh - 7], [lw / 2 - 2, lh - 6], [lw - 5, lh - 7]]) g.fillRect(lx + qx + 1, ly + qy + 1, 4, 4);
-  const balls = ["#e8d12e", "#2f5fc4", "#d8434a", "#7a3fb0", "#e8801f", "#2c9a5a"];
-  [[0, 0], [2, -1], [2, 1], [4, -2], [4, 0], [4, 2]].forEach(([bx, by], i) => { g.fillStyle = balls[i]; g.fillRect(lx + 30 + bx, ly + 12 + by, 2, 2); });
-  g.fillStyle = "#ffffff"; g.fillRect(lx + 12, ly + 12, 2, 2); g.fillStyle = "#12261c"; g.fillRect(lx + 36, ly + 12, 2, 2);
-  // Chess: a small table with a board on it; the position of the live game is drawn on top.
-  const cx = P.chess.x * T, cy = P.chess.y * T;
-  g.fillStyle = C.shadow; g.fillRect(cx + 1, cy + 1, 16, 16); g.fillStyle = "#6b4423"; g.fillRect(cx - 1, cy - 1, 18, 18);
-  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { g.fillStyle = (r + c) % 2 ? "#a97c50" : "#ecdcb8"; g.fillRect(cx + c * 2, cy + r * 2, 2, 2); }
-  // The kitchen and lounge: cold brew and the snack shelf on the lounge's back, shared by all.
-  g.fillStyle = "#cfd6dd"; g.fillRect(P.tap.x * T, P.tap.y * T - 6, 14, 20); g.fillStyle = "#3a2a1e"; g.fillRect(P.tap.x * T + 3, P.tap.y * T - 3, 8, 7); g.fillStyle = "#222"; g.fillRect(P.tap.x * T + 6, P.tap.y * T + 5, 2, 3);
-  g.fillStyle = "#b8a68a"; g.fillRect(17.8 * T, 15.6 * T, 2.2 * T, 3); g.fillRect(17.8 * T, 16.4 * T, 2.2 * T, 3);
-  const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"];
-  for (let i = 0; i < 8; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(17.8 * T + 2 + i * 4.4, 15.6 * T - 5 + (i % 2) * 13, 3, 5); }
-  // The front door, on the floor's right wall.
-  g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
-  // Labels.
-  g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("CEO", O.x * T + 5, O.y * T + 9);
-  g.fillText("SERVERS", (E.x + 1.6) * T, (E.y + E.h) * T - 4); g.fillText("MEETING", M.x * T + 5, (M.y + M.h) * T - 4);
-  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 15 * T + 9); g.fillStyle = "rgba(31,29,41,.6)";
-  g.fillText("KITCHEN", 24.6 * T, HQ_ROWS * T - 4); g.fillText("LOUNGE", 16.3 * T, HQ_ROWS * T - 4);
-  return bg;
-}
-
-// The things on the floor now, from the snapshot's office (ADR 0119): where each stands, how
-// big it is (the catalog's size comes with it), who put it there. Nothing here is fixed.
-function hqItems() {
-  const office = (HQ.snap && HQ.snap.office) || {};
-  return (office.items || []).map((i) => ({ ...i, w: i.w || 1, h: i.h || 1, wall: !!i.wall }));
-}
-
-// A sprite from the loaded art at a pixel, or false if it is not loaded.
-function hqSprite(g, key, x, y, w, h) {
-  const img = HQ_IMG[key]; if (!img) return false;
-  if (w) g.drawImage(img, Math.round(x), Math.round(y), w, h); else g.drawImage(img, Math.round(x), Math.round(y));
-  return true;
-}
-// A pot with leaves: what a plant is when its art is not loaded.
-function hqPot(g, it, leaf) {
-  const x = it.x * HQ_T, y = it.y * HQ_T;
-  g.fillStyle = "#b5651d"; g.fillRect(x + 4, y + 10, 8, 6); g.fillStyle = leaf; g.fillRect(x + 3, y + 2, 10, 9);
-}
-// How each kind of thing is drawn, at its tile. Plants, the couch and the shelf use the office's
-// art; for the kinds with none, a small pixel shape. Each is given the 2D context and the item.
-const HQ_ITEM_ART = {
-  plant: (g, it) => hqSprite(g, "PLANT", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#3f9b5b"),
-  fern: (g, it) => hqSprite(g, "PLANT_2", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#5fbf7a"),
-  cactus: (g, it) => hqSprite(g, "CACTUS", it.x * HQ_T, (it.y + 1) * HQ_T - 32) || hqPot(g, it, "#6aa84f"),
-  palm: (g, it) => hqSprite(g, "LARGE_PLANT", it.x * HQ_T - 8, (it.y + 1) * HQ_T - 48) || hqPot(g, it, "#2e8b57"),
-  couch: (g, it) => {
-    if (hqSprite(g, "SOFA_FRONT", it.x * HQ_T, it.y * HQ_T)) return;
-    g.fillStyle = "#7d6bb0"; g.fillRect(it.x * HQ_T, it.y * HQ_T + 2, it.w * HQ_T, 14); g.fillStyle = "#9a89c9"; g.fillRect(it.x * HQ_T + 2, it.y * HQ_T, it.w * HQ_T - 4, 6);
-  },
-  bookshelf: (g, it) => {
-    if (hqSprite(g, "BOOKSHELF", it.x * HQ_T, it.y * HQ_T)) return;
-    g.fillStyle = "#8a5a2b"; g.fillRect(it.x * HQ_T, it.y * HQ_T, it.w * HQ_T, 16);
-  },
-  lamp: (g, it) => {
-    const x = it.x * HQ_T, y = it.y * HQ_T;
-    g.fillStyle = HQ_C.shadow; g.fillRect(x + 4, y + 14, 8, 2);
-    g.fillStyle = "#3b4048"; g.fillRect(x + 7, y + 4, 2, 10); g.fillRect(x + 5, y + 13, 6, 2);
-    g.fillStyle = HQ_C.lamp; g.fillRect(x + 3, y, 10, 5); g.fillStyle = "#fff2a8"; g.fillRect(x + 5, y + 1, 6, 2);
-  },
-  rug: (g, it) => {
-    const x = it.x * HQ_T, y = it.y * HQ_T, w = it.w * HQ_T, h = it.h * HQ_T;
-    g.fillStyle = "rgba(185,140,240,.55)"; g.fillRect(x + 1, y + 1, w - 2, h - 2);
-    g.fillStyle = "rgba(255,255,255,.4)"; g.fillRect(x + 3, y + 3, w - 6, 1); g.fillRect(x + 3, y + h - 4, w - 6, 1);
-    g.fillRect(x + 3, y + 3, 1, h - 6); g.fillRect(x + w - 4, y + 3, 1, h - 6);
-  },
-  whiteboard: (g, it) => {
-    const x = it.x * HQ_T, y = it.y * HQ_T;
-    g.fillStyle = "#9aa"; g.fillRect(x + 3, y + 11, 2, 5); g.fillRect(x + 11, y + 11, 2, 5);
-    g.fillStyle = HQ_C.boardEdge; g.fillRect(x, y + 1, 16, 11); g.fillStyle = HQ_C.board; g.fillRect(x + 1, y + 2, 14, 9);
-    g.fillStyle = "#2a64c9"; g.fillRect(x + 3, y + 4, 8, 1); g.fillStyle = "#d33"; g.fillRect(x + 3, y + 7, 5, 1);
-  },
-  coffee_machine: (g, it) => {
-    const x = it.x * HQ_T, y = it.y * HQ_T;
-    g.fillStyle = HQ_C.shadow; g.fillRect(x + 2, y + 14, 12, 2);
-    g.fillStyle = "#3b4048"; g.fillRect(x + 3, y + 2, 10, 12); g.fillStyle = "#59606c"; g.fillRect(x + 4, y + 3, 8, 4);
-    g.fillStyle = HQ_C.red; g.fillRect(x + 10, y + 4, 2, 2); g.fillStyle = "#fff"; g.fillRect(x + 6, y + 10, 4, 4);
-  },
-  fish_tank: (g, it) => {
-    const x = it.x * HQ_T, y = it.y * HQ_T, swim = Math.round((Math.sin(HQ.t * 1.5 + it.id) + 1) * 3);
-    g.fillStyle = "#6b4f33"; g.fillRect(x, y + 11, 16, 5);
-    g.fillStyle = "rgba(127,178,255,.55)"; g.fillRect(x + 1, y + 3, 14, 8); g.fillStyle = "#e8d7a0"; g.fillRect(x + 1, y + 10, 14, 1);
-    g.fillStyle = HQ_C.lamp; g.fillRect(x + 3 + swim, y + 6, 3, 2); g.fillStyle = HQ_C.neon; g.fillRect(x + 10 - swim, y + 8, 2, 1);
-    g.fillStyle = "rgba(255,255,255,.5)"; g.fillRect(x + 2, y + 4, 1, 5);
-  },
-  bean_bag: (g, it) => {
-    const x = it.x * HQ_T + 8, y = it.y * HQ_T + 9;
-    g.fillStyle = HQ_C.shadow; g.fillRect(x - 6, y + 5, 12, 2);
-    g.fillStyle = "#ef7aa6"; g.beginPath(); g.arc(x, y, 6, 0, Math.PI * 2); g.fill();
-    g.fillStyle = "#f7a3c2"; g.fillRect(x - 3, y - 4, 4, 2);
-  },
-  poster: (g, it) => {
-    const x = it.x * HQ_T + 2;
-    g.fillStyle = "#ffffff"; g.fillRect(x, 5, 12, 17); g.fillStyle = HQ_C.neon; g.fillRect(x + 1, 6, 10, 7);
-    g.fillStyle = "#2a64c9"; g.fillRect(x + 2, 15, 8, 1); g.fillRect(x + 2, 18, 5, 1);
-  },
-  art: (g, it) => {
-    if (HQ_IMG.LARGE_PAINTING) { g.drawImage(HQ_IMG.LARGE_PAINTING, it.x * HQ_T, 6, 16, 16); return; }
-    g.fillStyle = "#8a5a2b"; g.fillRect(it.x * HQ_T + 1, 6, 14, 14); g.fillStyle = HQ_C.blue; g.fillRect(it.x * HQ_T + 3, 8, 10, 10);
-  },
-  // The wall clock shows the arc to the next tick of the real engine.
-  clock: (g, it) => {
-    const snap = HQ.snap || {}, cx = it.x * HQ_T + 8, cy = 14, every = (snap.tick_seconds || 30) * 1000;
-    const since = snap.last_tick_at ? Math.max(0, Date.now() - snap.last_tick_at) % every : 0;
-    g.fillStyle = "#ffffff"; g.beginPath(); g.arc(cx, cy, 8, 0, Math.PI * 2); g.fill(); g.strokeStyle = HQ_C.trim; g.stroke();
-    g.fillStyle = snap.stopped ? HQ_C.red : HQ_C.neon; g.beginPath(); g.moveTo(cx, cy);
-    g.arc(cx, cy, 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (since / every)); g.fill();
-  },
-  string_lights: (g, it) => {
-    const x0 = it.x * HQ_T, y0 = it.y * HQ_T + 3, span = it.w * HQ_T, colors = [HQ_C.red, HQ_C.lamp, HQ_C.green, HQ_C.blue, HQ_C.neon];
-    const sag = (dx) => Math.round(Math.sin((dx / span) * Math.PI) * 4);
-    g.fillStyle = "#6b6577"; for (let dx = 0; dx < span; dx += 2) g.fillRect(x0 + dx, y0 + sag(dx), 2, 1);
-    for (let i = 0; i < 6; i++) {
-      const dx = 2 + i * Math.floor((span - 4) / 5);
-      g.fillStyle = (Math.floor(HQ.t * 2) + i) % 3 !== 0 ? colors[i % colors.length] : "#8a8396"; g.fillRect(x0 + dx, y0 + 1 + sag(dx), 2, 3);
-    }
-  },
-};
-// A kind this screen has no picture for yet is drawn as a plain box, so nothing vanishes.
-function hqDrawItem(g, it) {
-  (HQ_ITEM_ART[it.kind] || ((ctx, i) => { ctx.fillStyle = "#b8a68a"; ctx.fillRect(i.x * HQ_T + 1, i.y * HQ_T + 1, i.w * HQ_T - 2, i.h * HQ_T - 2); }))(g, it);
-}
-
-function hqFurniture() {
-  const T = HQ_T, out = [], c = HQ_CEO.desk, m = HQ_MEETING.table, members = (HQ.snap && HQ.snap.members) || [];
-  const f = (key, x, y, extra = {}) => { const i = HQ_IMG[key]; if (i) out.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
-  const ceo = members.find((x) => x.role === "ceo");
-  // Every pod's desks, a PC on each, lit while its member works; a furloughed member's stands
-  // empty with a small card that says it is away (ADR 0119).
-  for (const pod of HQ.pods) {
-    for (const d of pod.desks) {
-      f("DESK_FRONT", d.x * T, d.y * T);
-      f("PC_FRONT_OFF", d.x * T + 4, d.y * T - 6, { lift: 0.5, pcOf: d.member });
-      const away = members.find((x) => x.id === d.member && x.furloughed);
-      if (away) out.push({ base: d.y * T + 33, draw: (g) => hqAwayCard(g, d) });
-    }
-  }
-  // The board room: the owner's table, with the decisions on it.
-  f("SMALL_TABLE_FRONT", HQ_P.owner.x * T, HQ_P.owner.y * T);
-  f("COFFEE", (HQ_P.owner.x + 1.3) * T, HQ_P.owner.y * T + 4, { lift: 40 });
-  f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 0.1) * T, (HQ_P.owner.y + 1.9) * T);
-  f("CUSHIONED_CHAIR_BACK", (HQ_P.owner.x + 1.1) * T, (HQ_P.owner.y + 1.9) * T);
-  f("PLANT_2", 0.2 * T, 4.8 * T);
-  // Mara's office: its desk and PC, a visitor's chair before it, the bookshelf, a sofa, a plant.
-  f("DESK_FRONT", c.x * T, c.y * T);
-  f("PC_FRONT_OFF", c.x * T + 4, c.y * T - 6, { lift: 0.5, pcOf: ceo ? ceo.id : -1 });
-  f("CUSHIONED_CHAIR_BACK", 22 * T, 5 * T);
-  f("BOOKSHELF", 24 * T, 2 * T); f("SOFA_FRONT", 24 * T, 5 * T); f("PLANT", 26 * T, 4 * T);
-  // The meeting room: the table, two chairs before it, a large plant in the corner.
-  f("SMALL_TABLE_FRONT", m.x * T, m.y * T);
-  f("CUSHIONED_CHAIR_BACK", 12 * T, 18 * T);
-  f("CUSHIONED_CHAIR_BACK", 13 * T, 18 * T);
-  f("LARGE_PLANT", 14 * T, 15 * T);
-  // The kitchen: a table, two chairs, a bin. The couches, the coffee machine and the rest of
-  // what makes it a lounge are the team's to place.
-  f("SMALL_TABLE_FRONT", 26 * T, 16 * T);
-  f("CUSHIONED_CHAIR_BACK", 26 * T, 18 * T); f("CUSHIONED_CHAIR_BACK", 27 * T, 18 * T);
-  f("BIN", 28 * T, 16 * T);
-  // Whatever stands on the floor now, as the snapshot has it: not the rugs and what hangs on the
-  // wall, which are drawn flat on the ground.
-  for (const it of hqItems()) {
-    if (it.kind === "rug" || it.wall) continue;
-    out.push({ base: (it.y + it.h) * T, item: it, draw: (g) => hqDrawItem(g, it) });
-  }
-  return out;
-}
-
-// The card on an empty desk: its member is away on furlough (ADR 0118), and keeps the desk.
-function hqAwayCard(g, d) {
-  const x = d.x * HQ_T + 12, y = d.y * HQ_T + 13;
-  g.fillStyle = HQ_C.shadow; g.fillRect(x + 1, y + 1, 24, 9);
-  g.fillStyle = "#ffffff"; g.fillRect(x, y, 24, 9); g.fillStyle = HQ_C.blue; g.fillRect(x, y, 24, 1);
-  g.font = HQ_PIXEL; g.fillStyle = "rgba(31,29,41,.75)"; g.fillText("AWAY", x + 3, y + 8);
-}
-
-// The sticky notes: the newest tasks that are not long finished, two rows of seventeen. A
-// dropped goal's tasks are gone from the board, finished or not: the retired demo's are
-// hundreds of done notes that would bury the owner's own work.
-function hqCards() {
-  const goals = (HQ.snap && HQ.snap.goals) || [];
-  const dropped = new Set(goals.filter((g) => g.status === "dropped").map((g) => g.id));
-  const tasks = ((HQ.snap && HQ.snap.tasks) || []).filter((t) => t.status !== "dropped" && !dropped.has(t.goal));
-  const shown = tasks.filter((t, i) => t.status !== "done" || i >= tasks.length - 34).slice(-34);
-  return shown.map((t, i) => ({ t, x: HQ_P.board.x * HQ_T + 4 + (i % 17) * 11, y: 7 + Math.floor(i / 17) * 10, w: 8, h: 8 }));
-}
-
-// Whoever is at the two ends of the ping-pong table, both of them idle and standing there,
-// play. Any two: the teams mix at the table as anywhere else.
-function hqPair(key, ends) {
-  const at = (end) => Object.values(HQ.people).find((p) => p.at && p.at[key] === end && !p.working && !p.path.length && !p.paused && !p.errand && !p.meeting);
-  const first = at(ends[0]), second = at(ends[1]);
-  return first && second ? [first, second] : null;
-}
-function hqPong() { return hqPair("pong", ["L", "R"]); }
-// The same at the pool table's two sides and at the chess table's two seats (ADR 0121).
-function hqPool() { return hqPair("pool", ["L", "R"]); }
-function hqChessPair() { return hqPair("chess", ["W", "B"]); }
-
-// Now and then two idle members play ping-pong or pool, for fun (ADR 0142): the browser makes
-// up the score, and nothing is recorded.
-function hqIdlePlay(dt) {
-  HQ.idlePlayT = (HQ.idlePlayT || 0) + dt;
-  if (HQ.idlePlayT < 120) return;
-  HQ.idlePlayT = 0;
-  const idle = Object.values(HQ.people).filter((p) => !p.working && !p.errand && !p.path.length);
-  if (idle.length < 2) return;
-  const [a, b] = idle.sort(() => Math.random() - 0.5);
-  const pool = Math.random() < 0.5;
-  const won = pool ? 8 : 11, lost = Math.floor(Math.random() * (won - 1));
-  hqPlayMatch({ game: pool ? "pool" : "ping_pong", winner_id: a.id, loser_id: b.id, score: [won, lost] });
-}
-
-// A match was played in the engine (ADR 0121): the two walk to that game's table, the winner
-// says the score and the other says good game. Nobody walks for someone who asks for calm, or
-// who is at work.
-function hqPlayMatch(d) {
-  const key = d.game === "pool" ? "pool" : "pong";
-  const ends = HQ_WANDER.filter((s) => s[key]);
-  const winner = HQ.people[d.winner_id], loser = HQ.people[d.loser_id];
-  if (hqCalm() || ends.length < 2 || !winner || !loser || winner.working || loser.working || winner.errand || loser.errand) return;
-  [[winner, ends[0], (d.score || []).join("–") + "!"], [loser, ends[1], "good game"]].forEach(([p, spot, say]) => {
-    p.wander = spot; p.idleT = 30; hqGo(p); hqSay(p, say); p.bubbleT = 14;
-  });
-}
-
-function hqFrame(p) {
-  if (p.path.length) {
-    const n = p.path[0], dx = n.x - p.x, dy = n.y - p.y;
-    const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
-    return { dir, frame: [0, 1, 2, 1][Math.floor(p.frame) % 4] };
-  }
-  const at = p.at || {}, dir = at.dir || "down";
-  const reads = p.role === "researcher" || p.role === "reviewer" || !at.desk;
-  if (p.working) return { dir, frame: reads ? 5 + (Math.floor(HQ.t * 1.5) % 2) : 3 + (Math.floor(HQ.t * 6) % 2) };
-  const pong = hqPong();
-  if (pong && pong.includes(p)) return { dir: at.pong === "L" ? "right" : "left", frame: 3 + (Math.floor(HQ.t * 4) % 2) };
-  // Pool: they lean over the table by turns; chess: they sit and think, reading.
-  const pool = hqPool(), chess = hqChessPair();
-  if (pool && pool.includes(p)) return { dir, frame: Math.floor(HQ.t / 2 + (at.pool === "L" ? 0 : 1)) % 2 ? 3 : 0 };
-  if (chess && chess.includes(p)) return { dir, frame: 5 + (Math.floor(HQ.t * 1.5) % 2) };
-  return { dir, frame: p.paused ? 1 : 0 };
-}
-
-// When idle, who says what.
-const HQ_IDLE = { researcher: "zZ", reviewer: "heads down", lead: "", developer: "" };
-
-function hqDraw() {
-  const cv = document.getElementById("hq-office");
-  if (!cv || !HQ_BG) return;
-  const ctx = cv.getContext("2d"), T = HQ_T, P = HQ_P, C = HQ_C, W = HQ_W, H = HQ_H, snap = HQ.snap || {};
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(HQ_BG, 0, 0);
-  // The board: a sticky note per task, coloured by where it is; a pink corner while it is worked.
-  for (const r of hqCards()) {
-    const asks = (snap.desk || []).some((d) => d.task === r.t.id);
-    ctx.fillStyle = "rgba(0,0,0,.12)"; ctx.fillRect(r.x + 1, r.y + 1, r.w, r.h);
-    ctx.fillStyle = asks ? C.violet : HQ_STATUS_COL[r.t.status] || C.sticky; ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.fillRect(r.x + 2, r.y + 3, r.w - 4, 1); ctx.fillRect(r.x + 2, r.y + 5, r.w - 5, 1);
-    if ((snap.runs || []).some((run) => run.task === r.t.id && run.status === "running")) { ctx.fillStyle = C.neon; ctx.fillRect(r.x + r.w - 2, r.y, 2, 2); }
-    if (HQ.selected && HQ.selected.type === "task" && HQ.selected.id === r.t.id) { ctx.strokeStyle = C.neon; ctx.strokeRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3); }
-  }
-  // The neon sign, with a flicker.
-  const flick = Math.floor(HQ.t * 3) % 23 === 0;
-  ctx.font = HQ_PIXEL; ctx.fillStyle = flick ? "rgba(255,79,163,.35)" : C.neon;
-  ctx.shadowColor = C.neon; ctx.shadowBlur = flick ? 0 : 6; ctx.fillText("SHIP IT", 66, 19); ctx.shadowBlur = 0;
-  // The server rack: its lights spark on each tick, red when stopped.
-  const rx = P.rack.x * T, ry = P.rack.y * T;
-  ctx.fillStyle = C.shadow; ctx.fillRect(rx + 2, ry + 38, 18, 4);
-  ctx.fillStyle = C.rack; ctx.fillRect(rx, ry, 18, 40); ctx.fillStyle = "#333b4a"; ctx.fillRect(rx + 2, ry + 2, 14, 36);
-  const ticks = (snap.counts && snap.counts.ticks) || 0;
-  for (let i = 0; i < 7; i++) {
-    const on = (ticks + i) % 3 === 0 || (HQ.spark || 0) > 0.5;
-    ctx.fillStyle = snap.stopped ? C.red : on ? C.green : "#24412f"; ctx.fillRect(rx + 4, ry + 5 + i * 5, 2, 2);
-    ctx.fillStyle = snap.stopped ? "#5a2224" : "#4a5a6a"; ctx.fillRect(rx + 8, ry + 5 + i * 5, 6, 2);
-  }
-  // What lies flat on the floor or hangs on the back wall, from the snapshot's office (ADR 0119):
-  // rugs, posters, art, string lights, and the wall clock with its arc to the next tick.
-  for (const it of hqItems()) if (it.kind === "rug" || it.wall) hqDrawItem(ctx, it);
-  // The pods: a faint patch of floor under each team's desks and its name, no walls.
-  ctx.font = HQ_PIXEL;
-  for (const pod of HQ.pods) {
-    ctx.fillStyle = "rgba(255,255,255,.12)"; ctx.fillRect(pod.x * T - 4, pod.y * T - 18, pod.width * T + 8, pod.rows * HQ_POD.desk.h * T + 20);
-    ctx.fillStyle = "rgba(31,29,41,.7)"; ctx.fillText(String(pod.label).toUpperCase(), pod.x * T, pod.y * T - 9);
-  }
-  // The burn gauge: today's spend against the pool's day.
-  const pool = snap.pool || { per_day: 1, committed: 0 }, fill = Math.min(1, (pool.committed || 0) / Math.max(1, pool.per_day));
-  const jx = P.jar.x * T, jy = P.jar.y * T, hgt = 30;
-  ctx.fillStyle = "#ffffff"; ctx.fillRect(jx, jy, 8, hgt); ctx.strokeStyle = C.trim; ctx.strokeRect(jx - 0.5, jy - 0.5, 9, hgt + 1);
-  ctx.fillStyle = fill > .85 ? C.red : fill > .6 ? C.lamp : C.green; ctx.fillRect(jx + 1, jy + hgt - Math.round(hgt * fill), 6, Math.round(hgt * fill));
-  ctx.font = HQ_PIXEL; ctx.fillStyle = "rgba(31,29,41,.65)"; ctx.fillText("BURN", jx + 12, jy + hgt);
-  // The kill switch on the board room's glass.
-  const lx = P.lever.x * T, ly = P.lever.y * T, up = !snap.stopped;
-  ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
-  ctx.fillStyle = "#9aa"; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
-  if ((HQ.doorFlash || 0) > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, HQ.doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
-  // A ping-pong ball between the two at the table.
-  if (hqPong()) { const k = (Math.sin(HQ.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(HQ.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
-  hqDrawGames(ctx, snap);
-  // People and furniture, in depth order.
-  const people = Object.values(HQ.people);
-  const items = HQ_FURN.map((f) => ({ base: f.base, f }));
-  for (const p of people) items.push({ base: p.y + 16, p });
-  items.sort((a, b) => a.base - b.base);
-  for (const it of items) {
-    if (it.p) { hqDrawPerson(ctx, it.p); continue; }
-    if (it.f.draw) { it.f.draw(ctx); continue; }
-    let key = it.f.key;
-    if (it.f.pcOf !== undefined) {
-      const at = people.find((p) => p.working && !p.path.length && p.at && p.at.desk && p.id === it.f.pcOf);
-      key = at ? "PC_FRONT_ON_" + (1 + (Math.floor(HQ.t * 4) % 3)) : "PC_FRONT_OFF";
-    }
-    if (HQ_IMG[key]) ctx.drawImage(HQ_IMG[key], Math.round(it.f.x), Math.round(it.f.y));
-  }
-  // Names under their people; at a pod's aisle they run out over their own desk, so the two
-  // who face each other do not write over one another.
-  ctx.font = HQ_PIXEL;
-  for (const p of people) {
-    const name = String(p.name || "").toUpperCase(), at = p.at || {}, w = Math.ceil(ctx.measureText(name).width);
-    const x = at.desk && at.dir === "right" ? Math.round(p.x) + 16 - w : at.desk && at.dir === "left" ? Math.round(p.x) : Math.round(p.x) + 1;
-    ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(name, x, Math.round(p.y) + 24);
-  }
-  // Decisions waiting on the board room table.
-  (snap.desk || []).slice(0, 5).forEach((n, i) => {
-    ctx.fillStyle = n.kind === "goal" ? C.violet : n.kind === "stuck" ? C.red : C.lamp;
-    ctx.fillRect(P.owner.x * T + 3 + i * 6, P.owner.y * T + 6 + (i % 2) * 3, 5, 6);
-    ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(P.owner.x * T + 4 + i * 6, P.owner.y * T + 8 + (i % 2) * 3, 3, 1);
-  });
-  // Wakes in flight, from the server closet to whoever was woken.
-  for (const e of HQ.envelopes) {
-    const p = HQ.people[e.who]; if (!p) continue;
-    const k = Math.min(1, e.t / 0.9), x = e.x + (p.x + 6 - e.x) * k, y = e.y + (p.y - 22 - e.y) * k - Math.sin(k * Math.PI) * 18;
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(x), Math.round(y), 7, 5); ctx.fillStyle = C.neon; ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, 5, 1);
-  }
-  if (snap.stopped) { ctx.fillStyle = "rgba(239,90,95,.12)"; ctx.fillRect(0, 0, W, H); ctx.font = HQ_PIXEL; ctx.fillStyle = C.red; ctx.fillText("KILL SWITCH PULLED", W / 2 - 44, 2 * T + 22); }
-  for (const p of people) hqBubble(ctx, p);
-}
-
-// The games on the floor (ADR 0121): the scoreboards the engine keeps by the ping-pong and the
-// pool table, the cue ball while two play pool, and the live game of chess on its board. The
-// names are the team's own, so they are drawn as canvas text and never as markup.
-function hqScoreLine(last) {
-  if (!last) return "";
-  const short = (name) => String(name || "").toUpperCase().slice(0, 5);
-  return `${short(last.winner)} ${(last.score || []).join("-")} ${short(last.loser)}`;
-}
-function hqDrawGames(ctx, snap) {
-  const T = HQ_T, P = HQ_P, games = snap.games || {};
-  ctx.font = HQ_PIXEL;
-  const ping = hqScoreLine((games.ping_pong || {}).last);
-  if (ping) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.fillText(ping, 4, 15 * T + 21); }
-  const pool = hqScoreLine((games.pool || {}).last);
-  if (pool) { ctx.fillStyle = "rgba(31,29,41,.75)"; ctx.fillText(pool, HQ_W - Math.ceil(ctx.measureText(pool).width) - 3, P.pool.y * T - 3); }
-  // Two at the pool table: the cue ball rolls to and fro along the cloth.
-  if (hqPool()) {
-    const k = (Math.sin(HQ.t * 1.6) + 1) / 2;
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(P.pool.x * T + 8 + k * 14), Math.round(P.pool.y * T + 12), 2, 2);
-  }
-  // The live game of chess, as pieces on the little board: white ones light, black ones dark,
-  // pawns a single dot.
-  const live = ((games.chess || {}).games || []).find((g) => g.status === "in_progress");
-  if (live && live.rows) {
-    live.rows.forEach((row, r) => [...String(row)].forEach((ch, c) => {
-      if (ch === ".") return;
-      const white = ch === ch.toUpperCase(), pawn = ch.toLowerCase() === "p";
-      ctx.fillStyle = white ? "#fffdf5" : "#1f1d29";
-      ctx.fillRect(P.chess.x * T + c * 2, P.chess.y * T + r * 2, pawn ? 1 : 2, pawn ? 1 : 2);
-    }));
-  }
-}
-
-// A speech bubble: what was just said, else what they are doing, else their idle word.
-function hqBubble(ctx, p) {
-  const playing = [hqPong(), hqPool(), hqChessPair()].some((pair) => pair && pair.includes(p));
-  const said = p.bubbleT > 0 ? p.bubble : "";
-  const doing = p.working && !p.path.length ? hqShort(p.doing) : "";
-  const idle = !p.working && !playing && !p.path.length && !p.errand && !p.meeting ? (p.paused ? "over budget" : HQ_IDLE[p.role] || "") : "";
-  const text = said || doing || idle;
-  if (!text) return;
-  const quiet = !said && !doing;
-  ctx.font = HQ_PIXEL;
-  const tw = Math.ceil(ctx.measureText(text).width) + 6, x = Math.round(Math.min(HQ_W - tw - 2, Math.max(2, p.x + 8 - tw / 2))), y = Math.round(p.y - 30);
-  ctx.fillStyle = quiet ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, 10);
-  ctx.fillStyle = quiet ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + 10, tw, 1); ctx.fillRect(Math.round(p.x + 7), y + 10, 2, 2);
-  ctx.fillStyle = quiet ? "#6b6577" : "#1f1d29"; ctx.fillText(text, x + 3, y + 8);
-}
-
-function hqDrawPerson(ctx, p) {
-  const img = HQ_IMG["char" + (p.look % 6)], x = Math.round(p.x), y = Math.round(p.y);
-  ctx.fillStyle = HQ_C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3);
-  if (img) {
-    const { dir, frame } = hqFrame(p), row = dir === "up" ? 1 : dir === "down" ? 0 : 2;
-    if (dir === "left") { ctx.save(); ctx.translate(x + 16, 0); ctx.scale(-1, 1); ctx.drawImage(img, frame * 16, row * 32, 16, 32, 0, y - 16, 16, 32); ctx.restore(); }
-    else ctx.drawImage(img, frame * 16, row * 32, 16, 32, x, y - 16, 16, 32);
-  }
-  if (p.paused) { ctx.fillStyle = HQ_C.lamp; ctx.fillRect(x + 13, y - 20, 6, 6); ctx.fillStyle = "#8a5a1c"; ctx.fillRect(x + 15, y - 19, 2, 4); }
-  if (HQ.selected && HQ.selected.type === "member" && HQ.selected.id === p.id) { ctx.strokeStyle = HQ_C.neon; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y - 16.5, 16, 33); }
-}
-
 function hqLoop() {
   // Only where something draws: not in a background tab's sandbox, nor in the console check.
   if (HQ.looping || typeof requestAnimationFrame !== "function") return;
@@ -1219,53 +609,19 @@ function hqLoop() {
   const step = () => {
     if (NAV.v !== "hq") { HQ.looping = false; return; }
     const now = Date.now(), dt = Math.min(0.1, (now - last) / 1000); last = now; HQ.t += dt;
-    HQ.spark = Math.max(0, (HQ.spark || 0) - dt * 2); HQ.doorFlash = Math.max(0, (HQ.doorFlash || 0) - dt);
-    for (const p of Object.values(HQ.people)) {
-      if (p.bubbleT > 0) p.bubbleT -= dt;
-      if (!p.path.length) { hqErrand(p, dt); hqIdle(p, dt); continue; }
-      const n = p.path[0], dx = n.x - p.x, dy = n.y - p.y, d = Math.hypot(dx, dy), v = 46 * dt;
-      if (d <= v) { p.x = n.x; p.y = n.y; p.path.shift(); } else { p.x += (dx / d) * v; p.y += (dy / d) * v; }
-      p.frame += dt * 8;
-    }
-    HQ.envelopes.forEach((e) => (e.t += dt)); HQ.envelopes = HQ.envelopes.filter((e) => e.t < 0.9);
-    hqIdlePlay(dt);
+    for (const id of Object.keys(HQ.fresh)) if ((HQ.fresh[id] -= dt) <= 0) delete HQ.fresh[id];
+    for (const id of Object.keys(HQ.recovered)) if ((HQ.recovered[id].t -= dt) <= 0) delete HQ.recovered[id];
+    for (const id of Object.keys(HQ.said)) if ((HQ.said[id].t -= dt) <= 0) delete HQ.said[id];
     hqDraw();
     requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
 }
 
-// A tap on the office: a person, a sticky note, or the kill switch.
-// Something chosen on the office floor is looked at on the Desk tab.
-function hqSelect(sel) { HQ.selected = sel; hqSetTab("desk"); render(); }
+// Something chosen in the studio is looked at on the Work tab.
+function hqSelect(sel) { HQ.selected = sel; hqSetTab("work"); render(); }
 
-function hqTap(ev) {
-  const cv = document.getElementById("hq-office"); if (!cv) return;
-  const b = cv.getBoundingClientRect(), x = (ev.clientX - b.left) * (HQ_W / b.width), y = (ev.clientY - b.top) * (HQ_H / b.height);
-  for (const p of Object.values(HQ.people)) {
-    if (x >= p.x && x <= p.x + 16 && y >= p.y - 16 && y <= p.y + 16) { hqSelect({ type: "member", id: p.id }); return; }
-  }
-  for (const r of hqCards()) {
-    if (x >= r.x - 2 && x <= r.x + r.w + 2 && y >= r.y - 2 && y <= r.y + r.h + 2) { hqSelect({ type: "task", id: r.t.id }); return; }
-  }
-  if (x >= HQ_P.lever.x * HQ_T && x <= HQ_P.lever.x * HQ_T + 16 && y >= HQ_P.lever.y * HQ_T && y <= HQ_P.lever.y * HQ_T + 20) {
-    dispatch(HQ.snap && HQ.snap.stopped ? "hq:resume" : "hq:stop"); return;
-  }
-  // A games table (ADR 0121): the chess board, or the pool and ping-pong leaderboards.
-  const over = (r) => x >= r.x * HQ_T - 2 && x <= (r.x + (r.w || 1)) * HQ_T + 2 && y >= r.y * HQ_T - 2 && y <= (r.y + (r.h || 1)) * HQ_T + 2;
-  for (const [type, table] of [["chess", HQ_P.chess], ["pool", HQ_P.pool], ["ping_pong", { ...HQ_P.pong, w: 4 }]]) {
-    if (over(table)) { hqSelect({ type, id: 0 }); return; }
-  }
-  // A thing on the floor: who put it there.
-  for (const it of hqItems()) {
-    if (x >= it.x * HQ_T && x <= (it.x + it.w) * HQ_T && y >= (it.wall ? 0 : it.y * HQ_T - 16) && y <= (it.y + it.h) * HQ_T) {
-      hqSelect({ type: "item", id: it.id }); return;
-    }
-  }
-  HQ.selected = null; render();
-}
-
-// The office's fonts, the same as its design: loaded once, only when HQ opens.
+// HQ's fonts, the same as its design, and the board's words: loaded once, only when HQ opens.
 function hqFonts() {
   if (typeof document === "undefined" || !document.head || document.getElementById("hq-fonts")) return;
   const link = document.createElement("link");
@@ -1276,18 +632,20 @@ function hqFonts() {
 
 // ---- the screen ------------------------------------------------------------------------
 
-// The screen is five tabs (the owner, on a phone: "it's all been expanded over time, hard to
-// find stuff"): what needs the owner first, then the team, the work, what the team knows, and
-// the office itself. Every tab is drawn and the others are hidden, so a live update never
-// loses what is typed on a tab that is not showing.
-// Activity first: the screen the owner glances at most, live (2026-10-25).
-// Manage holds every owner setting, shown rather than folded (2026-10-25).
-// Health holds the scorecard: how the team is doing, apart from the work itself.
-// Four places, each for what the owner goes there to do (the owner, 2026-10-25: eight tabs were
-// too many): what needs them and what is going on; the team; the work; and what they set up.
-const HQ_TABS = [["now", "Now"], ["team", "Team"], ["work", "Work"], ["manage", "Manage"]];
-// Where each of the old eight now lives, for links and choices kept from before.
-const HQ_TAB_MOVED = { activity: "now", desk: "now", office: "team", knowledge: "team", health: "work" };
+// The screen is in tabs (the owner, on a phone: "it's all been expanded over time, hard to
+// find stuff"). Every tab is drawn and the others are hidden, so a live update never loses what
+// is typed on a tab that is not showing.
+// Three places, by what the owner is doing (the density audit of 2026-10-25: the old Work tab
+// was 6.8 phone screens with 216 buttons): Work, where they give work, answer the desk and
+// follow what is in flight, and where every screen opens; Manage, what they own and set (the
+// projects and their loops, the team, the money, the knowledge, the office); and Health, how the
+// team and the lab are doing (the turns, what failed). Each shows one line per thing, and rare
+// actions and big cards wait behind a fold. Activity, the record of what happened, is a tab of
+// its own (the owner, 31 Oct): the latest twenty, and the rest a page at a time. Chess is the
+// model league's own (the owner's notes of 31 Oct; 47e-hq-chess.js).
+const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"], ["activity", "Activity"], ["chess", "Chess"]];
+// Where each older tab now lives, for links and choices kept from before.
+const HQ_TAB_MOVED = { now: "work", desk: "work", team: "manage", office: "manage", knowledge: "manage" };
 
 // A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
 // screen works the same without it.
@@ -1301,16 +659,17 @@ function hqStored(key, value) {
 
 function hqTab() {
   if (HQ.tab) return HQ.tab;
-  // Kept under a new name, so every screen opens once on Now.
-  const kept = hqStored("tab.v3");
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "now";
+  // A tab kept from the four tabs (tab.v3) lands where it now lives.
+  const v3 = hqStored("tab.v3");
+  const kept = hqStored("tab.v4") || (v3 && (HQ_TAB_MOVED[v3] || v3));
+  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "work";
   return HQ.tab;
 }
 
 function hqSetTab(id) {
   id = HQ_TAB_MOVED[id] || id;
   if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab.v3", id);
+  HQ.tab = id; hqStored("tab.v4", id);
 }
 
 // What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
@@ -1323,8 +682,7 @@ const HQ_DESK_HELP = {
   question: "A member is asking you. Type an answer if you like, then Answer & wake sends it and wakes them; Dismiss closes it unanswered.",
   notice: "Only to know of. Seen or Dismiss clears it.",
   approval: "A member wants to run exactly what is shown, once. Approve runs it; Decline runs nothing.",
-  decision: "The CEO asks the board to choose. Approve or Decline, or Answer in your own words; your words go in the task for the CEO.",
-  project_cap: "The CEO asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
+  project_cap: "The team asks for a monthly spending cap on a project. Grant the cap gives it (type another amount to change it); No cap lets the project run on the pool's limits alone.",
   project_budget: "This project spent its monthly cap, so its paid work waits. Raise the cap (type the new amount) to go on now; Wait for next month lets it resume when the month turns.",
   rounds: "This work was sent back three times. Accept as done closes it; Send it back gives it one more round.",
   hire: "A lead asks to add a member. Hire adds them; Decline does not.",
@@ -1332,8 +690,8 @@ const HQ_DESK_HELP = {
   out_for_day: "This member has used twice its share and is stopped. Give it today lets this member keep working today up to the amount (type one, or leave it empty for as offered); Wait stops them until tomorrow's budget.",
   tripwire: "The team started far more turns in ten minutes than real work does, so HQ stopped it. Resume lets it work again; Seen leaves it stopped for you to look first. The activity log shows what they were doing.",
   push: "Push it sends the accepted branch to your fork; Decline does not. Without a push key on the node, download the bundle and push it yourself.",
-  deploy: "Deployed once you have merged the branch and run the playbook: the lab's routine member then checks the lab once, reading health, logs and metrics only. Won't deploy closes this with no check.",
-  deploy_check: "The check after a deploy did not show the lab healthy: it found a problem, or could not tell. Seen or Dismiss clears it; the change's thread has the details.",
+  privacy: "The privacy scan found something personal-looking in an accepted branch, so nothing was pushed. Send it back has the team take it out; Push it anyway pushes it as it is, if what was found is not yours.",
+  needs_owner: "An accepted change needs something from you before it is deployed, such as a vault value it now reads. Done once you have set it; Dismiss clears it.",
 };
 
 // The choices each kind of desk item offers: [decision, label, style].
@@ -1349,10 +707,7 @@ const HQ_DESK_CHOICES = {
   // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
   // what the card shows, once; declining runs nothing.
   approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
-  // The CEO's decision for the board (ADR 0111): approve, decline, or answer in words; what
-  // the owner writes goes in the task's thread, and the CEO is woken to act on it.
-  decision: [["approve", "Approve", "ok"], ["decline", "Decline", "no"], ["answer", "Answer", ""]],
-  // A cap the CEO asks for a project (ADR 0113): granted as asked, or at what the owner
+  // A cap the team asks for a project (ADR 0113): granted as asked, or at what the owner
   // writes; or not at all, and the project runs on the pool's limits alone.
   project_cap: [["approve", "Grant the cap", "ok"], ["decline", "No cap", "no"]],
   // A project that spent its cap: its Claude turns wait until the owner raises the cap, or
@@ -1371,10 +726,10 @@ const HQ_DESK_CHOICES = {
   out_for_day: [["approve", "Give it today", "ok"], ["decline", "Wait for tomorrow", "no"]],
   // The runaway tripwire stopped the team (ADR 0133): resume it, or look first.
   tripwire: [["resume", "Resume the team", "ok"], ["seen", "Seen", ""]],
-  // The check after a deploy (ADR 0115, amended): the owner's word that a pushed branch is
-  // deployed starts one read-only check of the lab; its verdict, when not healthy, comes back.
-  deploy: [["deployed", "Deployed", "ok"], ["not_deploying", "Won't deploy", "no"]],
-  deploy_check: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
+  // Accepted work without a card (ADR 0115, amended 2026-10-31): a branch the privacy scan
+  // held, and a change that needs something of the owner.
+  privacy: [["send_back", "Send it back", "ok"], ["push_anyway", "Push it anyway", "no"]],
+  needs_owner: [["seen", "Done", "ok"], ["dismiss", "Dismiss", "no"]],
 };
 
 function hqDeskChoices(d) {
@@ -1402,34 +757,42 @@ function hqWorkForm(s) {
       <button class="hq-btn tall" data-act="hq:work:cancel:go">Cancel</button></div></div>`;
 }
 
-// The small status chips under the title: today's pool, the Mac, and what waits on the owner.
+// The small status chips under the title: today's pool and what waits on the owner.
 function hqChips(s) {
   const pool = s.pool || {}, waiting = (s.desk || []).length;
-  const chips = [];
+  // What waits on the owner first: a phone's chips scroll, and this one must always show.
+  const chips = [`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`];
   if (pool.per_day != null) {
     const left = Math.max(0, pool.per_day - (pool.committed || 0));
-    chips.push(`<span class="hq-chip" title="Today's money for the whole team">Pool ${hqDollars(pool.spent)} spent · ${hqDollars(left)} left</span>`);
+    chips.push(`<span class="hq-chip" title="Today's money for the whole team"><span class="hq-wide">Pool </span><span class="hq-spent">${hqDollars(pool.spent)} spent · </span>${hqDollars(left)} left</span>`);
   }
   // Turns of judgment that wait for budget are kept, not dropped (ADR 0131).
   if (pool.waiting > 0) chips.push(`<span class="hq-chip" title="They start when the day turns, you top up the pool, or you give the member an allowance">${pool.waiting} ${pool.waiting === 1 ? "turn waits" : "turns wait"} for budget</span>`);
   // A member's day of turns on the house's own models is capped (ADR 0133): the rest wait.
   if (pool.capped > 0) chips.push(`<span class="hq-chip" title="A member takes at most a day's turns on the house's own models; the rest start when the day turns">${pool.capped} ${pool.capped === 1 ? "turn waits" : "turns wait"} for tomorrow</span>`);
-  if (HQ.mac) chips.push(`<span class="hq-chip" title="${esc(hqMacWhy(HQ.mac.why))}">Mac ${hqMacWord(HQ.mac)}</span>`);
+  chips.push(...hqCreditChips());
   // What the week came to (ADR 0132): changes the owner approved and Endora pushed to the fork.
   const outcomes = s.scorecard && s.scorecard.outcomes;
-  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} landed this week</span>`);
-  chips.push(`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:now:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`);
+  if (outcomes && outcomes.week) chips.push(`<span class="hq-chip" title="Changes you approved to push to your fork, and Endora pushed, in the last 7 days">${Number(outcomes.week.landed) || 0} pushed<span class="hq-wide"> this week</span><span class="hq-narrow">/7d</span></span>`);
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
 // The tab strip, and the badge on the tabs that count something.
 function hqTabs(s) {
-  const badge = { now: (s.desk || []).length };
+  const badge = { work: (s.desk || []).length };
   const here = hqTab();
   return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
     `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
 }
 
+// Health on a wide screen: the outcomes, What failed beside them, then the team's turns, so the two
+// columns end near each other (round 6); a phone reads them in that order.
+function hqHealthCards(s) {
+  const card = hqScorecard(s), cut = card.indexOf("<h3>The team's turns</h3>");
+  if (cut < 0) return card + hqFailures();
+  // Named areas: on a wide screen What failed spans both rows beside the outcomes and the turns.
+  return `<div class="hq-health">${card.slice(0, cut).replace('<section class="hq-card"', '<section class="hq-card hq-h-out"')}</section>${hqFailures().replace('<section class="hq-card"', '<section class="hq-card hq-h-fail"')}<section class="hq-card hq-h-turns"><h2>The team's turns</h2>${card.slice(cut + "<h3>The team's turns</h3>".length)}</div>`;
+}
 function hqPanel(id, html) {
   return `<div class="hq-side" role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"${hqTab() === id ? "" : " hidden"}>${html}</div>`;
 }
@@ -1457,26 +820,42 @@ document.body.addEventListener("input", (ev) => {
 
 // One card of the desk or of the digest: what it says and is about, what its choices do, and the
 // choices. Every word goes through esc: they are a member's.
-function hqNeed(s, d) {
+function hqNeed(s, d, help = true) {
   const choices = hqDeskChoices(d);
-  const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
-  return `<div class="hq-need ${esc(d.kind)}">${hqClamp(`need${d.id}`, shown)}
+  // The task's own title leads, so a branch name or engine words are not the first thing read.
+  const t = d.task ? ((s.tasks || []).find((x) => x.id === d.task) || null) : null;
+  const title = t && t.title ? `<strong class="hq-need-title">${hqKey(t.id)} ${esc(t.title)}</strong>` : "";
+  return `<div class="hq-need ${esc(d.kind)}">${title}${hqClamp(`need${d.id}`, d.text)}
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKeyLink(d.task)}` : ""}${(d.also || []).length ? ` · also on ${d.also.map((t) => hqKeyLink(Number(t))).join(", ")}: one answer reaches each` : ""}${d.project ? ` · project ${esc(hqProjectTitle(d.project))}` : ""}</p>
-      ${HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
+      ${help && HQ_DESK_HELP[d.kind] ? `<p class="hq-help">${esc(HQ_DESK_HELP[d.kind])}</p>` : ""}
       ${HQ.deskNote[d.id] ? `<p class="hq-who hq-refused" role="alert">${esc(HQ.deskNote[d.id])}</p>` : ""}
       ${d.kind === "approval" ? hqApproval(d.approval, d.serves) : ""}
-      ${d.kind === "decision" ? hqDecision(d.decision) : ""}
-      ${d.kind === "deploy" && /^https:\/\/github\.com\//.test(String(d.branch_url || "")) ? `<p><a href="${esc(d.branch_url)}" target="_blank" rel="noopener noreferrer">Open the pull request on GitHub</a></p>` : ""}
       ${d.kind === "push" && !hqCanPush(d) && hqBundleOf(d) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:bundle:${d.task}:${esc(hqBundleOf(d))}">Download the bundle</button></div>` : ""}
-      ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
+      ${d.kind === "question" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       ${d.kind === "project_cap" || d.kind === "project_budget" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="${d.kind === "project_cap" ? "Dollars a month (empty: as asked)" : "The new cap, in dollars a month"}" aria-label="The cap, in dollars a month" />` : ""}
       ${d.kind === "out_for_day" ? `<input id="hq-answer-${d.id}" inputmode="decimal" placeholder="Dollars for today (empty: as offered)" aria-label="The allowance, in dollars for today" />` : ""}
       ${d.kind === "out_for_day" && hqPoolSpent(s) ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up the pool first</button></div>` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
 }
 
+// The desk: the first few cards whole, so the top of it is answered where it stands; the rest one
+// line each, their kind and first words, opening to the whole card (the density audit,
+// 2026-10-30: fifteen whole cards were three phone screens). Nothing is hidden from the count.
+const HQ_DESK_WHOLE = 5;
+function hqDesk(s) {
+  const short = (text) => { const t = String(text || ""); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
+  // The team stopped by HQ itself is always whole: nothing goes on until the owner answers it.
+  const isWhole = (d, i) => i < HQ_DESK_WHOLE || d.kind === "tripwire";
+  const items = s.desk || [];
+  // A kind's help is said on its first card only: the same lines on every card were noise.
+  const told = new Set(), firstOfKind = (d) => !told.has(d.kind) && told.add(d.kind);
+  const whole = items.filter(isWhole).map((d) => hqNeed(s, d, firstOfKind(d))).join("");
+  const rows = items.filter((d, i) => !isWhole(d, i)).map((d) => hqOpenRow(`desk${d.id}`, esc(String(d.kind).replace(/_/g, " ")), esc(short(d.text)), hqNeed(s, d))).join("");
+  return whole + (rows ? `<ul class="hq-team">${rows}</ul>` : "");
+}
+
 // "While you were away" (ADR 0132): stuck work, a guard's finding and a notice, newest first, in
-// one card at the top of the Desk tab. None needs a decision before the team can go on, so none
+// one card under the desk, on the Work tab. None needs a decision before the team can go on, so none
 // interrupts; each is the owner's to act on when they like, with the choices it always had, and
 // acting on one takes it out. Shown only when there is something in it.
 function hqDigest(s) {
@@ -1490,57 +869,127 @@ function hqDigest(s) {
     if (seen.has(key)) seen.get(key).times += 1;
     else seen.set(key, { d, times: 1 });
   }
-  const cards = [...seen.values()].map(({ d, times }) => times > 1
-    ? hqNeed(s, d).replace("</p>", ` <span class="hq-count">×${times}</span></p>`) : hqNeed(s, d));
-  const list = hqMore("digest", cards, 3);
+  // One line each until tapped (the density audit, 2026-10-30): what kind it is and its first
+  // words; open, the card with the choices it always had.
+  const short = (text) => { const t = String(text || ""); return t.length > 80 ? t.slice(0, 80) + "…" : t; };
+  const rows = [...seen.values()].map(({ d, times }) => hqOpenRow(`digest${d.id}`, esc(String(d.kind).replace(/_/g, " ")),
+    `${esc(short(d.text))}${times > 1 ? ` <span class="hq-count">×${times}</span>` : ""}`,
+    `<div class="hq-needs">${hqNeed(s, d)}</div>`));
+  const list = hqMore("digest", rows, 3);
   return `<section class="hq-card hq-digest" aria-live="polite"><h2>While you were away <span class="hq-count">${items.length}</span></h2>
-    <p class="hq-note">Nothing here needs you before the team can go on. Each is yours to act on when you like, and acting on one takes it out of this list.</p>
-    <div class="hq-needs">${list.shown}</div>${list.more}</section>`;
+    <p class="hq-note">Nothing here needs you before the team can go on: tap one to act on it when you like, and acting on one takes it out of this list.</p>
+    <ul class="hq-team">${list.shown}</ul>${list.more}</section>`;
 }
 
-// Older activity loads when the owner scrolls down near the end of the log: one page per
-// scroll, at most one every one and a half seconds. A redraw never moves the page, so it can
-// never load more on its own (an observer of the end did, until all history was on screen).
-const HQ_LOG_SCROLL = { y: 0, at: 0, listening: false };
-function hqLogScrolled(y, nearEnd, now) {
-  const down = y > HQ_LOG_SCROLL.y;
-  HQ_LOG_SCROLL.y = y;
-  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
-  if (!down || !nearEnd || !olderLeft || HQ.logBusy || now - HQ_LOG_SCROLL.at < 1500) return false;
-  HQ_LOG_SCROLL.at = now;
+// Activity, a tab of its own (the owner, 31 Oct): the latest twenty, live, and "Show more" for
+// a full-screen view of the past a page at a time, Newer and Older. Nothing loads as the page
+// scrolls: every page is asked for by a button.
+const HQ_LOG_SHOWN = 20, HQ_FEED_PAGE = 50;
+// HQ serves the past before an id, at most 200 events at a time; a tick takes no line, so a page
+// may ask again below the oldest it read, a few times at most.
+const HQ_LOG_BATCH = 200, HQ_LOG_ASKS = 5;
+
+// Up to `want` lines of the events just below the id `before`, newest first, and where the next
+// page starts (0 when HQ has nothing older).
+async function hqLogPage(before, want) {
+  const lines = [];
+  let next = before;
+  for (let ask = 0; ask < HQ_LOG_ASKS && next > 1; ask++) {
+    const got = await api("GET", `/v1/hq/events?before=${Number(next)}&limit=${HQ_LOG_BATCH}`);
+    const events = (got.events || []).slice().reverse();
+    for (const e of events) {
+      next = e.id;
+      const line = hqLogEntry(e);
+      if (line) lines.push(line);
+      if (lines.length >= want) return { lines, next: next > 1 ? next : 0 };
+    }
+    if (events.length < HQ_LOG_BATCH) return { lines, next: 0 };
+  }
+  return { lines, next: next > 1 ? next : 0 };
+}
+
+// The turns running now, at the top of Activity (the owner, 1 Nov): each with a Watch link to
+// its replay, live while it runs. Nothing when none runs.
+function hqRunningNow() {
+  const runs = ((HQ.snap && HQ.snap.runs) || []).filter((r) => r.status === "running");
+  if (!runs.length) return "";
+  const line = (r) => `<li><span>R${Number(r.id)} ${esc(hqName(r.member))}${r.task ? ` on ${hqKey(r.task)}` : ""}</span> <button class="hq-link" data-act="hq:from:watch:${Number(r.id)}">Watch</button></li>`;
+  return `<section class="hq-card hq-running hq-wide-card"><h2>Running now <span class="hq-count">${runs.length}</span></h2><ul class="hq-running-list">${runs.map(line).join("")}</ul></section>`;
+}
+
+// The Activity tab: the turns running now, then the latest twenty, newest first, each line whole.
+function hqActivity() {
+  const log = hqLogLines(HQ.log.slice(0, HQ_LOG_SHOWN));
+  return `${hqRunningNow()}<section class="hq-card hq-wide-card"><h2>Activity</h2><ul class="hq-log hq-log-whole">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>
+    <div class="hq-row"><button class="hq-btn" id="hq-feed-more" data-act="hq:feed:open:go">Show more</button></div></section>`;
+}
+
+// The past, full screen, a page at a time; Newer and Older step through it, as Replay steps
+// through a task's turns, and Back (or Escape) returns to the Activity tab.
+function hqFeedView() {
+  const f = HQ.feed;
+  const lines = hqLogLines(f.lines || []);
+  const body = f.error ? `<p class="hq-empty">${esc(f.error)}</p>`
+    : !f.lines ? `<p class="hq-empty">Loading…</p>`
+    : `<ul class="hq-log hq-log-whole">${lines || `<li class="hq-empty">Nothing older.</li>`}</ul>`;
+  const pager = `<div class="hq-replay-steps">
+      <button class="hq-btn" data-act="hq:feed:newer:go"${!f.at || f.busy ? " disabled" : ""}>◀ Newer</button>
+      <span class="hq-replay-progress">Page ${f.at + 1}</span>
+      <button class="hq-btn" data-act="hq:feed:older:go"${!f.next || f.busy ? " disabled" : ""}>Older ▶</button></div>`;
+  return `<div class="hq hq-feed"><div class="hq-bar"><h1 id="hq-feed-title" tabindex="-1">Activity</h1><span class="hq-grow"></span>
+      <div class="hq-row"><button class="hq-btn" data-act="hq:feed:close:go">◀ Back to HQ</button></div></div>
+    ${pager}<section class="hq-card" aria-live="polite">${body}</section>${pager}</div>`;
+}
+
+// Open the paged view on the newest page, step a page, or close it. Each page is read afresh.
+async function hqFeedAct(what) {
+  const focus = (id) => { const el = document.getElementById(id); if (el && el.focus) el.focus(); };
+  if (what === "close") {
+    HQ.feed = null; hqSetTab("activity"); render(); window.scrollTo(0, 0); focus("hq-feed-more");
+    return true;
+  }
+  if (what === "open") HQ.feed = { at: 0, starts: [HQ.last + 1], lines: null, next: 0, busy: false, error: "" };
+  const f = HQ.feed;
+  if (!f || f.busy) return true;
+  if (what === "older") { if (!f.next) return true; f.starts[f.at + 1] = f.next; f.at += 1; }
+  else if (what === "newer") { if (!f.at) return true; f.at -= 1; }
+  else if (what !== "open") return true;
+  Object.assign(f, { busy: true, lines: null, next: 0, error: "" });
+  render(); window.scrollTo(0, 0);
+  try {
+    const page = await hqLogPage(f.starts[f.at], HQ_FEED_PAGE);
+    Object.assign(f, { lines: page.lines, next: page.next });
+  } catch (e) { f.error = "Couldn't load the activity: " + e.message; }
+  f.busy = false;
+  if (HQ.feed !== f) return true;
+  render(); focus("hq-feed-title");
   return true;
 }
-function hqListenForLogEnd() {
-  if (HQ_LOG_SCROLL.listening || typeof window === "undefined" || !window.addEventListener) return;
-  HQ_LOG_SCROLL.listening = true;
-  window.addEventListener("scroll", () => {
-    if (NAV.v !== "hq" || hqTab() !== "now") return;
-    const end = document.getElementById("hq-log-end");
-    const near = !!end && end.getBoundingClientRect().top < window.innerHeight + 300;
-    if (hqLogScrolled(window.scrollY, near, Date.now())) dispatch("hq:logolder:0:more");
-  }, { passive: true });
+
+// Escape closes the paged view, as its Back button does.
+function hqFeedKey(ev) {
+  if (ev.key !== "Escape" || !HQ.feed) return;
+  ev.preventDefault();
+  dispatch("hq:feed:close:go");
 }
+document.body.addEventListener("keydown", hqFeedKey);
 
 function viewHQ() {
   if (HQ.error) return `<div class="hq"><h1>Endora HQ</h1><section class="hq-card"><p class="hq-empty">${esc(HQ.error)}</p></section></div>`;
   const s = HQ.snap;
   if (!s) return `<div class="hq"><h1>Endora HQ</h1><p class="hq-empty">Loading…</p></div>`;
+  if (HQ.feed) return hqFeedView();
   setTimeout(() => {
-    hqFonts(); hqLoop();
+    hqFonts(); hqStudioWatch(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
-    hqListenForLogEnd();
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
-  const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
+  const retrying = (s.runs || []).filter((r) => r.status === "retry_waiting").length;
+  const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Retrying", retrying], ["Held", c.held || 0],
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
-  const desk = (s.desk || []).map((d) => hqNeed(s, d)).join("");
-  // The latest sixty, newest first, live; older lines load as the owner scrolls to the end, and
-  // "Show older" stays for keyboards: first what is kept here, then what HQ still has.
-  const log = HQ.log.slice(0, HQ.logShown).map(hqLogLine).join("");
-  const olderLeft = HQ.log.length > HQ.logShown || (!HQ.logDone && HQ.oldest > 1);
-  const older = olderLeft ? `<div class="hq-row"><button class="hq-btn" data-act="hq:logolder:0:more"${HQ.logBusy ? " disabled" : ""}>${HQ.logBusy ? "Loading…" : "Show older"}</button></div>` : "";
+  const desk = hqDesk(s);
   const team = hqRoster(s);
   return `<div class="hq" data-tab="${esc(hqTab())}">
     <div class="hq-bar">
@@ -1557,50 +1006,39 @@ function viewHQ() {
     <div class="hq-main">
       ${hqTabs(s)}
       <div class="hq-stage">
-        <div class="hq-canvas-wrap"><canvas id="hq-office" width="${HQ_W}" height="${HQ_H}"
-          aria-label="The team's open-plan office: a pod of desks for each team, the board of tasks, the CEO's office with its door open, the meeting room, the kitchen and lounge, ping-pong, a pool table, a chess table, the server closet, the board room"></canvas></div>
+        <div class="hq-canvas-wrap">${hqStudioCanvasTag()}</div>
         <div class="hq-stats">${stats}</div>
-        <div class="hq-legend"><span style="--c:#fff2a8">To do</span><span style="--c:#ffb347">Doing</span><span style="--c:#7fb2ff">In review</span><span style="--c:#45c486">Done</span><span style="--c:#ef5a5f">Blocked</span><span style="--c:#b98cf0">Needs you</span></div>
+        <div class="hq-legend"><span style="--c:#ffd27a">A lit lamp: a turn running at that desk</span><span style="--c:#ffb347">Hourglass: a turn waiting to retry</span><span style="--c:#ef5a5f">Red sign: stuck, or a failed check</span><span style="--c:#45c486">Green tick: recovered</span></div>
       </div>
-      ${hqPanel("now", `
+      ${hqPanel("work", `
         <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        ${HQ.selected ? `<section class="hq-card" aria-live="polite"><h2>Looking at</h2>${hqSelected()}</section>` : ""}
+        ${HQ.selected ? `<section class="hq-card" id="hq-looking" aria-live="polite"><h2>Looking at</h2>${hqBackLink()}${hqSelected()}</section>` : ""}
         ${hqDigest(s)}
-        <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul>${older}<div id="hq-log-end"></div></section>`)}
-      ${hqPanel("team", `
-        <section class="hq-card"><h2>Team</h2>${team}</section>
-        ${hqMacCard(s)}
-        ${hqOffice(s)}
-        ${hqWorldCard(s)}
-        ${hqHouse(s)}`)}
-      ${hqPanel("work", `
-        <section class="hq-card"><h2>Find a task</h2>
-          <div class="hq-row"><input id="hq-find" placeholder="EL-687, or a few words of its title" aria-label="A task's number or words of its title" />
-          <button class="hq-btn" data-act="hq:find:task:go">Open it</button></div></section>
-        ${hqHolodeck(s)}
-        ${hqScorecard(s)}`)}
+        ${hqInFlight(s)}
+        ${hqHolodeck(s) ? hqFold("holodeck", "Holodeck", "chess matches and the model league", hqHolodeck(s)) : ""}`)}
       ${hqPanel("manage", `
-        ${hqContracts(s.contracts)}
-        ${hqProjects(s)}
-        ${hqRoutines(s)}
+        ${hqMoneyCard(s)}
         ${hqNotes(s)}
-        ${hqHireForm(s)}`)}
+        ${hqProjects(s)}
+        <div class="hq-foldstack">
+        ${hqAccepted(s)}
+        ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
+        ${hqOffice(s) ? hqFold("office", "Office", "its games", hqOffice(s)) : ""}
+        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section></div>
+        ${hqContracts(s.contracts)}`)}
+      ${hqPanel("health", hqHealthCards(s))}
+      ${hqPanel("activity", hqActivity())}
+      ${hqPanel("chess", hqChessTab(s))}
     </div>
-    <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
+    <p class="hq-note">Studio art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. Decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
 }
 
 // What a member thinks with, in a word for the roster line.
 function hqBrainTag(brain) {
   const b = String(brain || "local");
-  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b === "mac" ? "Mac" : "Local";
-}
-
-// A member's two brains (ADR 0131), in a few words: "Work: Mac · Judgment: Sonnet".
-function hqBrainsTag(m) {
-  if (!m.work_brain) return hqBrainTag(m.brain);
-  return `Work: ${hqBrainTag(m.work_brain)} · Judgment: ${hqBrainTag(m.judgment_brain || m.brain)}`;
+  return b.includes("opus") ? "Opus" : b.includes("sonnet") ? "Sonnet" : b.includes("haiku") ? "Haiku" : b.includes("deepseek") ? "DeepSeek" : b === "mac" ? "Mac" : "Local";
 }
 
 // What a member's turn waits for, in the owner's words, if one waits (ADR 0131): for budget,
@@ -1610,73 +1048,36 @@ function hqWaitingFor(m) {
   return turn ? turn.why : "";
 }
 
-// The lead a member works under: the nearest lead up whom it reports to, or none when the
-// chain reaches the CEO (or nobody) first.
-function hqLeadOf(m, members) {
-  let up = members.find((o) => o.id === m.reports_to);
-  for (let hops = 0; up && hops < members.length; hops++) {
-    if (up.role === "lead") return up;
-    if (up.role === "ceo") return null;
-    const next = up.reports_to;
-    up = members.find((o) => o.id === next);
-  }
-  return null;
-}
-
-// One member on the roster: name, role, brain, what it is doing and its money today, all on
-// one line; tapping it opens its controls (the brain, whom it reports to, a new name, a look at
-// it), closed until then.
-function hqRosterLine(m, members) {
+// One member on the team board, on one line (the owner's notes of 31 Oct): its name, the model
+// doing its work, what it is doing now and today's money. Tapping it opens the rest of its card
+// (its role, both brains, its day's allowance, the brain buttons, a new name, a look at it).
+function hqRosterLine(m) {
   const on = (m.running || []).map((r) => r.task ? "#" + r.task : "a look round").join(", ");
   const waits = hqWaitingFor(m);
-  const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today of ${hqDollars(m.per_day)}`;
+  const doing = m.furloughed ? "on furlough" : `${m.paused ? "paused · " : ""}${on ? "on " + esc(on) : waits ? esc(waits) : "between turns"}`;
+  const money = m.brain === "local" || m.brain === "mac" ? "costs nothing" : `${hqDollars(m.spent)} today`;
   const open = !!HQ.roster[m.id];
-  const controls = open ? `<div class="hq-controls">
-      <p class="hq-who"><span class="hq-tag">${esc(hqBrainsTag(m))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
+  const controls = open ? `<div class="hq-controls">${hqBackLink()}
+      <p class="hq-who"><span class="hq-tag">${esc(hqBrainTag(m.brain) + (m.brain === "mac" && HQ.mac ? ` (${hqMacWord(HQ.mac)})` : ""))}</span> ${hqMemberMoney(m)}</p>${hqBrains(m)}
       <div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button>
         <button class="hq-btn" data-act="hq:pick:member:${m.id}">Look at ${esc(m.name)}</button></div></div>` : "";
-  return `<li class="hq-member"><button class="hq-line" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
-      <span>${esc(hqRole(m.role))} · ${m.furloughed ? "on furlough · " : ""}${m.paused ? "paused · " : ""}${m.furloughed ? "" : (on ? "on " + esc(on) : waits ? esc(waits) : "between turns") + " · "}${money}</span></button>${controls}</li>`;
+  return `<li class="hq-member"><button class="hq-line" id="hq-member-${Number(m.id)}" aria-expanded="${open ? "true" : "false"}" data-act="hq:roster:${m.id}:toggle"><b>${esc(m.name)}</b>
+      <small>${esc(hqBrainTag(m.brain))} · ${doing}</small> <span>${money}</span></button>${controls}</li>`;
 }
 
-// The Team card as an org chart (the owner, on a phone: "super cluttered, can't tell the
-// teams"): the board, which is the owner, and the CEO with whoever has no lead above them; then
-// one group per lead, the lead first and then those who work under it. The wing's lead's is
-// Engineering; any other lead's, Ops.
+// The team board: a line a member, no groups (ADR 0142: ranked models, no roles or reporting
+// lines; the owner's notes of 31 Oct).
 function hqRoster(s) {
-  const members = s.members || [], wingLeads = (s.wing && s.wing.leads) || [];
-  const line = (m) => hqRosterLine(m, members);
-  const ceo = members.filter((m) => m.role === "ceo");
-  const leads = members.filter((m) => m.role === "lead");
-  const rest = members.filter((m) => m.role !== "ceo" && m.role !== "lead");
-  const loose = rest.filter((m) => !hqLeadOf(m, members));
-  const group = (title, people) => `<div class="hq-group"><h3>${title}</h3><ul class="hq-team">${people.map(line).join("")}</ul></div>`;
-  return group("Board: you", ceo.concat(loose)) + leads.map((l) =>
-    group(esc(hqTeamLabel(l, wingLeads)),
-      [l].concat(rest.filter((m) => (hqLeadOf(m, members) || {}).id === l.id)))).join("");
+  return `<ul class="hq-team hq-board">${(s.members || []).map(hqRosterLine).join("")}</ul>`;
 }
 
-// Roughly where a thing stands, in words: the same names HQ gives its proposals.
-function hqAreaOf(it) {
-  const x = it.x, y = it.y, within = (l, t, r, b) => x >= l && x < r && y >= t && y < b;
-  if (y < 2) return "the back wall";
-  if (within(16, 15, 24, 20)) return "the lounge";
-  if (within(24, 15, 32, 20)) return "the kitchen";
-  if (within(0, 15, 9, 20)) return "the ping-pong corner";
-  if (within(9, 15, 16, 20)) return "the meeting room side";
-  if (within(7, 2, 20, 7)) return "the commons";
-  if (within(0, 2, 7, 8)) return "the board room side";
-  if (within(20, 2, 32, 8)) return "the CEO's side";
-  return "the open floor";
-}
-
-// The Office card (ADR 0119, 0142): the floor and its games. The team no longer changes the
-// floor; the members work and, in their downtime, play.
+// The Office card (ADR 0119, 0142): the office's games. The floor became the studio (the owner,
+// 4 Nov); the members work and, in their downtime, play chess at its table.
 function hqOffice(s) {
   const o = s.office;
   if (!o) return "";
   return `<section class="hq-card hq-office-card"><h2>Office</h2>
-    <p class="hq-note">${(o.items || []).length} things on the floor. Downtime costs nothing: it is work on the house's own model.</p>
+    <p class="hq-note">Downtime costs nothing: it is work on the house's own model. The chess table stands in the studio's lounge.</p>
     ${hqGames(s)}
   </section>`;
 }
@@ -1685,7 +1086,8 @@ function hqOffice(s) {
 // Ping-pong and pool the engine plays for nothing, and chess the members play in their
 // downtime. Every name and every result is the team's own words, so all of it is escaped.
 
-const HQ_PIECES = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+// Each with U+FE0E, the text form: ♟ is also an emoji, which a phone draws black on either side.
+const HQ_PIECES = { k: "♚\uFE0E", q: "♛\uFE0E", r: "♜\uFE0E", b: "♝\uFE0E", n: "♞\uFE0E", p: "♟\uFE0E" };
 
 function hqStreak(n) { return n > 0 ? `W${n}` : n < 0 ? `L${-n}` : "–"; }
 
@@ -1699,11 +1101,13 @@ function hqLeaderboard(game, chess) {
   return `<table class="hq-board"><thead><tr><th>Player</th>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-// A chess board of 64 squares from the position's eight rows; capitals are white's pieces.
+// A chess board of 64 squares from the position's eight rows; capitals are white's pieces. The
+// squares in `lit` (row * 8 + file) are the last move's.
 function hqChessBoard(c) {
+  const lit = new Set(c.lit || []);
   const squares = (c.rows || []).map((row, r) => [...String(row)].map((ch, f) => {
     const piece = ch === "." ? "" : HQ_PIECES[ch.toLowerCase()] || "", white = ch !== "." && ch === ch.toUpperCase();
-    return `<span class="${(r + f) % 2 ? "dark" : ""}${white ? " white" : ""}">${piece}</span>`;
+    return `<span class="${(r + f) % 2 ? "dark" : ""}${white ? " white" : ""}${lit.has(r * 8 + f) ? " lit" : ""}">${piece}</span>`;
   }).join("")).join("");
   return `<div class="hq-chess" role="img" aria-label="${esc(`Chess board, ${c.white} against ${c.black}: ${c.fen}`)}">${squares}</div>`;
 }
@@ -1722,14 +1126,6 @@ function hqChessPanel() {
   return games.map(hqChessGame).join("");
 }
 
-// What a games table shows when tapped: its leaderboard and the latest match there.
-function hqTablePanel(id) {
-  const g = ((HQ.snap || {}).games || {})[id] || {};
-  const label = id === "pool" ? "Pool" : "Ping-pong", last = g.last;
-  return `<div class="hq-sel">${label}</div>${hqLeaderboard(g, false)}
-    <p class="hq-note">${last ? `Latest: ${esc(hqScoreLine(last))}${last.note ? ` (${esc(last.note)})` : ""}` : "Played by whoever has nothing to do, for nothing."}</p>`;
-}
-
 // The Games section of the Office card: the three leaderboards, the last five results, and the
 // games of chess being played, each a tap away from its board.
 function hqGames(s) {
@@ -1743,7 +1139,7 @@ function hqGames(s) {
     .map((c) => `<li>${esc(c.white)} against ${esc(c.black)}: ${esc(c.to_move)} to move, ${(c.moves || []).length} moves
       <button class="hq-btn" data-act="hq:pick:chess:0">Look at the board</button></li>`).join("");
   return `<h3>Games</h3>
-    <p class="hq-note">Idle members play ping-pong and pool for fun, and nothing is kept; chess is played by the members, a move in each downtime turn, and the model league plays in the Holodeck.</p>
+    <p class="hq-note">Chess is played by the members, a move in each downtime turn, and the model league plays in the Holodeck.</p>
     <details><summary>Chess</summary>${hqLeaderboard(g.chess, true)}</details>
     ${playing ? `<p class="hq-who">Playing now</p><ul class="hq-team">${playing}</ul>` : ""}
     ${recent ? `<p class="hq-who">Latest results</p><ul class="hq-team">${recent}</ul>${recentList.more}` : `<p class="hq-empty">No results yet.</p>`}
@@ -1761,24 +1157,15 @@ function hqBundleOf(d) {
   return m ? m[1] : "";
 }
 
-// The owner hires (ADR 0115, 0131): a name, a role, what the member works with (the Mac or the
-// house's model) and the Claude it judges with, and whom it reports to. HQ decides the rules
-// (one CEO, a Claude the role may use) and refuses the rest; this only asks.
-function hqHireForm(s) {
-  const roles = [["developer", "Developer"], ["lead", "Lead"], ["researcher", "Researcher"], ["reviewer", "Tester"], ["ceo", "CEO"]]
+// The owner hires (ADR 0115, 0142): a name and the model it is. HQ refuses a model it does not
+// have; this only asks.
+function hqHireForm() {
+  const brains = [["local", "Local"], ["mac", "Mac"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus"], ["deepseek-flash", "DeepSeek Flash"]]
     .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const works = [["mac", "Mac"], ["local", "Local"]]
-    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const judges = [["", "Claude Haiku (Sonnet for the CEO)"], ["claude-haiku-5-5", "Claude Haiku"], ["claude-sonnet-5-5", "Claude Sonnet"], ["claude-opus-5-5", "Claude Opus (the CEO's alone)"]]
-    .map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  const to = `<option value="">by role</option>` + (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)} (${esc(hqRole(m.role))})</option>`).join("");
-  return `<section class="hq-card"><h2>Hire</h2><div class="hq-row">
+  return `<h3>Hire</h3><div class="hq-row">
       <input id="hq-hire-name" placeholder="Name" aria-label="The new member's name" />
-      <select id="hq-hire-role" aria-label="Role">${roles}</select>
-      <label>works with <select id="hq-hire-work" aria-label="What the member works with">${works}</select></label>
-      <label>judges with <select id="hq-hire-judgment" aria-label="The Claude the member judges with">${judges}</select></label>
-      <label>reports to <select id="hq-hire-to" aria-label="Whom the member reports to">${to}</select></label>
-      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div></section>`;
+      <label>thinks with <select id="hq-hire-brain" aria-label="The model the member is">${brains}</select></label>
+      <button class="hq-btn ok" data-act="hq:hire:new:add">Hire</button></div>`;
 }
 
 // A task's documents and branches (ADR 0115): a submitted branch's diff and stat, a check's
@@ -1792,30 +1179,14 @@ function hqDocuments(t) {
   return `<div class="hq-evidence"><h3>Branches and documents</h3>${rows ? `<ul class="hq-thread">${rows}</ul>` : ""}${shown}</div>`;
 }
 
-// What a member thinks with (ADR 0109): the house's own model, or a Claude its role may use,
-// as HQ lists them for it. The one it has is pressed; each other is a tap away.
+// What a member thinks with (ADR 0109, 0142): its one model, of those HQ lists. The one it has
+// is pressed; each other is a tap away.
 function hqBrains(m) {
-  // Two brains (ADR 0131): what it works with, and the Claude it judges with. Every member has
-  // both, so neither can be taken away, only changed.
-  if (m.work_brains) {
-    const pick = (act, current, b) => `<button class="hq-btn${b.name === current ? " ok" : ""}" aria-pressed="${b.name === current ? "true" : "false"}"
-      data-act="hq:${act}:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
-    return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} works with">Work: ${m.work_brains.map((b) => pick("workbrain", m.work_brain, b)).join("")}</div>
-      <div class="hq-row" role="group" aria-label="The Claude ${esc(m.name)} judges with">Judgment: ${(m.judgment_brains || []).map((b) => pick("judge", m.judgment_brain, b)).join("")}</div>`;
-  }
   const brains = m.brains || [];
   if (brains.length < 2) return "";
   const btn = (b) => `<button class="hq-btn${b.name === m.brain ? " ok" : ""}" aria-pressed="${b.name === m.brain ? "true" : "false"}"
     data-act="hq:brain:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
   return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} thinks with">Brain: ${brains.map(btn).join("")}</div>`;
-}
-
-// The CEO's decision for the board (ADR 0111), in its three parts: every word is the CEO's,
-// so all of it is escaped.
-function hqDecision(c) {
-  if (!c) return "";
-  return `<dl class="hq-kv"><dt>Decision</dt><dd>${esc(c.decision)}</dd>
-    <dt>Recommendation</dt><dd>${esc(c.recommendation)}</dd><dt>Why</dt><dd>${esc(c.why)}</dd></dl>`;
 }
 
 // A project's title, by its id.
@@ -1828,11 +1199,12 @@ function hqProjectTitle(id) {
 // spend against its cap, amber from 80% and red once spent. The owner, who is the board, makes
 // them, caps them, hands them work, pauses, resumes, drops and reopens them. Every word a
 // member wrote (a proposal's title, its reason) is escaped.
+const HQ_PROJECTS_SHOWN = 4;
 function hqProjects(s) {
   const projects = s.projects || [];
   const goals = (s.goals || []).filter((g) => g.status === "active" || projects.some((p) => p.goal === g.id));
   const status = (p) => p.pause === "budget" ? "paused: it spent its cap" : p.pause === "owner" ? "paused by you"
-    : p.status === "proposed" ? `proposed by ${p.created_by}, waits for the CEO` : p.status;
+    : p.status === "proposed" ? `proposed by ${p.created_by}, waits for a decision` : p.status;
   const money = (p) => {
     if (!p.cap) return `<span>${hqDollars(p.spent)} this month · no cap</span>`;
     const share = Math.min(100, Math.round((p.spent / p.cap) * 100));
@@ -1861,23 +1233,44 @@ function hqProjects(s) {
       <div class="hq-row">${acts(p)}</div>`);
   // Live projects first; finished ones (done, dropped) wait behind "Show all".
   const finished = (p) => ["done", "dropped"].includes(p.status) ? 1 : 0;
+  // Routines are a kind of project here (the owner's notes of 31 Oct), each after its goal's
+  // projects; they stay their own record (ADR 0107), so this changes only how they show. The
+  // ones that are off wait behind one "Show the N that are off" for the card.
+  const routines = s.routines || [];
+  const off = routines.filter((r) => !r.enabled).length;
+  const showOff = !!HQ.more.routinesoff;
+  const routinesOf = (goal) => routines.filter((r) => r.goal === goal && (r.enabled || showOff)).map(hqRoutineRow).join("");
   const groups = goals.map((g) => {
-    const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b));
-    const live = mine.filter((p) => !finished(p)).length;
-    const list = hqMore(`projects${g.id}`, mine.map(row), Math.max(live, 1));
-    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${list.shown || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
+    // A few per goal at rest, those with open work first (tabs climb, round 0: 28 live rows read as
+    // a wall); the rest behind "Show all".
+    const mine = projects.filter((p) => p.goal === g.id).sort((a, b) => finished(a) - finished(b) || (b.open_tasks || 0) - (a.open_tasks || 0));
+    const list = hqMore(`projects${g.id}`, mine.map(row), HQ_PROJECTS_SHOWN);
+    const rows = list.shown + routinesOf(g.id);
+    return `<li><b>${esc(g.title)}</b><ul class="hq-team hq-projects">${rows || `<li class="hq-empty">No project yet.</li>`}</ul>${list.more}</li>`;
   }).join("");
+  // A routine whose goal is not listed (dropped, or none) still shows, after the goals.
+  const listed = new Set(goals.map((g) => g.id));
+  const loose = routines.filter((r) => !listed.has(r.goal) && (r.enabled || showOff)).map(hqRoutineRow).join("");
+  const offFold = off ? `<div class="hq-row"><button class="hq-btn hq-more" aria-expanded="${showOff}" data-act="hq:more:routinesoff:toggle">${showOff ? "Hide" : "Show"} the ${off} that ${off === 1 ? "is" : "are"} off</button></div>` : "";
   const goalOpts = (s.goals || []).filter((g) => g.status === "active").map((g) => `<option value="${g.id}">${esc(g.title)}</option>`).join("");
-  const leadOpts = (s.members || []).filter((m) => m.role === "lead" || m.role === "ceo")
-    .map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
+  // Any member at work may lead a project (ADR 0142): there are no titles to pick by.
+  const leadOpts = (s.members || []).filter((m) => !m.furloughed)
+    .map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  const who = (s.members || []).map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join("");
   return `<section class="hq-card"><h2>Projects</h2>
     <ul class="hq-team">${groups || `<li class="hq-empty">No goal yet: set the team a goal first.</li>`}</ul>
-    <h3>New project</h3><div class="hq-row">
+    ${loose ? `<ul class="hq-team hq-projects">${loose}</ul>` : ""}${offFold}
+    ${hqFormFold("newproject", "New project", `<h3>New project</h3><div class="hq-row">
       <select id="hq-project-goal" aria-label="The goal it serves">${goalOpts}</select>
       <input id="hq-project-title" placeholder="e.g. Media stack upkeep" aria-label="What it is" />
       <select id="hq-project-lead" aria-label="Who leads it">${leadOpts}</select>
       <label>cap $<input id="hq-project-cap" inputmode="decimal" placeholder="none" style="width:5em" aria-label="Monthly cap in dollars, or none" /> a month</label>
-      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div></section>`;
+      <button class="hq-btn ok" data-act="hq:project:new:add">Make it</button></div>`)}
+    ${hqFormFold("newroutine", "Add a routine", `<h3>Add a routine</h3><div class="hq-row">
+      <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
+      <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
+      <select id="hq-routine-who" aria-label="Who does it">${who}</select>
+      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div>`)}</section>`;
 }
 
 // A span of time in the owner's words: 40 s, 14 min, 2.5 h, 3 d.
@@ -1907,7 +1300,7 @@ function hqOutcomes(o) {
     const m = w.memory, c = m.consults;
     return `${m.reinvented} reinvented · ${m.record_asked} asks of the record · ${c.asked} consults (${c.answered} answered, ${c.from_record} from the record)`;
   };
-  const rows = hqScoreRows("outcome", [["Landed", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
+  const rows = hqScoreRows("outcome", [["Changes", landed], ["Cost of one", cost], ["Talk : work", talk], ["Desk", desk], ["Memory", memory]]
     .map(([k, f]) => [k, f(o.day), f(o.week)]), "1 day", "7 days");
   const w = o.waiting || {};
   // Turns that wait for the day to turn (ADR 0133) are said when there are any, so a calm team's
@@ -1931,7 +1324,7 @@ function hqScorecard(s) {
   const pct = (v) => (v == null ? "" : ` (${v}%)`);
   const turns = (w) => `${n(w.turns.total)} · ${n(w.turns.nothing)} showed nothing${pct(w.turns.nothing_share)}${w.turns.unlabelled ? ` · ${w.turns.unlabelled} unlabelled` : ""}`;
   const review = (w) => `${n(w.review.sent_back)} of ${n(w.review.submissions)} submitted${pct(w.review.sent_back_share)}`;
-  const done = (w) => (w.finished.per_done == null ? "none done" : `${hqDollars(w.finished.per_done)} each · ${w.finished.done} done`);
+  const done = (w) => (w.finished.per_done == null ? "none done" : `${hqDollars(w.finished.per_done)} each · ${w.finished.done} done${w.finished.unverified ? `, ${w.finished.unverified} not verified` : ""}`);
   const dropped = (w) => (w.finished.dropped ? `${hqDollars(w.finished.dropped_spent)} on ${w.finished.dropped} dropped` : "none dropped");
   const alarms = (w) => `${n(w.alarms.count)} · ${n(w.alarms.tasks)} tasks${w.alarms.closed_median_ms == null ? "" : ` · closed in ${hqSpan(w.alarms.closed_median_ms)}`}${w.alarms.open ? ` · ${w.alarms.open} open` : ""}`;
   const desk = (w) => {
@@ -1942,7 +1335,7 @@ function hqScorecard(s) {
   };
   // HQ keeps the tokens, not the brains' prices, so the share is shown and not the dollars.
   const cache = (w) => (w.cache.share == null ? "no paid input" : `${w.cache.share}% of paid input read from cache`);
-  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk", desk], ["Cache", cache]]
+  const measures = [["Turns", turns], ["Sent back", review], ["Per done task", done], ["Waste", dropped], ["Alarms", alarms], ["Desk cards", desk], ["Cache", cache]]
     .map(([k, f]) => [k, f(card.today), f(card.week)]);
   const members = (w) => (w.turns.members || []).map((m) => `<li>${esc(hqName(m.member))}: ${m.turns} turns · ${m.nothing} showed nothing${m.unlabelled ? ` · ${m.unlabelled} unlabelled` : ""} · ${hqDollars(m.spent)}</li>`).join("")
     || `<li class="hq-empty">No turns.</li>`;
@@ -1951,35 +1344,25 @@ function hqScorecard(s) {
     .map(([w, at]) => `the record for ${w} starts ${esc(when(at))}`).join("; ");
   // Today's pool and the owner's one-day top-up (ADR 0113 rule 6).
   const pl = card.pool;
-  if (pl) measures.push(["Pool", `pool ${hqDollars(pl.base)}${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
-  const topUp = pl ? `<div class="hq-row"><button class="hq-btn" data-act="hq:pool:topup:go">Top up today</button></div>` : "";
+  if (pl) measures.push(["Pool", `${hqDollars(pl.base)} base${pl.topped_up ? ` + ${hqDollars(pl.topped_up)} top-up` : ""}`, null]);
   return `<section class="hq-card"><h2>How the team is doing</h2>
     ${hqOutcomes(card.outcomes)}
     <h3>The team's turns</h3>
     ${hqScoreRows("measure", measures, "Today", "7 days")}
-    ${topUp}
     <details><summary>Per member</summary><div class="hq-score-members">
       <div><b>Today</b><ul class="hq-team">${members(card.today)}</ul></div>
       <div><b>7 days</b><ul class="hq-team">${members(card.week)}</ul></div></div></details>
     ${since ? `<p class="hq-note">${since}: older turns and events are no longer kept.</p>` : ""}</section>`;
 }
 
-// The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
-// every turn. The owner reads it here and may rewrite it.
+// The old house log (ADR 0111): read-only, as the house page is where the house is
+// kept now (ADR 0122, 0142).
 function hqHouse(s) {
   const log = s.house_log || "";
-  // Once its lines are on the house page's timeline (ADR 0122), the old log is read-only.
-  if (s.world && s.world.migrated) {
-    if (!log.trim()) return "";
-    return `<details class="hq-card"><summary>The old house log (read-only)</summary>
+  if (!log.trim()) return "";
+  return `<section class="hq-card"><h2>The old house log (read-only)</h2>
       <p class="hq-note">Its lines are on the house page's timeline, in the World card.</p>
-      <pre class="hq-doc">${esc(log)}</pre></details>`;
-  }
-  return `<section class="hq-card"><h2>House log</h2>
-    <p class="hq-note">Kept by the CEO; the CEO and the lead read it every turn.</p>
-    <textarea id="hq-house" rows="6" maxlength="6000" aria-label="The house log"
-      placeholder="Nothing yet: the CEO adds what it learns about the house">${esc(log)}</textarea>
-    <div class="hq-row"><button class="hq-btn ok" data-act="hq:house:save">Save the house log</button></div></section>`;
+      <pre class="hq-doc">${esc(log)}</pre></section>`;
 }
 
 // ---- The owner's Mac as a brain (ADR 0130) ---------------------------------------------------
@@ -1990,6 +1373,87 @@ function hqHouse(s) {
 
 async function hqLoadMac() {
   try { HQ.mac = await api("GET", "/v1/mac"); } catch (_) { HQ.mac = null; }
+}
+
+// What is left with each paid model provider (the owner, 2026-10-30): DeepSeek's balance as it
+// says it, Claude's as the owner's last figure less what Endora has paid since.
+async function hqLoadCredits() {
+  try { HQ.credits = await api("GET", "/v1/credits"); } catch (_) { HQ.credits = null; }
+}
+
+// The two credit chips under the title: a balance in red when it is below its threshold, and
+// Claude's asking to be set until the owner has entered it.
+function hqCreditChips() {
+  const c = HQ.credits;
+  if (!c) return [];
+  const chips = [];
+  if (c.deepseek) {
+    const d = c.deepseek, cur = d.currency === "USD" ? "" : ` ${esc(d.currency)}`;
+    chips.push(`<button class="hq-chip${d.low ? " low" : ""}" data-act="go:models" title="DeepSeek's balance as DeepSeek says it${d.low ? ": below your threshold, top it up on DeepSeek's platform" : ""}">DeepSeek ${hqDollars(d.left)}${cur} left</button>`);
+  }
+  if (c.claude) {
+    const renews = c.claude_grant ? `. Your plan's ${hqDollars(c.claude_grant)} grant renews on the ${hqOrdinal(c.claude_renews_on)}` : "";
+    chips.push(`<button class="hq-chip${c.claude.low ? " low" : ""}" data-act="go:models" title="The balance you entered from Anthropic's Console, less ${hqDollars(c.claude.spent_since)} Endora has paid since${renews}${c.claude.low ? ": below your threshold, top it up" : ""}">Claude ≈ ${hqDollars(c.claude.left)} left</button>`);
+  } else {
+    chips.push(`<button class="hq-chip" data-act="go:models" title="Anthropic does not say a balance: enter the one its Console shows, in Settings → AI">Claude credit: set it</button>`);
+  }
+  return chips;
+}
+
+// 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st: the day a plan renews.
+function hqOrdinal(n) {
+  const tens = n % 100, ones = n % 10;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  return `${n}${ones === 1 ? "st" : ones === 2 ? "nd" : ones === 3 ? "rd" : "th"}`;
+}
+
+// The credits on the Settings screen: Claude's balance as the Console shows it, a plan's
+// monthly grant (Claude Max's $100) with its renewal day and the credit bought on top, and the
+// two thresholds below which the owner is told. The grant is spent first; on the renewal day
+// the estimate becomes the whole grant plus what is left of the bought credit.
+function hqCreditsSetup() {
+  const c = HQ.credits;
+  if (!c) return `<div class="card"><p class="sub">The node could not say what is left.</p></div>`;
+  const d = c.deepseek, cl = c.claude;
+  const deepseekNow = d ? `DeepSeek: ${hqDollars(d.left)}${d.currency === "USD" ? "" : " " + esc(d.currency)} left, as DeepSeek says it.`
+    : c.has_deepseek ? "DeepSeek: its balance could not be read." : "DeepSeek: no DeepSeek provider with a key.";
+  const pots = cl && c.claude_grant ? ` Of it, ${hqDollars(cl.grant_left)} is this month's grant and ${hqDollars(cl.purchased_left)} credit you bought.` : "";
+  const claudeNow = cl ? `Claude: about ${hqDollars(cl.left)} left (your ${hqDollars(cl.set)}, less ${hqDollars(cl.spent_since)} paid since).${pots}`
+    : "Claude: Anthropic does not say its balance; enter the one its Console's billing page shows.";
+  const plan = c.claude_grant
+    ? `Your plan's ${hqDollars(c.claude_grant)} grant renews on the ${hqOrdinal(c.claude_renews_on)} (next ${esc(c.claude_next_renewal || "")}), by your clock.`
+    : "A plan such as Claude Max grants API credit each month: enter it and the day the plan renews.";
+  return `<div class="card hq-credits">
+      <div class="model-role">Credits left</div>
+      <p class="sub">${deepseekNow}<br>${claudeNow}</p>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+        <label>Claude's balance in the Console now $<input id="hq-credit-claude" type="number" min="0" step="0.01" placeholder="${cl ? (cl.left / 1e6).toFixed(2) : "e.g. 20.00"}" aria-label="Claude's balance in dollars" /></label>
+        <label>tell me under $<input id="hq-credit-claude-low" type="number" min="0" step="0.5" value="${(c.claude_low / 1e6).toFixed(2)}" aria-label="Claude threshold in dollars" /></label>
+        <label>DeepSeek under $<input id="hq-credit-deepseek-low" type="number" min="0" step="0.5" value="${(c.deepseek_low / 1e6).toFixed(2)}" aria-label="DeepSeek threshold in dollars" /></label></div>
+      <p class="sub" style="margin-top:8px;">${plan}</p>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+        <label>Monthly grant $<input id="hq-credit-claude-grant" type="number" min="0" step="1" placeholder="100.00"${c.claude_grant ? ` value="${(c.claude_grant / 1e6).toFixed(2)}"` : ""} aria-label="The plan's monthly grant in dollars, 0 for none" /></label>
+        <label>renews on day <input id="hq-credit-claude-renews" type="number" min="1" max="31" step="1" placeholder="1–31"${c.claude_renews_on ? ` value="${c.claude_renews_on}"` : ""} aria-label="The day of the month the plan renews" /></label>
+        <label>bought credit left $<input id="hq-credit-claude-purchased" type="number" min="0" step="0.01" placeholder="${cl && c.claude_grant ? (cl.purchased_left / 1e6).toFixed(2) : "0.00"}" aria-label="Credit you bought that is left, in dollars" /></label>
+        <button class="primary" data-act="hq:credits:save:go">Save</button></div>
+      <p class="sub" style="margin-top:8px;">The grant is spent before bought credit; on the renewal day the estimate becomes the whole grant plus the bought credit left, and the warning is armed again. Enter Claude's balance, or the credit you bought, again after each top-up. Below a threshold you are told once on the desk.</p></div>`;
+}
+
+async function hqCreditsAct() {
+  const num = (id) => { const v = val(id); return v === "" ? null : Number(v); };
+  const body = {};
+  const claude = num("hq-credit-claude"), cl = num("hq-credit-claude-low"), dl = num("hq-credit-deepseek-low");
+  if (claude != null) body.claude_balance = claude;
+  if (cl != null) body.claude_low = cl;
+  if (dl != null) body.deepseek_low = dl;
+  const grant = num("hq-credit-claude-grant"), renews = num("hq-credit-claude-renews"), bought = num("hq-credit-claude-purchased");
+  if (grant != null) body.claude_grant = grant;
+  if (renews != null) body.claude_renews_on = renews;
+  if (bought != null) body.claude_purchased = bought;
+  try { HQ.credits = await api("POST", "/v1/credits", body); flash("Saved.", "ok"); }
+  catch (e) { flash("Couldn't save them: " + e.message, "err"); }
+  render();
+  return true;
 }
 
 // What the node's few words mean to the owner.
@@ -2006,42 +1470,35 @@ function hqMacWord(m) {
   return { "owner active": "in use", "on battery": "on battery", "model loading": "loading", "not heard from": "away" }[m.why] || "away";
 }
 
-// On HQ: the Mac's state and the busy switch. Setting it up is under Settings.
-function hqMacCard(s) {
+// The Mac's card, in Settings → AI beside the house's model (the owner, 31 Oct: it had its own
+// card on HQ): its state and why, the busy switch, the helper's token, the model's address, key
+// and name, and how long the owner must be idle. The buttons are the same ones the node always had.
+function hqMacSetup() {
   const m = HQ.mac;
-  if (!m) return "";
-  const hq = s.mac || {};
+  if (!m) return `<div class="card"><p class="sub">The node could not say about the Mac.</p></div>`;
+  const hq = (HQ.snap && HQ.snap.mac) || {};
   const heard = m.heard_s_ago == null ? "never" : m.heard_s_ago < 90 ? `${m.heard_s_ago} s ago` : `${Math.round(m.heard_s_ago / 60)} min ago`;
   const facts = m.plugged == null ? "" : `${m.plugged ? "plugged in" : "on battery"} · idle ${Math.floor((m.idle_s || 0) / 60)} min · model ${m.model_up ? "up" : "down"} · `;
   const waiting = hq.waiting ? ` ${hq.waiting} ${hq.waiting === 1 ? "turn waits" : "turns wait"} for it.` : "";
   const running = hq.running ? " A turn is running on it." : "";
-  return `<section class="hq-card" aria-live="polite"><h2>The Mac <span class="hq-tag">${hqMacWord(m)}</span></h2>
-    <p class="hq-who">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}</p>
-    <p class="hq-note">${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
-      ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
-      : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time. Mac busy holds it.</p>
-    <div class="hq-row"><button class="hq-btn ${m.busy ? "stop" : "ok"}" aria-pressed="${m.busy ? "true" : "false"}"
-      data-act="hq:mac:busy:${m.busy ? "off" : "on"}">Mac busy: ${m.busy ? "on" : "off"}</button>
-      <button class="hq-link" data-act="go:models">Set up in AI</button></div></section>`;
-}
-
-// The Mac's setup, on the Settings screen: the helper's token, the model's address, key and
-// name, and how long the owner must be idle. The buttons are the same ones the node always had.
-function hqMacSetup() {
-  const m = HQ.mac;
-  if (!m) return `<div class="card"><p class="sub">The node could not say about the Mac.</p></div>`;
   const token = HQ.macToken ? `<p class="hq-who" role="status">The helper's token, shown this once: <code>${esc(HQ.macToken)}</code>
       Save it in the file the install names (ENDORA_MAC_TOKEN_FILE).</p>` : "";
-  return `<div class="card hq-macsetup">
-      <p class="sub">Now: ${esc(hqMacWhy(m.why))}. Its busy switch is on the HQ screen, under Team.</p>
-      <div class="row" style="flex-wrap:wrap;margin-top:8px;">
+  return `<div class="card model-card hq-macsetup" aria-live="polite">
+      <div class="model-role">The Mac <span class="pill">${hqMacWord(m)}</span></div>
+      <div class="sub" style="margin:-4px 0 0;">${esc(hqMacWhy(m.why))}.${esc(waiting)}${esc(running)}<br>${esc(facts)}heard ${esc(heard)}. ${Number(m.idle_minutes) > 0
+        ? `A turn runs on it only when it is plugged in and you have been idle for ${Number(m.idle_minutes)} min`
+        : "A turn runs on it whenever it is plugged in, whether or not you are using it"}; one at a time.</div>
+      <div class="row" style="align-items:flex-start;gap:10px;">
+        <div class="grow"><div class="title" style="font-weight:500;">Mac busy</div><div class="sub">On, the model is unloaded and the team's turns on the Mac wait.</div></div>
+        <button class="${m.busy ? "primary" : "ghost"}" aria-pressed="${m.busy ? "true" : "false"}" data-act="hq:mac:busy:${m.busy ? "off" : "on"}">${m.busy ? "On" : "Off"}</button></div>
+      <div class="row" style="flex-wrap:wrap;">
         <input id="hq-mac-url" value="${esc(m.url || "")}" placeholder="http://192.168.1.10:8080/v1" aria-label="The Mac's model address" />
         <input id="hq-mac-model" value="${esc(m.model || "")}" placeholder="Model name" aria-label="The model's name" />
         <input id="hq-mac-key" type="password" autocomplete="off" placeholder="${m.has_key ? "Key kept; type to replace it" : "Key (the server's --api-key)"}" aria-label="The server's key" />
         <label>wait until I am idle for <input id="hq-mac-idle" type="number" min="0" max="1440" value="${Number(m.idle_minutes) || 0}" aria-label="Minutes the owner must be idle (0: no wait)" /> min (0: no wait)</label>
         <button class="primary" data-act="hq:mac:save:go">Save</button></div>
-      <div class="row" style="margin-top:8px;"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
-      <p class="sub" style="margin-top:8px;">Teams on the Mac brain wait for the Mac and never fall back to another model.</p></div>`;
+      <div class="row"><button class="ghost" data-act="hq:mac:token:make">${m.has_token ? "Make a new token for the helper" : "Make a token for the helper"}</button></div>${token}
+      <div class="sub">Teams on the Mac brain wait for the Mac and never fall back to another model.</div></div>`;
 }
 
 async function hqMacAct(what, arg) {
@@ -2075,6 +1532,39 @@ function hqApproval(a, serves) {
   const served = serves && serves.text ? `<dt>Serves</dt><dd>${serves.n ? `criterion ${Number(serves.n)}: ` : ""}${esc(serves.text)}</dd>` : "";
   return `<dl class="hq-kv"><dt>Runs</dt><dd>${esc(a.tool)}</dd>${args}${served}</dl>
     <p class="hq-who">${esc(a.member || "A member")} says why: ${esc(a.why)}</p>`;
+}
+
+// Accepted, waiting to merge (ADR 0115, amended 2026-10-31): each accepted branch HQ has not yet
+// merged, one line each (task, branch, when, where it stands), folded at rest; and the owner's two
+// switches: the merge cards back on the desk, and HQ merging develop itself.
+function hqAccepted(s) {
+  const rows = s.accepted || [];
+  const d = s.delivery || {};
+  const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
+    data-act="hq:delivery:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
+  const when = (at) => at ? `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })} ${hqClock(at)}` : "";
+  // A reason most rows share is said once in the card, not on every row (tabs climb, round 1).
+  const whys = rows.map((r) => r.why).filter(Boolean), tally = new Map();
+  for (const w of whys) tally.set(w, (tally.get(w) || 0) + 1);
+  const common = [...tally].sort((a, b) => b[1] - a[1])[0];
+  const shared = common && common[1] > 2 ? common[0] : "";
+  const lines = rows.map((r) => {
+    const slug = String(r.branch || "").replace(/^hq\//, "");
+    // A blocked item's kept submission (D22) is never pushed: its bundle is how it is reached.
+    const bundle = (r.status === "accepted" && !r.can_push) || r.status === "kept_blocked"
+      ? ` <button class="hq-link" data-act="hq:bundle:${Number(r.task)}:${esc(slug)}">bundle</button>` : "";
+    // The branch is a tooltip: its name repeated the title in engine words.
+    return `<li title="${esc(`${hqKey(r.task)} ${r.title} · ${r.branch}`)}"><b>${hqKey(r.task)} ${esc(r.title)}</b> <small>${esc(when(r.at))} · ${esc(r.said || r.status)}${r.why && r.why !== shared ? `: ${esc(r.why)}` : ""}</small>${bundle}</li>`;
+  });
+  const list = hqMore("acceptedlist", lines, 8);
+  const body = `<section class="hq-card"><h2>Accepted, waiting to merge <span class="hq-count">${rows.length}</span></h2>
+    ${shared ? `<p class="hq-note">Where a row says only "not pushed": ${esc(shared)}.</p>` : ""}
+    ${lines.length ? `<ul class="hq-lines hq-accepted">${list.shown}</ul>${list.more}` : `<p class="hq-empty">Nothing waiting to merge.</p>`}
+    <p class="hq-note">HQ pushes each accepted branch to your fork once its review, its check and a privacy scan pass; nothing personal leaves without a card on your desk.
+      Merging develop stays off while the experiment's rounds run.</p>
+    <div class="hq-row">${btn("merge_develop", !!d.merge_develop, "Merge into develop")}${btn("cards", !!d.cards, "Cards on my desk")}</div></section>`;
+  const meta = rows.length ? `${rows.length} branch${rows.length === 1 ? "" : "es"}` : "none";
+  return hqFold("accepted", "Accepted, waiting to merge", meta, body);
 }
 
 // What the team may do on the home lab: Endora's contracts (ADR 0106), and the owner's two
@@ -2116,56 +1606,52 @@ function hqNotes(s) {
   return `<section class="hq-card"><h2>Goals</h2>${set}<p class="hq-note">Notes for the team: every member working on a goal reads them in its briefing.</p><ul class="hq-team">${listed.shown}</ul>${listed.more}</section>`;
 }
 
-// Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
-// its rhythm, when it last ran, and whether it takes the home lab's alarms; each switches the
-// other way and runs now. A small form adds one under the team's first active goal.
-function hqRoutines(s) {
+// A routine (ADR 0107) as a row of the Projects card: work that comes round again, each a task
+// for one member, marked as a routine. Shut, its rhythm, who and on or off; open, when it last
+// ran and whether it takes the home lab's alarms, with on/off and "Run now". The form that adds
+// one is at the foot of the Projects card.
+function hqRoutineRow(r) {
   const when = (at) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
-  const routines = (s.routines || []).map((r) => hqOpenRow(`routine${r.id}`, esc(r.title),
-    `${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
+  return hqOpenRow(`routine${r.id}`, esc(r.title),
+    `routine · ${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.enabled ? "on" : "off"}`,
     `<span>${esc(r.rhythm)} · ${esc(hqName(r.assignee))} · ${r.last_fired_at ? "last ran " + esc(when(r.last_fired_at)) : "not run yet"}${r.last_task_open ? ` · ${hqKeyLink(r.last_task)} open` : ""}${r.on_lab_trouble ? " · takes home-lab alarms" : ""}${r.project ? ` · in ${esc(hqProjectTitle(r.project))}` : ""}</span>
       <div class="hq-row"><button class="hq-btn ${r.enabled ? "ok" : "no"}" aria-pressed="${r.enabled ? "true" : "false"}" data-act="hq:routine:${r.id}:${r.enabled ? "off" : "on"}">${r.enabled ? "On" : "Off"}</button>
-        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`));
-  const listed = hqMore("routines", routines, 5);
-  const rows = listed.shown;
-  const who = (s.members || []).map((m) => `<option value="${m.id}"${m.role === "lead" ? " selected" : ""}>${esc(m.name)}</option>`).join("");
-  return `<section class="hq-card"><h2>Routines</h2>
-    <ul class="hq-team">${rows || `<li class="hq-empty">None yet: the team works only on what it is handed.</li>`}</ul>${listed.more}
-    <h3>Add a routine</h3><div class="hq-row">
-      <input id="hq-routine-title" placeholder="e.g. Check the home lab" aria-label="What it does" />
-      <label>every <input id="hq-routine-hours" type="number" min="1" max="720" value="6" style="width:4em" aria-label="Every how many hours" /> hours</label>
-      <select id="hq-routine-who" aria-label="Who does it">${who}</select>
-      <button class="hq-btn ok" data-act="hq:routine:new:add">Add</button></div></section>`;
+        <button class="hq-btn" data-act="hq:routine:${r.id}:fire">Run now</button></div>`);
 }
 
-// What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
+// What was tapped, in detail: a member's turn and budget, a task and its chain of why, your corner,
+// the week's shelves, what the team knows (47f-hq-studio.js), or the chess table.
+
+// What a working member is doing, in a line: its latest word on the task, else the task.
+function hqDoing(m, t) {
+  const last = (t.thread || []).filter((p) => p.author === m.name).pop();
+  return last ? last.text : `on ${hqKey(t.id)}: ${t.title}`;
+}
 function hqSelected() {
   const sel = HQ.selected;
-  if (!sel) return `<p class="hq-empty">Tap a worker or a card on the board.</p>`;
+  if (!sel) return `<p class="hq-empty">Tap a worker, your corner, the shelves or the chess table.</p>`;
   if (sel.type === "chess") return hqChessPanel();
-  if (sel.type === "pool" || sel.type === "ping_pong") return hqTablePanel(sel.type);
+  if (sel.type === "shelf") return hqShelfPanel();
+  if (sel.type === "corner") return hqCornerPanel();
+  if (sel.type === "knowing") return hqKnowingPanel();
+  if (sel.type === "goal") return hqGoalPanel();
   const why = (t) => `<ul class="hq-why">${(t.why || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
   if (sel.type === "member") {
     const m = hqMember(sel.id); if (!m) return "";
     const run = (m.running || [])[0], t = run && run.task ? hqTask(run.task) : null;
-    return `<div class="hq-sel">${esc(m.name)} · ${esc(hqRole(m.role))}</div><dl class="hq-kv">
-      <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
+    return `<div class="hq-sel">${esc(m.name)}</div><dl class="hq-kv">
+      <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc(hqDoing(m, t)) : hqWaitingRun(m.id) ? "Its turn was interrupted; it waits to retry" : "Between turns"}</dd>
+      ${hqTroubleSaid(m.id) ? `<dt>${(hqTrouble(m.id) || {}).kind === "recovered" ? "Recovered" : "Problem"}</dt><dd>${hqTroubleSaid(m.id)}</dd>` : ""}
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
-      <dt>Brain</dt><dd>${m.work_brain ? esc(hqBrainsTag(m)) : esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
+      <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
       <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}${hqTurns((r) => r.member === m.id, "member-" + m.id)}`;
   }
-  if (sel.type === "item") {
-    const it = hqItems().find((x) => x.id === sel.id); if (!it) return "";
-    const by = it.placed_by === "endora" ? "Endora, when the office was set up" : it.placed_by === "owner" ? "you" : it.placed_by;
-    return `<div class="hq-sel">${esc(String(it.kind).replace(/_/g, " "))}</div><dl class="hq-kv">
-      <dt>Put there by</dt><dd>${esc(by)}</dd><dt>Where</dt><dd>${esc(hqAreaOf(it))}</dd></dl>
-      <p class="hq-note">The team moves what stands here by proposing it together; the Office card below lets you undo, reset or veto.</p>`;
-  }
   const t = hqTask(sel.id); if (!t) return "";
+  if (t.brief) hqAskWhole(t.id);
   const runner =((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
   const thread = (t.thread || []).slice(-3).map((p) => `<li>${esc(p.author)}${p.unsupported ? ` <span class="hq-unsupported">unsupported</span>` : ""}: ${esc(p.text)}</li>`).join("");
   return `<div class="hq-sel">${hqKey(t.id)} · ${esc(t.title)}</div><dl class="hq-kv">
-    <dt>Status</dt><dd>${esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
+    <dt>Status</dt><dd>${t.closure && t.closure.why === "completed_unverified" ? "Completed · Not verified" : esc(String(t.status).replace("_", " "))}${t.gate === true ? " · gate passed" : t.gate === false ? " · gate failed" : ""}</dd>
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
     <dt>Project</dt><dd>${hqTaskProject(t)}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
@@ -2189,19 +1675,55 @@ function hqTaskProject(t) {
   return `${name} <select id="hq-move-${t.id}" aria-label="Move into project">${options}</select> <button class="hq-btn" data-act="hq:move:${t.id}:go">Move</button>`;
 }
 
+// A link in Activity (the owner, 1 Nov) opens what it names where it already lives: an item
+// under Work's "Looking at", a member's line on the team board (Manage), a turn's replay (with
+// what it was given; Watch opens it as it is). Where Activity was is kept, for the way back.
+function hqFrom(kind, n) {
+  if (!n || !["task", "member", "run", "watch"].includes(kind)) return true;
+  HQ.back = { y: window.scrollY || 0, feed: HQ.feed };
+  if (kind === "run" || kind === "watch") { REPLAY.given = kind === "run"; go("replay", `run-${n}`); return true; }
+  HQ.feed = null;
+  if (kind === "task") { HQ.selected = { type: "task", id: n }; hqSetTab("work"); }
+  else { HQ.roster[n] = true; hqSetTab("manage"); }
+  render();
+  const el = document.getElementById(kind === "task" ? "hq-looking" : `hq-member-${n}`);
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
+  return true;
+}
+
+// Back to Activity, where it was: the tab or the paged view, scrolled as it was.
+function hqBackToActivity() {
+  const back = HQ.back || { y: 0, feed: null };
+  HQ.back = null; HQ.feed = back.feed; hqSetTab("activity");
+  if (NAV.v === "hq") render(); else go("hq");
+  // A screen newly opened scrolls to its top first; this comes after.
+  requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, back.y)));
+  return true;
+}
+
+// The way back to Activity, on what one of its links opened.
+function hqBackLink() {
+  return HQ.back ? `<div class="hq-row"><button class="hq-btn" data-act="hq:back">◀ Back to Activity</button></div>` : "";
+}
+
 // The verbs this screen uses. Returns true when it handled one.
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
-  if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; hqSetTab("desk"); render(); return true; }
+  if (noun === "pick") { HQ.back = null; HQ.selected = { type: id, id: Number(arg) }; hqSetTab("work"); render(); return true; }
+  // A line of Activity opens what it names, and back returns to where Activity was.
+  if (noun === "from") return hqFrom(id, Number(arg));
+  if (noun === "back") return hqBackToActivity();
   // Find a task by its number or words of its title, and open it.
   if (noun === "find") {
     const asked = (document.getElementById("hq-find") || {}).value || "";
     const found = hqFindTask(asked);
     if (!found) { flash(asked.trim() ? `No task matches "${asked.trim()}".` : "Type a task's number or a few words of its title.", "warn"); return true; }
-    HQ.selected = { type: "task", id: found }; hqSetTab("desk"); render(); return true;
+    HQ.selected = { type: "task", id: found }; hqSetTab("work"); render(); return true;
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
+  // What is left with each paid provider (the owner, 2026-10-30).
+  if (noun === "credits") return hqCreditsAct();
   // The Holodeck and the office's replays (ADR 0135, 0121).
   if (noun === "holo") return hqHoloAct(id, arg);
   if (noun === "roster") {
@@ -2210,28 +1732,22 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   if (noun === "more") { HQ.more[id] = !HQ.more[id]; render(); return true; }
   if (noun === "turns") { HQ.allTurns[id] = !HQ.allTurns[id]; render(); return true; }
-  if (noun === "logmore") { HQ.logOpen[id] = !HQ.logOpen[id]; render(); return true; }
-  if (noun === "logolder") {
-    if (HQ.logBusy) return true;
-    // More of what is kept here first; only when that runs out, ask HQ for what is older.
-    if (HQ.log.length > HQ.logShown) { HQ.logShown += 30; render(); return true; }
-    HQ.logBusy = true; render();
-    try {
-      const got = await api("GET", `/v1/hq/events?before=${HQ.oldest}&limit=50`);
-      const events = got.events || [];
-      if (!events.length) HQ.logDone = true;
-      for (const e of events.slice().reverse()) hqTell(e, false, true);
-      HQ.logShown += 30;
-    } catch (e) { flash("Couldn't load older events: " + e.message, "err"); }
-    HQ.logBusy = false; render(); return true;
+  if (noun === "logmore") {
+    HQ.logOpen[id] = !HQ.logOpen[id];
+    // A post HQ cut in its event is read whole from its task's thread, asked of HQ once.
+    const l = hqLogFind(id);
+    if (HQ.logOpen[id] && l && l.whole && hqLogText(l) === l.text) hqAskWhole(l.whole.task);
+    render(); return true;
   }
+  // Activity's paged view (the owner, 31 Oct).
+  if (noun === "feed") return hqFeedAct(id);
   if (noun === "decide") {
     // A question's answer, if the owner wrote one, goes in the task's thread before the member
-    // wakes; so do the board's words on the CEO's decision.
+    // wakes.
     const box = document.getElementById(`hq-answer-${id}`);
     const item = ((HQ.snap && HQ.snap.desk) || []).find((d) => d.id === Number(id));
     const amount = item && (item.kind === "project_cap" || item.kind === "project_budget" || item.kind === "out_for_day");
-    const takesWords = arg === "seen" || amount || (item && item.kind === "decision");
+    const takesWords = arg === "seen" || amount;
     const answer = takesWords && box ? box.value.trim() : "";
     if (arg === "answer" && !answer) { flash("Write your answer first.", "warn"); return true; }
     if (arg === "raise" && !answer) { flash("Write the new cap first, in dollars a month.", "warn"); return true; }
@@ -2267,23 +1783,6 @@ async function hqDispatch(verb, noun, id, arg) {
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
-  // Two brains (ADR 0131): what a member works with (the Mac or the house's model, free), and
-  // the Claude it judges with, which is paid from the pool and reads what it is shown.
-  if (noun === "workbrain") {
-    const m = hqMember(Number(id)), b = ((m && m.work_brains) || []).find((x) => x.name === arg);
-    if (!m || !b || m.work_brain === arg) return true;
-    try { await api("POST", `/v1/hq/members/${id}/work-brain`, { work_brain: arg }); flash(`${m.name} works with ${b.label}.`, "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
-  if (noun === "judge") {
-    const m = hqMember(Number(id)), b = ((m && m.judgment_brains) || []).find((x) => x.name === arg);
-    if (!m || !b || m.judgment_brain === arg) return true;
-    if (!confirm(`${m.name} will judge with ${b.label}: each decision turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results included; Restricted ones stay home). Go ahead?`)) return true;
-    try { await api("POST", `/v1/hq/members/${id}/judgment-brain`, { judgment_brain: arg }); flash(`${m.name} judges with ${b.label}.`, "ok"); }
-    catch (e) { flash("Couldn't change it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
   // The owner renames a member: HQ keeps names apart, as members are named in threads.
   if (noun === "rename") {
     const m = hqMember(Number(id)); if (!m) return true;
@@ -2293,15 +1792,12 @@ async function hqDispatch(verb, noun, id, arg) {
     catch (e) { flash("Couldn't rename: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
-  // The owner hires (ADR 0115, 0131): HQ refuses a second CEO or a Claude the role may not use.
+  // The owner hires (ADR 0115, 0142): HQ refuses a model it does not have.
   if (noun === "hire") {
     const name = val("hq-hire-name");
-    const role = (document.getElementById("hq-hire-role") || {}).value || "developer";
-    const work_brain = (document.getElementById("hq-hire-work") || {}).value || "mac";
-    const judgment_brain = (document.getElementById("hq-hire-judgment") || {}).value || null;
-    const to = Number((document.getElementById("hq-hire-to") || {}).value || 0) || null;
+    const brain = (document.getElementById("hq-hire-brain") || {}).value || "local";
     if (!name) { flash("Give the new member a name.", "warn"); return true; }
-    try { await api("POST", "/v1/hq/members", { name, role, work_brain, judgment_brain, reports_to: to }); flash(`${name} joined the team.`, "ok"); }
+    try { await api("POST", "/v1/hq/members", { name, brain }); flash(`${name} joined the team.`, "ok"); }
     catch (e) { flash("Couldn't hire: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
@@ -2322,7 +1818,8 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The owner adds to today's pool, for today only (ADR 0113 rule 6). HQ holds the limit.
   if (noun === "pool") {
-    const base = ((((HQ.snap || {}).scorecard || {}).pool || {}).base) || 0;
+    // Prefilled with one floor day, the unit HQ counts top-ups in (at most three).
+    const base = ((((HQ.snap || {}).scorecard || {}).pool || {}).floor) || 0;
     const said = prompt("Dollars to add to today's pool (gone tomorrow; at most three pool days in all):", (base / 1e6).toFixed(2));
     if (said === null) return true;
     const micros = Math.round(parseFloat(said) * 1e6);
@@ -2371,13 +1868,6 @@ async function hqDispatch(verb, noun, id, arg) {
   }
   // The team's world (ADR 0122): make a piece canon, demote canon, or download it all.
   if (noun === "world") return hqWorldAct(id, arg);
-  // The owner rewrites the CEO's house log; empty clears it.
-  if (noun === "house") {
-    const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";
-    try { await api("POST", "/v1/hq/house", { log }); flash("House log saved.", "ok"); }
-    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
-    await loadHQ(); render(); return true;
-  }
 
   // A goal's notes for the team; empty clears them.
   if (noun === "note") {
@@ -2401,6 +1891,14 @@ async function hqDispatch(verb, noun, id, arg) {
     const title = val("hq-goal"); if (!title) return true;
     try { await api("POST", "/v1/hq/goals", { title, reason: "" }); flash("Goal set.", "ok"); }
     catch (e) { flash("Couldn't set it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner's switches for accepted work (ADR 0115, amended 2026-10-31): the cards back on
+  // the desk, and merging develop.
+  if (noun === "delivery") {
+    if (!["cards", "merge_develop"].includes(id)) return true;
+    try { await api("POST", "/v1/hq/delivery", { [id]: arg === "on" }); flash(arg === "on" ? "Switched on." : "Switched off.", "ok"); }
+    catch (e) { flash("Couldn't switch it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // The owner's switches for the team's contracts.
@@ -2432,7 +1930,7 @@ async function hqDispatch(verb, noun, id, arg) {
     await loadHQ(); render(); return true;
   }
   // Tabs: per-viewer, kept in this browser.
-  if (noun === "tab") { hqSetTab(id); render(); return true; }
+  if (noun === "tab") { HQ.back = null; hqSetTab(id); render(); return true; }
   // Hand the team a piece of work, under the first goal it is working towards, to the lead the
   // owner picks: a form on the screen, not pop-ups.
   if (noun === "work") {

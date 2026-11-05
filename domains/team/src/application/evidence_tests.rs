@@ -6,16 +6,20 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::run_ports::RunStore;
+
 use serde_json::{Value, json};
 
 use super::engine::{Author, Called, Engine, EngineError, Settings};
 use super::ports::{Clock, NewRoutine, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::receipt_ports::ReceiptStore;
+use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::evidence::NUDGE;
 use crate::domain::routines::HOUR_MS;
 use crate::domain::{
-    Criterion, GoalId, Label, MemberId, Priority, Refusal, Role, RunId, RunStatus, TaskId,
-    TaskStatus, WakeReason,
+    Criterion, GoalId, Label, MemberId, Priority, Refusal, RunId, RunStatus, TaskId, TaskStatus,
+    WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -49,12 +53,12 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// Grace the tester when `tester`.
 fn team(hq: &Hq<'_>, ceo: bool, tester: bool) -> Team {
     if ceo {
-        hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        hq.hire("Mara", 35, 1, 3).unwrap();
     }
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     if tester {
-        hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+        hq.hire("Grace", 20, 2, 1).unwrap();
     }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -180,17 +184,33 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
     let parent = owners_task(&hq, &t, t.lead, "Keep sonarr up");
     let ada = turn(&hq, t.lead);
     use_tool(&hq, &ada, "claim", &json!({ "task": parent.0 })).unwrap();
+    // A criterion past the most one may be is refused, saying which, not cut (#1049).
+    let made = hq.store().tasks().unwrap().len();
+    let long = use_tool(
+        &hq,
+        &ada,
+        "create_task",
+        &json!({ "title": "Tidy sonarr's role", "description": "and check it is up",
+                 "criteria": ["the role's tasks are named", "z".repeat(1001)] }),
+    )
+    .unwrap_err();
+    assert!(long.contains("criterion 2 is 1001 characters"), "{long}");
+    assert_eq!(hq.store().tasks().unwrap().len(), made, "nothing is made");
     use_tool(
         &hq,
         &ada,
         "create_task",
         &json!({ "title": "Tidy sonarr's role", "description": "and check it is up",
-                 "assignee": "Linus", "criteria": [
+                 "criteria": [
                     { "text": "the role's tasks are named" },
                     { "text": "sonarr is running and healthy", "live": true }] }),
     )
     .unwrap();
+    // Work goes to a member through its loop (ADR 0142): the owner gives Linus this one.
     let sub = hq.store().tasks().unwrap().pop().unwrap();
+    hq.store().set_assignee(sub.id, Some(t.dev)).unwrap();
+    hq.wake(t.dev, Some(sub.id), crate::domain::WakeReason::Assigned)
+        .unwrap();
     end(&hq, &clock, &ada);
     let linus = turn(&hq, t.dev);
     use_tool(&hq, &linus, "claim", &json!({ "task": sub.id.0 })).unwrap();
@@ -233,6 +253,12 @@ fn a_sandbox_report_is_cited_for_what_the_sandbox_did_but_never_for_the_lab_now(
     };
     let said = submit(json!([[format!("r{edit}")], [format!("r{curl}")]])).unwrap_err();
     assert!(said.contains("is about the lab now"), "{said}");
+    // Too many references is said as a count, never as "longer than 30 characters".
+    let many: Vec<String> = (0..=crate::domain::evidence::MOST_REFS)
+        .map(|_| format!("r{edit}"))
+        .collect();
+    let said = submit(json!([many, [format!("r{curl}")]])).unwrap_err();
+    assert!(said.contains("more than the 30 references"), "{said}");
     let fresh = reading(&hq, &linus, "homelab_status", "", false);
     submit(json!([
         [format!("r{edit}")],
@@ -287,9 +313,10 @@ fn the_owner_hands_out_work_only_with_what_done_means() {
     let many = vec![Criterion::new("x", false); crate::domain::evidence::MOST_CRITERIA + 1];
     assert_eq!(
         owners_ask(&hq, &t, t.lead, &many),
-        Err(EngineError::Refused(Refusal::TooLong(
-            crate::domain::evidence::MOST_CRITERIA
-        )))
+        Err(EngineError::Refused(Refusal::TooMany {
+            most: crate::domain::evidence::MOST_CRITERIA,
+            of: "criteria"
+        }))
     );
 
     let ask = [
@@ -680,7 +707,7 @@ fn a_check_back_on_a_task_blocked_on_a_wait_is_replaced_by_the_wait() {
         &hq,
         &ada,
         "create_task",
-        &json!({ "title": "Restart deluge", "description": "after the VPN", "assignee": "Linus",
+        &json!({ "title": "Restart deluge", "description": "after the VPN",
                  "criteria": [{ "text": "deluge is running", "live": true }] }),
     )
     .unwrap();

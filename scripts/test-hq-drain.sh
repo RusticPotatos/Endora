@@ -43,7 +43,14 @@ case "${1:-}" in
       grep) [ "$FAKE_CAN_DRAIN" = yes ]; exit $? ;;
       endora-hq)
         case "$2" in
-          drain) [ "${FAKE_DRAIN_FAILS:-no}" != yes ]; exit $? ;;
+          drain)
+            [ "${FAKE_DRAIN_FAILS:-no}" != yes ] || exit 1
+            if [ "${FAKE_CAP_EXPIRES:-no}" = yes ]; then
+              echo "drain: the cap of 300 s passed with 1 turn still running: the restart cuts them, and each is tried again"
+            else
+              echo "drain: no turn is running: the restart can go ahead"
+            fi
+            exit 0 ;;
           resume)
             n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
             echo $((n + 1)) >"$FAKE_COUNT"
@@ -119,6 +126,41 @@ fresh
 hq drain FAKE_DRAIN_FAILS=yes
 expect "an HQ that cannot be drained does not stop the deploy" "$([ $STATUS -eq 0 ]; echo $?)"
 expect "  and says it deploys anyway" "$(says 'deploying anyway'; echo $?)"
+
+echo "draining strictly, before a release (DRAIN_STRICT=1)"
+
+fresh
+hq drain DRAIN_STRICT=1
+expect "drains and waits as ever" "$(called 'endora-hq drain --cap 300 --wait'; echo $?)"
+expect "  and exits 0 once no turn is running" "$([ $STATUS -eq 0 ]; echo $?)"
+
+fresh
+hq drain DRAIN_STRICT=1 NO_DRAIN=1
+expect "refuses NO_DRAIN: a release always drains" "$([ $STATUS -ne 0 ]; echo $?)"
+expect "  and touches nothing" "$(never_exec; echo $?)"
+
+fresh
+hq drain DRAIN_STRICT=1 FAKE_UP="endora-node"
+expect "stops when HQ is not running here" "$([ $STATUS -ne 0 ]; echo $?)"
+
+fresh
+hq drain DRAIN_STRICT=1 FAKE_CAN_DRAIN=no
+expect "stops on an HQ that predates the drain" "$([ $STATUS -ne 0 ]; echo $?)"
+expect "  without running the command on it" "$(! called 'endora-hq drain'; echo $?)"
+
+fresh
+hq drain DRAIN_STRICT=1 FAKE_DRAIN_FAILS=yes
+expect "stops when HQ cannot be drained" "$([ $STATUS -ne 0 ]; echo $?)"
+expect "  and lifts what it may have announced" "$(called 'exec endora-hq endora-hq resume'; echo $?)"
+
+fresh
+hq drain DRAIN_STRICT=1 FAKE_CAP_EXPIRES=yes
+expect "stops when the cap passed with turns still running: that is no drain" "$([ $STATUS -ne 0 ]; echo $?)"
+expect "  and lifts the announcement" "$(called 'exec endora-hq endora-hq resume'; echo $?)"
+
+fresh
+hq drain FAKE_CAP_EXPIRES=yes
+expect "without DRAIN_STRICT, a cap that passes still deploys, as ADR 0134 says" "$([ $STATUS -eq 0 ]; echo $?)"
 
 echo "lifting the drain after a deploy"
 

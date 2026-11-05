@@ -56,6 +56,7 @@ Secrets are folders or files, never values.
 | `endora_router_model`, `endora_synth_model` | `ENDORA_ROUTER_MODEL`, `ENDORA_SYNTH_MODEL` | Models for routing and synthesis (the main model) |
 | `endora_ansible_nas_repo`, `endora_ansible_nas_ref` | `ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF` | The lab's ansible-nas the team reads, and its branch (none; the default branch) |
 | `endora_lab_retired` | `ENDORA_LAB_RETIRED` | Retired containers for the team's map: `name=note;name=note` (none) |
+| `endora_personal_values` | `ENDORA_PERSONAL_VALUES` | Your own values, comma separated, for the privacy scan before HQ pushes to your fork (ADR 0115); from your vault, never a tracked file (shapes and the secret tripwire only) |
 | `endora_git_push_key_dir` | `ENDORA_GIT_PUSH_KEY` | Folder holding the file `key`, a deploy key (ADR 0115) (the node cannot push) |
 | `endora_bench_token_dir` | `ENDORA_BENCH_TOKEN` | Folder holding the file `token` (ADR 0123) (no bench) |
 | `endora_bench_cap_cents` | `ENDORA_BENCH_CAP_CENTS` | What the bench may spend a day (200) |
@@ -95,6 +96,12 @@ profile `endora_profiles` cannot start. Its Mac-only allow-list is two entries: 
 (stamped at build time) and the `bundled` profile. The rest of `local.mk`
 (`DOCKER_CONTEXT`, `ENDORA_MAC_*`, `ENDORA_PI_SSH`, `ENDORA_BUILD_CONTEXT`, ...) only matters on
 the Mac and is not compose input.
+
+Endora is released by this role or `make deploy`, never by Watchtower: every compose service
+carries `com.centurylinklabs.watchtower.enable: "false"` (the file's `released-by-endora`
+labels), and so does every container Endora's runner starts. Its images are built, not pulled,
+and Watchtower failed nightly on `docker-observer`, which runs in the node's network. The same
+script fails when a compose service lacks the label.
 
 ## Sound, and the AirPlay 2 door
 

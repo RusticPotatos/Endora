@@ -5,6 +5,7 @@
 //! ended by the engine's longest-turn limit.
 
 use std::collections::{HashMap, VecDeque};
+
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -209,8 +210,9 @@ impl WorkerAdapter for RemoteRunner {
 mod tests {
     use super::*;
     use crate::application::engine::{Author, Engine, Settings};
-    use crate::application::ports::{Clock, NewTask, TeamStore};
-    use crate::domain::{MemberId, Priority, Role, RunStatus};
+    use crate::application::ports::{Clock, NewTask};
+    use crate::application::run_ports::RunStore;
+    use crate::domain::{MemberId, Priority, RunStatus};
     use crate::infrastructure::SqliteTeamStore;
 
     const GRACE: Duration = Duration::from_secs(10);
@@ -222,7 +224,6 @@ mod tests {
             task: None,
             told: "You are the developer.".to_owned(),
             token: token.to_owned(),
-            effort: None,
         }
     }
 
@@ -475,7 +476,7 @@ mod tests {
             Noon,
             Settings::default(),
         );
-        let dev = hq.hire("John Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = hq.hire("John Doe", 40, 2, 0).unwrap();
         let goal = hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
             .unwrap();

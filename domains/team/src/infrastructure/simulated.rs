@@ -25,6 +25,9 @@ pub enum Script {
     Killed,
     /// It cannot even start.
     WillNotStart,
+    /// The runner takes it, but its container never starts (the runner cannot start the
+    /// member's runtime), and the runner says so: exit -1, as the real runner reports it.
+    NeverStarts,
 }
 
 #[derive(Default)]
@@ -105,7 +108,9 @@ impl WorkerAdapter for SimulatedRunner {
             Script::WillNotStart => return Err(StartError("the runner said no".to_owned())),
             Script::StaysRunning => Liveness::Running,
             Script::Succeeds => Liveness::Finished { succeeded: true },
-            Script::Fails | Script::Killed => Liveness::Finished { succeeded: false },
+            Script::Fails | Script::Killed | Script::NeverStarts => {
+                Liveness::Finished { succeeded: false }
+            }
             Script::Vanishes => Liveness::Gone,
         };
         state.turns.insert(run.run, liveness);
@@ -113,6 +118,9 @@ impl WorkerAdapter for SimulatedRunner {
         state.exits.remove(&run.run);
         if script == Script::Killed {
             state.exits.insert(run.run, Exit::Code(137));
+        }
+        if script == Script::NeverStarts {
+            state.exits.insert(run.run, Exit::Code(-1));
         }
         state.started.push(run.clone());
         Ok(())

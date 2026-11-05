@@ -35,7 +35,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     fn running_turns(&self) -> Done<Vec<Run>> {
         Ok(self
             .store
-            .runs()?
+            .live_runs()?
             .into_iter()
             .filter(|r| r.status == RunStatus::Running)
             .collect())
@@ -58,9 +58,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Begins a drain, with `cap_seconds` for a deploy to wait for the turns under way (the
     /// default when none). One that already lasts is left as it began: asking again changes
     /// nothing. Returns [`Self::drain_shown`].
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn begin_drain(&self, cap_seconds: Option<i64>) -> Done<Value> {
         let _held = self.held();
         let now = self.clock.now();
@@ -80,9 +77,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Lifts the drain, if one lasts: what a deploy says once it is done, in case HQ was not
     /// restarted. Returns [`Self::drain_shown`].
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn end_drain(&self) -> Done<Value> {
         let _held = self.held();
         self.drain_tick_held_lock(self.clock.now())?;
@@ -94,9 +88,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// The drain as the API tells it: whether one lasts, since when and with what cap, how many
     /// turns are running and how many wait, and what the last one came to.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn drain_shown(&self) -> Done<Value> {
         let drain = self.live_drain()?;
         let last = self.store.setting(LAST)?.as_deref().and_then(Outcome::read);
@@ -152,7 +143,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // What waited for the restart waits for nothing now: a turn that is still held back for
         // another reason says that when it is next looked at.
         let said = crate::domain::turns::Wait::Restart.words();
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.status == RunStatus::Queued && run.end_reason == said {
                 run.end_reason.clear();
                 self.store.save_run(&run)?;
@@ -191,7 +182,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(false);
         }
         let said = crate::domain::turns::Wait::Restart.words();
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.status != RunStatus::Queued || run.end_reason == said {
                 continue;
             }

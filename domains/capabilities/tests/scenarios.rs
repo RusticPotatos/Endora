@@ -1,13 +1,19 @@
 //! The bridge's scenarios (docs/testing.md): the owner's words in `features/*.feature`, run
 //! against the bridge's policy as the node composes it (`app/node/src/api/bridge.rs`): each
 //! capability or tool server's tool is a candidate, the node asks the policy which are offered,
-//! and a call is resolved against that same list.
+//! and a call is resolved against that same list. The team's lookup of an image's tags,
+//! Claude's monthly credit and what Watchtower did to the lab have their own files. The node's
+//! mirror of the fork and of upstream has its own world, in `scenarios/mirror.rs`, for the
+//! features tagged `@mirror`.
+
+#[path = "scenarios/mirror.rs"]
+mod mirror;
 
 use cucumber::cli::Parser as _;
 use cucumber::{World, given, then, when};
 use endora_capabilities::Stance;
 use endora_capabilities::bridge::{
-    Asker, Bridged, Candidate, Kind, Thinks, bridge, offered as offered_to_a_turn,
+    Bridged, Candidate, Kind, Thinks, bridge, offered as offered_to_a_turn,
     switches_the_owners_devices,
 };
 
@@ -22,7 +28,28 @@ struct Bridge {
     offered: Vec<Bridged>,
     /// Why the last call was refused, or `None` when it was allowed.
     refused: Option<String>,
+    /// The public registries, faked: no network.
+    registries: registry::Registries,
+    /// What the last lookup of an image's tags answered.
+    answer: Option<serde_json::Value>,
+    /// Claude's credit as the node keeps it.
+    credit: credit::Credit,
+    /// The lab's containers and what Endora noted of their updates.
+    lab: lab_updates::Lab,
 }
+
+/// The lookup of an image's tags in its registry (ADR 0106, amended 2026-10-30), in its own
+/// file.
+#[path = "scenarios/registry.rs"]
+mod registry;
+
+/// Claude's monthly credit (the owner, 2026-10-30), in its own file.
+#[path = "scenarios/credit.rs"]
+mod credit;
+
+/// What Watchtower did to the lab (D11, ADR 0106 amended 2026-10-31), in its own file.
+#[path = "scenarios/lab_updates.rs"]
+mod lab_updates;
 
 impl Bridge {
     /// A candidate as the node makes one: ready, the owner's stance on it, and whether it
@@ -116,23 +143,17 @@ fn thinks(where_: &str) -> Thinks {
 
 /// The list a turn is offered, drawn up the way the node does it (`app/node/src/api/bridge.rs`).
 #[when(
-    regex = r"^the team's tools are drawn up for a (\w+) thinking on (the NAS's model|the Mac|Claude)$"
+    regex = r"^the team's tools are drawn up for a member thinking on (the NAS's model|the Mac|Claude)$"
 )]
-fn drawn_up_for(w: &mut Bridge, role: String, where_: String) {
+fn drawn_up_for(w: &mut Bridge, where_: String) {
     let all: Vec<Bridged> = w.candidates.iter().filter_map(|c| bridge(c).ok()).collect();
-    w.offered = offered_to_a_turn(
-        all,
-        Asker {
-            role: &role,
-            thinks: thinks(&where_),
-        },
-    );
+    w.offered = offered_to_a_turn(all, thinks(&where_));
 }
 
 /// A call by name, resolved against every tool Endora has, as the node does, so that one this
 /// turn may not use is refused with the reason and not as unknown.
-#[when(regex = r#"^a (\w+) thinking on (the NAS's model|the Mac|Claude) calls "(.+)" anyway$"#)]
-fn calls_while_thinking(w: &mut Bridge, _role: String, where_: String, name: String) {
+#[when(regex = r#"^a member thinking on (the NAS's model|the Mac|Claude) calls "(.+)" anyway$"#)]
+fn calls_while_thinking(w: &mut Bridge, where_: String, name: String) {
     let tool = w
         .candidates
         .iter()
@@ -203,11 +224,22 @@ fn options() -> cucumber::cli::Opts<
     cucumber::cli::Opts::try_parse_from(kept).expect("cucumber's own options")
 }
 
+/// Whether a feature is the node's mirror's (tagged `@mirror`), run by [`mirror::Node`].
+fn of_the_mirror(feature: &cucumber::gherkin::Feature) -> bool {
+    feature.tags.iter().any(|t| t == "mirror")
+}
+
 fn main() {
-    futures::executor::block_on(
+    futures::executor::block_on(async {
         Bridge::cucumber()
             .with_cli(options())
             .fail_on_skipped()
-            .run_and_exit("features"),
-    );
+            .filter_run_and_exit("features", |feature, _, _| !of_the_mirror(feature))
+            .await;
+        mirror::Node::cucumber()
+            .with_cli(options())
+            .fail_on_skipped()
+            .filter_run_and_exit("features", |feature, _, _| of_the_mirror(feature))
+            .await;
+    });
 }

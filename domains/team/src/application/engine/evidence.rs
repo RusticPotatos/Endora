@@ -163,7 +163,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let waits = task.map(|t| t.waits_on.clone()).unwrap_or_default();
         if cited.iter().map(Vec::len).sum::<usize>() > evidence::MOST_REFS {
-            return Err(EngineError::Refused(Refusal::TooLong(evidence::MOST_REFS)));
+            return Err(EngineError::Refused(Refusal::TooMany {
+                most: evidence::MOST_REFS,
+                of: "references",
+            }));
         }
         let mut all = Vec::new();
         for group in cited {
@@ -192,11 +195,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !run.task.is_some_and(|t| work.contains(&t)) {
                 continue;
             }
-            for receipt in self.store.call_receipts_of(run.id)? {
-                if receipt.ok && receipt.act && receipt.tool != "push" {
-                    latest = latest.max(Some(receipt.at));
-                }
-            }
+            let acts = self.store.call_receipts_of(run.id)?;
+            let acted = acts.iter().filter(|r| r.ok && r.act && r.tool != "push");
+            latest = latest.max(acted.map(|r| r.at).max());
         }
         for event in self.store.events_after(0)? {
             let alarm = (event.kind == "routine.fired" && event.data["firing"] == "alarm")
@@ -215,21 +216,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.last_change(task.id)?,
             self.clock.now(),
             self.settings.offset_minutes,
-        )
-        .map_err(EngineError::Refused)
-    }
-
-    /// Judges evidence for a decision or a message up: at least one reference, each in HQ's
-    /// record.
-    pub(super) fn judge_decision(&self, cited: &[Ref], turn: RunId) -> Done<()> {
-        let found = self.look_up(None, &[cited.to_vec()])?;
-        evidence::judge(
-            &[],
-            &found,
-            &Judged {
-                fresh: &[turn],
-                own_reading: None,
-            },
         )
         .map_err(EngineError::Refused)
     }
@@ -310,7 +296,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reads "needs re-check" and does not count.
     ///
     /// # Errors
-    /// [`Refusal::TooLong`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
+    /// [`Refusal::TooMany`] past [`evidence::MOST_CRITERIA`]; [`EngineError::Unknown`].
     pub fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Done<()> {
         let _held = self.held();
         self.set_criteria_held_lock(task, criteria)
@@ -378,7 +364,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// done means. Creating it is a change.
     ///
     /// # Errors
-    /// [`Refusal::NoCriteria`], [`Refusal::TooLong`] and what [`Engine::add_task`] refuses.
+    /// [`Refusal::NoCriteria`], [`Refusal::TooMany`] and what [`Engine::add_task`] refuses.
     pub fn create_task_in(
         &self,
         run: RunId,
@@ -389,9 +375,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let turn = self.running(run)?;
         // Who may hand what to whom comes first.
         let to_another = task.assignee.filter(|a| *a != turn.member);
-        if let Some(to) = to_another {
-            let (from, to) = (self.member(turn.member)?, self.member(to)?);
-            crate::domain::work::may_delegate(from.role, to.role).map_err(EngineError::Refused)?;
+        // Work goes to a member through its loop (ADR 0142): a member hands none to another.
+        if to_another.is_some() {
+            return Err(EngineError::Refused(Refusal::NotBelow));
         }
         evidence::may_hand_on(criteria, to_another.is_some()).map_err(EngineError::Refused)?;
         let id = self.add_task_authored_held_lock(
@@ -414,9 +400,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// as it is.
     ///
     /// # Errors
-    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooLong`] past
+    /// [`Refusal::OwnerNeedsCriteria`] when the owner gives none, [`Refusal::TooMany`] past
     /// [`evidence::MOST_CRITERIA`]; and as [`Engine::add_task`].
     pub fn add_task_with(&self, by: Author, task: NewTask, criteria: &[Criterion]) -> Done<TaskId> {
+        let stored = self.add_task_with_held(by, task, criteria);
+        self.ask_for_a_pass_after(by, &stored);
+        stored
+    }
+
+    fn add_task_with_held(
+        &self,
+        by: Author,
+        task: NewTask,
+        criteria: &[Criterion],
+    ) -> Done<TaskId> {
         let _held = self.held();
         let _asked = (by == Author::Owner).then(|| self.for_owner());
         let may = match by {
@@ -434,19 +431,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(id)
     }
 
-    /// The tester's verdict on work in review (ADR 0114), in her turn. She re-checks it
-    /// herself: a pass cites, per criterion, evidence that holds, with at least one reading of
-    /// her own this turn, and goes to the work's lead to accept (or closes it, when no other
-    /// lead is there). Sending it back is a finished test too, and keeps the review it had
-    /// ([`Engine::review_in`]), a draft for the owner included. A draft is never passed: it is
-    /// forwarded with `ask_owner`, or sent back. A CEO's draft puts the work task itself in
-    /// review, and a pass through the draft's path closed it as done, with the gate true, and
-    /// offered its push, with no evidence judged and no lead's acceptance.
+    /// The reviewer's verdict on work in review (ADR 0114), in its turn. A pass is re-checked:
+    /// it cites, per criterion, evidence that holds, with at least one reading of the
+    /// reviewer's own this turn, and closes the work (gated work through the gate's rule).
+    /// Without a pass the work is sent back ([`Engine::send_back_in`]). A draft is never
+    /// passed: it is forwarded with `ask_owner`, or sent back.
     ///
     /// A send-back may name its `reason` when it is one HQ counts (ADR 0132).
     ///
     /// # Errors
-    /// What [`Engine::review_in`] refuses, [`Refusal::ForwardTheDraft`], and what
+    /// What [`Engine::verdict_gate`] refuses, [`Refusal::ForwardTheDraft`], and what
     /// [`evidence::judge`] refuses for a pass.
     pub fn test_in(
         &self,
@@ -457,33 +451,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cited: &[Vec<Ref>],
         reason: Option<SendBackReason>,
     ) -> Done<()> {
-        let current = self.task(task)?;
         if !pass {
-            return self.review_in(run, task, false, notes, reason);
+            return self.send_back_in(run, task, notes, reason);
         }
         let _held = self.held();
         let turn = self.running(run)?;
-        self.reach(&turn, task, true)?;
-        let tester = self.member(turn.member)?;
-        // In the loops the member one rank up passes it (ADR 0142); otherwise, the tester.
-        let one_rank_up = self
-            .loop_reviewer_of(&current)?
-            .is_some_and(|r| r.id == tester.id);
-        if !one_rank_up {
-            return Err(EngineError::Refused(Refusal::NotYours));
-        }
-        if current.status != TaskStatus::InReview {
-            return Err(EngineError::Refused(Refusal::NotAStep {
-                from: current.status,
-                to: TaskStatus::Done,
-            }));
-        }
+        let (tester, current, _) = self.verdict_gate(&turn, task, true)?;
         if self.is_draft(&current)? {
             return Err(EngineError::Refused(Refusal::ForwardTheDraft));
-        }
-        let worker = current.owner.or(current.assignee);
-        if worker == Some(tester.id) {
-            return Err(EngineError::Refused(Refusal::OwnWork));
         }
         self.judge_work(
             &current,
@@ -508,6 +483,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &[],
         )?;
         self.mark_progress(tester.id, task)?;
+        self.after_verdict(&current, notes, None)?;
         self.close_checked(&current, tester.id)
     }
 
@@ -575,7 +551,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             return Ok(());
         };
         let task = self.task(task_id)?;
-        let mine = task.owner.or(task.assignee) == Some(run.member);
+        let mine = task.holder() == Some(run.member);
         if !mine || task.status.finished() || task.status == TaskStatus::InReview {
             return Ok(());
         }
@@ -623,9 +599,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub(super) fn shown_nothing(&self, member: MemberId, task: TaskId) -> Done<Vec<(RunId, bool)>> {
         let mut runs: Vec<Run> = self
             .store
-            .runs()?
+            .runs_of(task)?
             .into_iter()
-            .filter(|r| r.member == member && r.task == Some(task) && r.label.is_some())
+            // A turn the system ended (refused, timed out, failed) says nothing of the
+            // member's work, so it is not counted for or against it.
+            .filter(|r| r.member == member && r.label.is_some() && r.status == RunStatus::Succeeded)
             .collect();
         runs.sort_by_key(|r| r.id);
         let mut shown = Vec::new();
@@ -640,7 +618,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .collect();
             read.sort();
             read.dedup();
+            // A turn that ran out of room was working: it is never one that showed nothing.
+            let out_of_room = self.ran_out_of_room(&run)?;
             let nothing = match run.label {
+                _ if out_of_room => false,
                 Some(Label::Checked) => before
                     .as_ref()
                     .is_some_and(|b| !read.is_empty() && read.iter().all(|r| b.contains(r))),
@@ -736,29 +717,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// Who a briefing's turn on a task is, for the checking path: what the tester is told on
-    /// work submitted, and the lead on work to accept.
+    /// work submitted.
     pub(super) fn checking_said(&self, member: &Member, run: &Run, task: &Task) -> Done<String> {
         let reason = self.reason_for(run)?;
         let cloud = member.brain.cloud();
-        if reason == WakeReason::AcceptanceAsked.name() {
-            let tested = self.cited_said(task, TESTED, cloud)?;
-            let mut told = String::new();
-            if tested.is_empty() {
-                told.push_str("Nobody else tests this work: you accept it alone.\n");
-            } else {
-                told.push_str(&format!("The tester passed it on this evidence:\n{tested}"));
-            }
-            let submitted = self.cited_said(task, SUBMITTED, cloud)?;
-            if !submitted.is_empty() {
-                told.push_str(&format!("Its member submitted it on:\n{submitted}"));
-            }
-            told.push_str(
-                "Accept it against its criteria with accept (verdict accept, evidence one list \
-                 per criterion: receipts, the tester's among them, count as fresh), or send it \
-                 back with exactly what does not hold.\n",
-            );
-            return Ok(told);
-        }
         if reason == WakeReason::ReviewRequested.name() && !self.is_draft(task)? {
             let submitted = self.cited_said(task, SUBMITTED, cloud)?;
             if submitted.is_empty() {
@@ -822,13 +784,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let mut refs = Vec::new();
             for r in &c.refs {
                 let mut shown = json!({ "ref": r.said() });
-                if let Ref::Receipt(id) = r {
-                    if let Some(found) = self.store.call_receipt(*id)? {
-                        shown["tool"] = json!(found.tool);
-                        shown["at"] = json!(found.at);
-                        shown["excerpt"] = json!(found.excerpt);
-                        shown["ok"] = json!(found.ok);
-                    }
+                let found = match r {
+                    Ref::Receipt(id) => self.store.call_receipt(*id)?,
+                    _ => None,
+                };
+                if let Some(found) = found {
+                    shown["tool"] = json!(found.tool);
+                    shown["at"] = json!(found.at);
+                    shown["excerpt"] = json!(found.excerpt);
+                    shown["ok"] = json!(found.ok);
                 }
                 refs.push(shown);
             }
@@ -869,7 +833,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         task: TaskId,
         mark: &dyn Fn(&mut Run),
     ) -> Done<()> {
-        for mut run in self.store.runs()? {
+        for mut run in self.store.live_runs()? {
             if run.member == member && run.task == Some(task) && run.status == RunStatus::Running {
                 mark(&mut run);
                 self.store.save_run(&run)?;

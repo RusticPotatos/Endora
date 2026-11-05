@@ -5,6 +5,8 @@
 
 use std::sync::atomic::AtomicI64;
 
+use crate::application::run_ports::RunStore;
+
 use serde_json::{Value, json};
 
 use super::engine::{Engine, Settings};
@@ -20,7 +22,7 @@ const MINUTE: i64 = 60_000;
 fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
     use super::engine::Author;
     use super::ports::NewTask;
-    use crate::domain::{Priority, Role};
+    use crate::domain::Priority;
     let hq = Engine::new(
         SqliteTeamStore::in_memory().unwrap(),
         SimulatedRunner::new(4),
@@ -28,12 +30,12 @@ fn canonical_team(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
         Settings::default(),
     );
     {
-        let id = hq.hire("Member 1", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Member 1", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    hq.hire("Member 2", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Member 3", Role::Developer, 40, 2, 0).unwrap();
+    hq.hire("Member 2", 25, 2, 0).unwrap();
+    let dev = hq.hire("Member 3", 40, 2, 0).unwrap();
     let goal = hq.set_goal("Fixture", "", Author::Owner).unwrap();
     let task = hq
         .add_task(
@@ -444,9 +446,7 @@ fn several_turns_cut_are_one_item_naming_each() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, dev, task, file) = in_a_file(&clock, "several");
     let first = working(&hq, dev, task);
-    let ada = hq
-        .hire("Ada", crate::domain::Role::Developer, 40, 2, 4)
-        .unwrap();
+    let ada = hq.hire("Ada", 40, 2, 4).unwrap();
     let goal = hq.store().task(task).unwrap().unwrap().goal;
     let other = hq
         .add_task(

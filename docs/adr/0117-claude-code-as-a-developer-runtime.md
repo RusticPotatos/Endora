@@ -25,6 +25,22 @@ command line and the table's row say so below. A call the shell refuses, or a co
 fails, is also kept as a refused receipt now: Claude Code reports both as a `PostToolUse`
 whose response is a string starting "Error:", which the node used to keep as done.
 
+Amended 2026-10-31: **Claude Code runs a developer on Claude, not on any cloud model, and a model
+it cannot run puts the member back on the worker.** Live (round 2 of the baseline experiment,
+defect D1) the owner moved Rae to DeepSeek Flash with Claude Code still set. The domain allowed
+Claude Code for any brain that leaves the house (`Brain::cloud`), which DeepSeek is, while the
+runner starts it only on a `claude-` model; so HQ kept handing Claude Code out and the runner
+refused every turn for three hours, until the runtime was set to `worker` by hand. Now the
+domain asks the runner's question (`Brain::claude`: Opus, Sonnet or Haiku), so Claude Code is
+refused for a member on DeepSeek, and `effective` falls back to the worker. And the owner's
+model change (`POST /v1/members/{id}/model`) moves a runtime that cannot run the new model to
+the worker, says so in the feed (`member.runtime`, with `was` and `why: model`) and in the
+answer (`said`: "Rae now runs on Endora's worker: Claude Code runs only Claude"). It moves
+rather than refuses because the owner chooses both, the worker is every member's default and
+runs every model, and ADR 0142 lets any member be any model; a refusal would make the owner set
+two things in an order to change one. A move back to Claude does not restore Claude Code: the
+owner sets it again. Scenarios: `features/a-model-change-keeps-a-member-able-to-start.feature`.
+
 ## Context
 
 HQ's members take their turns on Endora's own worker (0102, 0109): a small loop that offers the

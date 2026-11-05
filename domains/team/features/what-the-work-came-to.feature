@@ -17,6 +17,36 @@ Feature: What the team's work came to
     And the outcomes say 0 changes landed this week
     And the outcomes give no cost for a landed change
 
+  # --- What each model cost ----------------------------------------------------------------
+
+  # The owner, 31 October 2026: what each model cost, compared over time. Built by hand from
+  # HQ's record for round 2's ten tasks; now the Money card keeps it.
+
+  Scenario: The Money card says what each model cost this week against the week before
+    Given Ada is the lead
+    And Linus is the developer
+    And Linus thinks with "Claude Haiku"
+    And the goal "Keep the home lab healthy"
+    And Linus has the task "Look at sonarr"
+    When Linus's turns on "Look at sonarr" spend $0.10 and then $0.20
+    And 7 days pass
+    And the owner gives Linus "Claude Sonnet" to think with
+    And Linus's turns on "Look at sonarr" spend $0.25 and then $0.35
+    Then the cost by model puts Claude Sonnet first, then Claude Haiku
+    And this week Claude Sonnet ran 2 turns for $0.60, $0.30 a turn, 100% of the spend
+    And this week Claude Haiku ran no turns
+    And the week before Claude Haiku ran 2 turns for $0.30, $0.15 a turn, 100% of the spend
+    And Claude Sonnet's cost went up and Claude Haiku's went down
+
+  Scenario: The house's models are in the cost by model at $0, with their turns
+    Given Ada is the lead
+    And Zed is hired as a developer on the house's model
+    And the goal "Keep the home lab healthy"
+    And Zed has the task "Cap sonarr's memory"
+    When Zed's turn starts
+    And Zed's turn ends
+    Then this week Local ran 1 turn for $0.00, $0.00 a turn
+
   # --- Talk against work -------------------------------------------------------------------
 
   # --- What waits --------------------------------------------------------------------------
@@ -24,6 +54,7 @@ Feature: What the team's work came to
   Scenario: Turns that wait are counted by what they wait for, with the oldest wait
     Given a pool of $0.50 a day
     And Ada is the lead
+    And Ada thinks with "Claude Haiku"
     And the goal "Keep the home lab healthy"
     And the pool's day is spent on Ada's decisions
     When Ada is woken to decide "Cap sonarr's memory"

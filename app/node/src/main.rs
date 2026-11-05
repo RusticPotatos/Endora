@@ -28,6 +28,9 @@ use api::AppState;
 use axum::serve::ListenerExt as _;
 use endora_infrastructure::{RandomIdSource, SystemClock};
 
+/// How long the relay's count of model requests is kept: 90 days, in milliseconds.
+const CENSUS_KEPT_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().skip(1).collect::<Vec<_>>() == ["homelab-setup"] {
@@ -54,6 +57,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // made beside the database on the first start; a database whose key is missing stops
     // the node here rather than starting with a new key that opens none of it.
     let store = Arc::new(secrets::open_store(&db_path)?);
+    // The relay's count of model requests (ADR 0102, amended 2026-11-04) is kept for 90 days,
+    // let go of at each start: best effort, never a reason not to start.
+    let ninety_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        - CENSUS_KEPT_MS;
+    if let Err(e) = store.prune_relay_requests(ninety_days_ago) {
+        eprintln!("endora: could not let go of the old relay census: {e}");
+    }
     // A zone name that is not one stops the node rather than quietly becoming UTC.
     let time_zone = match endora_infrastructure::TimeZone::named_or_fixed(
         &std::env::var("ENDORA_TIME_ZONE").unwrap_or_default(),
@@ -154,8 +166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => state,
     };
-    // The bench's credential (ADR 0123): the model relay alone, when a token file is named.
-    let state = state.with_bench_from_env();
     // endora-sound (ADR 0104), when this node has one: the same two ways to sign as HQ.
     let state = match (
         std::env::var("ENDORA_SOUND_URL")
@@ -199,6 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_homelab(state.clone());
     // Keeps HQ told whether the owner's Mac is free for the team's turns (ADR 0130).
     api::spawn_mac(state.clone());
+    api::spawn_delivery(state.clone());
+    // Keeps HQ told what is left of Claude's grant, which sizes the day's pool (ADR 0113).
+    api::spawn_credits(state.clone());
     // The team listener, in plain HTTP: HQ's model relays (ADR 0102, phase 4), the team's
     // contracts (ADR 0106) and the team gateway (ADR 0110), served nowhere else. Published to
     // the house's network for the Pi's runner and sandboxes; everything on it needs a token.
@@ -284,6 +297,8 @@ mod tests {
             "spawn_snapshots(",
             "spawn_homelab(",
             "spawn_mac(",
+            "spawn_credits(",
+            "spawn_delivery(",
         ] {
             assert!(boot.contains(kept), "the node no longer starts {kept}");
         }

@@ -5,13 +5,16 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::run_ports::RunStore;
+
 use serde_json::json;
 
 use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::desk_ports::DeskStore;
 use crate::domain::{
-    Criterion, DeskId, MemberId, Priority, Refusal, Role, RunStatus, TaskId, WakeReason,
+    Criterion, DeskId, MemberId, Priority, Refusal, RunStatus, TaskId, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -36,8 +39,8 @@ fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
         clock,
         Settings::default(),
     );
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     let goal = hq
         .set_goal(
             "Keep the home lab healthy",

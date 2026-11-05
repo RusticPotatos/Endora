@@ -241,7 +241,7 @@
     --hq-pixel: "Silkscreen", "Courier New", monospace;
     --hq-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
     color-scheme: light; background: var(--hq-bg); color: var(--hq-fg);
-    font: 13.5px/1.5 var(--hq-mono); display: grid; gap: 14px;
+    font: 13.5px/1.5 var(--hq-mono); display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px;
     margin: -4px -4px 0; padding: 14px 12px 24px; border-radius: 8px;
   }
   .hq h1 { font: 400 22px var(--hq-pixel); margin: 0; letter-spacing: .02em; }
@@ -266,6 +266,9 @@
   .hq .hq-line::after { content: "›"; flex: none; opacity: .6; }
   .hq .hq-open-row { list-style: none; }
   .hq .hq-open-row.open > .hq-line::after { content: "⌄"; }
+  /* A folded card (2026-10-30): one line until tapped, its cards following once open. */
+  .hq .hq-fold { padding-top: 6px; padding-bottom: 6px; }
+  .hq .hq-fold > .hq-line[aria-expanded="true"]::after { content: "⌄"; }
   .hq .hq-row-body { display: grid; gap: 4px; padding: 6px 2px 10px; }
   .hq .hq-btn:disabled { opacity: .45; cursor: default; }
   .hq textarea.hq-doc { width: 100%; box-sizing: border-box; min-height: 52vh; font: 16px/1.45 var(--hq-mono); padding: 10px; }
@@ -302,8 +305,11 @@
   .hq-side[hidden] { display: none; }
   /* The status chips under the title, and the give-work form. */
   .hq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .hq .hq-chip { border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); color: var(--hq-muted); background: var(--hq-panel); }
+  /* line-height after the font shorthand, which would reset it: every chip's text on one centre line. */
+  .hq .hq-chip { display: inline-block; min-height: 32px; box-sizing: border-box; border: 1px solid var(--hq-line); border-radius: 12px; padding: 3px 10px; font: 12px var(--hq-mono); line-height: 24px; color: var(--hq-muted); background: var(--hq-panel); }
   .hq .hq-chip-go { cursor: pointer; min-height: 32px; color: var(--hq-fg); }
+  .hq button.hq-chip { cursor: pointer; }
+  .hq .hq-chip.low { border-color: var(--hq-red); color: var(--hq-red); font-weight: 600; }
   .hq .hq-chip-go.has { border-color: var(--hq-violet); color: var(--hq-violet); font-weight: 600; }
   .hq-work { display: grid; gap: 6px; background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; padding: 12px 14px; }
   .hq-work label { font-weight: 600; font-size: 12.5px; }
@@ -312,6 +318,10 @@
   .hq-card { padding: 12px 14px; }
   .hq canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; border-radius: 3px; }
   .hq-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .hq-narrow { display: none; }
+  .hq > *, .hq-bar > *, .hq-chips > * { min-width: 0; max-width: 100%; }
+  /* The counters and the legend are the Health tab's on every size (council round 0). */
+  .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend { display: none; }
   .hq-stat { border: 1px solid var(--hq-line); border-radius: 4px; padding: 4px 9px; font-size: 12px; color: var(--hq-muted); font-variant-numeric: tabular-nums; }
   .hq-stat b { color: var(--hq-fg); font-weight: 600; }
   .hq-side { display: grid; gap: 12px; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }
@@ -376,6 +386,8 @@
   .hq-more { background: none; border: 0; box-shadow: none; padding: 0 2px; color: var(--hq-blue); font: inherit; text-decoration: underline; cursor: pointer; }
   /* On a phone the log is part of the page, not a small window to scroll inside the page. */
   @media (max-width: 560px) { .hq-log { max-height: none; overflow-y: visible; } }
+  /* Activity's twenty and its pages are read whole, never a box that scrolls (the owner, 31 Oct). */
+  .hq-log.hq-log-whole { max-height: none; overflow-y: visible; }
   .hq-log .k-wake { color: var(--hq-blue); }
   .hq-log .k-done { color: var(--hq-green); }
   .hq-log .k-warn { color: var(--hq-amber); }
@@ -396,10 +408,19 @@
   /* A roster line is a button, and buttons never wrap: on a phone it must, or the page scrolls
      sideways. */
   .hq .hq-line { white-space: normal; }
-  /* The Team card's org chart: one group per team, one tappable line per member. */
-  .hq-group + .hq-group { margin-top: 10px; }
-  .hq-group h3 { font-size: 12px; margin: 0 0 4px; color: var(--hq-fg); }
   .hq .hq-line { display: block; width: 100%; text-align: left; font: 12.5px var(--hq-mono); background: none; border: 0; padding: 4px 0; color: var(--hq-fg); cursor: pointer; box-shadow: none; overflow-wrap: anywhere; }
+  /* The team board (the owner's notes of 31 Oct): one line a member, however narrow. The name
+     and the money keep their place; what the member is doing gives way, cut short. */
+  /* Open tasks: the title on one line, its status and owner on a steady second (council round 3). */
+  /* Titles get two lines before they are cut (round 6). */
+  .hq .hq-open .hq-line b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; max-width: 100%; white-space: normal; overflow: hidden; }
+  .hq .hq-open .hq-line small { display: block; color: var(--hq-muted); }
+  .hq .hq-open .hq-line { position: relative; padding-right: 16px; }
+  .hq .hq-open .hq-line::after { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); }
+  .hq-board .hq-line { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+  .hq-board .hq-line b { flex: none; }
+  .hq-board .hq-line small { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: inherit; color: var(--hq-muted); }
+  .hq-board .hq-line span { flex: none; }
   .hq .hq-line[aria-expanded="true"] b { text-decoration: underline; }
   .hq-tag { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 0 3px; }
   .hq-controls { padding: 4px 0 8px 10px; display: grid; gap: 4px; }
@@ -410,7 +431,36 @@
   .hq-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
   .hq-note { color: var(--hq-muted); font-size: 12px; max-width: 80ch; margin: 8px 0 0; }
   /* Replay: a turn read back as a timeline, phone first; a task's turns stepped through. */
-  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; }
+  .hq .hq-thread .hq-link { font-weight: 400; color: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; text-decoration: none; }
+  .hq .hq-thread .hq-link:hover, .hq .hq-thread .hq-link:focus-visible { text-decoration: underline; }
+  .hq-turn-id { white-space: nowrap; opacity: .75; }
+  .hq-foldset > .hq-card { position: relative; }
+  /* Manage's folds stack in one grid cell, so short folded cards leave no holes beside tall ones. */
+  .hq-foldstack { display: grid; gap: 14px; align-content: start; min-width: 0; }
+  .hq .hq-accepted li { display: block; padding: 6px 0; border-bottom: 1px solid var(--hq-line); }
+  .hq .hq-accepted li b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow: hidden; }
+  .hq .hq-thread li { padding: 4px 0; }
+  .hq .hq-thread .hq-turn-title { display: block; color: var(--hq-fg); font-weight: 600; }
+  .hq .hq-thread small { display: block; }
+  .hq .hq-accepted li small { display: block; color: var(--hq-muted); }
+  .hq-times { color: var(--hq-muted); }
+  .hq .hq-fold-x { position: absolute; top: 10px; right: 14px; font: 11px var(--hq-mono); letter-spacing: 0; }
+  /* The heading of an open fold leaves room for its control, so the two never overlap. */
+  .hq-foldset > .hq-card > h2 { padding-right: 52px; }
+  .hq .hq-spark { margin-left: 6px; border-bottom: 1px solid var(--hq-line); }
+  .hq pre.hq-doc { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* A long read-only log is a bounded box that scrolls, not a wall down the page (round 8). */
+  .hq .hq-card pre.hq-doc { max-height: 16em; overflow-y: auto; }
+  .hq details > summary { cursor: pointer; }
+  .hq details > summary::after { content: " ›"; opacity: .6; }
+  /* A drill-down summary reads like the label rows above it: sentence case, its chevron after it. */
+  .hq .hq-score-members, .hq details > summary { text-transform: none; letter-spacing: 0; }
+  .hq details > summary { display: inline-block; font: 600 12.5px var(--hq-mono); color: var(--hq-fg); list-style: none; }
+  .hq details > summary::-webkit-details-marker { display: none; }
+  .hq-turn-id { white-space: nowrap; opacity: .75; display: inline; }
+  /* A turn's link is one line of text, not a flex row that split it into columns (round 5). */
+  .hq .hq-thread .hq-link { display: inline; }
+  @media (max-width: 480px) { .hq-wide-card .hq-lines li small { display: block; } }
   .hq-replay-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
   .hq-replay-progress { font: 11px var(--hq-pixel); color: var(--hq-muted); }
   .hq .hq-btn[disabled] { opacity: .45; cursor: default; }
@@ -436,16 +486,69 @@
   .hq-card .hq-replay-told summary { color: var(--hq-violet); text-decoration: underline dotted; }
   .hq-replay-told pre { font: 11.5px var(--hq-mono); max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 8px; background: var(--hq-panel-2); border-radius: 4px; }
   .hq-replay-fold summary { overflow-wrap: anywhere; }
+  .hq-card .hq-replay-given > summary { display: list-item; font: inherit; color: var(--hq-violet); cursor: pointer; margin: 0; }
+  .hq-replay-parts { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+  .hq-card .hq-replay-part summary { display: list-item; font: inherit; letter-spacing: normal; color: inherit; margin: 0; cursor: pointer; overflow-wrap: anywhere; }
+  .hq-replay-part pre { font: 11.5px var(--hq-mono); max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; padding: 8px; background: var(--hq-panel-2); border-radius: 4px; }
+  .hq-replay-names { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; margin-top: 4px; }
+  .hq-replay-names code { font: 11px var(--hq-mono); padding: 1px 5px; border: 1px solid var(--hq-line); border-radius: 3px; overflow-wrap: anywhere; max-width: 100%; }
   .hq-replay-fold[open] summary { color: var(--hq-muted); }
+  /* A live turn (ADR 0129, amended 2026-11-01), and what the model thought, folded under each step. */
+  .hq-live { color: var(--hq-green); margin-left: 4px; }
+  .hq-card .hq-replay-thought summary { display: list-item; font: inherit; letter-spacing: normal; color: var(--hq-muted); margin: 4px 0 0; cursor: pointer; }
+  .hq-replay-thought .hq-replay-said { display: block; color: var(--hq-muted); font-style: italic; overflow-wrap: anywhere; }
+  /* Activity's "Running now" strip: a line a turn, each with its Watch link. */
+  .hq-running-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; }
+  .hq-running-list li { overflow-wrap: anywhere; }
   @media (min-width: 720px) { .hq-replay-moment { grid-template-columns: 70px 64px minmax(0, 1fr); } .hq-replay-tag { grid-column: 2; grid-row: 1; padding-top: 2px; } .hq-replay-body { grid-column: 3; grid-row: 1; } }
   /* Games in the office (ADR 0121): a chess board of 64 squares, light and dark, with the pieces as letters. */
   .hq-chess { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(8, minmax(0, 1fr)); width: min(100%, 288px); aspect-ratio: 1; border: 2px solid var(--hq-line); margin: 6px 0; }
-  .hq-chess span { display: grid; place-items: center; font: 400 clamp(16px, 5vw, 26px)/1 system-ui, sans-serif; background: #ecdcb8; color: #1f1d29; }
+  .hq-chess span { display: grid; place-items: center; font: 400 clamp(16px, 5vw, 26px)/1 system-ui, sans-serif; font-variant-emoji: text; background: #ecdcb8; color: #1f1d29; }
   .hq-chess span.dark { background: #a97c50; }
   .hq-chess span.white { color: #fffdf5; text-shadow: 0 0 2px #1f1d29, 0 0 1px #1f1d29; }
+  .hq-chess span.lit { background: #e3c55a; }
+  .hq-chess span.dark.lit { background: #c9a43c; }
+  .hq-moves { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0; margin: 6px 0; list-style: none; font-variant-numeric: tabular-nums; }
+  .hq-move { background: none; border: 0; padding: 2px 4px; border-radius: 4px; font: inherit; color: inherit; cursor: pointer; }
+  .hq-move.on { background: var(--hq-line); font-weight: 600; }
+  /* A brain's rating game by game in the model league: a small line beside its name. */
+  .hq-spark { display: inline-block; vertical-align: middle; overflow: visible; }
+  .hq-spark polyline { fill: none; stroke: var(--hq-blue); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
   .hq-board { width: 100%; border-collapse: collapse; }
   .hq-board td, .hq-board th { padding: 2px 6px; text-align: left; font-weight: 400; }
   .hq-board td.n { text-align: right; }
+  /* The Chess tab's bracket: as wide as its cells, scrolling inside its box so the page never
+     scrolls sideways on a phone. */
+  .hq-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 6px 0; }
+  .hq-cross { border-collapse: collapse; min-width: max-content; font-size: 13px; }
+  .hq-cross th, .hq-cross td { padding: 3px 8px; border: 1px solid var(--hq-line); text-align: center; white-space: nowrap; font-weight: 400; }
+  .hq-cross th[scope="row"] { text-align: left; position: sticky; left: 0; background: var(--hq-panel); }
+  /* A table wider than its card fades at the right edge, so it reads as one that scrolls. */
+  .hq-scroll { -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+  .hq-foldset { display: grid; gap: 14px; min-width: 0; align-content: start; }
+  /* A card whose table needs the width spans both columns on a wide screen. */
+  .hq-wide-card { grid-column: 1 / -1; }
+  /* Health on a wide screen: outcomes then turns on the left, What failed spanning both on the right. */
+  .hq-health { display: contents; }
+  @media (min-width: 768px) {
+    .hq-side:has(> .hq-health) { grid-template-areas: "out fail" "turns fail"; }
+    .hq-h-out { grid-area: out; } .hq-h-turns { grid-area: turns; } .hq-h-fail { grid-area: fail; align-self: start; }
+  }
+  .hq details > summary { color: var(--hq-muted); font-weight: 400; }
+  .hq-cross + * , .hq-lines li .hq-spark { white-space: nowrap; }
+  .hq-need-title { display: block; margin: 0 0 4px; }
+  .hq-cross td.won { color: var(--hq-green); font-weight: 600; }
+  .hq-cross td.notyet, .hq-cross td.playing { opacity: 0.7; }
+  .hq-game { display: flex; gap: 6px; align-items: center; }
+  .hq-game .hq-line { flex: 1 1 auto; min-width: 0; }
+  /* What each model cost, on the Money card: each week's cell is its spend over a line of its
+     turns, cost a turn and share, so four columns fit a phone and wrap rather than scroll. */
+  .hq-by-model { margin-top: 8px; }
+  .hq-cost { margin-top: 6px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .hq-cost th.n { text-align: right; }
+  .hq-cost td, .hq-cost th { vertical-align: top; padding: 3px 6px; }
+  .hq-cost tbody th { font-weight: 600; }
+  .hq-cost small { display: block; color: var(--hq-muted); font-size: 12px; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
   /* A phone: the office is a thin strip until the owner opens it, so the desk is first on
      screen; the tabs sit straight under the top bar. */
@@ -455,15 +558,27 @@
     .hq .hq-tab { flex: 1 1 0; padding: 8px 6px; font-size: 12px; letter-spacing: 0; }
     .hq-badge { padding: 0 4px; margin-left: 2px; }
     /* The office plays on every tab (the owner, 2026-10-25); its counters and legend are the
-       Office tab's, so the other tabs keep only the animation above their content. */
+       Health tab's (2026-10-30), so the other tabs keep only the animation above their content. */
     .hq-stage { order: -1; padding: 4px; }
-    .hq:not([data-tab="team"]) .hq-stats, .hq:not([data-tab="team"]) .hq-legend,
-    .hq:not([data-tab="team"]) .hq-stage .hq-note { display: none; }
+    .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend,
+    .hq:not([data-tab="health"]) .hq-stage .hq-note { display: none; }
     .hq-side { grid-template-columns: minmax(0, 1fr); }
-    .hq-bar .hq-row { width: 100%; }
-    .hq-bar .hq-row .hq-btn { flex: 1 1 0; }
+    /* A shorter top on a phone (council round 2): the title and both buttons on one line, the chips
+       on one row that scrolls, so the whole studio is above the fold. */
+    .hq h1 { font-size: 17px; }
+    .hq-bar { flex-wrap: nowrap; gap: 8px; }
+    .hq-bar .hq-row { flex-wrap: nowrap; gap: 6px; }
+    .hq .hq-btn.tall { padding: 8px 8px; font-size: 10px; min-width: 0; }
+    .hq-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .hq-chips::-webkit-scrollbar { display: none; }
+    .hq-chips > * { flex: 0 0 auto; white-space: nowrap; }
+    .hq-spent, .hq-chips .hq-wide { display: none; }
+    .hq-chips .hq-narrow { display: inline; }
+    .hq-chips .hq-chip { padding-left: 8px; padding-right: 8px; }
   }
-  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button on a touch screen. */
+  /* A finger needs 44 px (Apple's HIG; WCAG 2.5.5): every button and line on a touch screen. With
+     a mouse a line is 32 px, so lists like Health's read as one block (tabs climb, round 1). */
+  @media (pointer: fine) { .hq .hq-line { min-height: 32px; padding-top: 5px; padding-bottom: 5px; } }
   @media (pointer: coarse) {
     .hq .hq-btn { min-height: 44px; }
   }

@@ -41,6 +41,88 @@ unpublished, through the node's team gateway on 8788 (now published on the house
 every route needing a token), and starts each turn as an offline workbench that reaches the
 gateway and nothing else.
 
+Amended 2026-11-04 (the agentic-harness climb, round 5): **the owner's new work asks for a pass
+of the tick at once.** Work was taken up only on the tick, every 30 s on the NAS, so the owner's
+new item waited for anything up to the whole interval before any member read it: 8.7 s in the
+climb's live paired run, and exactly 30 s less the tick's phase on a disposable HQ (27.96 s,
+20.97 s, 13.98 s and 6.97 s at 2, 9, 16 and 23 s after a tick). Now, once the owner's task is in
+the store, the engine asks its service for a pass (`Engine::with_pass_requests`), and HQ's
+ticker (`app/hq/src/ticker.rs`) runs one: the same `tick()`, with every guard it keeps (the kill
+switch, the drain, budgets, capacity, order). Asks are coalesced (asks before a pass starts are
+served by it; asks during one bring one more after it), passes never overlap, the clock keeps
+its cadence, and an idle HQ passes no more often than before. Only the owner's stored work
+asks: a member's own work, and work refused, do not. Scenarios:
+`domains/team/features/the-owners-new-work-starts-at-once.feature`.
+
+Amended 2026-11-04 (the agentic-harness climb, round 7): **a turn's record keeps which model
+answered, as the provider named it.** HQ kept only the alias a turn asked for (its brain), so a
+comparison could not show which model actually answered. The node's relay now reads the model a
+reply names (a whole reply's `model`, a stream's `message_start`) and sends it with that call's
+charge, as `served_model` on `/v1/team/usage`, or null when the reply named none; the field is
+optional, so an older node is still understood, as naming none. HQ counts each call under the
+name it was told, beside the turn (`run_served_models`, `Engine::note_served_model`), every name
+kept and none overwritten; a call whose answer named no model is counted as not known, and the
+alias never stands in for it. Charges, budgets, routing and what is sent are unchanged. The
+house's free relay (`/v1/team/tokens`) keeps no name yet. Scenarios:
+`domains/team/features/a-turns-model-is-kept-as-the-provider-named-it.feature`.
+
+Amended 2026-11-04 (the agentic-harness climb, round 9): **the node keeps its own count of the
+model requests its relay passes on.** HQ's only record of a call was the usage report the node
+sends it, so a lost report hid that the call happened, and the comparison could not prove every
+request was accounted for. The node's store now has `relay_requests` (`SqliteStore`, behind the
+`RelayCensus` port): one row per request passed to the provider, with the run, when it began and
+ended, the model asked for, the model the provider named (or none), how it ended (`unfinished`,
+`answered`, `interrupted`, `failed`), the HTTP status when known, whether its usage was fully
+reported, and whether HQ accepted the usage post (`hq_told`, empty until the charge is tried).
+A row begun and never ended stays `unfinished`, never complete. The Anthropic relay counts a
+call just before it leaves for the provider, so a call refused earlier (not authorized, over
+budget, no key) is not counted, and `count_tokens` is not a model request; the house's and
+DeepSeek's chat path is counted the same way, as answered or failed (an unreadable 2xx body as
+interrupted). Kept: ids, times, model names, outcome, status, flags. Not kept: any prompt, reply,
+body, key, tool argument or token count of the turn. Charges, budgets, routing and what is sent
+are unchanged. The count is kept 90 days (let go of at each start of the node) and indexed by
+run. Scenarios: `app/node/features/the-relay-keeps-its-own-count-of-model-requests.feature`.
+
+Amended 2026-11-04 (the agentic-harness climb, round 17): **a turn that can go on again is
+taken up at once.** HQ settled a turn the runner said had ended, and started a turn the owner's
+reply had brought forward, only on its tick. In the climb's interrupted run the owner's reply
+brought the stopped turn forward at once, and it then sat 8.6 s for the next tick (every 10 s on
+the NAS) before it ran. Now the runner's accepted report of an end (`/v1/runner/{run}/ended`;
+`Engine::a_turn_has_ended`) and the owner's reply that wakes someone (a turn queued, or folded,
+which brings a waiting one forward) ask for a pass, through the same coalesced asks as round 5:
+the ordinary `tick()`, with every guard it keeps. A report under another attempt's lease, and a
+reply refused, ask for none. How long a failed turn waits before it is tried again (a minute),
+and how many tries it gets, are unchanged; a pass never starts a waiting turn before its time.
+Scenarios: `domains/team/features/a-turn-that-can-go-on-starts-at-once.feature`.
+
+Amended 2026-11-04 (the agentic-harness climb, round 18): **a probe's side effects can be
+recorded outside the agent's reach, by an observer.** The `tool_failure` benchmark probe asks
+whether a tool that failed was tried again, and the agent's own word is no evidence of what its
+tool did. The runner can now start a small observer container for an item, before the item's
+first turn, and start the turn's workbench inside the observer's network namespace, so the
+agent's tool reaches the observer on `127.0.0.1:8799` while the observer's records stay in a
+container the agent has no mount, process or IPC namespace, token or Docker access to: the
+inverse of a sidecar the agent could reach into. It is off by default and the runner's own:
+`OBSERVER_PROJECTS` lists the project numbers that get one (empty or unset, none; anything but
+numbers stops the runner), and HQ only says which project a turn is in (`project` in
+`/v1/runner/next`), so HQ can never turn it on. The image is the runner's own workbench image;
+the command (the probe's publish service, compiled into the runner), the limits (64 MiB, 32
+processes, half a CPU), the fence (read-only, no capabilities, no new privileges, the workbench's
+unanswering resolver, a megabyte in memory for the image's `/data` and no mount) and the network
+are fixed in the runner, never taken from HQ, and the
+observer has its own random token that the turn never sees. The workbench's fence is unchanged
+but for the network (and the DNS setting Docker refuses on a joined network). There is no new
+egress and no new endpoint: nothing leaves the host, and the records are read only through the
+runner host's own Docker access. The observer lives with its item: a later turn of the item
+(another member's, a retry) finds the same observer and its history. When the item is let go the
+observer is kept another 30 minutes so the benchmark rig can export its records, then removed at
+the sweep. One that is lost (stopped, or removed) is never replaced by a fresh empty one, which
+would read as a tool that had no side effects: the item's further turns are refused as never
+run, with "evidence is unavailable". An observer that does not say it is serving within ten
+seconds is taken down and the turn refused the same way. A runner that restarts takes back the
+observers it finds by their label. Scenarios:
+`app/runner/features/a-probe-observer-starts-before-the-workbench.feature`.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

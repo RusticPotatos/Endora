@@ -5,11 +5,15 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::run_ports::RunStore;
+
 use super::engine::{Author, Engine, EngineError, Fired, Settings};
 use super::ports::{Clock, NewRoutine, NewTask, TeamStore};
+use crate::application::event_ports::EventStore;
+use crate::application::schedule_ports::ScheduleStore;
 use crate::domain::routines::{HOUR_MS, MINUTE_MS};
 use crate::domain::{
-    CheckBackStatus, GoalId, MemberId, Priority, Receipt, Refusal, Refused, Role, RoutineId, RunId,
+    CheckBackStatus, GoalId, MemberId, Priority, Receipt, Refusal, Refused, RoutineId, RunId,
     RunStatus, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
@@ -46,8 +50,8 @@ fn office(clock: &Hands) -> (Hq<'_>, Team) {
         clock,
         Settings::default(),
     );
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 0).unwrap();
     let goal = hq
         .set_goal(
             "Keep the home lab healthy",
@@ -518,12 +522,10 @@ fn a_check_back_waits_at_most_twelve_hours_replaces_its_own_and_not_for_finished
 }
 
 #[test]
-fn a_timer_with_nothing_to_do_starts_no_turn() {
+fn a_wake_on_a_clock_with_nothing_to_do_starts_no_turn() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, t) = office(&clock);
-    hq.store()
-        .add_timer(t.lead, WakeReason::LeadReview, NOON, HOUR_MS)
-        .unwrap();
+    hq.wake(t.lead, None, WakeReason::Alarm).unwrap();
     hq.tick().unwrap();
     let wake = hq.wakes().unwrap().pop().unwrap();
     assert_eq!(wake.receipt, Receipt::Refused(Refused::NothingToDo));
@@ -545,12 +547,13 @@ fn a_timer_with_nothing_to_do_starts_no_turn() {
     )
     .unwrap();
     clock.forward(HOUR_MS);
+    hq.wake(t.lead, None, WakeReason::Alarm).unwrap();
     hq.tick().unwrap();
     let looked = hq
         .wakes()
         .unwrap()
         .into_iter()
-        .rfind(|w| w.reason == WakeReason::LeadReview)
+        .rfind(|w| w.reason == WakeReason::Alarm)
         .unwrap();
     assert_ne!(looked.receipt, Receipt::Refused(Refused::NothingToDo));
 }

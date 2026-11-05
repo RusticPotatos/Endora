@@ -20,8 +20,6 @@ pub enum WakeReason {
     SubtasksFinished,
     /// The owner decided something it asked.
     ProposalDecided,
-    /// The lead's regular look over the team's work.
-    LeadReview,
     /// A failed turn, tried again.
     Retry,
     /// Work that stopped moving, nudged once.
@@ -39,23 +37,25 @@ pub enum WakeReason {
     ReviewRequested,
     /// The reviewer sent the member's draft back: something in it did not hold.
     SentBack,
-    /// Work the tester passed (or that nobody else tests) waits for its lead to accept it
-    /// against its criteria, or send it back (ADR 0114).
-    AcceptanceAsked,
     /// A check of the member's submitted branch reported, pass or fail (ADR 0115): the
     /// submitter reads it, and so does the tester.
     CheckDone,
     /// Nothing to do: a turn about no task, for the office and the notebook (ADR 0119).
     Downtime,
-    /// Stuck work climbed the ladder to this member (ADR 0120): the area's lead, to decide;
-    /// or the CEO, when the lead said it needs the CEO.
-    Decide,
     /// A task its task waits on was dropped (ADR 0124): the wait will not end by itself.
     WaitDropped,
-    /// A colleague consults this member (ADR 0129): one short turn, about no task, to answer a
-    /// question from what it knows and the record. A member who cannot be woken is not.
-    Consulted,
+    /// Its own turn on its task ended at its prompt's budget (ADR 0142, amended 2026-10-30): it
+    /// goes on in a fresh turn, from HQ's handover rather than the whole conversation.
+    Continued,
+    /// A reason nothing raises any more, under the name it was stored with (one of
+    /// [`RETIRED`]): the lead's look on a timer, a decision up the stuck ladder, a lead's
+    /// acceptance after the tester, a colleague's consult (ADR 0142). Kept so that wakes already
+    /// on record still read, and read back as they were written.
+    Retired(&'static str),
 }
+
+/// The stored names of the reasons nothing raises any more (see [`WakeReason::Retired`]).
+pub const RETIRED: [&str; 4] = ["lead_review", "acceptance_asked", "decide", "consulted"];
 
 impl WakeReason {
     /// Stable lowercase name.
@@ -67,7 +67,6 @@ impl WakeReason {
             Self::WaitFinished => "wait_finished",
             Self::SubtasksFinished => "subtasks_finished",
             Self::ProposalDecided => "proposal_decided",
-            Self::LeadReview => "lead_review",
             Self::Retry => "retry",
             Self::Recovery => "recovery",
             Self::CheckBack => "check_back",
@@ -76,32 +75,30 @@ impl WakeReason {
             Self::AssignmentRecovery => "assignment_recovery",
             Self::ReviewRequested => "review_requested",
             Self::SentBack => "sent_back",
-            Self::AcceptanceAsked => "acceptance_asked",
             Self::CheckDone => "check_done",
             Self::Downtime => "downtime",
-            Self::Decide => "decide",
             Self::WaitDropped => "wait_dropped",
-            Self::Consulted => "consulted",
+            Self::Continued => "continued",
+            Self::Retired(name) => name,
         }
     }
 
     /// Whether the wake brings something new to its task: anything but a stale continuation
-    /// (a recovery nudge, a retry) or the lead's look round on a timer. Only a wake that brings
-    /// nothing new is ever delayed by the back-off.
+    /// (a recovery nudge, a retry) or a retired reason. Only a wake that brings nothing new is
+    /// ever delayed by the back-off.
     #[must_use]
     pub const fn brings_news(self) -> bool {
         !matches!(
             self,
-            Self::Recovery | Self::AssignmentRecovery | Self::Retry | Self::LeadReview
+            Self::Recovery | Self::AssignmentRecovery | Self::Retry | Self::Retired(_)
         )
     }
 
-    /// Whether the wake comes from a clock rather than from someone: a timer, a check-back or
-    /// an alarm. One of these that names no task, for a member with no open task, finds
-    /// nothing to do.
+    /// Whether the wake comes from a clock rather than from someone: a check-back or an alarm.
+    /// One of these that names no task, for a member with no open task, finds nothing to do.
     #[must_use]
     pub const fn on_a_clock(self) -> bool {
-        matches!(self, Self::LeadReview | Self::CheckBack | Self::Alarm)
+        matches!(self, Self::CheckBack | Self::Alarm)
     }
 
     /// Whether the wake reaches the owner of a task waiting for its reviewer: only the owner's
@@ -111,42 +108,36 @@ impl WakeReason {
     pub const fn reaches_work_in_review(self) -> bool {
         matches!(
             self,
+            Self::OwnerReplied | Self::ProposalDecided | Self::SentBack | Self::CheckDone
+        )
+    }
+
+    /// Whether the wake reaches a blocked item in the loops (ADR 0142, amended 2026-10-31): only
+    /// the owner's word (a reply, or an answer) and the end of what it waits on do. Anything else
+    /// (a recovery nudge, a check-back, a mention) would be a turn on work that waits for the
+    /// owner, and item 938 took one about every eleven minutes.
+    #[must_use]
+    pub const fn reaches_a_blocked_item(self) -> bool {
+        matches!(
+            self,
             Self::OwnerReplied
                 | Self::ProposalDecided
-                | Self::SentBack
-                | Self::CheckDone
-                | Self::Decide
+                | Self::WaitFinished
+                | Self::SubtasksFinished
+                | Self::WaitDropped
         )
     }
 
-    /// Whether the wake reaches the CEO (ADR 0111), who wakes only for escalations, the
-    /// board's word, its own work (its daily review, what it handed on) and the continuations
-    /// of its own turns: never to be named in a thread, for an alarm, for a look round, or for
-    /// downtime (the CEO is paid, and has an office of its own).
+    /// Every reason that is raised, in the order they are declared ([`Self::Retired`] is not).
+    /// A reason added to the enum must be added here too.
     #[must_use]
-    pub const fn reaches_the_ceo(self) -> bool {
-        !matches!(
-            self,
-            Self::Mentioned
-                | Self::LeadReview
-                | Self::Alarm
-                | Self::ReviewRequested
-                | Self::Downtime
-        )
-    }
-
-    /// Every reason there is, in the order they are declared. A reason added to the enum must
-    /// be added here too, and classified in [`super::turns`], whose table test fails until it
-    /// is.
-    #[must_use]
-    pub const fn all() -> [Self; 20] {
+    pub const fn all() -> [Self; 17] {
         [
             Self::Assigned,
             Self::Mentioned,
             Self::WaitFinished,
             Self::SubtasksFinished,
             Self::ProposalDecided,
-            Self::LeadReview,
             Self::Retry,
             Self::Recovery,
             Self::CheckBack,
@@ -155,19 +146,24 @@ impl WakeReason {
             Self::AssignmentRecovery,
             Self::ReviewRequested,
             Self::SentBack,
-            Self::AcceptanceAsked,
             Self::CheckDone,
             Self::Downtime,
-            Self::Decide,
             Self::WaitDropped,
-            Self::Consulted,
+            Self::Continued,
         ]
     }
 
-    /// The reason with this [`name`](Self::name), if there is one.
+    /// The reason with this [`name`](Self::name), if there is one: a retired name reads as
+    /// [`Self::Retired`] under that same name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().into_iter().find(|r| r.name() == name)
+        if let Some(live) = Self::all().into_iter().find(|r| r.name() == name) {
+            return Some(live);
+        }
+        RETIRED
+            .into_iter()
+            .find(|retired| *retired == name)
+            .map(Self::Retired)
     }
 }
 
@@ -190,7 +186,8 @@ pub enum Refused {
     /// it back or the owner speaks.
     InReview,
     /// The CEO is not woken for that: only for escalations, the board's word and its own work
-    /// (ADR 0111).
+    /// (ADR 0111). No longer raised (ADR 0142: there is no CEO); kept because it was, and a
+    /// refused wake on record whose reason does not read is a corrupt row.
     NotForTheCeo,
     /// The task's project is paused by the owner (ADR 0113): nobody takes a turn on it until
     /// the owner resumes it.
@@ -202,6 +199,9 @@ pub enum Refused {
     Redundant,
     /// The check after a deploy has had its one turn and its verdict (ADR 0115, amended).
     Checked,
+    /// The item is blocked in the loops and waits for the owner: their answer in words, or
+    /// their move of it back to work (ADR 0142, amended 2026-10-31).
+    Blocked,
 }
 
 impl Refused {
@@ -220,6 +220,7 @@ impl Refused {
             Self::Furloughed => "furloughed",
             Self::Redundant => "redundant",
             Self::Checked => "checked",
+            Self::Blocked => "blocked",
         }
     }
 
@@ -238,6 +239,7 @@ impl Refused {
             Self::Furloughed => "the member is on furlough",
             Self::Redundant => "it was woken on this again and again for nothing",
             Self::Checked => "the check after the deploy has had its one turn",
+            Self::Blocked => "the item is blocked and waits for the owner",
         }
     }
 
@@ -256,6 +258,7 @@ impl Refused {
             Self::Furloughed,
             Self::Redundant,
             Self::Checked,
+            Self::Blocked,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -327,9 +330,6 @@ pub struct WakeSituation {
     /// Whether the wake is for the owner of a task waiting for its reviewer, and is not one
     /// that [reaches work in review](WakeReason::reaches_work_in_review).
     pub waits_for_review: bool,
-    /// Whether the wake is for the CEO, and is not one that
-    /// [reaches the CEO](WakeReason::reaches_the_ceo).
-    pub not_for_the_ceo: bool,
     /// Whether the wake's task is in a project the owner paused (ADR 0113).
     pub project_paused: bool,
     /// Whether the member is on furlough (ADR 0118): never woken.
@@ -337,6 +337,10 @@ pub struct WakeSituation {
     /// Whether the wake brings nothing new, to a member whose last turns on the task showed
     /// nothing, again and again (ADR 0124): it is not woken for nothing once more.
     pub woken_for_nothing: bool,
+    /// Whether the wake's task is blocked in the loops and waits for the owner, and the wake is
+    /// neither the owner's asking nor one that [reaches a blocked
+    /// item](WakeReason::reaches_a_blocked_item).
+    pub blocked_for_the_owner: bool,
 }
 
 /// What to do with a wake.
@@ -367,9 +371,6 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.furloughed {
         return WakeDecision::Refuse(Refused::Furloughed);
     }
-    if situation.not_for_the_ceo {
-        return WakeDecision::Refuse(Refused::NotForTheCeo);
-    }
     if situation.nothing_to_do {
         return WakeDecision::Refuse(Refused::NothingToDo);
     }
@@ -381,6 +382,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     }
     if situation.woken_for_nothing {
         return WakeDecision::Refuse(Refused::Redundant);
+    }
+    if situation.blocked_for_the_owner {
+        return WakeDecision::Refuse(Refused::Blocked);
     }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         if own.foldable {
@@ -419,10 +423,10 @@ mod tests {
             already_held: false,
             nothing_to_do: false,
             waits_for_review: false,
-            not_for_the_ceo: false,
             project_paused: false,
             furloughed: false,
             woken_for_nothing: false,
+            blocked_for_the_owner: false,
         }
     }
 
@@ -438,6 +442,35 @@ mod tests {
         assert_eq!(Refused::from_name("redundant"), Some(Refused::Redundant));
     }
     const OTHER: MemberId = MemberId(2);
+
+    #[test]
+    fn a_blocked_item_waiting_for_the_owner_wakes_nobody() {
+        let s = WakeSituation {
+            blocked_for_the_owner: true,
+            ..quiet()
+        };
+        assert_eq!(decide(ME, &s), WakeDecision::Refuse(Refused::Blocked));
+        assert_eq!(Refused::from_name("blocked"), Some(Refused::Blocked));
+    }
+
+    #[test]
+    fn only_the_owners_word_and_the_end_of_a_wait_reach_a_blocked_item() {
+        let reach: Vec<&str> = WakeReason::all()
+            .into_iter()
+            .filter(|r| r.reaches_a_blocked_item())
+            .map(WakeReason::name)
+            .collect();
+        assert_eq!(
+            reach,
+            [
+                "wait_finished",
+                "subtasks_finished",
+                "proposal_decided",
+                "owner_replied",
+                "wait_dropped"
+            ]
+        );
+    }
 
     #[test]
     fn a_wake_on_a_free_task_is_queued() {
@@ -565,40 +598,6 @@ mod tests {
     }
 
     #[test]
-    fn the_ceo_wakes_for_escalations_and_its_own_work_and_never_for_routine_noise() {
-        let noise = WakeSituation {
-            not_for_the_ceo: true,
-            ..quiet()
-        };
-        assert_eq!(
-            decide(ME, &noise),
-            WakeDecision::Refuse(Refused::NotForTheCeo)
-        );
-        for reaches in [
-            WakeReason::ProposalDecided,
-            WakeReason::OwnerReplied,
-            WakeReason::Assigned,
-            WakeReason::SentBack,
-            WakeReason::SubtasksFinished,
-            WakeReason::CheckBack,
-        ] {
-            assert!(reaches.reaches_the_ceo(), "{reaches:?}");
-        }
-        for not in [
-            WakeReason::Mentioned,
-            WakeReason::LeadReview,
-            WakeReason::Alarm,
-            WakeReason::ReviewRequested,
-        ] {
-            assert!(!not.reaches_the_ceo(), "{not:?}");
-        }
-        assert_eq!(
-            Refused::from_name("not_for_the_ceo"),
-            Some(Refused::NotForTheCeo)
-        );
-    }
-
-    #[test]
     fn a_furloughed_member_is_never_woken_whatever_the_wake_is_for() {
         let out = WakeSituation {
             furloughed: true,
@@ -650,7 +649,7 @@ mod tests {
         for stale in [
             WakeReason::Recovery,
             WakeReason::Retry,
-            WakeReason::LeadReview,
+            WakeReason::Retired("lead_review"),
         ] {
             assert!(!stale.brings_news(), "{stale:?}");
         }
@@ -665,7 +664,7 @@ mod tests {
         ] {
             assert!(news.brings_news(), "{news:?}");
         }
-        assert!(WakeReason::LeadReview.on_a_clock() && WakeReason::CheckBack.on_a_clock());
+        assert!(WakeReason::Alarm.on_a_clock() && WakeReason::CheckBack.on_a_clock());
         assert!(!WakeReason::Assigned.on_a_clock());
     }
 
@@ -677,7 +676,6 @@ mod tests {
             WakeReason::WaitFinished,
             WakeReason::SubtasksFinished,
             WakeReason::ProposalDecided,
-            WakeReason::LeadReview,
             WakeReason::Retry,
             WakeReason::Recovery,
             WakeReason::CheckBack,
@@ -685,6 +683,13 @@ mod tests {
         ] {
             assert_eq!(WakeReason::from_name(r.name()), Some(r));
         }
+        // A retired reason on record reads back under the name it was written with.
+        for name in RETIRED {
+            let read = WakeReason::from_name(name).expect("a retired name still reads");
+            assert_eq!((read, read.name()), (WakeReason::Retired(name), name));
+            assert!(!WakeReason::all().contains(&read), "{name} is never raised");
+        }
+        assert_eq!(WakeReason::from_name("huddle"), None);
         for r in [
             Refused::KillSwitch,
             Refused::Paused,

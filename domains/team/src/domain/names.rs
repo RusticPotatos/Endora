@@ -17,22 +17,31 @@ pub fn next_free(taken: &[&str]) -> String {
     if let Some(name) = FIXED.iter().find(|n| free(n)) {
         return (*name).to_owned();
     }
-    for second in std::iter::once("").chain(OPENINGS.iter().copied()) {
-        for opening in OPENINGS {
-            for vowel in VOWELS {
-                for ending in ENDINGS {
-                    let tail = if second.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{}{vowel}", second.to_lowercase())
-                    };
-                    let name = format!("{opening}{vowel}{tail}{ending}");
-                    if name.len() > 2 && free(&name) && !FIXED.contains(&name.as_str()) {
-                        return name;
-                    }
-                }
-            }
-        }
-    }
-    format!("Member {}", taken.len() + 1)
+    made_up()
+        .find(|name| name.len() > 2 && free(name) && !FIXED.contains(&name.as_str()))
+        .unwrap_or_else(|| format!("Member {}", taken.len() + 1))
+}
+
+/// A made-up name: an opening and a vowel, the second syllable if there is one, and an ending.
+fn name_of(opening: &str, vowel: &str, second: &str, ending: &str) -> String {
+    let tail = if second.is_empty() {
+        String::new()
+    } else {
+        format!("{}{vowel}", second.to_lowercase())
+    };
+    format!("{opening}{vowel}{tail}{ending}")
+}
+
+/// Every made-up name, in the order they are tried: one syllable, then two.
+fn made_up() -> impl Iterator<Item = String> {
+    let seconds = std::iter::once("").chain(OPENINGS.iter().copied());
+    seconds.flat_map(|second| {
+        OPENINGS.iter().flat_map(move |opening| {
+            VOWELS.iter().flat_map(move |vowel| {
+                ENDINGS
+                    .iter()
+                    .map(move |ending| name_of(opening, vowel, second, ending))
+            })
+        })
+    })
 }

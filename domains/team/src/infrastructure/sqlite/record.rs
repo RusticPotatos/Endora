@@ -9,7 +9,7 @@ use endora_kernel::tier::Tier;
 use rusqlite::types::Value;
 use rusqlite::{Connection, params_from_iter};
 
-use super::{SqliteTeamStore, backend};
+use super::{SqliteTeamStore, backend, corrupt};
 use crate::application::ports::Stored;
 use crate::domain::history::{tier_from_name, tier_of};
 use crate::domain::record::{PER_SOURCE, Passage, Query, Source, fts_query};
@@ -50,15 +50,23 @@ fn about(column: &str, q: &Query, args: &mut Vec<Value>) -> String {
     sql
 }
 
-fn run_of(conn: &Connection, sql: &str, args: &[Value]) -> Stored<Vec<Vec<Value>>> {
+/// The rows of a query, each its first `N` columns: a query narrower than its reader is a
+/// store failure, not a panic.
+fn run_of<const N: usize>(conn: &Connection, sql: &str, args: &[Value]) -> Stored<Vec<[Value; N]>> {
     let mut stmt = conn.prepare(sql).map_err(backend)?;
-    let width = stmt.column_count();
+    if stmt.column_count() < N {
+        return Err(corrupt("a record query with fewer columns than its reader"));
+    }
     let rows = stmt
         .query_map(params_from_iter(args.iter()), |r| {
-            (0..width).map(|i| r.get::<_, Value>(i)).collect()
+            let mut row: [Value; N] = std::array::from_fn(|_| Value::Null);
+            for (i, cell) in row.iter_mut().enumerate() {
+                *cell = r.get(i)?;
+            }
+            Ok(row)
         })
         .map_err(backend)?
-        .collect::<rusqlite::Result<Vec<Vec<Value>>>>()
+        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(backend)?;
     Ok(rows)
 }
@@ -125,7 +133,7 @@ fn posts(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     sql.push_str(&about("p.task", q, &mut args));
     sql.push_str(" ORDER BY p.at_ms DESC LIMIT ?");
     limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
+    Ok(run_of::<6>(conn, &sql, &args)?
         .iter()
         .map(|r| Passage {
             source: Source::Post,
@@ -161,7 +169,7 @@ fn handovers(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     sql.push_str(&about("h.task", q, &mut args));
     sql.push_str(" ORDER BY h.at_ms DESC LIMIT ?");
     limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
+    Ok(run_of::<7>(conn, &sql, &args)?
         .iter()
         .map(|r| Passage {
             source: Source::Handover,
@@ -192,7 +200,7 @@ fn sections(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     }
     sql.push_str(" ORDER BY s.updated_at DESC LIMIT ?");
     limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
+    Ok(run_of::<7>(conn, &sql, &args)?
         .iter()
         .map(|r| Passage {
             source: Source::Section,
@@ -222,7 +230,7 @@ fn timelines(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     }
     sql.push_str(" ORDER BY t.at_ms DESC LIMIT ?");
     limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
+    Ok(run_of::<7>(conn, &sql, &args)?
         .iter()
         .map(|r| Passage {
             source: Source::Timeline,
@@ -249,6 +257,9 @@ fn has_index(conn: &Connection) -> bool {
 }
 
 fn conversations(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
+    let Some(first) = q.terms.first() else {
+        return Ok(Vec::new());
+    };
     let mut args: Vec<Value> = Vec::new();
     let mut sql;
     if has_index(conn) {
@@ -262,7 +273,7 @@ fn conversations(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
             .to_owned();
     } else {
         // No index: a bounded scan, shown around the first word.
-        args.push(Value::Text(q.terms[0].clone()));
+        args.push(Value::Text(first.clone()));
         args.push(Value::Integer(q.since));
         sql = format!(
             "SELECT t.run, t.task, mb.name,
@@ -279,7 +290,7 @@ fn conversations(conn: &Connection, q: &Query) -> Stored<Vec<Passage>> {
     sql.push_str(&about("t.task", q, &mut args));
     sql.push_str(" ORDER BY t.at_ms DESC LIMIT ?");
     limit(&mut args);
-    Ok(run_of(conn, &sql, &args)?
+    Ok(run_of::<6>(conn, &sql, &args)?
         .iter()
         .map(|r| Passage {
             source: Source::Conversation,

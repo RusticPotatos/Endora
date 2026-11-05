@@ -12,13 +12,16 @@ use super::{Done, Engine, EngineError};
 use crate::application::ports::{Clock, TeamStore, WorkerAdapter};
 use crate::domain::chess::{self, Game, Refused};
 use crate::domain::games::{self, Rng};
-use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, Role, RunId, WakeReason};
+use crate::domain::{EventKind, Member, MemberId, Millis, Refusal, RunId, WakeReason};
 
 /// The most results the office shows as the latest.
 const RECENT: usize = 5;
 
 /// The least time between two turns given a member to make its move in a game of chess.
 const CHESS_PACE_MS: Millis = 30 * 60 * 1000;
+/// The turns a member is given for one move before it forfeits: Kit was woken 115 times for one
+/// move it never made (baseline, 28 Oct).
+const CHESS_TRIES: u32 = 3;
 /// The most finished games of chess the snapshot keeps showing, beside those being played.
 const FINISHED_SHOWN: usize = 3;
 
@@ -84,11 +87,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// turn, free), open tasks or not, at most every [`CHESS_PACE_MS`]. Before, a move waited for
     /// downtime, which a member holding any open task never has.
     fn chess_picked_up(&self, now: Millis) -> Done<()> {
+        // No downtime while a round of the experiment runs (ADR 0142, amended 2026-11-01): the
+        // games wait for its close.
+        if self.round_running()? {
+            return Ok(());
+        }
         let games = self.store.chess_games()?;
         if !games.iter().any(Game::live) {
             return Ok(());
         }
-        let runs = self.store.runs()?;
+        let runs = self.store.live_runs()?;
         let wakes = self.store.wakes()?;
         for game in games.iter().filter(|g| g.live()) {
             let mover = game.to_move();
@@ -96,7 +104,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !member.at_work() {
                 continue;
             }
-            let busy = runs.iter().any(|r| r.member == mover && r.status.live())
+            let busy = runs.iter().any(|r| r.member == mover)
                 || wakes
                     .iter()
                     .any(|w| w.member == mover && w.receipt == crate::domain::Receipt::Held);
@@ -112,6 +120,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if now.saturating_sub(last) < CHESS_PACE_MS {
                 continue;
             }
+            // The turns given for this move so far, by the moves made when they were given.
+            let tries_key = format!("chess_tries:{}", game.id);
+            let tries = self
+                .store
+                .setting(&tries_key)?
+                .and_then(|s| {
+                    let (at, n) = s.split_once(':')?;
+                    (at.parse::<usize>().ok()? == game.moves.len())
+                        .then(|| n.parse::<u32>().ok())?
+                })
+                .unwrap_or(0);
+            if tries >= CHESS_TRIES {
+                let mut ended = game.clone();
+                if ended.forfeit() {
+                    self.store.save_chess_game(&ended)?;
+                    let names = self.names()?;
+                    let name = |id: MemberId| names.get(&id).cloned().unwrap_or_default();
+                    let result = chess::result_said(&ended, &name(ended.white), &name(ended.black));
+                    self.emit_chess_ended(&ended, &result)?;
+                }
+                continue;
+            }
+            self.store
+                .set_setting(&tries_key, &format!("{}:{}", game.moves.len(), tries + 1))?;
             self.store.set_setting(&key, &now.to_string())?;
             self.wake_held_lock(mover, None, WakeReason::Downtime)?;
         }
@@ -122,17 +154,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// queued, no open task and no routine due.
     pub(super) fn free_to_play(&self, now: Millis) -> Done<Vec<Member>> {
         let tasks = self.store.tasks()?;
-        let runs = self.store.runs()?;
+        let runs = self.store.live_runs()?;
         let routines = self.store.routines()?;
         let wakes = self.store.wakes()?;
         Ok(self
             .store
             .members()?
             .into_iter()
-            .filter(|m| m.role != Role::Ceo && m.at_work())
+            .filter(crate::domain::Member::at_work)
             .filter(|m| {
                 // A wake held behind another member's turn is work coming (ADR 0120): not idle.
-                let busy = runs.iter().any(|r| r.member == m.id && r.status.live())
+                let busy = runs.iter().any(|r| r.member == m.id)
                     || wakes
                         .iter()
                         .any(|w| w.member == m.id && w.receipt == crate::domain::Receipt::Held);
@@ -156,6 +188,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .chess_games()?
             .into_iter()
             .find(|g| g.live() && g.plays(member)))
+    }
+
+    /// A game of chess played in the office, written out in PGN under the members' names and
+    /// dated the day it began.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a game there is not; a store failure.
+    pub fn chess_pgn(&self, id: i64) -> Done<String> {
+        let game = self
+            .store
+            .chess_games()?
+            .into_iter()
+            .find(|g| g.id == id)
+            .ok_or(EngineError::Unknown("chess game"))?;
+        let names = self.names()?;
+        let name = |m: MemberId| names.get(&m).cloned().unwrap_or_else(|| "?".to_owned());
+        let (white, black) = (name(game.white), name(game.black));
+        Ok(crate::domain::pgn::pgn(&crate::domain::pgn::Record {
+            event: crate::domain::pgn::OFFICE,
+            date: Some(game.started_at),
+            round: None,
+            white: &white,
+            black: &black,
+            moves: &game.moves,
+            status: game.status,
+            reason: &game.reason,
+            abandoned: false,
+        }))
     }
 
     pub(super) fn names(&self) -> Done<HashMap<MemberId, String>> {
@@ -299,7 +359,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if other.id == me.id {
             return Err(refused(Refused::Yourself));
         }
-        if !other.at_work() || other.role == Role::Ceo {
+        if !other.at_work() {
             return Err(refused(Refused::NotAvailable(other.name)));
         }
         if self.chess_game_of(me.id)?.is_some() {

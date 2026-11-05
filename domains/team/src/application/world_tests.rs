@@ -12,7 +12,7 @@ use super::ports::{Clock, NewTask, RunContext};
 use super::protocol::call;
 use super::world_ports::WorldStore;
 use crate::domain::world::Stage;
-use crate::domain::{GoalId, MemberId, Priority, Role, TaskId};
+use crate::domain::{GoalId, MemberId, Priority, TaskId};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -48,14 +48,14 @@ fn engine(clock: &Hands) -> Hq<'_> {
 /// tester, who reports to Ada.
 fn team(hq: &Hq<'_>) -> Team {
     let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
     hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
-    hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    hq.hire("Dee", 20, 2, 1).unwrap();
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
@@ -120,7 +120,7 @@ fn reading(hq: &Hq<'_>, context: &RunContext) -> String {
 }
 
 #[test]
-fn the_export_reads_newest_first_and_each_page_once_with_the_screens_role_names() {
+fn the_export_reads_newest_first_and_each_page_once_with_each_members_model() {
     let clock = Hands(AtomicI64::new(OCT_18));
     let hq = engine(&clock);
     team(&hq);
@@ -158,10 +158,13 @@ fn the_export_reads_newest_first_and_each_page_once_with_the_screens_role_names(
     assert!(first.starts_with("- "), "{md}");
     assert_eq!(md.matches(first).count(), 1, "the lab's lines once\n{md}");
     assert!(!md.contains("(world:lab):"), "{md}");
-    assert!(md.contains("- Mara (CEO, "), "{md}");
-    assert!(md.contains("- Ada (Lead, "), "{md}");
-    assert!(md.contains("- Linus (Developer, "), "{md}");
-    assert!(md.contains("- Dee (Tester, "), "{md}");
+    for name in ["Mara", "Ada", "Linus", "Dee"] {
+        assert!(md.contains(&format!("- {name} (")), "{md}");
+    }
+    assert!(
+        !md.contains("(CEO") && !md.contains("(Tester"),
+        "no titles: {md}"
+    );
 }
 
 #[test]
@@ -225,7 +228,8 @@ fn the_owner_writes_a_section_and_a_timeline_entry_that_the_team_reads_and_membe
 
     // It is in the export, and in every member's briefing, first.
     assert!(hq.world_markdown().unwrap().contains("The NAS has 32 GB."));
-    task_for(&hq, t.goal, t.lead, "Look over the lab");
+    // On an item, the sections that name what it names (ADR 0142, amended 2026-10-30).
+    task_for(&hq, t.goal, t.lead, "Look over the NAS");
     let ada = turn(&hq, t.lead);
     assert!(
         ada.told
@@ -233,7 +237,7 @@ fn the_owner_writes_a_section_and_a_timeline_entry_that_the_team_reads_and_membe
         "{}",
         ada.told
     );
-    task_for(&hq, t.goal, t.dev, "Fix it");
+    task_for(&hq, t.goal, t.dev, "Fix the NAS's swap");
     let linus = turn(&hq, t.dev);
     assert!(linus.told.contains("(world:house#nas)"), "{}", linus.told);
     // A member's own section on the same key is refused: it is the owner's.

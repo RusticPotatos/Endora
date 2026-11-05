@@ -471,8 +471,6 @@ pub enum WorldRefusal {
     TooLong(usize),
     /// Work handed on with no handover note.
     HandoverNeeded,
-    /// The house log is the house page's timeline now.
-    HouseLogRetired,
     /// A derived page is HQ's to write.
     Derived(String),
     /// No page of the world is called that.
@@ -502,10 +500,6 @@ impl fmt::Display for WorldRefusal {
             Self::HandoverNeeded => f.write_str(
                 "handing work on needs a handover note: handover { done, not_done, next, \
                  watch_out }, each said",
-            ),
-            Self::HouseLogRetired => f.write_str(
-                "the house log is now the house page (world:house): note_house adds a dated line \
-                 to its timeline, and write_world writes a section of it",
             ),
             Self::Derived(address) => {
                 write!(

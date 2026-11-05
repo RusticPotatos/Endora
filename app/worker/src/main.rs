@@ -20,6 +20,7 @@
 
 mod check;
 mod claude_code;
+mod gist;
 mod repo;
 mod shell;
 mod transcript;
@@ -37,9 +38,9 @@ const CONTRACTS: &str = "http://node:8788/team-relay/contracts";
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
 const MOST_ROUNDS: u32 = 12;
-/// The most rounds of Claude Code in a turn, unless told otherwise: a round is one model call,
-/// and Claude Code reads and edits a file a round. The relay's money cap is the real limit.
-const MOST_CLAUDE_CODE_ROUNDS: u32 = 30;
+/// The most rounds of a turn on Claude, on either runtime, unless told otherwise: a round is one
+/// model call, and Claude reads or edits a file a round. The relay's money cap is the real limit.
+const MOST_CLAUDE_ROUNDS: u32 = 30;
 /// Where the workbench's shell runs: the sandbox's writable home, gone when the turn ends.
 const WORKBENCH_DIR: &str = "/work";
 
@@ -70,8 +71,19 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             ));
         }
     };
+    let model = given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned());
+    // A Claude model is reached through the Anthropic relay, in Anthropic's own API; anything
+    // else through the local relay, in OpenAI's.
+    let api = if model.starts_with("claude-") {
+        Api::Anthropic
+    } else {
+        Api::OpenAi
+    };
+    // A Claude turn gets the rounds Claude Code gets, on either runtime: with twelve, the
+    // worker's turns stopped mid-task where Claude Code's, on the same model, went on to
+    // check their work (the runtime proof of concept, 1 Nov). The house's model keeps twelve.
     let most_rounds = match given("ENDORA_MOST_ROUNDS") {
-        None if claude_code => MOST_CLAUDE_CODE_ROUNDS,
+        None if claude_code || api == Api::Anthropic => MOST_CLAUDE_ROUNDS,
         None => MOST_ROUNDS,
         Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
             format!("ENDORA_MOST_ROUNDS must be a whole number above zero, not {n}")
@@ -86,14 +98,6 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             |(node, _)| format!("{node}/team-relay/contracts"),
         )
     });
-    let model = given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned());
-    // A Claude model is reached through the Anthropic relay, in Anthropic's own API; anything
-    // else through the local relay, in OpenAI's.
-    let api = if model.starts_with("claude-") {
-        Api::Anthropic
-    } else {
-        Api::OpenAi
-    };
     // How hard Claude tries, as HQ decided for this turn: one of the five, or the model's own.
     let effort = match given("ENDORA_EFFORT") {
         None => None,
@@ -116,6 +120,34 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     if claude_code && (workbench.is_none() || api != Api::Anthropic) {
         return Err("Claude Code takes a turn only in the workbench, on a Claude model".to_owned());
     }
+    // What the turn may read in all before it goes on fresh: HQ's figure by the member's brain,
+    // given by the runner; its kind's from an older runner.
+    let prompt_budget = match given("ENDORA_PROMPT_BUDGET") {
+        None => turn::prompt_budget_for(api),
+        Some(n) => n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+            format!("ENDORA_PROMPT_BUDGET must be a whole number of bytes above zero, not {n}")
+        })?,
+    };
+    // How the budget counts (HQ's word by the member's brain): `conversation`, each byte once,
+    // or `every_call`, every call's prompt summed, as an older runner's turns did.
+    let counts_conversation = match given("ENDORA_BUDGET_COUNTS").as_deref() {
+        None | Some("every_call") => false,
+        Some("conversation") => true,
+        Some(other) => {
+            return Err(format!(
+                "ENDORA_BUDGET_COUNTS must be conversation or every_call, not {other}"
+            ));
+        }
+    };
+    // Past what size a long result is read through a gist: its kind's, unless told; `off`
+    // reads every result whole.
+    let gist_past = match given("ENDORA_GIST_PAST").as_deref() {
+        None => turn::gist_past_for(api),
+        Some("off") => None,
+        Some(n) => Some(n.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+            format!("ENDORA_GIST_PAST must be off or a whole number of bytes above zero, not {n}")
+        })?),
+    };
     let mcp = given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned());
     endora_protocol::team::canonical_endpoint(&mcp).map_err(str::to_owned)?;
     Ok(Setup {
@@ -126,9 +158,12 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         model,
         api,
         most_rounds,
+        prompt_budget,
+        counts_conversation,
         workbench,
         effort,
         claude_code,
+        gist_past,
     })
 }
 
@@ -179,6 +214,13 @@ fn main() {
             eprintln!(
                 "worker: the {} rounds ran out before the model finished",
                 setup.most_rounds
+            );
+            TAKEN
+        }
+        Ok(Taken::OutOfRoom) => {
+            eprintln!(
+                "worker: the turn's prompt reached its budget of {} bytes; it goes on in a fresh turn",
+                setup.prompt_budget
             );
             TAKEN
         }
@@ -236,6 +278,28 @@ mod tests {
         assert_eq!(setup.api, Api::OpenAi);
         assert_eq!(setup.most_rounds, 12);
         assert_eq!(setup.workbench, None, "no shell outside the workbench");
+    }
+
+    #[test]
+    fn a_claude_turn_gets_the_rounds_claude_code_gets_and_a_house_turn_keeps_twelve() {
+        // The runtime proof of concept (1 Nov): the worker's twelve rounds cut R1 before it
+        // submitted, where Claude Code, on the same model, used 25.
+        let rounds = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).unwrap().most_rounds
+        };
+        assert_eq!(rounds(&[("ENDORA_MODEL", "claude-haiku-5-5")]), 30);
+        assert_eq!(rounds(&[]), 12, "the house's model");
+        assert_eq!(rounds(&[("ENDORA_MODEL", "deepseek-flash")]), 12);
+        assert_eq!(
+            rounds(&[
+                ("ENDORA_MODEL", "claude-haiku-5-5"),
+                ("ENDORA_MOST_ROUNDS", "5")
+            ]),
+            5,
+            "told otherwise"
+        );
     }
 
     #[test]
@@ -302,6 +366,42 @@ mod tests {
         assert_eq!(setup.model, "claude-haiku-5-5");
         assert_eq!(setup.api, Api::Anthropic, "Claude speaks Anthropic's API");
         assert_eq!(setup.most_rounds, 4);
+    }
+
+    /// What a turn may read in all before it ends and goes on fresh (ADR 0142, amended
+    /// 2026-10-30): about 60,000 tokens on the house's models, 120,000 on Claude, four bytes a
+    /// token, unless told.
+    #[test]
+    fn the_prompt_budget_is_the_turn_kinds_unless_told() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).map(|s| s.prompt_budget)
+        };
+        assert_eq!(at(&[]), Ok(240_000), "a house turn");
+        assert_eq!(at(&[("ENDORA_MODEL", "claude-haiku-5-5")]), Ok(480_000));
+        assert_eq!(at(&[("ENDORA_PROMPT_BUDGET", "5000")]), Ok(5_000));
+        for odd in ["0", "-1", "lots"] {
+            assert!(at(&[("ENDORA_PROMPT_BUDGET", odd)]).is_err(), "{odd}");
+        }
+    }
+
+    /// A house turn reads a long log, diff or listing through a gist (ADR 0142, amended
+    /// 2026-10-30); a Claude turn reads it whole; the runner may say otherwise.
+    #[test]
+    fn a_house_turn_gists_long_results_unless_told() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).map(|s| s.gist_past)
+        };
+        assert_eq!(at(&[]), Ok(Some(gist::GIST_PAST)), "a house turn");
+        assert_eq!(at(&[("ENDORA_MODEL", "claude-haiku-5-5")]), Ok(None));
+        assert_eq!(at(&[("ENDORA_GIST_PAST", "off")]), Ok(None));
+        assert_eq!(at(&[("ENDORA_GIST_PAST", "4096")]), Ok(Some(4_096)));
+        for odd in ["0", "-1", "lots"] {
+            assert!(at(&[("ENDORA_GIST_PAST", odd)]).is_err(), "{odd}");
+        }
     }
 
     #[test]

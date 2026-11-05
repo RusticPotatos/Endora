@@ -1,7 +1,9 @@
 Feature: Caps on talk and runaway
-  A runaway team is stopped by HQ itself, and a member's turns on the house's own models are
-  capped each day: they cost nothing, so no budget stops them. (The budget of talk, ADR 0133,
-  went with the company: ADR 0142.)
+  A runaway team is stopped by HQ itself, and a member's turns on the house's own models stop for
+  the day when they keep showing nothing: they cost nothing, so no budget stops them. Round 3
+  (D15): Bo, on the house's model, stopped at a fixed sixty turns a day whatever his turns
+  achieved. A count is not what should stop a free model; waste is (ADR 0133, amended
+  2026-11-01). (The budget of talk, ADR 0133, went with the company: ADR 0142.)
 
   Background:
     Given Ada is the lead
@@ -17,8 +19,8 @@ Feature: Caps on talk and runaway
   # the scripted demo once ran 1,539 turns in 3 h 40 min.
 
   # Seed: no cap fails the waiting step; a cap that loses the wake fails the last step.
-  Scenario: A member's sixty-first turn of a day on the house's own models waits until tomorrow
-    When Linus takes 60 turns on "Plan the backups", two minutes apart
+  Scenario: A member whose turns on the house's own models keep showing nothing waits until tomorrow
+    When Linus takes 10 turns on "Plan the backups" that only talk, two minutes apart
     And Linus is asked to talk about "Plan the backups" again
     And a tick passes
     Then Linus's turn on "Plan the backups" is waiting for tomorrow
@@ -28,14 +30,23 @@ Feature: Caps on talk and runaway
     Then Linus's turn starts on "Plan the backups"
     And the top bar counts 0 turns waiting for tomorrow
 
+  # Seed (D15): the fixed sixty a day stopped this member's sixty-first turn.
+  Scenario: A member whose turns on the house's own models do work is not stopped by a count
+    When Linus takes 61 turns on "Plan the backups" that each take a reading, two minutes apart
+    And Linus is asked to talk about "Plan the backups" again
+    And a tick passes
+    Then Linus's turn starts on "Plan the backups"
+    And the top bar counts 0 turns waiting for tomorrow
+
   # --- A runaway ---------------------------------------------------------------------------
 
-  # Only the owner could stop a team: the plan's tripwires were never built.
+  # Only the owner could stop a team: the plan's tripwires were never built. Turns that show
+  # nothing are stopped by the waste check first; the tripwire catches turns that look busy.
 
   # Seed: no tripwire fails the first step; one that lets the forty-first start fails the count;
   # a resume that does not clear the slate fails the last step.
   Scenario: A runaway stops the team itself, and the owner's resume starts it again
-    When Ada and Linus are woken again and again, a turn every 5 seconds
+    When Ada and Linus are woken again and again, a turn every 5 seconds, each taking a reading
     Then HQ has stopped the team, saying "stopped by the runaway tripwire"
     And 40 turns were started, and no more
     And the owner's desk holds a tripwire card naming Ada and Linus

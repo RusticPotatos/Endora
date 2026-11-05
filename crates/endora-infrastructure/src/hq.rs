@@ -118,6 +118,32 @@ impl HqClient {
         Self::read(response)
     }
 
+    /// GETs a path from HQ that answers in plain text (a game's PGN), as the text.
+    ///
+    /// # Errors
+    /// [`HqError`] if HQ cannot be reached or says no.
+    pub fn get_text(&self, path: &str) -> Result<String, HqError> {
+        let mut response = self
+            .agent
+            .get(&format!("{}{path}", self.url))
+            .header("authorization", &format!("Bearer {}", self.token()?))
+            .call()
+            .map_err(|e| HqError::Unreachable(e.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| HqError::Unreachable(e.to_string()))?;
+        if (200..300).contains(&status) {
+            return Ok(text);
+        }
+        let message = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|b| b["error"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("HQ answered {status}"));
+        Err(HqError::Answered { status, message })
+    }
+
     /// POSTs a JSON body to a path on HQ.
     ///
     /// # Errors
@@ -247,6 +273,25 @@ mod tests {
             request
                 .to_lowercase()
                 .contains("authorization: bearer a-token-of-at-least-thirty-two-characters")
+        );
+    }
+
+    #[test]
+    fn a_plain_text_answer_is_read_as_it_came() {
+        let (url, seen) = one_answer("200 OK", "[Event \"x\"]\n\n*\n");
+        let hq = HqClient::new(&url, "t");
+        assert_eq!(
+            hq.get_text("/v1/chess/1/pgn").unwrap(),
+            "[Event \"x\"]\n\n*\n"
+        );
+        assert!(seen.join().unwrap().starts_with("GET /v1/chess/1/pgn "));
+        let (url, _seen) = one_answer("404 Not Found", r#"{"error":"no such chess game"}"#);
+        assert_eq!(
+            HqClient::new(&url, "t").get_text("/v1/chess/2/pgn"),
+            Err(HqError::Answered {
+                status: 404,
+                message: "no such chess game".to_owned()
+            })
         );
     }
 

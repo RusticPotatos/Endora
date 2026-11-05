@@ -4,13 +4,18 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::application::office_ports::OfficeStore;
+
+use crate::application::run_ports::RunStore;
+
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, Settings};
+use super::engine::{Author, Engine, EngineError, Settings};
 use super::ports::{Clock, RunContext, TeamStore};
 use super::protocol::{call, tools};
+use crate::application::event_ports::EventStore;
 use crate::domain::chess::{self, Status};
-use crate::domain::{MemberId, Role, RunStatus, WakeReason};
+use crate::domain::{MemberId, RunStatus, WakeReason};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -41,7 +46,6 @@ fn engine(clock: &Hands, downtime: bool, games: bool) -> Hq<'_> {
 }
 
 struct Team {
-    ceo: MemberId,
     ada: MemberId,
     bo: MemberId,
     cy: MemberId,
@@ -49,22 +53,11 @@ struct Team {
 }
 
 fn team(hq: &Hq<'_>) -> Team {
-    let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        hq.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let bo = hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-    let cy = hq.hire("Cy", Role::Researcher, 20, 1, 1).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 1, 2).unwrap();
-    Team {
-        ceo,
-        ada,
-        bo,
-        cy,
-        dee,
-    }
+    let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+    let bo = hq.hire("Bo", 40, 2, 4).unwrap();
+    let cy = hq.hire("Cy", 20, 1, 1).unwrap();
+    let dee = hq.hire("Dee", 20, 1, 2).unwrap();
+    Team { ada, bo, cy, dee }
 }
 
 fn run_of(hq: &Hq<'_>, context: &RunContext) -> crate::application::ports::Run {
@@ -180,23 +173,50 @@ fn the_snapshot_carries_chess_and_no_tracked_ping_pong_or_pool() {
 // ---- chess --------------------------------------------------------------------------------
 
 #[test]
-fn every_role_is_offered_the_chess_tool() {
-    for role in [
-        Role::Lead,
-        Role::Developer,
-        Role::Researcher,
-        Role::Reviewer,
-    ] {
+fn every_member_is_offered_the_chess_tool() {
+    {
         let all = tools();
         let tool = all
             .as_array()
             .unwrap()
             .iter()
             .find(|t| t["name"] == "chess")
-            .unwrap_or_else(|| panic!("{role:?} lacks the chess tool"));
+            .expect("a member is offered the chess tool");
         let actions = tool["inputSchema"]["properties"]["action"]["enum"].clone();
         assert_eq!(actions, json!(["board", "move", "challenge"]));
     }
+}
+
+/// Whether HQ marks `name` as one the turn is to be offered up front, before any search (ADR
+/// 0142, amended 2026-10-30): the house's worker starts with a small core and finds the rest.
+fn up_front_in(hq: &Hq<'_>, context: &RunContext, name: &str) -> bool {
+    let (run, member) = hq.turn_of(&context.token).unwrap().expect("a running turn");
+    super::protocol::tools_in(hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name)
+        .is_some_and(|t| t["_meta"][super::protocol::UP_FRONT] == true)
+}
+
+/// A move is a downtime turn's whole point: behind a search, no move was ever made (25 Oct).
+/// Any other turn finds the game when it wants it.
+#[test]
+fn the_chess_tool_is_up_front_in_a_downtime_turn_and_found_in_any_other() {
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, true, false);
+    let t = team(&hq);
+    hq.tick().unwrap();
+    let ada = downtime_for(&hq, &clock, t.ada);
+    assert!(up_front_in(&hq, &ada, "chess"), "a downtime turn");
+    assert!(
+        !up_front_in(&hq, &ada, "post"),
+        "HQ marks the kind's tools alone"
+    );
+    let at_work = engine(&clock, false, false);
+    let t = team(&at_work);
+    let bo = mention_turn(&at_work, t.bo);
+    assert!(!up_front_in(&at_work, &bo, "chess"), "a turn of work");
 }
 
 #[test]
@@ -233,10 +253,6 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
     assert!(challenge("Ada").unwrap_err().contains("yourself"));
     assert!(challenge("Nobody").unwrap_err().contains("nobody"));
     assert!(
-        challenge("Mara").unwrap_err().contains("not at hand"),
-        "the CEO"
-    );
-    assert!(
         challenge("Cy").unwrap_err().contains("not at hand"),
         "paused"
     );
@@ -252,7 +268,6 @@ fn one_game_each_and_only_a_member_at_hand_can_be_challenged() {
     hq.pause(t.cy, false).unwrap();
     let busy = challenge("Cy").unwrap_err();
     assert!(busy.contains("already"), "{busy}");
-    let _ = t.ceo;
 }
 
 #[test]
@@ -435,6 +450,40 @@ fn a_game_is_picked_up_over_time_by_the_member_whose_move_it_is() {
 }
 
 #[test]
+fn a_member_given_three_turns_for_a_move_without_moving_forfeits_and_is_woken_no_more() {
+    // Baseline 28 Oct: Kit, on Sonnet, was woken every half hour for a move it never made: 115
+    // turns and $2.50 in three days on one game. Three turns without a move, and it forfeits.
+    let clock = Hands(AtomicI64::new(START));
+    let hq = engine(&clock, false, true);
+    let t = team(&hq);
+    only(&hq, &t, [t.ada, t.bo]);
+    hq.store().add_chess_game(t.ada, t.bo, START).unwrap();
+    let mut game = hq.store().chess_games().unwrap().remove(0);
+    game.play(t.ada, "e4", START + 1).unwrap();
+    hq.store().save_chess_game(&game).unwrap();
+    end_all(&hq);
+    let chess_wakes = |hq: &Hq<'_>, before: i64| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| w.member == t.bo && w.reason == WakeReason::Downtime && w.at < before)
+            .count()
+    };
+    for _ in 0..6 {
+        clock.0.fetch_add(31 * MINUTE, Ordering::SeqCst);
+        end_all(&hq);
+    }
+    let games = hq.store().chess_games().unwrap();
+    let game = games[0].clone();
+    // The office may sit Bo down to a new game after; the first game's turns came before it.
+    let next_began = games.get(1).map_or(i64::MAX, |g| g.started_at);
+    assert_eq!(chess_wakes(&hq, next_began), 3, "three tries, then no more");
+    assert_eq!(game.status, Status::WhiteWon);
+    assert!(game.reason.contains("forfeits"), "{}", game.reason);
+}
+
+#[test]
 fn checkmate_ends_the_game_says_so_and_goes_on_the_leaderboard() {
     let clock = Hands(AtomicI64::new(START));
     let hq = engine(&clock, true, false);
@@ -503,6 +552,24 @@ fn a_game_nobody_moves_in_for_a_week_is_adjourned_as_a_draw() {
     );
     hq.tick().unwrap();
     assert_eq!(events(&hq, "chess.ended").len(), 1, "once");
+    // Its PGN says the house adjourned it, a draw by adjudication, under the members' names.
+    let id = kept.id;
+    let pgn = hq.chess_pgn(id).unwrap();
+    for tag in [
+        "[Event \"Endora office chess\"]",
+        "[Date \"2026.10.16\"]",
+        "[White \"Ada\"]",
+        "[Black \"Bo\"]",
+        "[Result \"1/2-1/2\"]",
+        "[Termination \"adjudication\"]",
+    ] {
+        assert!(pgn.contains(tag), "{tag}: {pgn}");
+    }
+    assert!(
+        pgn.ends_with("{adjourned after a week without a move} 1/2-1/2\n"),
+        "{pgn}"
+    );
+    assert!(matches!(hq.chess_pgn(id + 1), Err(EngineError::Unknown(_))));
 }
 
 #[test]
@@ -528,6 +595,30 @@ fn a_downtime_briefing_says_whose_move_it_is_in_chess() {
     );
     assert!(
         ada.told.contains("This turn is for your move"),
+        "{}",
+        ada.told
+    );
+    // A move is all the turn is (30 Oct: office chess turns averaged 27,760 prompt tokens, the
+    // week's largest cost): HQ offers it my_turn and chess alone, the node none of its tools,
+    // and its briefing carries no map of the world.
+    let run = run_of(&hq, &ada);
+    let member = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == t.ada)
+        .unwrap();
+    let offered: Vec<String> = super::protocol::tools_in_v2(&hq, &run, &member)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(offered, ["my_turn", "chess"], "{offered:?}");
+    assert_eq!(hq.lab_tools_of(ada.run).unwrap(), Some(Vec::new()));
+    assert!(
+        !ada.told.contains("Your map of the team's world"),
         "{}",
         ada.told
     );

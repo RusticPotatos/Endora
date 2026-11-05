@@ -5,25 +5,28 @@ use std::sync::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::application::ports::{
-    DeskItem, NewProject, NewRoutine, NewTask, Post, Run, StoreError, Stored, TeamStore, Timer,
-    Wake,
+    NewProject, NewTask, Post, Run, StoreError, Stored, TeamStore, Wake,
 };
-use crate::application::ports::{LedgerRow, ThreadPost};
-use crate::domain::chess;
+use crate::domain::Document;
 use crate::domain::history::{InputOrigin, InputRef};
-use crate::domain::office;
 use crate::domain::{
-    Brain, CheckBack, CheckBackStatus, DeskId, Event, Evidence, Goal, GoalId, GoalStatus, Member,
-    MemberId, Micros, Millis, Pause, Priority, Project, ProjectId, ProjectStatus, Receipt, Refused,
-    Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
+    Brain, Event, Evidence, Goal, GoalId, GoalStatus, Member, MemberId, Millis, Pause, Priority,
+    Project, ProjectId, ProjectStatus, Receipt, Refused, RunId, RunStatus, Task, TaskId,
+    TaskStatus, WakeId, WakeReason,
 };
-use crate::domain::{Branch, Check, Document};
 
+mod desk;
+mod events;
 mod guards;
 mod history;
 mod input_lineage;
 mod map;
+mod office_store;
+mod receipts;
 mod record;
+mod runs;
+mod schedule;
+mod wing_store;
 mod world;
 
 const SCHEMA: &str = "
@@ -60,6 +63,8 @@ CREATE TABLE IF NOT EXISTS wakes (
     task INTEGER REFERENCES tasks(id), reason TEXT NOT NULL, receipt TEXT NOT NULL,
     refused TEXT, run INTEGER, at_ms INTEGER NOT NULL, by_owner INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+-- A task's held wakes, asked of every open task on every tick, without visiting the rest.
+CREATE INDEX IF NOT EXISTS wakes_held ON wakes(task,id) WHERE receipt = 'held';
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
     task INTEGER REFERENCES tasks(id), wake INTEGER NOT NULL REFERENCES wakes(id),
@@ -76,9 +81,19 @@ CREATE TABLE IF NOT EXISTS runs (
 -- Cutover recovery scans live taskless turns without visiting completed history.
 CREATE INDEX IF NOT EXISTS runs_live_taskless ON runs(id)
  WHERE task IS NULL AND status IN ('queued','running','retry_waiting');
+-- The live turns, read on every tick, without visiting the ended ones.
+CREATE INDEX IF NOT EXISTS runs_live ON runs(id)
+ WHERE status IN ('queued','running','retry_waiting');
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
     run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
+) STRICT;
+-- The models that answered a turn's calls, as the provider named them, and how many calls each
+-- (the agentic-harness climb, round 7). '' is a call whose answer named none: not known, never
+-- the alias the turn asked for.
+CREATE TABLE IF NOT EXISTS run_served_models (
+    run INTEGER NOT NULL REFERENCES runs(id), model TEXT NOT NULL, calls INTEGER NOT NULL,
+    PRIMARY KEY (run, model)
 ) STRICT;
 -- Append-only: a reservation before a turn starts, use while it runs, the charge and the
 -- release when it ends. Rows are never changed or removed. `owner` marks a turn the owner
@@ -262,7 +277,7 @@ const RUNTIME_COLUMNS: [(&str, &str); 2] = [
 
 /// The columns a store made before turns had a kind (ADR 0131) gains: a member's work brain and
 /// the brain a turn ran on, both empty. A turn's empty brain is read as unknown (it ran before
-/// turns had one); a member's is filled in at open, see [`give_two_brains`].
+/// turns had one); a member's is no longer read (ADR 0142).
 const TURN_COLUMNS: [(&str, &str); 2] = [("members", "work_brain TEXT"), ("runs", "brain TEXT")];
 
 /// The column a store made before the platform's interruptions were told from a worker's
@@ -310,25 +325,6 @@ const RETIRED_CONVERSATIONS: &str = "
       OR key LIKE 'guard_mode:%' OR key LIKE 'coordination_since:%'
       OR key LIKE 'coordination_asked:%' OR key = 'guards_ceremony';
 ";
-
-/// Gives every member two brains (ADR 0131), once. A member on the house's model or the Mac keeps
-/// it as its **work brain**, and a member on Claude gets the Mac to work with. A member that has
-/// no Claude to judge with (the house's model in its `brain`, or nothing it knows) is given the
-/// owner's cheap one, Haiku, or Sonnet for the CEO, who may not think with Haiku. Only a member
-/// that has no work brain yet is touched, so a second start changes nothing and the owner's later
-/// choice is never overwritten: a member that is one model (ADR 0142) keeps it.
-fn give_two_brains(conn: &Connection) -> Stored<()> {
-    conn.execute_batch(
-        "UPDATE members SET
-             work_brain = CASE WHEN brain IN ('local', 'mac') THEN brain ELSE 'mac' END,
-             brain = CASE
-                 WHEN brain IN ('claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5') THEN brain
-                 WHEN role = 'ceo' THEN 'claude-sonnet-5-5'
-                 ELSE 'claude-haiku-5-5' END
-         WHERE work_brain IS NULL;",
-    )
-    .map_err(backend)
-}
 
 /// Adds `column` (its name, then its type) to `table`, unless the table has it already.
 fn add_column(conn: &Connection, table: &str, column: &str) -> Stored<()> {
@@ -462,12 +458,14 @@ impl SqliteTeamStore {
         {
             add_column(&conn, table, column)?;
         }
-        give_two_brains(&conn)?;
         // A project's month is read on every wake and turn about its work, each row with its
-        // turn's reservation: by run and by project, not by reading the whole ledger each time.
+        // turn's reservation: by run and by project, not by reading the whole ledger each time;
+        // the reservation itself by an index of the reserves alone.
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS ledger_by_run ON ledger(run);
-             CREATE INDEX IF NOT EXISTS ledger_by_project ON ledger(project);",
+             CREATE INDEX IF NOT EXISTS ledger_by_project ON ledger(project);
+             CREATE INDEX IF NOT EXISTS ledger_reserves ON ledger(run, at_ms)
+              WHERE kind = 'reserve';",
         )
         .map_err(backend)?;
         // Roles as an enforced RACI (ADR 0120): new tables only, made if missing, so a live
@@ -490,6 +488,12 @@ fn task_from(conn: &Connection, row: &rusqlite::Row<'_>) -> rusqlite::Result<Tas
     let waits_on = waits
         .query_map([id], |r| r.get::<_, i64>(0).map(TaskId))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    task_with(row, waits_on)
+}
+
+/// A task from its row, given what it waits on.
+fn task_with(row: &rusqlite::Row<'_>, waits_on: Vec<TaskId>) -> rusqlite::Result<Task> {
+    let id: i64 = row.get(0)?;
     let status: String = row.get(7)?;
     let priority: String = row.get(8)?;
     Ok(Task {
@@ -507,6 +511,17 @@ fn task_from(conn: &Connection, row: &rusqlite::Row<'_>) -> rusqlite::Result<Tas
         waits_on,
         nudged: row.get::<_, i64>(10)? != 0,
         criteria: crate::domain::Criterion::read(&row.get::<_, String>(12)?),
+    })
+}
+
+/// An event from its row: id, time, kind and data (`null` when the data does not read).
+fn event_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
+    let data: String = r.get(3)?;
+    Ok(Event {
+        id: r.get(0)?,
+        at: r.get(1)?,
+        kind: r.get(2)?,
+        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
     })
 }
 
@@ -567,6 +582,10 @@ fn receipt_from(name: &str, refused: Option<&str>) -> Stored<Receipt> {
         _ => return Err(corrupt("a wake's receipt")),
     })
 }
+
+/// A task's held wakes, oldest first, read by the `wakes_held` index.
+const HELD_WAKES_OF_TASK: &str = "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes \
+     WHERE task=?1 AND receipt='held' ORDER BY id";
 
 const WAKE_BY_ID: &str =
     "SELECT id,member,task,reason,receipt,refused,run,at_ms,by_owner FROM wakes WHERE id=?1";
@@ -652,29 +671,16 @@ fn call_receipt_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<crate::domain::C
 }
 
 impl TeamStore for SqliteTeamStore {
-    fn add_member(
-        &self,
-        name: &str,
-        role: Role,
-        share_percent: u8,
-        slots: u8,
-        look: u8,
-    ) -> Stored<MemberId> {
+    fn add_member(&self, name: &str, share_percent: u8, slots: u8, look: u8) -> Stored<MemberId> {
         let conn = self.conn()?;
-        // A new member judges with the owner's cheap Claude and works with the Mac, until the
-        // owner says otherwise (ADR 0131).
+        // A new member is the house's own model until the owner says otherwise. The work brain
+        // column of the members once split in two (ADR 0131) is kept in step, unread; so is the
+        // role column, as the plain member every member is since one team (ADR 0142), so a
+        // build from before roles were retired reads it the same.
         conn.execute(
             "INSERT INTO members (name, role, share_percent, slots, look, brain, work_brain)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                name,
-                role.name(),
-                share_percent,
-                slots,
-                look,
-                Brain::default_judgment(role).name(),
-                Brain::Mac.name()
-            ],
+             VALUES (?1, 'developer', ?2, ?3, ?4, ?5, ?5)",
+            params![name, share_percent, slots, look, Brain::default().name()],
         )
         .map_err(backend)?;
         Ok(MemberId(conn.last_insert_rowid()))
@@ -684,39 +690,25 @@ impl TeamStore for SqliteTeamStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, role, share_percent, slots, paused, look, brain, reports_to, \
-                 furloughed_at, recalled_at, work_brain FROM members ORDER BY id",
+                "SELECT id, name, share_percent, slots, paused, look, brain, \
+                 furloughed_at, recalled_at FROM members ORDER BY id",
             )
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
-                let role: String = r.get(2)?;
-                let role = Role::from_name(&role).unwrap_or(Role::Developer);
                 // A member is its model (ADR 0142): the brain stored, whichever it is. One the
-                // store does not know is the cheap Claude its role may use.
-                let stored = Brain::from_name(&r.get::<_, String>(7)?);
-                let brain = stored.unwrap_or(Brain::default_judgment(role));
-                // A member never given a work brain works with the house's brain it is, or the
-                // Mac.
-                let work_brain = r
-                    .get::<_, Option<String>>(11)?
-                    .as_deref()
-                    .and_then(Brain::from_name)
-                    .or(stored.filter(|b| b.house()))
-                    .unwrap_or(Brain::Mac);
+                // store does not know is the house's own model.
+                let brain = Brain::from_name(&r.get::<_, String>(6)?).unwrap_or_default();
                 Ok(Member {
                     id: MemberId(r.get(0)?),
                     name: r.get(1)?,
-                    role,
-                    share_percent: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(0),
-                    slots: u8::try_from(r.get::<_, i64>(4)?).unwrap_or(1),
-                    paused: r.get::<_, i64>(5)? != 0,
-                    look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
+                    share_percent: u8::try_from(r.get::<_, i64>(2)?).unwrap_or(0),
+                    slots: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(1),
+                    paused: r.get::<_, i64>(4)? != 0,
+                    look: u8::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
                     brain,
-                    work_brain,
-                    reports_to: r.get::<_, Option<i64>>(8)?.map(MemberId),
-                    furloughed_at: r.get(9)?,
-                    recalled_at: r.get(10)?,
+                    furloughed_at: r.get(7)?,
+                    recalled_at: r.get(8)?,
                 })
             })
             .map_err(backend)?;
@@ -743,46 +735,10 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn recall_member(&self, member: MemberId, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET recalled_at = ?2 WHERE id = ?1 AND furloughed_at IS NOT NULL",
-                params![member.0, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn set_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
-        // The brain named goes to the slot it belongs to (ADR 0131): a house model is the work
-        // brain and a Claude the judgment brain, and each leaves the other as it is.
-        if brain.house() {
-            return self.set_work_brain(member, brain);
-        }
-        self.conn()?
-            .execute(
-                "UPDATE members SET brain = ?2, work_brain = COALESCE(work_brain, 'mac')
-                 WHERE id = ?1",
-                params![member.0, brain.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_model(&self, member: MemberId, brain: Brain) -> Stored<()> {
         self.conn()?
             .execute(
                 "UPDATE members SET brain = ?2, work_brain = ?2 WHERE id = ?1",
-                params![member.0, brain.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_work_brain(&self, member: MemberId, brain: Brain) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET work_brain = ?2 WHERE id = ?1",
                 params![member.0, brain.name()],
             )
             .map_err(backend)?;
@@ -811,26 +767,6 @@ impl TeamStore for SqliteTeamStore {
             .execute(
                 "UPDATE members SET runtime = ?2 WHERE id = ?1",
                 params![member.0, runtime.name()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET reports_to = ?2 WHERE id = ?1",
-                params![member.0, to.map(|t| t.0)],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_role(&self, member: MemberId, role: Role) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE members SET role = ?2 WHERE id = ?1",
-                params![member.0, role.name()],
             )
             .map_err(backend)?;
         Ok(())
@@ -1007,8 +943,24 @@ impl TeamStore for SqliteTeamStore {
         let mut stmt = conn
             .prepare(&format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY id"))
             .map_err(backend)?;
+        // What every task waits on, in one read rather than one a task.
+        let mut waits: std::collections::HashMap<i64, Vec<TaskId>> =
+            std::collections::HashMap::new();
+        let mut all = conn
+            .prepare_cached("SELECT task, waits_on FROM task_waits ORDER BY task, waits_on")
+            .map_err(backend)?;
+        let pairs = all
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, TaskId(r.get(1)?))))
+            .map_err(backend)?;
+        for pair in pairs {
+            let (task, on) = pair.map_err(backend)?;
+            waits.entry(task).or_default().push(on);
+        }
         let rows = stmt
-            .query_map([], |r| task_from(&conn, r))
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                task_with(r, waits.remove(&id).unwrap_or_default())
+            })
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
@@ -1200,133 +1152,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn add_call_receipt(&self, r: &crate::domain::CallReceipt) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO call_receipts (run, member, task, tool, args, excerpt, ok, act,
-                confidential, at_ms, sandbox) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                r.run.0,
-                r.member.0,
-                r.task.map(|t| t.0),
-                r.tool,
-                r.args,
-                r.excerpt,
-                r.ok,
-                r.act,
-                r.confidential,
-                r.at,
-                r.sandbox
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn call_receipt(&self, id: i64) -> Stored<Option<crate::domain::CallReceipt>> {
-        self.conn()?
-            .query_row(
-                &format!("{RECEIPT_SELECT} WHERE id = ?1"),
-                [id],
-                call_receipt_from,
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn call_receipts_of(&self, run: RunId) -> Stored<Vec<crate::domain::CallReceipt>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{RECEIPT_SELECT} WHERE run = ?1 ORDER BY id"))
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([run.0], call_receipt_from)
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn add_scenario_action(&self, a: &crate::application::ports::ScenarioAction) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO scenario_actions (task, run, member, action, ok, said, at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![a.task.0, a.run.0, a.member.0, a.action, a.ok, a.said, a.at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn scenario_actions(
-        &self,
-        task: TaskId,
-    ) -> Stored<Vec<crate::application::ports::ScenarioAction>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task, run, member, action, ok, said, at_ms FROM scenario_actions
-                 WHERE task = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([task.0], |row| {
-                Ok(crate::application::ports::ScenarioAction {
-                    id: row.get(0)?,
-                    task: TaskId(row.get(1)?),
-                    run: RunId(row.get(2)?),
-                    member: MemberId(row.get(3)?),
-                    action: row.get(4)?,
-                    ok: row.get(5)?,
-                    said: row.get(6)?,
-                    at: row.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn add_cited(&self, c: &crate::application::ports::Cited) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "INSERT INTO cited (task, run, member, stage, criterion, refs, at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    c.task.0,
-                    c.run.0,
-                    c.member.0,
-                    c.stage,
-                    i64::try_from(c.criterion).unwrap_or(0),
-                    crate::domain::Ref::kept(&c.refs),
-                    c.at
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn cited(&self, task: TaskId) -> Stored<Vec<crate::application::ports::Cited>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT task, run, member, stage, criterion, refs, at_ms FROM cited
-                 WHERE task = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([task.0], |r| {
-                Ok(crate::application::ports::Cited {
-                    task: TaskId(r.get(0)?),
-                    run: RunId(r.get(1)?),
-                    member: MemberId(r.get(2)?),
-                    stage: r.get(3)?,
-                    criterion: usize::try_from(r.get::<_, i64>(4)?).unwrap_or(0),
-                    refs: crate::domain::Ref::read(&r.get::<_, String>(5)?),
-                    at: r.get(6)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
     fn thread(&self, task: TaskId) -> Stored<Vec<Post>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -1342,6 +1167,22 @@ impl TeamStore for SqliteTeamStore {
                     at: r.get(2)?,
                     unsupported: r.get::<_, i64>(3)? != 0,
                 })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn post_counts(&self) -> Stored<std::collections::HashMap<TaskId, usize>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT task, COUNT(*) FROM posts GROUP BY task")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    TaskId(r.get(0)?),
+                    usize::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+                ))
             })
             .map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
@@ -1400,11 +1241,19 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn held_wakes(&self, task: TaskId) -> Stored<Vec<Wake>> {
-        Ok(self
-            .wakes()?
-            .into_iter()
-            .filter(|w| w.task == Some(task) && w.receipt == Receipt::Held)
-            .collect())
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(HELD_WAKES_OF_TASK).map_err(backend)?;
+        let rows = stmt
+            .query_map([task.0], wake_from)
+            .map_err(backend)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|(mut wake, receipt, refused)| {
+                wake.receipt = receipt_from(&receipt, refused.as_deref())?;
+                Ok(wake)
+            })
+            .collect()
     }
 
     fn wakes(&self) -> Stored<Vec<Wake>> {
@@ -1440,275 +1289,6 @@ impl TeamStore for SqliteTeamStore {
                 Ok(wake)
             })
             .transpose()
-    }
-
-    fn add_run(
-        &self,
-        member: MemberId,
-        task: Option<TaskId>,
-        wake: WakeId,
-        at: Millis,
-    ) -> Stored<RunId> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO runs (member, task, wake, status, queued_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                member.0,
-                task.map(|t| t.0),
-                wake.0,
-                RunStatus::Queued.name(),
-                at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(RunId(conn.last_insert_rowid()))
-    }
-
-    fn run(&self, id: RunId) -> Stored<Option<Run>> {
-        self.conn()?
-            .query_row(
-                &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
-                [id.0],
-                run_from,
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn runs(&self) -> Stored<Vec<Run>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("SELECT {RUN_COLUMNS} FROM runs ORDER BY id"))
-            .map_err(backend)?;
-        let rows = stmt.query_map([], run_from).map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn issue_token(&self, run: RunId) -> Stored<String> {
-        // SQLite's own randomness: 32 bytes, as hex.
-        self.conn()?
-            .query_row(
-                "INSERT INTO run_tokens (run, token) VALUES (?1, lower(hex(randomblob(32))))
-                 ON CONFLICT (run) DO UPDATE SET token = lower(hex(randomblob(32)))
-                 RETURNING token",
-                [run.0],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-    }
-
-    fn run_of_token(&self, token: &str) -> Stored<Option<RunId>> {
-        self.conn()?
-            .query_row(
-                "SELECT run FROM run_tokens WHERE token = ?1",
-                [token],
-                |r| r.get(0).map(RunId),
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn add_tokens(
-        &self,
-        run: RunId,
-        fresh: i64,
-        read: i64,
-        written: i64,
-        output: i64,
-    ) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE runs SET input_tokens = input_tokens + ?2,
-                    cache_read_tokens = cache_read_tokens + ?3,
-                    cache_write_tokens = cache_write_tokens + ?4,
-                    output_tokens = output_tokens + ?5
-                 WHERE id = ?1",
-                params![
-                    run.0,
-                    fresh.max(0),
-                    read.max(0),
-                    written.max(0),
-                    output.max(0)
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn save_run(&self, run: &Run) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE runs SET status = ?2, attempts = ?3, started_at = ?4, retry_at = ?5,
-                    ended_at = ?6, reserved = ?7, spent = ?8, told = ?9, end_reason = ?10,
-                    moved_forward = ?11, posted = ?12, blocked = ?13, label = ?14,
-                    asked_by_owner = ?15, brain = ?16, interrupted = ?17
-                 WHERE id = ?1",
-                params![
-                    run.id.0,
-                    run.status.name(),
-                    run.attempts,
-                    run.started_at,
-                    run.retry_at,
-                    run.ended_at,
-                    run.reserved,
-                    run.spent,
-                    run.told,
-                    run.end_reason,
-                    run.moved_forward,
-                    run.posted,
-                    run.blocked,
-                    run.label.map(crate::domain::Label::name),
-                    run.asked_by_owner,
-                    run.brain.map(Brain::name),
-                    run.interrupted
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn reserve(
-        &self,
-        run: RunId,
-        member: MemberId,
-        day: i64,
-        amount: Micros,
-        at: Millis,
-    ) -> Stored<()> {
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
-                     VALUES (?1, ?2, ?3, 'reserve', ?4, ?5,
-                        COALESCE({consult_project},
-                                 (SELECT t.project FROM runs r JOIN tasks t ON t.id = r.task WHERE r.id = ?1)),
-                        {RUNS_OWNER})",consult_project=history::CONSULT_PROJECT_FOR_RUN
-                ),
-                params![run.0, member.0, day, amount, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn record_use(
-        &self,
-        run: RunId,
-        member: MemberId,
-        day: i64,
-        amount: Micros,
-        at: Millis,
-    ) -> Stored<()> {
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
-                     VALUES (?1, ?2, ?3, 'use', ?4, ?5, {RUNS_PROJECT}, {RUNS_OWNER})"
-                ),
-                params![run.0, member.0, day, amount, at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn settle(&self, run: RunId, member: MemberId, day: i64, at: Millis) -> Stored<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let sum = |kind: &str| -> Stored<Micros> {
-            tx.query_row(
-                "SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE run = ?1 AND kind = ?2",
-                params![run.0, kind],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-        };
-        let to_charge = sum("use")? - sum("charge")?;
-        let to_release = sum("reserve")? - sum("release")?;
-        // Booked on the day the reservation was made, so a turn that crosses midnight is
-        // counted once, on the day it started.
-        let booked: i64 = tx
-            .query_row(
-                "SELECT day FROM ledger WHERE run = ?1 AND kind = 'reserve' ORDER BY id DESC LIMIT 1",
-                [run.0],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(backend)?
-            .unwrap_or(day);
-        for (kind, amount) in [("charge", to_charge), ("release", to_release)] {
-            if amount != 0 {
-                tx.execute(
-                    &format!(
-                        "INSERT INTO ledger (run, member, day, kind, amount, at_ms, project, owner)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, {RUNS_PROJECT}, {RUNS_OWNER})"
-                    ),
-                    params![run.0, member.0, booked, kind, amount, at],
-                )
-                .map_err(backend)?;
-            }
-        }
-        tx.commit().map_err(backend)
-    }
-
-    fn committed(&self, member: Option<MemberId>, day: i64) -> Stored<Micros> {
-        self.conn()?
-            .query_row(
-                "SELECT COALESCE(SUM(CASE kind WHEN 'charge' THEN amount WHEN 'reserve' THEN amount
-                                              WHEN 'release' THEN -amount ELSE 0 END), 0)
-                 FROM ledger WHERE day = ?1 AND (?2 IS NULL OR member = ?2)",
-                params![day, member.map(|m| m.0)],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-    }
-
-    fn share_committed(&self, member: MemberId, day: i64) -> Stored<Micros> {
-        self.conn()?
-            .query_row(
-                "SELECT COALESCE(SUM(CASE kind WHEN 'charge' THEN amount WHEN 'reserve' THEN amount
-                                              WHEN 'release' THEN -amount ELSE 0 END), 0)
-                 FROM ledger WHERE day = ?1 AND member = ?2 AND owner = 0",
-                params![day, member.0],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-    }
-
-    fn spent(&self, member: Option<MemberId>, day: i64) -> Stored<Micros> {
-        self.conn()?
-            .query_row(
-                "SELECT COALESCE(SUM(amount), 0) FROM ledger
-                 WHERE kind = 'use' AND day = ?1 AND (?2 IS NULL OR member = ?2)",
-                params![day, member.map(|m| m.0)],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-    }
-
-    fn project_committed(&self, project: ProjectId, from: Millis, until: Millis) -> Stored<Micros> {
-        self.conn()?
-            .query_row(
-                &format!(
-                    "SELECT COALESCE(SUM(CASE l.kind WHEN 'charge' THEN l.amount
-                        WHEN 'reserve' THEN l.amount WHEN 'release' THEN -l.amount ELSE 0 END), 0)
-                     {PROJECTS_ROWS}"
-                ),
-                params![project.0, from, until],
-                |r| r.get(0),
-            )
-            .map_err(backend)
-    }
-
-    fn project_spent(&self, project: ProjectId, from: Millis, until: Millis) -> Stored<Micros> {
-        self.conn()?
-            .query_row(
-                &format!(
-                    "SELECT COALESCE(SUM(CASE l.kind WHEN 'use' THEN l.amount ELSE 0 END), 0)
-                     {PROJECTS_ROWS}"
-                ),
-                params![project.0, from, until],
-                |r| r.get(0),
-            )
-            .map_err(backend)
     }
 
     fn add_project(&self, project: &NewProject, at: Millis) -> Stored<ProjectId> {
@@ -1764,188 +1344,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn set_desk_project(&self, id: DeskId, project: ProjectId) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE desk SET project = ?2 WHERE id = ?1",
-                params![id.0, project.0],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn has_event(&self, id: i64) -> Stored<bool> {
-        self.conn()?
-            .query_row("SELECT COUNT(*) > 0 FROM events WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
-            .map_err(backend)
-    }
-
-    fn emit(&self, at: Millis, kind: &str, data: &serde_json::Value) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO events (at_ms, kind, data) VALUES (?1, ?2, ?3)",
-            params![at, kind, data.to_string()],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn last_event(&self) -> Stored<i64> {
-        self.conn()?
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))
-            .map_err(backend)
-    }
-
-    fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)> {
-        self.conn()?
-            .query_row(
-                "SELECT COUNT(*), MAX(at_ms) FROM events WHERE kind = ?1",
-                [kind],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(backend)
-    }
-
-    fn prune_events(&self, keep: i64) -> Stored<usize> {
-        // Everything older than the oldest of the newest `keep` that are not ticks goes; a tick
-        // also goes once it is not among the newest `keep` of all.
-        self.conn()?
-            .execute(
-                "DELETE FROM events
-                 WHERE id <= COALESCE((SELECT id FROM events WHERE kind <> ?2
-                                       ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)
-                    OR (kind = ?2 AND id <= (SELECT COALESCE(MAX(id), 0) FROM events) - ?1)",
-                params![keep, crate::domain::EventKind::Tick.name()],
-            )
-            .map_err(backend)
-    }
-
-    fn event(&self, id: i64) -> Stored<Option<Event>> {
-        self.conn()?
-            .query_row(
-                "SELECT id, at_ms, kind, data FROM events WHERE id = ?1",
-                [id],
-                |r| {
-                    let data: String = r.get(3)?;
-                    Ok(Event {
-                        id: r.get(0)?,
-                        at: r.get(1)?,
-                        kind: r.get(2)?,
-                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                    })
-                },
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn events_after(&self, id: i64) -> Stored<Vec<Event>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, at_ms, kind, data FROM events WHERE id > ?1 ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([id], |r| {
-                let data: String = r.get(3)?;
-                Ok(Event {
-                    id: r.get(0)?,
-                    at: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn events_before(&self, id: i64, limit: usize) -> Stored<Vec<Event>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, at_ms, kind, data FROM events WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id, i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
-                let data: String = r.get(3)?;
-                Ok(Event {
-                    id: r.get(0)?,
-                    at: r.get(1)?,
-                    kind: r.get(2)?,
-                    data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .map_err(backend)?;
-        let mut events: Vec<Event> = rows.collect::<rusqlite::Result<_>>().map_err(backend)?;
-        events.reverse();
-        Ok(events)
-    }
-
-    fn add_desk(
-        &self,
-        kind: &str,
-        task: Option<TaskId>,
-        goal: Option<GoalId>,
-        from: Option<MemberId>,
-        text: &str,
-        at: Millis,
-    ) -> Stored<DeskId> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO desk (kind, task, goal, member, text, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![kind, task.map(|t| t.0), goal.map(|g| g.0), from.map(|m| m.0), text, at],
-        )
-        .map_err(backend)?;
-        Ok(DeskId(conn.last_insert_rowid()))
-    }
-
-    fn set_desk_status(&self, id: DeskId, status: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE desk SET status = ?2 WHERE id = ?1",
-                params![id.0, status],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn set_desk_text(&self, id: DeskId, text: &str) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE desk SET text = ?2 WHERE id = ?1 AND status = 'waiting'",
-                params![id.0, text],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn desk(&self) -> Stored<Vec<DeskItem>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, task, goal, text, status, at_ms, member, project FROM desk ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(DeskItem {
-                    id: DeskId(r.get(0)?),
-                    kind: r.get(1)?,
-                    task: r.get::<_, Option<i64>>(2)?.map(TaskId),
-                    goal: r.get::<_, Option<i64>>(3)?.map(GoalId),
-                    text: r.get(4)?,
-                    status: r.get(5)?,
-                    at: r.get(6)?,
-                    member: r.get::<_, Option<i64>>(7)?.map(MemberId),
-                    project: r.get::<_, Option<i64>>(8)?.map(ProjectId),
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
     fn stopped(&self) -> Stored<bool> {
         let value: Option<String> = self
             .conn()?
@@ -1983,521 +1381,6 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
-    fn add_timer(
-        &self,
-        member: MemberId,
-        reason: WakeReason,
-        due_at: Millis,
-        every_ms: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO timers (member, reason, due_at, every_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![member.0, reason.name(), due_at, every_ms],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn timers(&self) -> Stored<Vec<Timer>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, member, reason, due_at, every_ms FROM timers ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                let reason: String = r.get(2)?;
-                Ok(Timer {
-                    id: r.get(0)?,
-                    member: MemberId(r.get(1)?),
-                    reason: WakeReason::from_name(&reason).unwrap_or(WakeReason::LeadReview),
-                    due_at: r.get(3)?,
-                    every_ms: r.get(4)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn set_timer_due(&self, id: i64, due_at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE timers SET due_at = ?2 WHERE id = ?1",
-                params![id, due_at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_routine(&self, routine: &NewRoutine, next_due_at: Millis) -> Stored<RoutineId> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO routines (title, description, goal, assignee, every_ms, next_due_at,
-                on_lab_trouble, project) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                routine.title,
-                routine.description,
-                routine.goal.0,
-                routine.assignee.0,
-                routine.every_ms,
-                next_due_at,
-                routine.on_lab_trouble,
-                routine.project.map(|p| p.0)
-            ],
-        )
-        .map_err(backend)?;
-        Ok(RoutineId(conn.last_insert_rowid()))
-    }
-
-    fn routines(&self) -> Stored<Vec<Routine>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, title, description, goal, assignee, every_ms, next_due_at, enabled,
-                    on_lab_trouble, last_fired_at, last_task, project FROM routines ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(Routine {
-                    id: RoutineId(r.get(0)?),
-                    title: r.get(1)?,
-                    description: r.get(2)?,
-                    goal: GoalId(r.get(3)?),
-                    project: r.get::<_, Option<i64>>(11)?.map(ProjectId),
-                    assignee: MemberId(r.get(4)?),
-                    every_ms: r.get(5)?,
-                    next_due_at: r.get(6)?,
-                    enabled: r.get::<_, i64>(7)? != 0,
-                    on_lab_trouble: r.get::<_, i64>(8)? != 0,
-                    last_fired_at: r.get(9)?,
-                    last_task: r.get::<_, Option<i64>>(10)?.map(TaskId),
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn save_routine(&self, routine: &Routine) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE routines SET enabled = ?2, next_due_at = ?3, last_fired_at = ?4,
-                    last_task = ?5, project = ?6, assignee = ?7 WHERE id = ?1",
-                params![
-                    routine.id.0,
-                    routine.enabled,
-                    routine.next_due_at,
-                    routine.last_fired_at,
-                    routine.last_task.map(|t| t.0),
-                    routine.project.map(|p| p.0),
-                    routine.assignee.0
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_check_back(
-        &self,
-        member: MemberId,
-        task: TaskId,
-        why: &str,
-        due_at: Millis,
-        at: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO check_backs (member, task, why, due_at, set_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![member.0, task.0, why, due_at, at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn check_backs(&self) -> Stored<Vec<CheckBack>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, member, task, why, due_at, status, set_at, done_at FROM check_backs
-                 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                let status: String = r.get(5)?;
-                Ok(CheckBack {
-                    id: r.get(0)?,
-                    member: MemberId(r.get(1)?),
-                    task: TaskId(r.get(2)?),
-                    why: r.get(3)?,
-                    due_at: r.get(4)?,
-                    status: CheckBackStatus::from_name(&status).unwrap_or(CheckBackStatus::Dropped),
-                    set_at: r.get(6)?,
-                    done_at: r.get(7)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn set_check_back(&self, id: i64, status: CheckBackStatus, at: Millis) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE check_backs SET status = ?2, done_at = ?3 WHERE id = ?1",
-                params![id, status.name(), at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_document(&self, d: &Document) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO documents (task, run, title, text, at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![d.task.0, d.run.map(|r| r.0), d.title, d.text, d.at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn document(&self, id: i64) -> Stored<Option<Document>> {
-        self.conn()?
-            .query_row(
-                &format!("{DOCUMENT_SELECT} WHERE id = ?1"),
-                [id],
-                document_row,
-            )
-            .optional()
-            .map_err(backend)
-    }
-
-    fn documents_of(&self, task: TaskId) -> Stored<Vec<Document>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("{DOCUMENT_SELECT} WHERE task = ?1 ORDER BY id"))
-            .map_err(backend)?;
-        let rows = stmt.query_map([task.0], document_row).map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn add_branch(&self, b: &Branch) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO branches (task, run, member, name, head, base, files, plus, minus,
-                can_push, status, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                b.task.0,
-                b.run.0,
-                b.member.0,
-                b.name,
-                b.head,
-                b.base,
-                i64::try_from(b.files).unwrap_or(i64::MAX),
-                b.plus,
-                b.minus,
-                b.can_push,
-                b.status,
-                b.at
-            ],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn branches(&self) -> Stored<Vec<Branch>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task, run, member, name, head, base, files, plus, minus, can_push,
-                 status, at_ms FROM branches ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(Branch {
-                    id: r.get(0)?,
-                    task: TaskId(r.get(1)?),
-                    run: RunId(r.get(2)?),
-                    member: MemberId(r.get(3)?),
-                    name: r.get(4)?,
-                    head: r.get(5)?,
-                    base: r.get(6)?,
-                    files: usize::try_from(r.get::<_, i64>(7)?).unwrap_or(0),
-                    plus: r.get(8)?,
-                    minus: r.get(9)?,
-                    can_push: r.get::<_, i64>(10)? != 0,
-                    status: r.get(11)?,
-                    at: r.get(12)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn save_branch(&self, b: &Branch) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE branches SET status = ?2 WHERE id = ?1",
-                params![b.id, b.status],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn add_check(&self, c: &Check) -> Stored<(i64, String)> {
-        // SQLite's own randomness for the job's token: 32 bytes, as hex.
-        self.conn()?
-            .query_row(
-                "INSERT INTO checks (task, branch, run, token, status, queued_at)
-                 VALUES (?1, ?2, ?3, lower(hex(randomblob(32))), 'waiting', ?4)
-                 RETURNING id, token",
-                params![c.task.0, c.branch, c.run.0, c.queued_at],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(backend)
-    }
-
-    fn checks(&self) -> Stored<Vec<Check>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task, branch, run, token, status, ok, summary, queued_at, started_at,
-                 done_at FROM checks ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(Check {
-                    id: r.get(0)?,
-                    task: TaskId(r.get(1)?),
-                    branch: r.get(2)?,
-                    run: RunId(r.get(3)?),
-                    token: r.get(4)?,
-                    status: r.get(5)?,
-                    ok: r.get::<_, Option<i64>>(6)?.map(|ok| ok != 0),
-                    summary: r.get(7)?,
-                    queued_at: r.get(8)?,
-                    started_at: r.get(9)?,
-                    done_at: r.get(10)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn save_check(&self, c: &Check) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE checks SET status = ?2, ok = ?3, summary = ?4, started_at = ?5, done_at = ?6
-                 WHERE id = ?1",
-                params![c.id, c.status, c.ok, c.summary, c.started_at, c.done_at],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn thread_cited(&self, task: TaskId) -> Stored<Vec<ThreadPost>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT author, text, at_ms, unsupported, evidence FROM posts WHERE task = ?1
-                 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([task.0], |r| {
-                Ok(ThreadPost {
-                    task,
-                    post: Post {
-                        author: r.get(0)?,
-                        text: r.get(1)?,
-                        at: r.get(2)?,
-                        unsupported: r.get::<_, i64>(3)? != 0,
-                    },
-                    evidence: crate::domain::Ref::read(&r.get::<_, String>(4)?),
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn ledger_of(&self, run: RunId) -> Stored<Vec<LedgerRow>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT kind, amount, at_ms FROM ledger WHERE run = ?1 ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([run.0], |r| {
-                Ok(LedgerRow {
-                    run,
-                    kind: r.get(0)?,
-                    amount: r.get(1)?,
-                    at: r.get(2)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(backend)
-    }
-
-    fn office_items(&self) -> Stored<Vec<office::Item>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT id, kind, x, y, placed_by, placed_at FROM office_items ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?,
-                ))
-            })
-            .map_err(backend)?;
-        let mut items = Vec::new();
-        for row in rows {
-            let (id, kind, x, y, placed_by, placed_at) = row.map_err(backend)?;
-            let kind = office::Kind::from_name(&kind).ok_or_else(|| corrupt("an item's kind"))?;
-            items.push(office::Item {
-                id,
-                kind,
-                x,
-                y,
-                placed_by,
-                placed_at,
-            });
-        }
-        Ok(items)
-    }
-
-    fn add_office_item(
-        &self,
-        kind: office::Kind,
-        x: i64,
-        y: i64,
-        by: &str,
-        at: Millis,
-    ) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO office_items (kind, x, y, placed_by, placed_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![kind.name(), x, y, by, at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn move_office_item(&self, id: i64, x: i64, y: i64) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE office_items SET x = ?2, y = ?3 WHERE id = ?1",
-                params![id, x, y],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn remove_office_item(&self, id: i64) -> Stored<()> {
-        self.conn()?
-            .execute("DELETE FROM office_items WHERE id = ?1", [id])
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn replace_office_items(&self, items: &[office::Item]) -> Stored<()> {
-        let mut conn = self.conn()?;
-        let tx = conn.transaction().map_err(backend)?;
-        tx.execute("DELETE FROM office_items", [])
-            .map_err(backend)?;
-        for item in items {
-            tx.execute(
-                "INSERT INTO office_items (id, kind, x, y, placed_by, placed_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    item.id,
-                    item.kind.name(),
-                    item.x,
-                    item.y,
-                    item.placed_by,
-                    item.placed_at
-                ],
-            )
-            .map_err(backend)?;
-        }
-        tx.commit().map_err(backend)
-    }
-
-    fn add_chess_game(&self, white: MemberId, black: MemberId, at: Millis) -> Stored<i64> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO chess_games (white, black, started_at, last_move_at) \
-             VALUES (?1, ?2, ?3, ?3)",
-            params![white.0, black.0, at],
-        )
-        .map_err(backend)?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    fn chess_games(&self) -> Stored<Vec<chess::Game>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, white, black, moves, status, reason, started_at, last_move_at \
-                 FROM chess_games ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, i64>(6)?,
-                    r.get::<_, i64>(7)?,
-                ))
-            })
-            .map_err(backend)?;
-        let mut all = Vec::new();
-        for row in rows {
-            let (id, white, black, moves, status, reason, started_at, last_move_at) =
-                row.map_err(backend)?;
-            all.push(chess::Game {
-                id,
-                white: MemberId(white),
-                black: MemberId(black),
-                moves: moves.split_whitespace().map(str::to_owned).collect(),
-                status: chess::Status::from_name(&status)
-                    .ok_or_else(|| corrupt("a chess game's status"))?,
-                reason,
-                started_at,
-                last_move_at,
-            });
-        }
-        Ok(all)
-    }
-
-    fn save_chess_game(&self, game: &chess::Game) -> Stored<()> {
-        self.conn()?
-            .execute(
-                "UPDATE chess_games SET moves = ?2, status = ?3, reason = ?4, last_move_at = ?5 \
-                 WHERE id = ?1",
-                params![
-                    game.id,
-                    game.moves.join(" "),
-                    game.status.name(),
-                    game.reason,
-                    game.last_move_at
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
     fn report_tasks(&self) -> Stored<Vec<(TaskId, MemberId, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -2528,6 +1411,14 @@ fn document_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::desk_ports::DeskStore;
+    use crate::application::event_ports::EventStore;
+    use crate::application::office_ports::OfficeStore;
+    use crate::application::receipt_ports::ReceiptStore;
+    use crate::application::run_ports::RunStore;
+
+    use crate::application::wing_ports::WingStore;
+    use crate::domain::{Branch, Check};
 
     /// The schema as it was before projects (ADR 0113): the live store was made with it.
     const SCHEMA_BEFORE_PROJECTS: &str = "
@@ -2624,10 +1515,8 @@ CREATE TABLE IF NOT EXISTS check_backs (
     #[test]
     fn a_task_is_claimed_by_exactly_one_member() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
-        let b = store
-            .add_member("Linus", Role::Developer, 40, 2, 0)
-            .unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
+        let b = store.add_member("Linus", 40, 2, 0).unwrap();
         let goal = store
             .add_goal("Ship it", "", GoalStatus::Active, None)
             .unwrap();
@@ -2667,7 +1556,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        let a = store.add_member("Ada", Role::Lead, 25, 2, 0).unwrap();
+        let a = store.add_member("Ada", 25, 2, 0).unwrap();
         store
             .add_desk("question", None, None, Some(a), "Ada asks: when?", 6)
             .unwrap();
@@ -2767,7 +1656,7 @@ CREATE TABLE IF NOT EXISTS check_backs (
     }
 
     #[test]
-    fn a_store_made_before_projects_gains_their_columns_and_its_home_lab_work_one_project() {
+    fn a_store_made_before_projects_gains_their_columns_and_a_projects_ledger() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
@@ -2800,49 +1689,26 @@ CREATE TABLE IF NOT EXISTS check_backs (
             Noon,
             crate::application::Settings::default(),
         );
-        let made = hq.migrate_projects().unwrap().expect("made");
-        assert_eq!(hq.migrate_projects(), Ok(None), "once");
-        let projects = hq.store().projects().unwrap();
-        assert_eq!(projects.len(), 1);
-        let upkeep = &projects[0];
-        assert_eq!(
-            (
-                upkeep.id,
-                upkeep.title.as_str(),
-                upkeep.goal,
-                upkeep.lead,
-                upkeep.status,
-                upkeep.cap
-            ),
-            (
-                made,
-                crate::application::engine::LAB_UPKEEP,
-                GoalId(1),
-                MemberId(2),
-                ProjectStatus::Active,
-                None
+        let made = hq
+            .store()
+            .add_project(
+                &crate::application::ports::NewProject {
+                    goal: GoalId(1),
+                    title: "Home lab upkeep".to_owned(),
+                    reason: String::new(),
+                    lead: MemberId(2),
+                    status: ProjectStatus::Active,
+                    cap: None,
+                    asked_cap: None,
+                    created_by: "owner".to_owned(),
+                    proposer: None,
+                    proposed_in: None,
+                    evidence: Vec::new(),
+                },
+                NOON,
             )
-        );
-        let routines: Vec<Option<ProjectId>> = hq
-            .store()
-            .routines()
-            .unwrap()
-            .iter()
-            .map(|r| r.project)
-            .collect();
-        assert_eq!(routines, [Some(made), None], "the CEO's review stays out");
-        let tasks: Vec<Option<ProjectId>> = hq
-            .store()
-            .tasks()
-            .unwrap()
-            .iter()
-            .map(|t| t.project)
-            .collect();
-        assert_eq!(
-            tasks,
-            [Some(made), None, None],
-            "open work of its goal only"
-        );
+            .unwrap();
+        hq.store().set_task_project(TaskId(1), Some(made)).unwrap();
         // The old ledger row is no project's; a new turn's rows are its task's project's; and
         // nothing in the ledger may be changed.
         let (from, until) = crate::domain::projects::month_around(NOON);
@@ -2868,6 +1734,21 @@ CREATE TABLE IF NOT EXISTS check_backs (
             )
             .unwrap();
         assert_eq!(indexed, 2, "a project's month reads the ledger by index");
+        // Each of its rows finds its turn's reservation by the reserves' own index, not by
+        // walking every ledger row of that turn (twice).
+        let plan: Vec<String> = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT SUM(l.amount) {PROJECTS_ROWS}"
+            ))
+            .unwrap()
+            .query_map(params![made.0, from, until], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("ledger_reserves")),
+            "{plan:?}"
+        );
     }
 
     /// The members table as it is on the live store before elastic staffing (ADR 0118).
@@ -2908,12 +1789,6 @@ INSERT INTO members (id, name, role, share_percent, slots, brain, reports_to) VA
         assert_eq!(
             (rae.furloughed(), rae.furloughed_at, rae.name.as_str()),
             (true, Some(77), "Rae")
-        );
-        store.recall_member(MemberId(3), 99).unwrap();
-        let rae = store.members().unwrap().remove(2);
-        assert_eq!(
-            (rae.furloughed(), rae.furloughed_at, rae.recalled_at),
-            (false, Some(77), Some(99))
         );
         // A second furlough starts afresh.
         store.furlough_member(MemberId(3), 120).unwrap();
@@ -3160,6 +2035,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
     #[test]
     fn a_store_made_before_claude_code_runs_every_member_on_the_worker() {
+        use crate::domain::Runtime;
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         conn.execute_batch(SCHEMA_BEFORE_EVIDENCE).unwrap();
@@ -3169,7 +2045,6 @@ CREATE TABLE IF NOT EXISTS projects (
         )
         .unwrap();
         let store = SqliteTeamStore::over(conn).unwrap();
-        use crate::domain::Runtime;
         assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::Worker);
         store.set_runtime(MemberId(1), Runtime::ClaudeCode).unwrap();
         assert_eq!(store.runtime_of(MemberId(1)).unwrap(), Runtime::ClaudeCode);
@@ -3268,11 +2143,127 @@ CREATE TABLE IF NOT EXISTS projects (
     }
 
     #[test]
+    fn the_live_turns_are_read_without_the_ended_ones() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
+        let wake = store
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
+            .unwrap();
+        let mut ids = Vec::new();
+        for status in [
+            RunStatus::Succeeded,
+            RunStatus::Running,
+            RunStatus::Failed,
+            RunStatus::Queued,
+            RunStatus::RetryWaiting,
+        ] {
+            let id = store.add_run(a, None, wake, 0).unwrap();
+            let mut run = store.run(id).unwrap().unwrap();
+            run.status = status;
+            store.save_run(&run).unwrap();
+            ids.push(id);
+        }
+        let live: Vec<RunId> = store.live_runs().unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(live, [ids[1], ids[3], ids[4]]);
+    }
+
+    #[test]
+    fn a_tasks_turns_are_read_without_the_others() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
+        let goal = store
+            .add_goal("Ship it", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = |title: &str| NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        let mine = store.add_task(&task("Mine"), 0).unwrap();
+        let other = store.add_task(&task("Other"), 0).unwrap();
+        let wake = store
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
+            .unwrap();
+        let first = store.add_run(a, Some(mine), wake, 0).unwrap();
+        store.add_run(a, Some(other), wake, 0).unwrap();
+        store.add_run(a, None, wake, 0).unwrap();
+        let second = store.add_run(a, Some(mine), wake, 0).unwrap();
+        let of: Vec<RunId> = store.runs_of(mine).unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(of, [first, second]);
+    }
+
+    #[test]
+    fn events_are_read_by_kind_and_the_feed_says_where_it_begins() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        assert_eq!(store.first_event_at().unwrap(), None);
+        store.emit(10, "tick", &serde_json::json!({})).unwrap();
+        store
+            .emit(20, "task.changed", &serde_json::json!({ "task": 1 }))
+            .unwrap();
+        store
+            .emit(30, "guard.found", &serde_json::json!({ "said": "long" }))
+            .unwrap();
+        store
+            .emit(40, "desk.added", &serde_json::json!({}))
+            .unwrap();
+        let kept: Vec<(Millis, String)> = store
+            .events_of(&["task.changed", "desk.added"])
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.at, e.kind))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (20, "task.changed".to_owned()),
+                (40, "desk.added".to_owned())
+            ]
+        );
+        // The feed begins at its oldest event, of whatever kind.
+        assert_eq!(store.first_event_at().unwrap(), Some(10));
+    }
+
+    #[test]
+    fn every_threads_posts_are_counted_in_one_read() {
+        let store = SqliteTeamStore::in_memory().unwrap();
+        let goal = store
+            .add_goal("Ship it", "", GoalStatus::Active, None)
+            .unwrap();
+        let task = |title: &str| NewTask {
+            goal,
+            project: None,
+            parent: None,
+            title: title.to_owned(),
+            description: String::new(),
+            assignee: None,
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        };
+        let busy = store.add_task(&task("Busy"), 0).unwrap();
+        let quiet = store.add_task(&task("Quiet"), 0).unwrap();
+        let silent = store.add_task(&task("Silent"), 0).unwrap();
+        for n in 0..3 {
+            store.post(busy, "owner", &format!("busy {n}"), 0).unwrap();
+        }
+        store.post(quiet, "owner", "once", 0).unwrap();
+        let counts = store.post_counts().unwrap();
+        assert_eq!(counts.get(&busy), Some(&3));
+        assert_eq!(counts.get(&quiet), Some(&1));
+        // A task with no posts is not in the count; the screen reads it as none.
+        assert_eq!(counts.get(&silent), None);
+    }
+
+    #[test]
     fn the_ledger_is_append_only() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 1, 400_000, 0).unwrap();
@@ -3284,9 +2275,9 @@ CREATE TABLE IF NOT EXISTS projects (
     #[test]
     fn settling_charges_use_and_frees_the_reservation_on_the_day_it_was_made() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let a = store.add_member("Ada", 40, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
+            .add_wake(a, None, WakeReason::Alarm, Receipt::Queued, None, 0)
             .unwrap();
         let run = store.add_run(a, None, wake, 0).unwrap();
         store.reserve(run, a, 10, 400_000, 0).unwrap();
@@ -3348,107 +2339,54 @@ CREATE TABLE IF NOT EXISTS projects (
         path
     }
 
-    /// Each member's (judgment brain, work brain), by name.
-    fn brains_of(store: &SqliteTeamStore) -> Vec<(String, String)> {
-        store
-            .members()
-            .unwrap()
-            .iter()
-            .map(|m| (m.brain.name().to_owned(), m.work_brain.name().to_owned()))
-            .collect()
-    }
-
-    fn want(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(j, w)| ((*j).to_owned(), (*w).to_owned()))
-            .collect()
-    }
-
     #[test]
-    fn a_store_from_before_turns_had_kinds_gains_two_brains_once_and_loses_no_choice() {
+    fn a_store_from_before_turns_had_kinds_keeps_each_members_model() {
         let path = a_file_from_before_turns_had_a_kind();
         let store = SqliteTeamStore::open(&path).unwrap();
-        // A house model or the Mac stays as the work brain, and the member judges with the
-        // owner's cheap Claude (the CEO, Sonnet); a Claude stays the judgment brain and the
-        // member works with the Mac; a brain the store does not know is read as none given.
-        let migrated = want(&[
-            ("claude-sonnet-5-5", "mac"),
-            ("claude-haiku-5-5", "local"),
-            ("claude-haiku-5-5", "mac"),
-            ("claude-haiku-5-5", "mac"),
-            ("claude-sonnet-5-5", "local"),
-            ("claude-haiku-5-5", "mac"),
-        ]);
-        assert_eq!(brains_of(&store), migrated);
-        // It was written, not just read: no member's brain is the house's any more.
-        {
-            let conn = store.conn().unwrap();
-            let houses: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members WHERE brain IN ('local', 'mac')",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(houses, 0);
-            let none: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM members WHERE work_brain IS NULL",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(none, 0);
-        }
-        // The owner's later choices are kept, and opening the file again changes nothing.
-        let members = store.members().unwrap();
-        store.set_work_brain(members[0].id, Brain::Local).unwrap();
-        store.set_brain(members[1].id, Brain::Sonnet).unwrap();
+        // A member is its model (ADR 0142): opening the file splits nobody in two, and a brain
+        // the store does not know is read as the house's own model.
+        let brains = |store: &SqliteTeamStore| -> Vec<Brain> {
+            store.members().unwrap().iter().map(|m| m.brain).collect()
+        };
+        let kept = [
+            Brain::Sonnet,
+            Brain::Local,
+            Brain::Mac,
+            Brain::Haiku,
+            Brain::Local,
+            Brain::Local,
+        ];
+        assert_eq!(brains(&store), kept);
         drop(store);
-        let again = SqliteTeamStore::open(&path).unwrap();
-        let mut chosen = migrated;
-        chosen[0].1 = "local".to_owned();
-        chosen[1].0 = "claude-sonnet-5-5".to_owned();
-        assert_eq!(brains_of(&again), chosen);
-        drop(again);
+        assert_eq!(brains(&SqliteTeamStore::open(&path).unwrap()), kept);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn each_brain_goes_to_its_own_slot_and_a_new_member_has_the_defaults() {
+    fn a_new_member_is_the_houses_model_until_the_owner_sets_its_model() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let ada = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        let ceo = store.add_member("Mara Roe", Role::Ceo, 35, 1, 0).unwrap();
-        let of = |store: &SqliteTeamStore, at: usize| {
-            let m = store.members().unwrap().remove(at);
-            (m.brain, m.work_brain)
-        };
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac), "a new member");
-        assert_eq!(
-            of(&store, 1),
-            (Brain::Sonnet, Brain::Mac),
-            "the CEO's cheapest"
-        );
-        // A house model is the work brain, and leaves the Claude it judges with alone.
-        store.set_brain(ada, Brain::Local).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Local));
-        store.set_work_brain(ada, Brain::Mac).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Haiku, Brain::Mac));
-        // A Claude is the judgment brain, and leaves the work brain alone.
-        store.set_work_brain(ada, Brain::Local).unwrap();
+        let ada = store.add_member("Jane Doe", 25, 2, 0).unwrap();
+        let brain = |store: &SqliteTeamStore| store.members().unwrap()[0].brain;
+        assert_eq!(brain(&store), Brain::Local);
         store.set_brain(ada, Brain::Sonnet).unwrap();
-        assert_eq!(of(&store, 0), (Brain::Sonnet, Brain::Local));
-        store.set_brain(ceo, Brain::Opus).unwrap();
-        assert_eq!(of(&store, 1), (Brain::Opus, Brain::Mac));
+        assert_eq!(brain(&store), Brain::Sonnet);
+        store.set_brain(ada, Brain::Mac).unwrap();
+        assert_eq!(brain(&store), Brain::Mac);
     }
 
     #[test]
     fn a_turn_remembers_the_brain_it_ran_on() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let a = store.add_member("Jane Doe", 25, 2, 0).unwrap();
         let wake = store
-            .add_wake(a, None, WakeReason::Decide, Receipt::Queued, None, 0)
+            .add_wake(
+                a,
+                None,
+                WakeReason::ProposalDecided,
+                Receipt::Queued,
+                None,
+                0,
+            )
             .unwrap();
         let id = store.add_run(a, None, wake, 0).unwrap();
         let mut run = store.run(id).unwrap().unwrap();

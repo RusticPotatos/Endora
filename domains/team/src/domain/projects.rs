@@ -6,8 +6,8 @@
 //! Models propose; these rules decide: who may lead and propose, whether a task fits, whether
 //! a cap fits in the pool, and when a project has spent its cap.
 
-use super::money::{DOLLAR, Micros};
-use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, Role, TaskId};
+use super::money::Micros;
+use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, TaskId};
 
 /// Of its cap, the share a project may spend before the owner hears of it, once a month.
 pub const WARN_PERCENT: i64 = 80;
@@ -184,29 +184,6 @@ pub struct Project {
     pub updated_at: Millis,
 }
 
-/// Whether a member in `role` may lead a project.
-///
-/// # Errors
-/// [`Refusal::NotAProjectLead`] for anyone but a lead or the CEO.
-pub const fn may_lead(role: Role) -> Result<(), Refusal> {
-    if role.leads() {
-        return Ok(());
-    }
-    Err(Refusal::NotAProjectLead)
-}
-
-/// Whether a member in `role` may propose a project: a lead, who spots the pattern in its
-/// area; the CEO decides proposals and makes none (ADR 0120).
-///
-/// # Errors
-/// [`Refusal::OnlyLeadsPropose`] for anyone but a lead.
-pub const fn may_propose(role: Role) -> Result<(), Refusal> {
-    if matches!(role, Role::Lead) {
-        return Ok(());
-    }
-    Err(Refusal::OnlyLeadsPropose)
-}
-
 /// Whether a task, or a routine, under `goal` may be put in a project serving `serves`, which
 /// is now `status`.
 ///
@@ -322,42 +299,24 @@ pub const fn month_around(at: Millis) -> (Millis, Millis) {
     (month_start(month), month_start(month + 1))
 }
 
-/// An amount as dollars and cents: `$12.50`.
-#[must_use]
-pub fn dollars(amount: Micros) -> String {
-    let cents = (amount + 5_000).div_euclid(10_000);
-    format!("${}.{:02}", cents.div_euclid(100), cents.rem_euclid(100))
-}
-
-/// An amount the owner or the CEO wrote in dollars (`25`, `$12.50`), if it reads as one
-/// above nothing, to the cent.
-#[must_use]
-pub fn read_dollars(text: &str) -> Option<Micros> {
-    let text = text.trim().trim_start_matches('$').trim();
-    let (whole, cents) = text.split_once('.').unwrap_or((text, ""));
-    if whole.is_empty() && cents.is_empty() {
-        return None;
-    }
-    let whole: i64 = if whole.is_empty() {
-        0
-    } else {
-        whole.parse().ok()?
-    };
-    if cents.len() > 2 || !cents.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let cents: i64 = format!("{cents:0<2}").parse().ok()?;
-    let amount = whole.checked_mul(DOLLAR)?.checked_add(cents * 10_000)?;
-    (amount > 0).then_some(amount)
-}
+pub use endora_kernel::money::{dollars, read_dollars};
 
 /// The tools a project's work is given, when the owner narrows them (the Holodeck plan's phase
 /// 4): kept as one setting a project, a JSON list of tool names, or `null` for none. A turn on
-/// the project's work is given these and its own four ([`super::deploy::HQ_TOOLS`]) alone;
+/// the project's work is given these and its own four ([`super::lab_tools::HQ_TOOLS`]) alone;
 /// with no list, what its role and brain give it, as before.
 #[must_use]
 pub fn tools_key(id: ProjectId) -> String {
     format!("project_tools:{}", id.0)
+}
+
+/// The repository outside the lab a project's work is done in (ADR 0115, amended 2026-11-01:
+/// round 4's F4), kept as one setting a project: a public `https://github.com/<owner>/<name>`
+/// alone, held to `endora_kernel::lab::outside_repo`. The node mirrors it, `repo_checkout` hands
+/// it out and `repo_submit` keeps the branch on the node; nothing of it is ever pushed.
+#[must_use]
+pub fn repo_key(id: ProjectId) -> String {
+    format!("project_repo:{}", id.0)
 }
 
 /// A project's tools, as [`tools_key`] keeps them: `None` for no list.
@@ -377,22 +336,60 @@ pub const SHELL: &str = "shell";
 /// local model is spared the rest. Without it a list gives HQ's four alone, as a scenario needs.
 pub const TEAM: &str = "team";
 
+/// The read-only lookups that go with a tool on a project's list: listed, the tool brings them
+/// (ADR 0113, amended 2026-10-31). Round 2 (31 Oct): the node's `image_tags` shipped, but the
+/// ansible-nas loop's list named `repo_checkout` and not it, so its members never found it and
+/// asked the owner which tags exist. Only reads go here, and only where the tool's own work
+/// needs them: work on the fork pins images to tags that exist. A read gives a read-only task
+/// nothing to change the lab with, and the lab's acts are refused it as before.
+pub const COMES_WITH: [(&str, &[&str]); 1] = [("repo_checkout", &["image_tags"])];
+
+/// What a project's list gives its work: the list as the owner wrote it, then what comes with
+/// its tools ([`COMES_WITH`]), each once. An empty list stays empty.
+#[must_use]
+pub fn tools_given(list: &[String]) -> Vec<String> {
+    let mut given = list.to_vec();
+    for (tool, with) in COMES_WITH {
+        if !list.iter().any(|t| t == tool) {
+            continue;
+        }
+        for read in with {
+            if !given.iter().any(|g| g == read) {
+                given.push((*read).to_owned());
+            }
+        }
+    }
+    given
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::money::POOL_PER_MONTH;
+    use crate::domain::money::{DOLLAR, POOL_PER_MONTH};
 
     #[test]
-    fn a_lead_or_the_ceo_leads_a_project_and_only_a_lead_proposes_one() {
-        for role in [Role::Ceo, Role::Lead] {
-            assert!(may_lead(role).is_ok(), "{role:?}");
-        }
-        // Leads propose; the CEO decides (ADR 0120).
-        assert!(may_propose(Role::Lead).is_ok());
-        assert_eq!(may_propose(Role::Ceo), Err(Refusal::OnlyLeadsPropose));
-        for role in [Role::Developer, Role::Researcher, Role::Reviewer] {
-            assert_eq!(may_lead(role), Err(Refusal::NotAProjectLead));
-            assert_eq!(may_propose(role), Err(Refusal::OnlyLeadsPropose));
+    fn a_checkout_brings_the_image_lookup_and_nothing_else_does() {
+        let list = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            tools_given(&list(&[TEAM, SHELL, "repo_checkout", "repo_submit"])),
+            list(&[TEAM, SHELL, "repo_checkout", "repo_submit", "image_tags"])
+        );
+        assert_eq!(
+            tools_given(&list(&["repo_checkout", "image_tags"])),
+            list(&["repo_checkout", "image_tags"]),
+            "once"
+        );
+        assert_eq!(
+            tools_given(&list(&["homelab_status", "container_logs"])),
+            list(&["homelab_status", "container_logs"])
+        );
+        assert!(tools_given(&[]).is_empty(), "a scenario's empty list");
+        // Only reads come with a tool: never one of the lab's acts, nor a submission.
+        for (_, with) in COMES_WITH {
+            for read in with {
+                assert!(!super::super::lab_tools::LAB_ACTS.contains(read), "{read}");
+                assert_ne!(*read, "repo_submit");
+            }
         }
     }
 

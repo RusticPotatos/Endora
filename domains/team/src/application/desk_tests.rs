@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use serde_json::Value;
 
 use super::guards_tests::{Hands, Hq, NOON, later, team};
-use super::ports::TeamStore;
+use crate::application::desk_ports::DeskStore;
 
 fn desk(hq: &Hq<'_>) -> Vec<Value> {
     hq.snapshot().unwrap()["desk"]

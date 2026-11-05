@@ -82,7 +82,8 @@ pub fn normalize(service: &str, value: &Value) -> Result<Value, &'static str> {
 
 /// The observer's projection: [`normalize`], and for each container its id and how it exited,
 /// which the agenda loop's restart and its crashed-or-stopped rule need (ADR 0103), and
-/// Docker's status text, which the team's `homelab_status` contract reads (ADR 0106). For the
+/// Docker's status text, which the team's `homelab_status` contract reads (ADR 0106), and when
+/// it was created and its image id, short, which tell an update from a restart. For the
 /// console, the agenda and the team's contracts only; what a chat skill hands a model stays
 /// [`normalize`]'s.
 ///
@@ -99,6 +100,16 @@ pub fn normalize_observed(service: &str, value: &Value) -> Result<Value, &'stati
             item["id"] = text(&raw["Id"]).into();
             item["exit"] = exit_code(raw["Status"].as_str().unwrap_or("")).into();
             item["status"] = text(&raw["Status"]).into();
+            // When Docker created it and on which image, which tell an update from a restart
+            // (D11, `lab_updates`).
+            if let Some(created) = raw["Created"].as_i64() {
+                item["created_ms"] = created.saturating_mul(1000).into();
+            }
+            let image = text(&raw["ImageID"]);
+            let image = image.strip_prefix("sha256:").unwrap_or(&image);
+            if !image.is_empty() {
+                item["image"] = image.chars().take(12).collect::<String>().into();
+            }
         }
     }
     Ok(out)

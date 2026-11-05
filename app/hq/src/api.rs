@@ -19,7 +19,7 @@ use serde_json::json;
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
 use endora_team::domain::{
-    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, Role, RoutineId, RunId, TaskId,
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, RoutineId, RunId, TaskId,
 };
 
 use crate::Hq;
@@ -61,6 +61,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/events", get(events))
         // Replay: a turn, or a task's turns, read back in full for the owner's screen.
         .route("/v1/runs/{id}/replay", get(run_replay))
+        .route("/v1/tasks/{id}", get(task_shown))
         .route("/v1/tasks/{id}/replay", get(task_replay))
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
@@ -73,35 +74,49 @@ pub fn app(state: State) -> Router {
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
         .route("/v1/members/{id}/model", post(set_model))
-        .route("/v1/members/{id}/work-brain", post(set_work_brain))
-        .route("/v1/members/{id}/judgment-brain", post(set_judgment_brain))
         // What runs a member's turns (ADR 0117): the worker, or Claude Code for a developer.
         .route("/v1/members/{id}/runtime", post(set_runtime))
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
         .route("/v1/members/{id}/name", post(rename))
-        .route("/v1/house", post(house_log))
         // The owner as landlord of the office (ADR 0119): undo the last change, reset it to the
         // layout it began with, and veto an open proposal. The team's own proposals and votes
         // come through the worker's door.
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/pool/top-up", post(pool_top_up))
+        // The node says what is left of the Claude plan's grant and when it renews: today's
+        // pool is sized from it (ADR 0113, amended 2026-10-31).
+        .route("/v1/pool/credit", post(pool_credit))
         // The owner hires (ADR 0115): a name, a role, a brain, whom it reports to.
         .route("/v1/members", post(hire))
         .route("/v1/projects", post(add_project))
         .route("/v1/projects/{id}", post(change_project))
         .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/projects/{id}/tools", post(project_tools))
+        // The repository outside the lab a project's work is in (ADR 0115, amended 2026-11-01).
+        .route("/v1/projects/{id}/repo", post(project_repo))
         .route("/v1/projects/{id}/rank", post(loop_rank))
+        .route("/v1/projects/{id}/items", post(loop_items))
+        // A loop worked by one member alone (ADR 0142, amended 2026-11-01), or by the team.
+        .route("/v1/projects/{id}/solo", post(loop_solo))
+        // A loop's lessons (ADR 0142, amended 2026-10-31): read, and set whole by the owner.
+        .route(
+            "/v1/projects/{id}/lessons",
+            get(loop_lessons).post(set_loop_lessons),
+        )
         .route("/v1/one-team", post(one_team))
-        // Scenarios (the Holodeck plan's phase 5): the owner starts one, and reads it.
+        // A round of the experiment under way (ADR 0142, amended 2026-11-01): its items, set by
+        // `scripts/experiment.py start`; no downtime turn starts while any is open.
+        .route("/v1/round", get(round_shown).post(set_round))
+        // Scenarios (ADR 0135): the owner starts a chess match, and reads it.
         .route("/v1/scenarios", post(start_scenario))
-        .route("/v1/scenarios/rerun", post(rerun_holodeck))
         .route("/v1/league", post(start_league))
         .route("/v1/league/reset", post(reset_league))
+        // The league's finished games, newest first, a page at a time (the owner's Chess tab).
+        .route("/v1/league/games", get(league_games))
         .route("/v1/scenarios/{task}", get(scenario_shown))
-        // Trials (phase 7): one scenario under two conditions or more, compared.
-        .route("/v1/trials", post(start_trial))
-        .route("/v1/trials/{name}", get(trial_report))
+        // A game written out in PGN, to copy or keep: a Holodeck match, or the office's chess.
+        .route("/v1/scenarios/{task}/pgn", get(scenario_pgn))
+        .route("/v1/chess/{id}/pgn", get(chess_pgn))
         // A match of ping-pong or pool played again, step by step.
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
@@ -119,6 +134,7 @@ pub fn app(state: State) -> Router {
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
+        .route("/v1/team/tokens", post(crate::team::tokens))
         // The node's receipts (ADR 0114): each call a turn made of Endora's tools, with the
         // turn's own token, written by the node and never by the model.
         .route("/v1/team/receipt", post(crate::team::receipt))
@@ -148,6 +164,12 @@ pub fn app(state: State) -> Router {
             "/v1/team/push/{id}/outcome",
             post(crate::team::push_outcome),
         )
+        // Accepted work without a card (ADR 0115, amended 2026-10-31): what the node is to push
+        // or merge, and what came of it.
+        .route("/v1/team/deliveries", get(crate::team::deliveries))
+        .route("/v1/team/deliveries/{id}", post(crate::team::delivered))
+        // The owner's two settings for it: the cards back, and merging develop.
+        .route("/v1/delivery", post(set_delivery))
         // The team's world (ADR 0122): the owner reads and downloads it, and alone makes
         // something canon or demotes it.
         .merge(world::routes())
@@ -382,7 +404,8 @@ async fn add_task(
         return Err(Failed(EngineError::Unknown("task title")));
     }
     let hq = state.hq.clone();
-    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria);
+    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria)
+        .map_err(|why| Failed(EngineError::Refused(Refusal::Criterion(why))))?;
     let task = blocking(move || {
         hq.add_task_with(
             Author::Owner,
@@ -436,18 +459,9 @@ async fn decide(
 #[derive(Deserialize)]
 struct HireRequest {
     name: String,
-    role: String,
-    /// One brain, to the slot it belongs to (ADR 0131): the way a hire was always asked.
+    /// Its model; the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
-    /// What it works with, the Mac or the house's model; the Mac if not said.
-    #[serde(default)]
-    work_brain: Option<String>,
-    /// The Claude it judges with; Haiku if not said (the CEO's, Sonnet).
-    #[serde(default)]
-    judgment_brain: Option<String>,
-    #[serde(default)]
-    reports_to: Option<i64>,
 }
 
 /// The owner hires a member (ADR 0115).
@@ -455,19 +469,8 @@ async fn hire(
     Extract(state): Extract<State>,
     Json(req): Json<HireRequest>,
 ) -> Result<Json<serde_json::Value>, Failed> {
-    let role = Role::from_name(req.role.trim()).ok_or(Failed(EngineError::Unknown("role")))?;
     let hq = state.hq.clone();
-    let id = blocking(move || {
-        hq.hire_by_owner_with(
-            &req.name,
-            role,
-            req.brain.as_deref(),
-            req.work_brain.as_deref(),
-            req.judgment_brain.as_deref(),
-            req.reports_to.map(MemberId),
-        )
-    })
-    .await?;
+    let id = blocking(move || hq.hire_by_owner_with(&req.name, req.brain.as_deref())).await?;
     Ok(Json(json!({ "member": id.0 })))
 }
 
@@ -485,22 +488,6 @@ async fn rename(
     let hq = state.hq.clone();
     let name = blocking(move || hq.rename(MemberId(id), &req.name)).await?;
     Ok(Json(json!({ "member": id, "name": name })))
-}
-
-#[derive(Deserialize)]
-struct HouseLog {
-    #[serde(default)]
-    log: String,
-}
-
-/// The owner rewrites the house log, which the CEO keeps; empty clears it.
-async fn house_log(
-    Extract(state): Extract<State>,
-    Json(req): Json<HouseLog>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    blocking(move || hq.set_house_log(&req.log)).await?;
-    Ok(Json(json!({ "kept": true })))
 }
 
 #[derive(Deserialize)]
@@ -533,33 +520,6 @@ async fn reply(
         Ok(()) => Json(json!({ "posted": true })).into_response(),
         Err(failed) => failed.into_response(),
     }
-}
-
-#[derive(Deserialize)]
-struct Rerun {
-    round: String,
-    /// Start over: drop the scenario in play and queue every setup again.
-    #[serde(default)]
-    restart: bool,
-}
-
-/// The owner runs every scenario again, one at a time, the earlier round kept and labelled.
-async fn rerun_holodeck(
-    Extract(state): Extract<State>,
-    Json(req): Json<Rerun>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let round = req.round.clone();
-    let restart = req.restart;
-    let queued = blocking(move || {
-        if restart {
-            hq.restart_holodeck(&round)
-        } else {
-            hq.rerun_holodeck(&round)
-        }
-    })
-    .await?;
-    Ok(Json(json!({ "queued": queued, "round": req.round })))
 }
 
 #[derive(Deserialize)]
@@ -622,7 +582,7 @@ struct BrainAsked {
     brain: String,
 }
 
-/// The owner sets what a member thinks with: `local`, or a Claude its role may use.
+/// The owner sets what a member thinks with: its one model (ADR 0142).
 async fn set_brain(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
@@ -638,48 +598,17 @@ struct ModelAsked {
     model: String,
 }
 
-/// The owner sets a member's model (ADR 0142): every turn of its runs on it.
+/// The owner sets a member's model (ADR 0142): every turn of its runs on it. `said` tells the
+/// owner when its runtime could not run the model and it was put on the worker (ADR 0117).
 async fn set_model(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
     Json(req): Json<ModelAsked>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
-    Ok(Json(json!({ "member": id, "model": brain.name() })))
-}
-
-#[derive(Deserialize)]
-struct WorkBrainAsked {
-    work_brain: String,
-}
-
-/// The owner sets what a member does its work with (ADR 0131): `mac` or `local`.
-async fn set_work_brain(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<WorkBrainAsked>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_work_brain(MemberId(id), &req.work_brain)).await?;
-    Ok(Json(json!({ "member": id, "work_brain": brain.name() })))
-}
-
-#[derive(Deserialize)]
-struct JudgmentBrainAsked {
-    judgment_brain: String,
-}
-
-/// The owner sets the Claude a member judges with (ADR 0131).
-async fn set_judgment_brain(
-    Extract(state): Extract<State>,
-    Path(id): Path<i64>,
-    Json(req): Json<JudgmentBrainAsked>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let brain = blocking(move || hq.set_judgment_brain(MemberId(id), &req.judgment_brain)).await?;
+    let set = blocking(move || hq.set_model(MemberId(id), &req.model)).await?;
     Ok(Json(
-        json!({ "member": id, "judgment_brain": brain.name() }),
+        json!({ "member": id, "model": set.brain.name(), "said": set.said }),
     ))
 }
 
@@ -775,6 +704,28 @@ async fn pool_top_up(
     Ok(Json(json!({ "topped_up_today": total })))
 }
 
+#[derive(Deserialize)]
+struct PoolCredit {
+    /// What is left of the plan's grant, in micros; `null` when the owner has set no grant.
+    #[serde(default)]
+    grant_left: Option<i64>,
+    /// The day the plan next renews, `YYYY-MM-DD` on the owner's calendar; `null` with no grant.
+    #[serde(default)]
+    renews: Option<String>,
+}
+
+/// The node says what is left of the Claude grant and the day the plan next renews, every few
+/// minutes (ADR 0113, amended 2026-10-31). The first grant heard in the owner's day sizes that
+/// day's pool; bought credit is never sent, since it does not expire.
+async fn pool_credit(
+    Extract(state): Extract<State>,
+    Json(req): Json<PoolCredit>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.tell_claude_credit(req.grant_left, req.renews.as_deref())).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// A monthly cap as the screen sends it: dollars, as a number or as text; nothing for none.
 fn cap_of(cap: Option<&serde_json::Value>) -> Result<Option<i64>, Failed> {
     let said = match cap {
@@ -798,9 +749,12 @@ struct ProjectRequest {
     lead: i64,
     #[serde(default)]
     cap: Option<serde_json::Value>,
+    /// The member who works the loop alone (ADR 0142, amended 2026-11-01), if any.
+    #[serde(default)]
+    solo: Option<i64>,
 }
 
-/// The owner makes a project, active at once.
+/// The owner makes a project, active at once, worked alone by `solo` when it names a member.
 async fn add_project(
     Extract(state): Extract<State>,
     Json(req): Json<ProjectRequest>,
@@ -808,13 +762,17 @@ async fn add_project(
     let cap = cap_of(req.cap.as_ref())?;
     let hq = state.hq.clone();
     let id = blocking(move || {
-        hq.add_project(
+        let id = hq.add_project(
             GoalId(req.goal),
             &req.title,
             &req.reason,
             MemberId(req.lead),
             cap,
-        )
+        )?;
+        if let Some(solo) = req.solo {
+            hq.set_loop_solo(id, Some(MemberId(solo)))?;
+        }
+        Ok(id)
     })
     .await?;
     Ok(Json(json!({ "project": id.0 })))
@@ -857,26 +815,19 @@ async fn project_cap(
 #[derive(Deserialize)]
 struct StartScenario {
     project: i64,
-    /// `lighthouse` (the default), `silent_station` or `chess`.
+    /// `chess`, the one world left (ADR 0135, amended 2026-10-30).
     #[serde(default)]
     kind: Option<String>,
-    /// The lighthouse's member.
-    #[serde(default)]
-    member: Option<i64>,
-    /// Silent Station's crew: the captain, science and the engineer.
-    #[serde(default)]
-    crew: Option<[i64; 3]>,
     /// A chess match's players: white, then black.
     #[serde(default)]
     players: Option<[i64; 2]>,
-    /// The world's seed: the same seed is the same world. Today's clock when not given.
+    /// Which game it is. Today's clock when not given.
     #[serde(default)]
     seed: Option<u64>,
 }
 
-/// The owner starts a scenario, in a project that gives its work the scenario tool alone: the
-/// lighthouse for a member, or Silent Station for a crew of three. Starting it again with the
-/// same seed is its reset.
+/// The owner starts a chess match, in a project that gives its work the scenario tool alone.
+/// The lighthouse and Silent Station were retired (2026-10-30), and are refused.
 async fn start_scenario(
     Extract(state): Extract<State>,
     Json(req): Json<StartScenario>,
@@ -886,88 +837,29 @@ async fn start_scenario(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
     });
+    let (Some("chess"), Some(players)) = (req.kind.as_deref(), req.players) else {
+        return Err(Failed(EngineError::Refused(Refusal::Scenario(
+            "the Holodeck plays chess alone: kind \"chess\" names its players: [white, black] \
+             (the lighthouse and Silent Station were retired)"
+                .to_owned(),
+        ))));
+    };
     let hq = state.hq.clone();
     let project = ProjectId(req.project);
-    let task = match (req.kind.as_deref(), req.member, req.crew, req.players) {
-        (Some("silent_station"), _, Some(crew), _) => {
-            blocking(move || hq.start_station(project, crew.map(MemberId), seed)).await?
-        }
-        (Some("chess"), _, _, Some(players)) => {
-            blocking(move || hq.start_chess(project, players.map(MemberId), seed)).await?
-        }
-        (None | Some("lighthouse"), Some(member), _, _) => {
-            blocking(move || hq.start_scenario(project, MemberId(member), seed)).await?
-        }
-        _ => {
-            return Err(Failed(EngineError::Refused(Refusal::Scenario(
-                "a lighthouse names its member; silent_station names its crew: [captain, \
-                 science, engineer]; chess names its players: [white, black]"
-                    .to_owned(),
-            ))));
-        }
-    };
+    let task = blocking(move || hq.start_chess(project, players.map(MemberId), seed)).await?;
     Ok(Json(json!({ "task": task.0, "seed": seed })))
 }
 
-#[derive(Deserialize)]
-struct TrialArm {
-    label: String,
-    members: Vec<i64>,
-    /// How the players are briefed, when not as usual: `plan_first`.
-    #[serde(default)]
-    brief: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StartTrial {
-    name: String,
-    project: i64,
-    kind: String,
-    conditions: Vec<TrialArm>,
-    seeds: Vec<u64>,
-}
-
-/// The owner starts a trial: one scenario, every condition on every seed.
-async fn start_trial(
-    Extract(state): Extract<State>,
-    Json(req): Json<StartTrial>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    let name = req.name.clone();
-    let arms: Vec<endora_team::domain::trials::Arm> = req
-        .conditions
-        .into_iter()
-        .map(|c| endora_team::domain::trials::Arm {
-            label: c.label,
-            members: c.members.into_iter().map(MemberId).collect(),
-            brief: c.brief,
-        })
-        .collect();
-    let tasks = blocking(move || {
-        hq.start_trial(
-            &req.name,
-            ProjectId(req.project),
-            &req.kind,
-            &arms,
-            &req.seeds,
-        )
-    })
-    .await?;
-    Ok(Json(
-        json!({ "name": name, "tasks": tasks.iter().map(|t| t.0).collect::<Vec<_>>() }),
-    ))
-}
-
-/// A trial compared.
-async fn trial_report(
-    Extract(state): Extract<State>,
-    Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, Failed> {
-    let hq = state.hq.clone();
-    Ok(Json(blocking(move || hq.trial_report(&name)).await?))
-}
-
 /// A scenario, its state and its log step by step.
+/// One task whole, as the owner opens it.
+async fn task_shown(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.task_shown(TaskId(id))).await?))
+}
+
 async fn scenario_shown(
     Extract(state): Extract<State>,
     Path(task): Path<i64>,
@@ -978,6 +870,38 @@ async fn scenario_shown(
     ))
 }
 
+/// PGN as plain text.
+fn pgn_text(pgn: String) -> Response {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        pgn,
+    )
+        .into_response()
+}
+
+/// A Holodeck match in PGN: a league game under the league, its sides the brains.
+async fn scenario_pgn(
+    Extract(state): Extract<State>,
+    Path(task): Path<i64>,
+) -> Result<Response, Failed> {
+    let hq = state.hq.clone();
+    Ok(pgn_text(
+        blocking(move || hq.scenario_pgn(TaskId(task))).await?,
+    ))
+}
+
+/// A game of the office's chess in PGN.
+async fn chess_pgn(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Response, Failed> {
+    let hq = state.hq.clone();
+    Ok(pgn_text(blocking(move || hq.chess_pgn(id)).await?))
+}
+
 #[derive(Deserialize)]
 struct ProjectTools {
     #[serde(default)]
@@ -986,10 +910,75 @@ struct ProjectTools {
 
 /// The owner sets the tools a project's work is given (the Holodeck plan's phase 4), or with
 /// `null` takes the list away.
+/// Which page of a list, from 1.
+#[derive(Deserialize)]
+struct Page {
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+/// How many of the league's finished games a page holds.
+const LEAGUE_GAMES_A_PAGE: usize = 10;
+
+/// The league's finished games, of every round, newest first, a page at a time.
+async fn league_games(
+    Extract(state): Extract<State>,
+    Query(q): Query<Page>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let page = q.page.unwrap_or(1);
+    Ok(Json(
+        blocking(move || hq.league_games(page, LEAGUE_GAMES_A_PAGE)).await?,
+    ))
+}
+
 /// The owner resets the model league: its games set aside, every brain rated afresh.
 async fn reset_league(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     Ok(Json(blocking(move || hq.reset_league()).await?))
+}
+
+#[derive(Deserialize)]
+struct Round {
+    /// Items to add to the round under way.
+    #[serde(default)]
+    items: Vec<i64>,
+    /// The round is over: downtime goes on.
+    #[serde(default)]
+    close: bool,
+}
+
+/// The round of the experiment under way, as HQ holds it: its items and whether any is open.
+fn round_said(hq: &Hq) -> Result<serde_json::Value, EngineError> {
+    let items: Vec<i64> = hq.round_items()?.into_iter().map(|t| t.0).collect();
+    Ok(json!({ "items": items, "running": hq.round_running()? }))
+}
+
+/// The round of the experiment under way (ADR 0142, amended 2026-11-01).
+async fn round_shown(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || round_said(&hq)).await?))
+}
+
+/// The owner, or `scripts/experiment.py start`, adds a round's items (each arm's in turn), or
+/// closes the round: while any of its items is open, no downtime or chess turn starts.
+async fn set_round(
+    Extract(state): Extract<State>,
+    Json(req): Json<Round>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(
+        blocking(move || {
+            if req.close {
+                hq.close_round()?;
+            } else {
+                let items: Vec<TaskId> = req.items.into_iter().map(TaskId).collect();
+                hq.add_to_round(&items)?;
+            }
+            round_said(&hq)
+        })
+        .await?,
+    ))
 }
 
 /// The owner's cut-over to one team of loops (ADR 0142): what it did.
@@ -1014,6 +1003,88 @@ async fn loop_rank(
     Ok(Json(json!({ "project": id, "rank": req.rank })))
 }
 
+#[derive(Deserialize)]
+struct LoopItems {
+    items: u8,
+}
+
+/// The owner sets how many items a loop has in hand at once, 1 to 4 (ADR 0142).
+async fn loop_items(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopItems>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_items(ProjectId(id), req.items)).await?;
+    Ok(Json(json!({ "project": id, "items": req.items })))
+}
+
+#[derive(Deserialize)]
+struct LoopSolo {
+    member: Option<i64>,
+}
+
+/// The owner sets a loop to be worked by one member alone, or (`null`) by the team again
+/// (ADR 0142, amended 2026-11-01).
+async fn loop_solo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopSolo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_loop_solo(ProjectId(id), req.member.map(MemberId))).await?;
+    Ok(Json(json!({ "project": id, "solo": req.member })))
+}
+
+/// A loop's lessons, oldest first (ADR 0142, amended 2026-10-31).
+async fn loop_lessons(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let lessons = blocking(move || hq.loop_lessons(ProjectId(id))).await?;
+    Ok(Json(json!({ "project": id, "lessons": lessons })))
+}
+
+#[derive(Deserialize)]
+struct LoopLessons {
+    lessons: Vec<String>,
+}
+
+/// The owner sets a loop's lessons, the whole list: at most ten short lines, nothing secret.
+#[derive(Deserialize)]
+struct DeliverySettings {
+    #[serde(default)]
+    cards: Option<bool>,
+    #[serde(default)]
+    merge_develop: Option<bool>,
+}
+
+/// The owner's settings for accepted work (ADR 0115, amended 2026-10-31): the "Ready to merge"
+/// and "Push" cards back on the desk, and HQ merging pushed branches into the fork's develop.
+async fn set_delivery(
+    Extract(state): Extract<State>,
+    Json(req): Json<DeliverySettings>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let shown = blocking(move || {
+        hq.set_delivery(req.cards, req.merge_develop)?;
+        hq.snapshot()
+    })
+    .await?;
+    Ok(Json(json!({ "delivery": shown["delivery"] })))
+}
+
+async fn set_loop_lessons(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<LoopLessons>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let lessons = blocking(move || hq.set_loop_lessons(ProjectId(id), &req.lessons)).await?;
+    Ok(Json(json!({ "project": id, "lessons": lessons })))
+}
+
 async fn project_tools(
     Extract(state): Extract<State>,
     Path(id): Path<i64>,
@@ -1026,6 +1097,24 @@ async fn project_tools(
     let hq = state.hq.clone();
     let kept = blocking(move || hq.project_tools(ProjectId(id))).await?;
     Ok(Json(json!({ "project": id, "tools": kept })))
+}
+
+#[derive(Deserialize)]
+struct ProjectRepo {
+    /// A public `https://github.com/<owner>/<name>`, or null to take it away.
+    url: Option<String>,
+}
+
+/// The owner names the repository outside the lab a project's work is in (ADR 0115, amended
+/// 2026-11-01: round 4's F4): a public GitHub address alone, refused otherwise.
+async fn project_repo(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectRepo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let kept = blocking(move || hq.set_project_repo(ProjectId(id), req.url.as_deref())).await?;
+    Ok(Json(json!({ "project": id, "repo": kept })))
 }
 
 #[derive(Deserialize)]
@@ -1162,9 +1251,15 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+    use endora_team::application::desk_ports::DeskStore;
     use endora_team::application::engine::Settings;
+    use endora_team::application::event_ports::EventStore;
+    use endora_team::application::office_ports::OfficeStore;
     use endora_team::application::ports::TeamStore as _;
-    use endora_team::domain::{Role, RunId, RunStatus, TaskId};
+    use endora_team::application::receipt_ports::ReceiptStore;
+    use endora_team::application::run_ports::RunStore;
+    use endora_team::application::wing_ports::WingStore;
+    use endora_team::domain::{RunId, RunStatus, TaskId};
     use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore};
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
@@ -1188,10 +1283,10 @@ mod tests {
             Settings::default(),
         ));
         if simulated {
-            let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-            hq.hire("Bo", Role::Developer, 40, 2, 4).unwrap();
-            hq.hire("Cy", Role::Researcher, 15, 2, 2).unwrap();
-            hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
+            let ada = hq.hire("Ada", 25, 2, 0).unwrap();
+            hq.hire("Bo", 40, 2, 4).unwrap();
+            hq.hire("Cy", 15, 2, 2).unwrap();
+            hq.hire("Dee", 20, 2, 1).unwrap();
             let goal = hq
                 .set_goal("Keep the home lab healthy", "", Author::Owner)
                 .unwrap();
@@ -1231,7 +1326,7 @@ mod tests {
 
     /// A developer is handed a task, and the tick starts their turn: it waits for a runner.
     fn a_turn_starts(st: &State) -> (RunId, TaskId) {
-        let dev = st.hq.hire("John Doe", Role::Developer, 40, 2, 0).unwrap();
+        let dev = st.hq.hire("John Doe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the lab tidy", "a test", Author::Owner)
@@ -1262,7 +1357,7 @@ mod tests {
     /// from its turns alone.
     fn a_wing_turn_starts(st: &State) -> (RunId, TaskId) {
         let (run, task) = a_turn_starts(st);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 1).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 1).unwrap();
         let wing = st
             .hq
             .set_goal(endora_team::domain::wing::WING_GOAL, "", Author::Owner)
@@ -1320,6 +1415,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "health needs no token");
+    }
+
+    /// A game of chess, a Holodeck match or the office's, is read as PGN in plain text, to copy
+    /// or keep; one there is not is not found.
+    #[tokio::test]
+    async fn a_game_is_read_as_pgn() {
+        let st = state(false);
+        let white = st.hq.hire("Jane Doe", 40, 2, 4).unwrap();
+        let black = st.hq.hire("John Doe", 40, 2, 4).unwrap();
+        let goal = st.hq.set_goal("Holodeck", "", Author::Owner).unwrap();
+        let project = st.hq.add_project(goal, "Chess", "", white, None).unwrap();
+        st.hq
+            .set_project_tools(project, Some(vec!["scenario".to_owned()]))
+            .unwrap();
+        let task = st.hq.start_chess(project, [white, black], 1).unwrap();
+        st.hq.store().add_chess_game(black, white, 0).unwrap();
+        let office = st.hq.store().chess_games().unwrap()[0].id;
+        let app = app(st);
+        for (path, has) in [
+            (
+                format!("/v1/scenarios/{}/pgn", task.0),
+                "[Event \"Endora Holodeck\"]\n",
+            ),
+            (format!("/v1/chess/{office}/pgn"), "[White \"John Doe\"]\n"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", &path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert!(
+                res.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/plain"),
+                "{path}"
+            );
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(text.contains(has), "{path}: {text}");
+            assert!(text.contains("[Result \"*\"]"), "{path}: {text}");
+        }
+        for path in ["/v1/scenarios/9999/pgn", "/v1/chess/9999/pgn"] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    /// The league's finished games, a page at a time, for the owner's Chess tab (31 Oct): an
+    /// empty first page before any game, and a page past the end empty too.
+    #[tokio::test]
+    async fn the_leagues_finished_games_are_read_a_page_at_a_time() {
+        let app = app(state(false));
+        for (path, page) in [("/v1/league/games", 1), ("/v1/league/games?page=3", 3)] {
+            let res = app
+                .clone()
+                .oneshot(call("GET", path, Some(TOKEN), ""))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let got = json_of(res).await;
+            assert_eq!(got["page"], page, "{path}: {got}");
+            assert_eq!(got["per_page"], 10, "{path}: {got}");
+            assert_eq!(got["total"], 0, "{path}: {got}");
+            assert_eq!(got["games"], json!([]), "{path}: {got}");
+        }
+    }
+
+    /// The owner retired the Holodeck's other worlds (ADR 0135, amended 2026-10-30): nothing
+    /// starts a lighthouse, Silent Station, a trial or a re-run any more.
+    #[tokio::test]
+    async fn only_chess_starts_on_the_holodeck() {
+        let app = app(state(true));
+        for (path, body) in [
+            ("/v1/scenarios", r#"{"project":1,"member":2,"seed":7}"#),
+            (
+                "/v1/scenarios",
+                r#"{"project":1,"kind":"silent_station","crew":[2,3,4]}"#,
+            ),
+            ("/v1/scenarios/rerun", r#"{"round":"round 1"}"#),
+            (
+                "/v1/trials",
+                r#"{"name":"t","project":1,"kind":"lighthouse"}"#,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(call("POST", path, Some(TOKEN), body))
+                .await
+                .unwrap();
+            assert!(
+                !res.status().is_success(),
+                "{path} {body}: {}",
+                res.status()
+            );
+        }
+        let refused = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/scenarios",
+                Some(TOKEN),
+                r#"{"project":1,"kind":"lighthouse","member":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            json_of(refused).await.to_string().contains("chess alone"),
+            "the refusal says why"
+        );
     }
 
     /// `/health` says how long ago the tick last finished (ADR 0124): none before the first,
@@ -1490,10 +1700,7 @@ mod tests {
         let st = state(false);
         let (run, task) = a_turn_starts(&st);
         let endora_team::application::Asked::Desk(asked) =
-            st.hq.ask_owner(run, "Which cables first?").unwrap()
-        else {
-            panic!("no reviewer: straight to the desk");
-        };
+            st.hq.ask_owner(run, "Which cables first?").unwrap();
         let app = app(st.clone());
         let decide = |body: &str| call("POST", &format!("/v1/desk/{}", asked.0), Some(TOKEN), body);
         let res = app
@@ -1678,12 +1885,11 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         // Every member is offered the same tools, and none of the company's (ADR 0142): the
-        // work's, the record's, chess, and the map.
+        // work's, the record's, chess, and the map. The task is the member's, so neither
+        // `my_turn` nor `claim` (D30).
         assert_eq!(
             names,
             [
-                "my_turn",
-                "claim",
                 "post",
                 "set_status",
                 "create_task",
@@ -1874,7 +2080,12 @@ mod tests {
             .oneshot(tell(Some(TOKEN), &turn.token, said))
             .await
             .unwrap();
-        assert_eq!(again.status(), StatusCode::BAD_REQUEST, "a turn has one");
+        // Told again while it runs, the latest replaces it (ADR 0129, amended 2026-11-01).
+        assert_eq!(
+            again.status(),
+            StatusCode::OK,
+            "a running turn tells it as it goes"
+        );
         // The owner's replay carries it.
         let replay = json_of(
             app.clone()
@@ -2013,7 +2224,21 @@ mod tests {
         )
         .await;
         assert_eq!(all["runs"][0]["run"], turn.run.0);
-        for missing in ["/v1/runs/999999/replay", "/v1/tasks/999999/replay"] {
+        // The owner opens the task whole.
+        let opened = json_of(
+            app.clone()
+                .oneshot(call("GET", &format!("/v1/tasks/{task}"), Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(opened["id"], task);
+        assert!(opened["thread"].is_array(), "{opened}");
+        for missing in [
+            "/v1/runs/999999/replay",
+            "/v1/tasks/999999/replay",
+            "/v1/tasks/999999",
+        ] {
             let res = app
                 .clone()
                 .oneshot(call("GET", missing, Some(TOKEN), ""))
@@ -2041,7 +2266,11 @@ mod tests {
             .expect("the demo hands Ada a task")
             .id;
         st.hq
-            .wake(ada, Some(hers), endora_team::domain::WakeReason::Decide)
+            .wake(
+                ada,
+                Some(hers),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -2086,6 +2315,28 @@ mod tests {
         );
         let ok = json_of(app.clone().oneshot(cached).await.unwrap()).await;
         assert_eq!(ok["may_go_on"], true);
+        // The model the provider said answered each call is kept beside the turn, as it was
+        // named; a call the node names none for (as the two above) is kept as not known
+        // (the agentic-harness climb, round 7).
+        let named = call(
+            "POST",
+            "/v1/team/usage",
+            Some(TOKEN),
+            &json!({ "run": turn.run.0, "micros": 0,
+                     "served_model": "claude-sonnet-5-5-20261001" })
+            .to_string(),
+        );
+        assert_eq!(
+            app.clone().oneshot(named).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            st.hq.served_models(turn.run).unwrap(),
+            vec![
+                (None, 2),
+                (Some("claude-sonnet-5-5-20261001".to_owned()), 1)
+            ]
+        );
         let kept = st.hq.store().run(turn.run).unwrap().unwrap();
         assert_eq!(
             (
@@ -2097,6 +2348,23 @@ mod tests {
             (100, 9_000, 900, 250),
             "the turn's record keeps the tokens the relay reported, in and out"
         );
+        // A free call (the house's models) costs nothing, but its tokens are kept all the same:
+        // HQ decides from them whether a turn ran out of room (ADR 0142, amended 2026-10-30).
+        let free = call(
+            "POST",
+            "/v1/team/tokens",
+            Some(TOKEN),
+            &json!({ "run": turn.run.0, "input": 5_000, "output": 50 }).to_string(),
+        );
+        assert_eq!(
+            app.clone().oneshot(free).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let kept = st.hq.store().run(turn.run).unwrap().unwrap();
+        assert_eq!(
+            (kept.input_tokens, kept.output_tokens, kept.spent),
+            (5_100, 300, 20)
+        );
         let over = json_of(app.clone().oneshot(spend(left)).await.unwrap()).await;
         assert_eq!(over["may_go_on"], false, "past its budget, the turn stops");
         let gone = app
@@ -2107,7 +2375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_in_the_digest() {
+    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_that_never_waits() {
         let st = state(true);
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
@@ -2139,35 +2407,32 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        // A notice needs no decision, so it waits in the digest and does not interrupt (ADR 0132).
-        assert!(
-            snap["desk"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|d| d["id"] != item),
-            "a notice is not on the desk: {}",
-            snap["desk"]
-        );
-        let shown = snap["digest"]
-            .as_array()
+        // A notice needs no decision: in the loops it is told and never waits, on the desk or
+        // in the digest (ADR 0132, 0142).
+        for waiting in ["desk", "digest"] {
+            assert!(
+                snap[waiting]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|d| d["id"] != item),
+                "a notice does not wait in the {waiting}: {}",
+                snap[waiting]
+            );
+        }
+        let kept = st
+            .hq
+            .store()
+            .desk()
             .unwrap()
-            .iter()
-            .find(|d| d["id"] == item)
-            .cloned()
+            .into_iter()
+            .find(|d| d.id.0 == item)
             .unwrap();
-        assert_eq!(shown["kind"], "notice", "{shown}");
-        assert!(shown["text"].as_str().unwrap().contains("restarted sonarr"));
-        let seen = app
-            .oneshot(call(
-                "POST",
-                &format!("/v1/desk/{item}"),
-                Some(TOKEN),
-                r#"{"decision":"seen"}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(seen.status(), StatusCode::OK);
+        assert_eq!(
+            (kept.kind.as_str(), kept.status.as_str()),
+            ("notice", "seen")
+        );
+        assert!(kept.text.contains("restarted sonarr"));
     }
 
     #[tokio::test]
@@ -2430,10 +2695,72 @@ mod tests {
                 ("the disk is under 80% full", true)
             ]
         );
+        // #1049 of set 3: a criterion as long as the set's longest (582 characters) is kept
+        // whole; one past the most is refused, saying which, and nothing is made.
+        let long = format!("{} plain SimpleEval still refuses it.", "x".repeat(540));
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Support set comprehensions",
+                "criteria": [long.clone()] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let task = json_of(res).await["task"].as_i64().unwrap();
+        let kept = st.hq.store().task(TaskId(task)).unwrap().unwrap().criteria;
+        assert_eq!(kept[0].text, long);
+        let made = st.hq.store().tasks().unwrap().len();
+        let res = app
+            .clone()
+            .oneshot(give(json!({ "goal": goal, "title": "Too long",
+                "criteria": ["fine", "y".repeat(1001)] })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("criterion 2 is 1001 characters"),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
+        );
+        // One criterion more than the most is refused, saying the most, and nothing is made:
+        // never a task whose last requirement was left out.
+        let many: Vec<String> = (1..=endora_team::domain::evidence::MOST_CRITERIA + 1)
+            .map(|n| format!("requirement {n}"))
+            .collect();
+        let res = app
+            .clone()
+            .oneshot(give(
+                json!({ "goal": goal, "title": "Too many", "criteria": many }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let said = json_of(res).await;
+        assert!(
+            said["error"].as_str().unwrap().contains(&format!(
+                "more than the {} criteria",
+                endora_team::domain::evidence::MOST_CRITERIA
+            )),
+            "{said}"
+        );
+        assert_eq!(
+            st.hq.store().tasks().unwrap().len(),
+            made,
+            "nothing is made"
+        );
     }
 
-    /// The runner's three routes, each with a body it might send.
-    const RUNNER_ROUTES: [(&str, &str, &str); 3] = [
+    /// The runner's four routes, each with a body it might send.
+    const RUNNER_ROUTES: [(&str, &str, &str); 4] = [
         ("POST", "/v1/runner/next", r#"{"free":1}"#),
         (
             "POST",
@@ -2441,6 +2768,7 @@ mod tests {
             r#"{"succeeded":true,"lease":1}"#,
         ),
         ("GET", "/v1/runner/stops", ""),
+        ("POST", "/v1/runner/sandboxes", r#"{"items":[1]}"#),
     ];
 
     #[tokio::test]
@@ -2504,38 +2832,46 @@ mod tests {
         }
     }
 
-    /// Explicit assistance and its result verification do not inherit execution capabilities.
+    /// The runner is told the turn's project, so a runner that was set up to watch some
+    /// projects' side effects can tell whether this turn is one of theirs. Its word is only a
+    /// project's number: what the runner does about it is the runner's own.
     #[tokio::test]
-    async fn a_deploy_checks_turn_is_handed_without_a_shell_and_with_the_lab_reads_alone() {
+    async fn the_runner_is_told_the_project_of_the_turns_task() {
         let st = state(false);
-        let (run, task) = a_turn_starts(&st);
-        let app = app(st.clone());
-        let next = || call("POST", "/v1/runner/next", Some(RUNNER), r#"{"free":2}"#);
-        let whose = |token: &str| {
-            call(
-                "POST",
-                "/v1/team/turn",
-                Some(TOKEN),
-                &json!({ "token": token }).to_string(),
-            )
-        };
-        // An ordinary turn first: a shell where the runner has one, and no list.
-        let other = st.hq.store().runs().unwrap()[0].clone();
-        assert_eq!(other.id, run);
-        st.hq
-            .store()
-            .set_setting(&format!("deploy_check:{}", task.0), "1")
+        let dev = st.hq.hire("John Doe", 40, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the lab tidy", "a test", Author::Owner)
             .unwrap();
-        let handed = json_of(app.clone().oneshot(next()).await.unwrap()).await;
-        assert_eq!(handed["run"], run.0);
-        assert_eq!(handed["shell"], false, "{handed}");
-        let token = handed["token"].as_str().unwrap().to_owned();
-        let found = json_of(app.clone().oneshot(whose(&token)).await.unwrap()).await;
-        assert_eq!(
-            found["only"],
-            json!(["homelab_status", "container_logs", "nas_status"]),
-            "{found}"
-        );
+        let project = st.hq.add_project(goal, "Cables", "", dev, None).unwrap();
+        st.hq
+            .add_task(
+                Author::Owner,
+                NewTask {
+                    goal,
+                    project: Some(project),
+                    parent: None,
+                    title: "Sort the cables".to_owned(),
+                    description: String::new(),
+                    assignee: Some(dev),
+                    priority: Priority::Normal,
+                    waits_on: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(st.hq.tick().unwrap().started, 1);
+        let res = app(st)
+            .oneshot(call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                &json!({ "free": 1 }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let turn = json_of(res).await;
+        assert_eq!(turn["project"], project.0);
     }
 
     #[tokio::test]
@@ -2558,7 +2894,7 @@ mod tests {
         let turn = json_of(res).await;
         assert_eq!(turn["run"], run.0);
         assert_eq!(turn["member"], "John Doe");
-        assert_eq!(turn["role"], "developer");
+        assert!(turn.get("role").is_none(), "no title is said: {turn}");
         assert_eq!(turn["task"], task.0);
         assert_eq!(
             turn["brain"], "local",
@@ -2566,9 +2902,15 @@ mod tests {
         );
         assert_eq!(turn["effort"], json!(null), "the house's model takes none");
         assert_eq!(
+            turn["prompt_budget"],
+            json!(240_000),
+            "the house's budget, as HQ judges the turn by"
+        );
+        assert_eq!(
             turn["shell"], true,
             "a turn has a shell where the runner gives one"
         );
+        assert_eq!(turn["project"], json!(null), "a task in no project says so");
         let token = turn["token"].as_str().unwrap();
         assert_eq!(
             st.hq.turn_of(token).unwrap().unwrap().0.id,
@@ -2602,6 +2944,74 @@ mod tests {
             st.hq.turn_of(token).unwrap().is_none(),
             "its token is spent"
         );
+    }
+
+    /// Round 17 (ADR 0102, amended 2026-11-04): the runner's accepted report of an end asks for
+    /// a pass at once, so the turn is settled now, not on the clock; a report under another
+    /// attempt's lease changes nothing and asks for none.
+    #[tokio::test]
+    async fn an_accepted_end_report_asks_for_a_pass_and_a_stale_one_does_not() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = passes.clone();
+        let hq = Arc::new(
+            endora_team::application::engine::Engine::new(
+                SqliteTeamStore::in_memory().unwrap(),
+                Runner::Remote(RemoteRunner::default()),
+                SystemClock,
+                Settings::default(),
+            )
+            .with_pass_requests(Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+        let st = State {
+            hq,
+            token: Arc::new(TOKEN.to_owned()),
+            runner_token: Some(Arc::new(RUNNER.to_owned())),
+            tick_seconds: 30,
+            last_tick: Arc::default(),
+        };
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    &json!({ "free": 1 }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let lease = handed["lease"].as_u64().unwrap();
+        let before = passes.load(Ordering::SeqCst);
+        let end = |lease: u64| {
+            call(
+                "POST",
+                &format!("/v1/runner/{}/ended", run.0),
+                Some(RUNNER),
+                &json!({ "succeeded": false, "lease": lease, "code": 137 }).to_string(),
+            )
+        };
+        let stale = app.clone().oneshot(end(lease + 1)).await.unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            before,
+            "a stale report asks for no pass"
+        );
+        let ended = app.oneshot(end(lease)).await.unwrap();
+        assert_eq!(ended.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            before + 1,
+            "an accepted report asks for one"
+        );
+        assert_eq!(st.hq.tick().unwrap().retrying, 1, "and the pass settles it");
+        assert_eq!(status_of(&st, run), RunStatus::RetryWaiting);
     }
 
     #[tokio::test]
@@ -2830,7 +3240,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_gives_a_member_a_cloud_brain_and_the_runner_and_the_node_hear_it() {
         let st = state(false);
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, brain: &str| {
             call(
@@ -2850,17 +3260,18 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        let opus = app
+        // Since one team (ADR 0142) a lead may think with Opus; a model Endora lacks is refused.
+        let unknown = app
             .clone()
-            .oneshot(set(Some(TOKEN), lead.0, "claude-opus-5-5"))
+            .oneshot(set(Some(TOKEN), lead.0, "gpt-5"))
             .await
             .unwrap();
-        assert_eq!(opus.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
         assert!(
-            json_of(opus).await["error"]
+            json_of(unknown).await["error"]
                 .as_str()
                 .unwrap()
-                .contains("Opus")
+                .contains("thinks with")
         );
         let nobody = app
             .clone()
@@ -2899,7 +3310,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(lead, Some(look), endora_team::domain::WakeReason::Decide)
+            .wake(
+                lead,
+                Some(look),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -2915,7 +3330,7 @@ mod tests {
         )
         .await;
         assert_eq!(handed["brain"], "claude-sonnet-5-5");
-        assert_eq!(handed["effort"], "medium", "the lead's");
+        assert_eq!(handed["effort"], json!(null), "its model's own");
         let token = handed["token"].as_str().unwrap();
         let found = json_of(
             app.oneshot(call(
@@ -2930,162 +3345,55 @@ mod tests {
         .await;
         assert_eq!(found["cloud"], true, "the node's check point is told");
         assert_eq!(found["brain"], "claude-sonnet-5-5");
-        assert_eq!(found["role"], "lead");
+        assert!(found.get("role").is_none(), "no title is said: {found}");
     }
 
     #[tokio::test]
-    async fn the_owner_sets_both_brains_and_a_turn_of_work_is_handed_out_on_the_work_brain() {
-        let engine = endora_team::application::engine::Engine::new(
-            SqliteTeamStore::in_memory().unwrap(),
-            Runner::Remote(RemoteRunner::default()),
-            SystemClock,
-            Settings::default(),
-        );
-        let st = State {
-            hq: Arc::new(engine),
-            token: Arc::new(TOKEN.to_owned()),
-            runner_token: Some(Arc::new(RUNNER.to_owned())),
-            tick_seconds: 30,
-            last_tick: Arc::default(),
-        };
-        let lead = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+    async fn a_model_claude_code_cannot_run_answers_that_the_member_runs_on_the_worker() {
+        // Round 2 (31 Oct): Rae moved to DeepSeek kept Claude Code, and the runner refused every
+        // turn of hers until the runtime was set by hand.
+        let st = state(false);
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
+        st.hq.set_brain(dev, "claude-sonnet-5-5").unwrap();
+        st.hq.set_runtime(dev, "claude-code").unwrap();
         let app = app(st.clone());
-        let set = |path: &str, token: Option<&str>, body: serde_json::Value| {
-            call(
+        let res = app
+            .clone()
+            .oneshot(call(
                 "POST",
-                &format!("/v1/members/{}/{path}", lead.0),
-                token,
-                &body.to_string(),
-            )
-        };
-        let stranger = app
-            .clone()
-            .oneshot(set(
-                "work-brain",
-                Some(RUNNER),
-                json!({ "work_brain": "mac" }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            stranger.status(),
-            StatusCode::UNAUTHORIZED,
-            "the node's alone"
-        );
-        // Claude never does the work; the house's models do.
-        let claude = app
-            .clone()
-            .oneshot(set(
-                "work-brain",
+                &format!("/v1/members/{}/model", dev.0),
                 Some(TOKEN),
-                json!({ "work_brain": "claude-sonnet-5-5" }),
+                &json!({ "model": "deepseek-flash" }).to_string(),
             ))
             .await
             .unwrap();
-        assert_eq!(claude.status(), StatusCode::BAD_REQUEST);
-        let mac = json_of(
-            app.clone()
-                .oneshot(set(
-                    "work-brain",
-                    Some(TOKEN),
-                    json!({ "work_brain": "mac" }),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(mac["work_brain"], "mac");
-        // Judgment is Claude's, Opus is the CEO's alone, and a member cannot be left with none.
-        for refused in ["claude-opus-5-5", "local", "none"] {
-            let res = app
-                .clone()
-                .oneshot(set(
-                    "judgment-brain",
-                    Some(TOKEN),
-                    json!({ "judgment_brain": refused }),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{refused}");
-        }
-        let sonnet = json_of(
-            app.clone()
-                .oneshot(set(
-                    "judgment-brain",
-                    Some(TOKEN),
-                    json!({ "judgment_brain": "claude-sonnet-5-5" }),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(sonnet["judgment_brain"], "claude-sonnet-5-5");
-
-        // A task handed to the lead is work, and the Mac has not said it is free: the house's
-        // own model does it, on the worker, and the node's relay is told so.
-        let goal = st
-            .hq
-            .set_goal("Keep the lab tidy", "a test", Author::Owner)
-            .unwrap();
-        st.hq
-            .add_task(
-                Author::Owner,
-                NewTask {
-                    goal,
-                    project: None,
-                    parent: None,
-                    title: "Look round".to_owned(),
-                    description: String::new(),
-                    assignee: Some(lead),
-                    priority: Priority::Normal,
-                    waits_on: Vec::new(),
-                },
-            )
-            .unwrap();
-        st.hq.tick().unwrap();
-        let handed = json_of(
-            app.clone()
-                .oneshot(call(
-                    "POST",
-                    "/v1/runner/next",
-                    Some(RUNNER),
-                    &json!({ "free": 1 }).to_string(),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(handed["brain"], "local", "work, and the Mac is not free");
-        assert_eq!(handed["runtime"], "worker");
-        let token = handed["token"].as_str().unwrap();
-        let found = json_of(
-            app.clone()
-                .oneshot(call(
-                    "POST",
-                    "/v1/team/turn",
-                    Some(TOKEN),
-                    &json!({ "token": token }).to_string(),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let said = json_of(res).await;
+        assert_eq!(said["model"], "deepseek-flash");
         assert_eq!(
-            found["cloud"], false,
-            "nothing of a work turn reaches Anthropic"
+            said["said"],
+            "Jane Doe now runs on Endora's worker: Claude Code runs only Claude"
         );
-        assert_eq!(found["brain"], "local");
-        let shown = st.hq.snapshot().unwrap();
-        let jane = &shown["members"][0];
-        assert_eq!(jane["work_brain"], "mac");
-        assert_eq!(jane["judgment_brain"], "claude-sonnet-5-5");
+        // And Claude Code is refused while it cannot run the member's model.
+        let refused = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/runtime", dev.0),
+                Some(TOKEN),
+                &json!({ "runtime": "claude-code" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn the_owner_puts_a_developer_on_claude_code_and_the_runner_and_the_relay_hear_it() {
         let st = state(false);
-        let dev = st.hq.hire("Jane Doe", Role::Developer, 40, 2, 0).unwrap();
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 1).unwrap();
+        let dev = st.hq.hire("Jane Doe", 40, 2, 0).unwrap();
+        st.hq.set_brain(dev, "claude-haiku-5-5").unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 1).unwrap();
         st.hq.set_brain(lead, "claude-sonnet-5-5").unwrap();
         let app = app(st.clone());
         let set = |token: Option<&str>, member: i64, runtime: &str| {
@@ -3106,14 +3414,19 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "the node's alone"
         );
-        // Every member judges with a Claude (ADR 0131), so a developer may be given Claude Code
-        // to do that judging with; a lead keeps Endora's worker.
+        // A member on Claude may be given Claude Code; one on the house's model keeps Endora's
+        // worker.
+        st.hq.set_brain(lead, "local").unwrap();
         let refused = app
             .clone()
             .oneshot(set(Some(TOKEN), lead.0, "claude-code"))
             .await
             .unwrap();
-        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "a lead");
+        assert_eq!(
+            refused.status(),
+            StatusCode::BAD_REQUEST,
+            "the house's model"
+        );
         let res = app
             .clone()
             .oneshot(set(Some(TOKEN), dev.0, "claude-code"))
@@ -3157,7 +3470,11 @@ mod tests {
             )
             .unwrap();
         st.hq
-            .wake(dev, Some(tidy), endora_team::domain::WakeReason::Decide)
+            .wake(
+                dev,
+                Some(tidy),
+                endora_team::domain::WakeReason::ProposalDecided,
+            )
             .unwrap();
         st.hq.tick().unwrap();
         let handed = json_of(
@@ -3186,6 +3503,38 @@ mod tests {
         )
         .await;
         assert_eq!(found["runtime"], "claude-code", "the relay is told");
+        assert_eq!(found["repo"], json!(null), "work in no outside repository");
+    }
+
+    /// ADR 0142, amended 2026-11-01: the runner keeps an item's sandbox between its turns, and
+    /// asks HQ which to go on keeping: the open items, not a closed one nor one HQ has no task
+    /// for.
+    #[tokio::test]
+    async fn the_runner_hears_which_items_sandboxes_to_keep() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let ask = |items: serde_json::Value| {
+            call(
+                "POST",
+                "/v1/runner/sandboxes",
+                Some(RUNNER),
+                &json!({ "items": items }).to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(ask(json!([task.0, 999])))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["keep"], json!([task.0]));
+        st.hq.drop_task(task).unwrap();
+        let res = app.clone().oneshot(ask(json!([task.0]))).await.unwrap();
+        assert_eq!(json_of(res).await["keep"], json!([]), "dropped: it goes");
+        let many: Vec<i64> = (0..1001).collect();
+        let res = app.oneshot(ask(json!(many))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -3228,7 +3577,7 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_switches_and_runs_a_routine_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3333,9 +3682,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let none = json_of(app.clone().oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(none["fired"], "nobody", "{none}");
-        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
-        crate::seed_routine(&st.hq).unwrap();
+        lab_routine(&st);
         let took = json_of(app.oneshot(alarm(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(took["fired"], "created", "{took}");
         let task = st
@@ -3348,6 +3695,29 @@ mod tests {
             task.description
                 .contains("sonarr became unhealthy at 14:02")
         );
+    }
+
+    /// The home lab's routine, which takes its alarms: a member's, under the lab's goal.
+    fn lab_routine(st: &State) {
+        let member = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        st.hq
+            .add_routine(
+                Author::Owner,
+                endora_team::application::ports::NewRoutine {
+                    title: "Check the home lab".to_owned(),
+                    description: String::new(),
+                    goal,
+                    project: None,
+                    assignee: member,
+                    every_ms: 6 * 60 * 60 * 1000,
+                    on_lab_trouble: true,
+                },
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3365,9 +3735,7 @@ mod tests {
         let app = app(st.clone());
         let res = app.clone().oneshot(back(None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
-        crate::seed_routine(&st.hq).unwrap();
+        lab_routine(&st);
         let none = json_of(app.clone().oneshot(back(Some(TOKEN))).await.unwrap()).await;
         assert_eq!(
             none["posted"],
@@ -3407,10 +3775,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let (run, _) = a_turn_starts(&st);
         let endora_team::application::Asked::Desk(asked) =
-            st.hq.ask_owner(run, "Restart `Crappy_Cray`?").unwrap()
-        else {
-            panic!("no reviewer: straight to the desk");
-        };
+            st.hq.ask_owner(run, "Restart `Crappy_Cray`?").unwrap();
         let item = st
             .hq
             .store()
@@ -3459,49 +3824,40 @@ mod tests {
         assert_eq!(st.hq.snapshot().unwrap()["mac"]["ready"], true);
     }
 
-    #[test]
-    fn with_the_demo_off_the_home_labs_routine_is_made_once_when_its_goal_is_there() {
+    #[tokio::test]
+    async fn the_node_tells_the_claude_grant_and_todays_pool_is_sized_from_it() {
         let st = state(false);
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "no goal yet");
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq
-            .set_goal("Ship the tracker", "", Author::Owner)
+        let app = app(st.clone());
+        let floor = st.hq.snapshot().unwrap()["pool"]["base_per_day"].clone();
+        let said = |token: Option<&str>, body: serde_json::Value| {
+            call("POST", "/v1/pool/credit", token, &body.to_string())
+        };
+        // Ten million dollars left and a renewal centuries off: about $28 a day whenever the
+        // test runs, so held at the ceiling, three floors.
+        let grant = json!({ "grant_left": 10_000_000_000_000_i64, "renews": "2999-01-01" });
+        let res = app
+            .clone()
+            .oneshot(said(None, grant.clone()))
+            .await
             .unwrap();
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "not that goal");
-        let goal = st
-            .hq
-            .set_goal("keep the home lab healthy ", "", Author::Owner)
-            .unwrap();
-        let made = crate::seed_routine(&st.hq).unwrap().unwrap();
-        let routines = st.hq.store().routines().unwrap();
-        assert_eq!(routines.len(), 1);
-        let r = &routines[0];
-        assert_eq!(r.id, made);
-        assert_eq!(r.title, "Check the home lab");
-        assert_eq!((r.goal, r.assignee), (goal, lead));
-        assert_eq!(r.every_ms, 6 * 3_600_000);
-        assert!(r.on_lab_trouble && r.enabled);
-        assert!(
-            r.description
-                .starts_with("Look at the home lab with homelab_status")
-        );
-        let changed = st
-            .hq
-            .events_after(0)
-            .unwrap()
-            .into_iter()
-            .rfind(|e| e.kind == "routine.changed")
-            .unwrap();
-        assert_eq!(changed.data["by"], "endora", "recorded, as Endora's");
-        st.hq.switch_routine(made, false).unwrap();
-        assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "once");
-        assert_eq!(st.hq.store().routines().unwrap().len(), 1);
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node");
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["base_per_day"], floor);
+        let res = app.clone().oneshot(said(Some(TOKEN), grant)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let pool = st.hq.snapshot().unwrap()["pool"].clone();
+        assert_eq!(pool["base_per_day"], floor.as_i64().unwrap() * 3, "{pool}");
+        assert_eq!(pool["sized"]["by"], "ceiling", "{pool}");
+        // A word with no grant later the same day changes nothing.
+        let none = json!({ "grant_left": null, "renews": null });
+        let res = app.oneshot(said(Some(TOKEN), none)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(st.hq.snapshot().unwrap()["pool"]["sized"]["by"], "ceiling");
     }
 
     #[tokio::test]
-    async fn the_owner_renames_a_member_and_edits_the_house_log_through_the_node() {
+    async fn the_owner_renames_a_member_through_the_node() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
         let app = app(st.clone());
         let res = app
             .clone()
@@ -3515,17 +3871,6 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(json_of(res).await["name"], "Jane Doe");
-        let res = app
-            .clone()
-            .oneshot(call(
-                "POST",
-                "/v1/house",
-                Some(TOKEN),
-                r#"{"log":"- 17 Oct: the NAS has 16 GB."}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
         let snap = json_of(
             app.clone()
                 .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
@@ -3533,10 +3878,96 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(snap["house_log"], "- 17 Oct: the NAS has 16 GB.");
         assert_eq!(snap["members"][0]["name"], "Jane Doe");
         let unsigned = app
-            .oneshot(call("POST", "/v1/house", None, r#"{"log":""}"#))
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/name", lead.0),
+                None,
+                r#"{"name":"X"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Round 4's solo arm (ADR 0142, amended 2026-11-01): the owner makes a loop worked by one
+    /// member alone, and may give it back to the team.
+    #[tokio::test]
+    async fn the_owner_makes_a_loop_worked_alone() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st.clone());
+        let post = |uri: String, body: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", &uri, Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, made) = post(
+            "/v1/projects".to_owned(),
+            json!({ "goal": goal.0, "title": "Round 4 solo", "lead": lead.0, "solo": lead.0 })
+                .to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = ProjectId(made["project"].as_i64().unwrap());
+        assert_eq!(st.hq.loop_solo(id).unwrap(), Some(lead));
+        let (status, _) = post(
+            format!("/v1/projects/{}/solo", id.0),
+            json!({ "member": null }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(st.hq.loop_solo(id).unwrap(), None);
+        let (status, _) = post(
+            "/v1/projects/999/solo".to_owned(),
+            json!({ "member": lead.0 }).to_string(),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "no such loop");
+    }
+
+    /// ADR 0142, amended 2026-11-01: `scripts/experiment.py start` sets the round's items; no
+    /// downtime turn starts while any is open, and the close ends it.
+    #[tokio::test]
+    async fn a_round_of_the_experiment_is_set_read_and_closed() {
+        let st = state(false);
+        let (_, task) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let send = |method: &str, body: &str| {
+            let app = app.clone();
+            let (method, body) = (method.to_owned(), body.to_owned());
+            async move {
+                let res = app
+                    .oneshot(call(&method, "/v1/round", Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, none) = send("GET", "").await;
+        assert_eq!(status, StatusCode::OK, "{none}");
+        assert_eq!(none, json!({ "items": [], "running": false }));
+        let (status, set) = send("POST", &json!({ "items": [task.0] }).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        assert_eq!(set, json!({ "items": [task.0], "running": true }));
+        assert!(st.hq.round_running().unwrap());
+        let (status, _) = send("POST", r#"{"items":[99999]}"#).await;
+        assert_ne!(status, StatusCode::OK, "no such task");
+        let (_, closed) = send("POST", r#"{"close":true}"#).await;
+        assert_eq!(closed, json!({ "items": [], "running": false }));
+        let unsigned = app
+            .clone()
+            .oneshot(call("POST", "/v1/round", None, r#"{"close":true}"#))
             .await
             .unwrap();
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
@@ -3545,11 +3976,9 @@ mod tests {
     #[tokio::test]
     async fn the_owner_makes_caps_and_pauses_a_project() {
         let st = state(false);
-        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
-        st.hq
-            .hire("Richard Roe", Role::Developer, 40, 2, 0)
-            .unwrap();
+        let lead = st.hq.hire("John Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Jane Doe", 25, 2, 0).unwrap();
+        st.hq.hire("Richard Roe", 40, 2, 0).unwrap();
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
@@ -3631,6 +4060,37 @@ mod tests {
             )
         );
         assert_eq!(snap["tasks"][0]["project"], id);
+        // The repository outside the lab its work is in (ADR 0115, amended 2026-11-01): a
+        // public GitHub address alone, kept plainly; anything else is refused.
+        let (status, refused) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://gitlab.com/example/tiny" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("only a public https://github.com/"),
+            "{refused}"
+        );
+        let (status, kept) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": "https://github.com/example/tiny.git" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        assert_eq!(kept["repo"], "https://github.com/example/tiny");
+        let (status, gone) = post(
+            format!("/v1/projects/{id}/repo"),
+            json!({ "url": null }).to_string(),
+        )
+        .await;
+        assert_eq!(
+            (status, gone["repo"].clone()),
+            (StatusCode::OK, json!(null))
+        );
     }
 
     #[tokio::test]
@@ -3674,12 +4134,12 @@ mod tests {
         );
         let (status, said) = send(json!({ "amount_micros": 99_000_000 }), Some(TOKEN)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(said.to_string().contains("three"), "{said}");
+        assert!(said.to_string().contains("five"), "{said}");
         assert_eq!(st.hq.snapshot().unwrap()["pool"]["topped_up"], 1_000_000);
     }
 
     #[tokio::test]
-    async fn the_owner_hires_through_the_node_and_one_ceo_is_enough() {
+    async fn the_owner_hires_through_the_node_on_any_model_endora_has() {
         let st = state(false);
         let app = app(st.clone());
         let hire = |signed: Option<&str>, body: serde_json::Value| {
@@ -3700,47 +4160,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let kit = json_of(res).await["member"].as_i64().unwrap();
         let res = app
             .clone()
             .oneshot(hire(
                 Some(TOKEN),
-                json!({ "name": "Rae", "role": "developer", "brain": "claude-haiku-5-5", "reports_to": kit }),
+                json!({ "name": "Rae", "role": "developer", "brain": "claude-haiku-5-5" }),
             ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let members = st.hq.store().members().unwrap();
         let rae = members.iter().find(|m| m.name == "Rae").unwrap();
-        assert_eq!(
-            (rae.role, rae.brain.name(), rae.reports_to),
-            (Role::Developer, "claude-haiku-5-5", Some(MemberId(kit)))
-        );
-        {
-            let id = st.hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-            st.hq.set_brain(id, "claude-opus-5-5").unwrap();
-            id
-        };
+        assert_eq!(rae.brain.name(), "claude-haiku-5-5");
+        // A model Endora lacks is refused, whatever the title.
         let res = app
             .clone()
             .oneshot(hire(
                 Some(TOKEN),
-                json!({ "name": "Second", "role": "ceo", "brain": "claude-opus-5-5" }),
+                json!({ "name": "Second", "role": "ceo", "brain": "gpt-5" }),
             ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        assert!(
-            json_of(res).await["error"]
-                .as_str()
-                .unwrap()
-                .contains("one CEO"),
-        );
+        // A title an older console still sends is a name only (ADR 0142): it decides nothing.
         let res = app
             .oneshot(hire(Some(TOKEN), json!({ "name": "X", "role": "wizard" })))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// D12 (ADR 0142, amended 2026-10-31): work in progress the node kept as a turn ran out of
+    /// room is recorded for the next turn to check out, with no document and no check queued.
+    #[tokio::test]
+    async fn work_in_progress_the_node_kept_is_recorded_unchecked() {
+        let st = state(false);
+        let (_, task) = a_wing_turn_starts(&st);
+        let app = app(st.clone());
+        let handed = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/runner/next",
+                    Some(RUNNER),
+                    r#"{"free":2}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let token = handed["token"].as_str().unwrap().to_owned();
+        let kept = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/team/branch",
+                    Some(TOKEN),
+                    &json!({ "token": token, "branch": "hq/task-1-sort-the-cables",
+                             "head": "a1b2c3d4e5f60718", "base": "0123456789abcdef",
+                             "files": 1, "plus": 2, "minus": 0, "stat": " a | 2 ++",
+                             "diff": "+x\n+y", "can_push": true, "wip": true })
+                    .to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(kept["kept"], true, "{kept}");
+        assert!(kept["check"].is_null(), "no check is queued: {kept}");
+        assert!(st.hq.store().documents_of(task).unwrap().is_empty());
+        let branches = st.hq.store().branches().unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].status, "in_progress");
     }
 
     #[tokio::test]
@@ -4032,6 +4523,9 @@ mod tests {
                     stat: String::new(),
                     diff: String::new(),
                     can_push: true,
+                    changed: Vec::new(),
+                    texts: Vec::new(),
+                    workflows: None,
                 },
             )
             .unwrap();
@@ -4039,6 +4533,8 @@ mod tests {
             .store()
             .set_task_status(task, endora_team::domain::TaskStatus::Done)
             .unwrap();
+        // On the owner's card: the cards are back (ADR 0115, amended 2026-10-31).
+        st.hq.set_delivery(Some(true), None).unwrap();
         st.hq.offer_push(task).unwrap();
         let item = st
             .hq
@@ -4096,6 +4592,110 @@ mod tests {
                 .text
                 .contains("Pushed hq/task-1")
         );
+    }
+
+    /// Accepted work without a card (ADR 0115, amended 2026-10-31): the node, with its token
+    /// alone, reads what is due and says what came of it once; the owner sets merging.
+    #[tokio::test]
+    async fn the_node_reads_what_is_due_and_says_what_came_of_it_once() {
+        let st = state(false);
+        let (_, task) = a_wing_turn_starts(&st);
+        let context = {
+            let remote = st.hq.runner().remote().unwrap();
+            endora_team::infrastructure::RemoteRunner::next(remote).expect("a turn waits")
+        };
+        st.hq
+            .record_branch(
+                &context.turn.token,
+                &endora_team::application::Submission {
+                    branch: "hq/task-1-sort-the-cables".to_owned(),
+                    head: "a1b2c3d4e5f60718".to_owned(),
+                    base: "0123456789abcdef".to_owned(),
+                    files: 1,
+                    plus: 2,
+                    minus: 0,
+                    stat: String::new(),
+                    diff: String::new(),
+                    can_push: true,
+                    changed: Vec::new(),
+                    texts: Vec::new(),
+                    workflows: None,
+                },
+            )
+            .unwrap();
+        let check = st.hq.next_check().unwrap().expect("a check waits");
+        st.hq
+            .check_done(check.id, &check.token, true, "syntax ok", "")
+            .unwrap();
+        st.hq
+            .store()
+            .set_task_status(task, endora_team::domain::TaskStatus::Done)
+            .unwrap();
+        st.hq.offer_push(task).unwrap();
+        let app = app(st.clone());
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/v1/team/deliveries", Some(RUNNER), ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "the node's token alone"
+        );
+        let due = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/team/deliveries", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(due["push"][0]["name"], "hq/task-1-sort-the-cables", "{due}");
+        assert_eq!(due["push"][0]["scan"], true, "{due}");
+        assert_eq!(due["merge"], json!([]));
+        let branch = due["push"][0]["branch"].as_i64().unwrap();
+        let told = |body: &str| {
+            call(
+                "POST",
+                &format!("/v1/team/deliveries/{branch}"),
+                Some(TOKEN),
+                body,
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(told(r#"{"step":"held"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "held says what");
+        let body = r#"{"step":"push","ok":true,"text":"pushed hq/task-1-sort-the-cables"}"#;
+        let res = app.clone().oneshot(told(body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app.clone().oneshot(told(body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT, "told once");
+        let set = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/delivery",
+                    Some(TOKEN),
+                    r#"{"merge_develop":true}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            set["delivery"],
+            json!({ "cards": false, "merge_develop": true })
+        );
+        let due = json_of(
+            app.oneshot(call("GET", "/v1/team/deliveries", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(due["merge"][0]["branch"], branch, "{due}");
     }
 
     /// The drain's door (ADR 0134) is the node's token's alone, as the owner's actions are: not

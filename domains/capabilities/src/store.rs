@@ -1,15 +1,15 @@
-//! Capabilities persistence — SQLite adapters for skill config, settings, the
-//! autonomy envelope, and the deep-model configuration, over the shared handle.
+//! Capabilities persistence — SQLite adapters for skill config, settings and the
+//! deep-model configuration, over the shared handle.
 
 use endora_kernel::RepositoryError;
 use endora_persistence::{Db, backend, corrupt};
 use rusqlite::{OptionalExtension, params};
 
 use crate::application::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
-    CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
-    DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, Recipe,
-    RecipeRepository, Sampling, Stance, TargetAlias, TargetAliasRepository,
+    ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
+    CapabilitySettingsRepository, ConfigWrite, DeepModel, DeepModelRepository, McpServer,
+    McpServerRegistry, McpTransport, ModelSlot, Recipe, RecipeRepository, Sampling, Stance,
+    TargetAlias, TargetAliasRepository,
 };
 use crate::domain::{RecipeInput, RecipeInputKind, Transition, Watched};
 
@@ -375,41 +375,6 @@ impl ButlerModelConfigRepository for ConfigStore {
     }
 }
 
-impl AutonomyEnvelopeRepository for ConfigStore {
-    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError> {
-        self.db
-            .lock()?
-            .query_row(
-                "SELECT auto_external, auto_consequential FROM autonomy_envelope WHERE id = 0",
-                [],
-                |r| {
-                    Ok(AutonomyEnvelope {
-                        auto_external: r.get::<_, i64>(0)? != 0,
-                        auto_consequential: r.get::<_, i64>(1)? != 0,
-                    })
-                },
-            )
-            .optional()
-            .map_err(backend)
-            .map(Option::unwrap_or_default)
-    }
-
-    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "INSERT OR REPLACE INTO autonomy_envelope (id, auto_external, auto_consequential) \
-                 VALUES (0, ?1, ?2)",
-                params![
-                    i64::from(envelope.auto_external),
-                    i64::from(envelope.auto_consequential)
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-}
-
 impl CapabilitySettingsRepository for ConfigStore {
     fn all_settings(&self) -> Result<Vec<(String, String, String)>, RepositoryError> {
         let conn = self.db.lock()?;
@@ -454,6 +419,29 @@ impl CapabilitySettingsRepository for ConfigStore {
                 params![capability_id, key, value],
             )
             .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_settings(
+        &self,
+        capability_id: &str,
+        values: &[(&str, &str)],
+    ) -> Result<(), RepositoryError> {
+        let sealed = values
+            .iter()
+            .map(|(key, value)| Ok((*key, self.db.seal(value)?)))
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let mut conn = self.db.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        for (key, value) in sealed {
+            tx.execute(
+                "INSERT OR REPLACE INTO capability_settings (capability_id, key, value) \
+                 VALUES (?1, ?2, ?3)",
+                params![capability_id, key, value],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
         Ok(())
     }
 }
@@ -992,27 +980,26 @@ impl McpServerRegistry for ConfigStore {
 mod tests {
     use super::{ConfigStore, migrate};
     use crate::application::Stance;
-    use crate::application::{
-        AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository,
-        CapabilitySettingsRepository,
-    };
+    use crate::application::{CapabilityConfigRepository, CapabilitySettingsRepository};
     use endora_persistence::Db;
 
     #[test]
-    fn envelope_defaults_then_round_trips() {
+    fn settings_set_together_are_kept_together() {
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
         let store = ConfigStore::new(db);
+        store
+            .set_settings("credits", &[("a", "1"), ("b", "2")])
+            .unwrap();
+        let mut all = store.all_settings().unwrap();
+        all.sort();
         assert_eq!(
-            AutonomyEnvelopeRepository::get(&store).unwrap(),
-            AutonomyEnvelope::default()
+            all,
+            vec![
+                ("credits".to_owned(), "a".to_owned(), "1".to_owned()),
+                ("credits".to_owned(), "b".to_owned(), "2".to_owned()),
+            ]
         );
-        let widened = AutonomyEnvelope {
-            auto_external: true,
-            auto_consequential: true,
-        };
-        AutonomyEnvelopeRepository::set(&store, &widened).unwrap();
-        assert_eq!(AutonomyEnvelopeRepository::get(&store).unwrap(), widened);
     }
 
     #[test]

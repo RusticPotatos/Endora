@@ -1,0 +1,1902 @@
+//! HQ's mechanical checks of work that reaches review (ADR 0142, amended 2026-10-30): what can
+//! be judged by rule is judged by HQ, not by a model one rank up, and the reviewer is told the
+//! results as facts.
+//!
+//! - **Quoted evidence** ([`quotes_checked`]): each line the worker's post quotes (in backticks
+//!   or a fenced block) and attributes to a receipt (`r12`) is looked for in that receipt's
+//!   kept result, whitespace aside. A receipt keeps only the start of its result
+//!   ([`super::evidence::EXCERPT_MOST`]); a quote not in a cut excerpt cannot be told apart from
+//!   one past the cut, and says so rather than guess.
+//! - **Branch scope** ([`scope`]): the files a submitted branch changes, against the paths
+//!   nobody touches ([`forbidden`]) and against the paths the task names, if it names any.
+//! - **Defaults coverage** ([`coverage`]): when the criteria ask for a README listing every
+//!   default, each role README in the branch names every top-level key of the role's
+//!   `defaults/main.yml` with its value.
+//! - **A CI run** ([`ci`], amended 2026-10-31): when the criteria ask for a CI run's result,
+//!   whether any GitHub Actions workflow at the branch's head runs on a push of it, by its
+//!   `on.push` filter ([`push_filter`]); when none does, the criterion cannot be met. A
+//!   criterion about CI that asks for no run's result (amended 2026-11-01, D25) is measured by
+//!   the check of the head ([`HeadCheck`]), which runs the lint steps CI runs.
+//! - **Lint** ([`asks_for_lint`], amended 2026-11-01, D22): a criterion about lint is measured
+//!   by the check of the head against develop ("no more findings than develop: met"), and the
+//!   report gives that verdict for it, for the reviewer to take as it takes the CI line.
+
+use super::cut::CUT;
+use super::record;
+
+/// The header every report starts with: what the reviewer and the thread read.
+pub const HEADER: &str =
+    "HQ's mechanical checks (measured by HQ from the record, not judged by a model):";
+
+/// A line the worker quoted and the receipt it says it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quote {
+    /// The receipt's id: `r<id>` as cited.
+    pub receipt: i64,
+    /// The quoted text.
+    pub text: String,
+}
+
+/// A receipt as the quotes check reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept<'a> {
+    /// Its id.
+    pub id: i64,
+    /// The tool it called: a backtick-quoted tool name is not a quote of its result.
+    pub tool: &'a str,
+    /// What it kept of the result.
+    pub excerpt: &'a str,
+    /// Whether it was taken on the item the quote is checked for: another item's reading
+    /// proves nothing of this one.
+    pub this_items: bool,
+}
+
+/// Whether a quote is in its receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// In the receipt's kept result.
+    Found,
+    /// Not in it, and the receipt kept the whole result.
+    NotFound,
+    /// Not in what the receipt kept, which is only the start of its result.
+    PastTheCut,
+    /// No such receipt in HQ's record.
+    NoReceipt,
+    /// A receipt of another item's (or of no item's): not evidence for this one.
+    NotThisItems,
+}
+
+/// The receipts a piece of text names, `r12`, with where each starts.
+fn receipts_in(text: &str) -> Vec<(usize, i64)> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let starts = bytes[i] == b'r' && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric());
+        if !starts {
+            i += 1;
+            continue;
+        }
+        let mut end = i + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        let ends = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if end > i + 1 && ends {
+            if let Ok(id) = text[i + 1..end].parse() {
+                found.push((i, id));
+            }
+        }
+        i = end.max(i + 1);
+    }
+    found
+}
+
+/// Whether a quoted span is itself a receipt's name (`r12`), which quotes nothing.
+fn is_a_receipt(text: &str) -> bool {
+    let t = text.trim();
+    t.len() > 1 && t.starts_with('r') && t[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// The lines a post quotes and attributes to a receipt. A fenced block's lines belong to the
+/// receipt its opening fence names (```` ```r12 ````), or else the last one the line before it
+/// names. A backtick span belongs to the nearest receipt named before it on its line, or else
+/// the first named after it. Quotes with no receipt are not attributed, so not checked.
+#[must_use]
+pub fn quotes(post: &str) -> Vec<Quote> {
+    let mut found = Vec::new();
+    let mut fence: Option<Option<i64>> = None;
+    let mut before: Option<&str> = None;
+    for line in post.lines() {
+        let trimmed = line.trim();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if fence.is_some() {
+                fence = None;
+            } else {
+                let named = receipts_in(info)
+                    .first()
+                    .map(|(_, id)| *id)
+                    .or_else(|| before.and_then(|b| receipts_in(b).last().map(|(_, id)| *id)));
+                fence = Some(named);
+            }
+            before = Some(line);
+            continue;
+        }
+        if let Some(named) = fence {
+            if let Some(receipt) = named.filter(|_| !trimmed.is_empty()) {
+                found.push(Quote {
+                    receipt,
+                    text: trimmed.to_owned(),
+                });
+            }
+            continue;
+        }
+        if !trimmed.is_empty() {
+            before = Some(line);
+        }
+        let named = receipts_in(line);
+        if named.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('`');
+        let mut at = parts.next().map_or(0, |p| p.len() + 1);
+        while let (Some(span), Some(after)) = (parts.next(), parts.next()) {
+            let start = at;
+            at += span.len() + 1 + after.len() + 1;
+            if span.trim().is_empty() || is_a_receipt(span) {
+                continue;
+            }
+            let receipt = named
+                .iter()
+                .rev()
+                .find(|(pos, _)| *pos < start)
+                .or_else(|| named.iter().find(|(pos, _)| *pos > start))
+                .map(|(_, id)| *id);
+            if let Some(receipt) = receipt {
+                found.push(Quote {
+                    receipt,
+                    text: span.trim().to_owned(),
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Text as a receipt keeps it, with no whitespace at all: a quote and a result are compared
+/// whitespace aside.
+fn bare(text: &str) -> String {
+    record::clean(text)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// Whether one quote is in the receipt it names.
+#[must_use]
+pub fn seen(quote: &Quote, receipts: &[Kept<'_>]) -> Seen {
+    let Some(receipt) = receipts.iter().find(|r| r.id == quote.receipt) else {
+        return Seen::NoReceipt;
+    };
+    if !receipt.this_items {
+        return Seen::NotThisItems;
+    }
+    let quoted = quote
+        .text
+        .trim()
+        .trim_end_matches('…')
+        .trim_end_matches("...");
+    let cut = receipt.excerpt.ends_with(CUT);
+    let kept = receipt.excerpt.trim_end_matches(CUT);
+    if bare(kept).contains(&bare(quoted)) {
+        return Seen::Found;
+    }
+    if cut {
+        return Seen::PastTheCut;
+    }
+    Seen::NotFound
+}
+
+/// Every quote of a post attributed to a receipt, with whether it is there. A backtick span
+/// that is the receipt's own tool name is a name, not a quote, and is left out.
+#[must_use]
+pub fn quotes_checked(post: &str, receipts: &[Kept<'_>]) -> Vec<(Quote, Seen)> {
+    quotes(post)
+        .into_iter()
+        .filter(|q| {
+            !receipts
+                .iter()
+                .any(|r| r.id == q.receipt && r.tool == q.text)
+        })
+        .map(|q| {
+            let s = seen(&q, receipts);
+            (q, s)
+        })
+        .collect()
+}
+
+pub use endora_kernel::lab::forbidden_path;
+
+/// Whether a word reads as a path: a folder (`roles/x/`), a file with an extension
+/// (`README.md`, `defaults/main.yml`), anything under `roles/`, or three segments or more.
+fn a_path(word: &str) -> bool {
+    if word.is_empty() || word.contains("://") || word.starts_with("hq/") {
+        return false;
+    }
+    if !word
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '*'))
+    {
+        return false;
+    }
+    let last = word.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    let extension = last.rsplit_once('.').is_some_and(|(name, ext)| {
+        !name.is_empty() && ext.chars().all(|c| c.is_ascii_alphabetic()) && !ext.is_empty()
+    });
+    let segments = word.trim_end_matches('/').split('/').count();
+    (word.contains('/') && word.ends_with('/'))
+        || extension
+        || word.starts_with("roles/")
+        || segments >= 3
+}
+
+/// The paths a task's words name, in order, each once.
+#[must_use]
+pub fn named_paths(words: &str) -> Vec<String> {
+    let mut named: Vec<String> = Vec::new();
+    for raw in words.split_whitespace() {
+        let word = raw
+            .trim_matches(|c: char| "`'\"()[]{}<>,;:!?".contains(c))
+            .trim_end_matches('.')
+            .trim_start_matches("./");
+        if a_path(word) && !named.iter().any(|n| n == word) {
+            named.push(word.to_owned());
+        }
+    }
+    named
+}
+
+/// Whether a changed file is within a named path: the path is a folder it is under, the file
+/// itself, or the file's trailing segments (`defaults/main.yml`, `README.md`).
+#[must_use]
+pub fn within(file: &str, named: &str) -> bool {
+    let file: Vec<&str> = file.trim_start_matches("./").split('/').collect();
+    let pattern: Vec<&str> = named
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .split('/')
+        .collect();
+    if pattern.len() > file.len() {
+        return false;
+    }
+    // A named path holds no `/` within a segment, nor `?`, `+` or `[` (`a_path`).
+    let all = |of: &[&str]| {
+        pattern
+            .iter()
+            .zip(of)
+            .all(|(p, s)| pattern_matches(p, s) == Some(true))
+    };
+    all(&file[..pattern.len()]) || all(&file[file.len() - pattern.len()..])
+}
+
+/// What a branch touches, against the rules.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Scope {
+    /// Every file it changes.
+    pub changed: Vec<String>,
+    /// The files it must never have touched.
+    pub forbidden: Vec<String>,
+    /// The paths the task names; empty when it names none.
+    pub named: Vec<String>,
+    /// The files outside every named path (none when the task names no path).
+    pub outside: Vec<String>,
+}
+
+/// A branch's changed files against the forbidden paths and the task's named ones. The
+/// forbidden paths are the lab's: a branch of a repository outside the lab (`outside_lab`, the
+/// repository the owner named on the item's project) touches none of the owner's values
+/// (ADR 0115, amended 2026-11-05).
+#[must_use]
+pub fn scope(changed: &[String], task_words: &str, outside_lab: bool) -> Scope {
+    let named = named_paths(task_words);
+    let forbidden_files = changed
+        .iter()
+        .filter(|f| endora_kernel::lab::refused_as_owners_values(f, outside_lab))
+        .cloned()
+        .collect();
+    let outside = if named.is_empty() {
+        Vec::new()
+    } else {
+        changed
+            .iter()
+            .filter(|f| !named.iter().any(|n| within(f, n)))
+            .cloned()
+            .collect()
+    };
+    Scope {
+        changed: changed.to_vec(),
+        forbidden: forbidden_files,
+        named,
+        outside,
+    }
+}
+
+/// The files a diff changes, from its `diff --git a/x b/y` lines: what a branch recorded before
+/// the node told HQ its file names is read from its document. Both sides of each, so a file
+/// moved out of a forbidden folder is still one the branch touches, and a name git quoted (one
+/// outside ASCII, or with a quote in it) as the name it is.
+#[must_use]
+pub fn changed_in_diff(diff: &str) -> Vec<String> {
+    let mut changed: Vec<String> = Vec::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("diff --git ") else {
+            continue;
+        };
+        let Some((a, b)) = header_sides(rest) else {
+            continue;
+        };
+        for side in [a, b] {
+            if !changed.contains(&side) {
+                changed.push(side);
+            }
+        }
+    }
+    changed
+}
+
+/// The two paths of a `diff --git` header after its words, each without its `a/` or `b/`.
+fn header_sides(rest: &str) -> Option<(String, String)> {
+    let (a, b) = if rest.starts_with('"') {
+        let (a, after) = unquoted(rest)?;
+        let after = after.strip_prefix(' ')?;
+        let b = if after.starts_with('"') {
+            unquoted(after)?.0
+        } else {
+            after.to_owned()
+        };
+        (a, b)
+    } else if let Some(at) = rest.find(" \"b/") {
+        (rest[..at].to_owned(), unquoted(&rest[at + 1..])?.0)
+    } else {
+        // Unquoted on both sides: a name may hold " b/" itself, so the split that gives the
+        // same name on both sides is the one, and otherwise (a move) the first.
+        let splits: Vec<usize> = rest.match_indices(" b/").map(|(i, _)| i).collect();
+        let at = splits
+            .iter()
+            .copied()
+            .find(|&i| rest[..i].strip_prefix("a/") == Some(&rest[i + 3..]))
+            .or_else(|| splits.first().copied())?;
+        (rest[..at].to_owned(), rest[at + 1..].to_owned())
+    };
+    Some((
+        a.strip_prefix("a/")?.to_owned(),
+        b.strip_prefix("b/")?.to_owned(),
+    ))
+}
+
+/// A name git quoted (`"..."`, C escapes and octal bytes) as it is, and what follows it.
+fn unquoted(quoted: &str) -> Option<(String, &str)> {
+    let body = quoted.strip_prefix('"')?;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((String::from_utf8_lossy(&bytes).into_owned(), &body[i + 1..])),
+            '\\' => {
+                let (_, e) = chars.next()?;
+                let byte = match e {
+                    'a' => 7,
+                    'b' => 8,
+                    't' => b'\t',
+                    'n' => b'\n',
+                    'v' => 11,
+                    'f' => 12,
+                    'r' => b'\r',
+                    '0'..='7' => {
+                        let mut n = u32::from(e) - u32::from('0');
+                        for _ in 0..2 {
+                            let (_, d) = chars.next()?;
+                            n = n * 8 + d.to_digit(8)?;
+                        }
+                        u8::try_from(n).ok()?
+                    }
+                    other => u8::try_from(other).ok()?,
+                };
+                bytes.push(byte);
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    None
+}
+
+/// Whether a task's criteria ask for a README that lists every default.
+#[must_use]
+pub fn asks_for_defaults(criteria: &[&str]) -> bool {
+    criteria.iter().any(|c| {
+        let c = c.to_ascii_lowercase();
+        c.contains("readme") && c.contains("default")
+    })
+}
+
+/// The role READMEs a branch changes, each with the defaults file beside it:
+/// `roles/x/README.md` and `roles/x/defaults/main.yml`.
+#[must_use]
+pub fn role_readmes(changed: &[String]) -> Vec<(String, String)> {
+    changed
+        .iter()
+        .filter_map(|f| {
+            let (dir, name) = f.rsplit_once('/')?;
+            if !name.eq_ignore_ascii_case("readme.md") || !dir.starts_with("roles/") {
+                return None;
+            }
+            Some((f.clone(), format!("{dir}/defaults/main.yml")))
+        })
+        .collect()
+}
+
+/// A YAML value as written, without a trailing comment or the quotes around it. `None` for a
+/// value on the lines below (a block, a list, `|` or `>`): its name is checked, not its value.
+fn plain_value(raw: &str) -> Option<String> {
+    let value = uncommented(raw).trim();
+    if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+        return None;
+    }
+    Some(unquote(value).to_owned())
+}
+
+/// The top-level keys of a `defaults/main.yml`, in order, each with its plain value.
+#[must_use]
+pub fn top_level_defaults(yaml: &str) -> Vec<(String, Option<String>)> {
+    yaml.lines()
+        .filter(|l| !l.starts_with(char::is_whitespace) && !l.starts_with('#'))
+        .filter(|l| !l.starts_with('-') && !l.starts_with("..."))
+        .filter_map(|l| {
+            let (key, value) = l.split_once(':')?;
+            let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
+            if key.is_empty()
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return None;
+            }
+            Some((key.to_owned(), plain_value(value)))
+        })
+        .collect()
+}
+
+/// Whether a line names a key as a word of its own.
+fn names_key(line: &str, key: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices(key).any(|(i, _)| {
+        let before = line[..i].chars().next_back().is_none_or(|c| !word(c));
+        let after = line[i + key.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !word(c));
+        before && after
+    })
+}
+
+/// Whether a README line gives a value: as written, whitespace and case aside. An empty value
+/// is given as `""`, `''` or the word empty.
+fn gives_value(line: &str, value: &str) -> bool {
+    let squash = |t: &str| -> String {
+        t.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    if value.is_empty() {
+        let l = line.to_lowercase();
+        return l.contains("\"\"") || l.contains("''") || l.contains("empty");
+    }
+    squash(line).contains(&squash(value))
+}
+
+/// How a role's README covers its defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coverage {
+    /// The README.
+    pub readme: String,
+    /// How many top-level defaults the role has.
+    pub keys: usize,
+    /// Defaults the README never names.
+    pub missing: Vec<String>,
+    /// Defaults it names without their value: the key and the value it should give.
+    pub wrong_value: Vec<(String, String)>,
+}
+
+impl Coverage {
+    /// Whether the README lists every default with its value.
+    #[must_use]
+    pub fn whole(&self) -> bool {
+        self.missing.is_empty() && self.wrong_value.is_empty()
+    }
+}
+
+/// How a README covers a role's defaults: every top-level key named, and its value on a line
+/// that names it.
+#[must_use]
+pub fn coverage(readme_path: &str, readme: &str, defaults_yaml: &str) -> Coverage {
+    let defaults = top_level_defaults(defaults_yaml);
+    let mut missing = Vec::new();
+    let mut wrong_value = Vec::new();
+    for (key, value) in &defaults {
+        let lines: Vec<&str> = readme.lines().filter(|l| names_key(l, key)).collect();
+        if lines.is_empty() {
+            missing.push(key.clone());
+            continue;
+        }
+        let Some(value) = value else {
+            continue;
+        };
+        if !lines.iter().any(|l| gives_value(l, value)) {
+            wrong_value.push((key.clone(), value.clone()));
+        }
+    }
+    Coverage {
+        readme: readme_path.to_owned(),
+        keys: defaults.len(),
+        missing,
+        wrong_value,
+    }
+}
+
+/// The criteria about CI: those that name CI as a word of their own (`CI`, `ci.yml`),
+/// continuous integration, GitHub Actions or a workflow run. Only some ask for a run's result
+/// ([`asks_for_a_run`]).
+#[must_use]
+pub fn asks_for_ci(criteria: &[&str]) -> Vec<String> {
+    criteria
+        .iter()
+        .filter(|c| {
+            let c = c.to_ascii_lowercase();
+            names_key(&c, "ci")
+                || c.contains("continuous integration")
+                || c.contains("github actions")
+                || c.contains("workflow run")
+        })
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
+/// The criteria about lint (D22 of round 3): those with a word naming it (`lint`, `lints`,
+/// `ansible-lint`, `yamllint`, `linting`). The check of the head measures them against develop.
+#[must_use]
+pub fn asks_for_lint(criteria: &[&str]) -> Vec<String> {
+    criteria
+        .iter()
+        .filter(|c| {
+            c.to_ascii_lowercase()
+                .split(|ch: char| !ch.is_ascii_alphanumeric())
+                .any(|w| w.ends_with("lint") || w == "lints" || w == "linting")
+        })
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
+/// Whether a criterion about CI asks for a CI run's result (D25 of round 3): it names a run
+/// ("A CI run on the branch passes"), or says CI passes, goes green or succeeds ("The tests pass
+/// on GitHub Actions"). "It reports today's offenders without failing CI on them" asks what CI's
+/// steps make of the work, which the check of the head shows without a run.
+#[must_use]
+pub fn asks_for_a_run(criterion: &str) -> bool {
+    let c = criterion.to_ascii_lowercase();
+    let words: Vec<&str> = c
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let named_run = [
+        "ci run",
+        "workflow run",
+        "actions run",
+        "run of ci",
+        "run of the workflow",
+    ]
+    .iter()
+    .any(|r| c.contains(r));
+    let succeeds = words.iter().any(|w| {
+        matches!(
+            *w,
+            "pass" | "passes" | "passing" | "green" | "succeed" | "succeeds" | "successful"
+        )
+    });
+    named_run || succeeds
+}
+
+/// What a GitHub Actions workflow's `on.push` says of the branches a push runs it for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushFilter {
+    /// It does not run on a push.
+    NotOnPush,
+    /// A push to any branch runs it.
+    AnyBranch,
+    /// A push runs it only for a branch these patterns match (`branches`).
+    Branches(Vec<String>),
+    /// A push runs it for any branch but those these patterns match (`branches-ignore`).
+    BranchesIgnored(Vec<String>),
+    /// Only a push of tags runs it (`tags` with no `branches`).
+    TagsOnly,
+    /// Written in a form HQ does not read (a flow mapping, a block scalar): it cannot tell.
+    Unread,
+}
+
+/// What a push of one branch does with one workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnPush {
+    /// The push runs it.
+    Runs,
+    /// It runs on a push, but not of this branch.
+    NotForIt,
+    /// It does not run on a push at all.
+    NotOnPush,
+    /// HQ cannot tell.
+    CannotTell,
+}
+
+/// A line of YAML as the push filter reads it: its indent and its text, comment cut.
+struct YamlLine<'a> {
+    indent: usize,
+    text: &'a str,
+}
+
+/// A line without its comment: from a `#` at its start or after whitespace, outside quotes.
+fn uncommented(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut last = ' ';
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '#' && last.is_whitespace() => return &line[..i],
+            None => {}
+        }
+        last = c;
+    }
+    line
+}
+
+/// A YAML document's lines that say something, with their indents.
+fn yaml_lines(yaml: &str) -> Vec<YamlLine<'_>> {
+    yaml.lines()
+        .filter_map(|l| {
+            let text = uncommented(l).trim_end();
+            let trimmed = text.trim_start();
+            if trimmed.is_empty() || trimmed == "---" {
+                return None;
+            }
+            Some(YamlLine {
+                indent: text.len() - trimmed.len(),
+                text: trimmed,
+            })
+        })
+        .collect()
+}
+
+/// A word without the quotes around it.
+fn unquote(word: &str) -> &str {
+    let word = word.trim();
+    ['"', '\'']
+        .iter()
+        .find_map(|q| word.strip_prefix(*q).and_then(|w| w.strip_suffix(*q)))
+        .unwrap_or(word)
+}
+
+/// A mapping line's key, unquoted, and what follows its colon.
+fn key_of(text: &str) -> Option<(&str, &str)> {
+    if text.starts_with('-') {
+        return None;
+    }
+    let colon = text
+        .char_indices()
+        .find(|(i, c)| *c == ':' && text[i + 1..].chars().next().is_none_or(char::is_whitespace))?;
+    Some((unquote(&text[..colon.0]), text[colon.0 + 1..].trim()))
+}
+
+/// The lines under `lines[at]`: those indented deeper than it, up to the next that is not.
+fn children<'l, 'a>(lines: &'l [YamlLine<'a>], at: usize) -> &'l [YamlLine<'a>] {
+    let indent = lines[at].indent;
+    let end = lines[at + 1..]
+        .iter()
+        .position(|l| l.indent <= indent)
+        .map_or(lines.len(), |p| at + 1 + p);
+    &lines[at + 1..end]
+}
+
+/// A list's items: written after its key (`[a, b]`, or one word), or as `- a` lines under it.
+/// `None` for a form HQ does not read.
+fn list_value(rest: &str, under: &[YamlLine<'_>]) -> Option<Vec<String>> {
+    if let Some(inner) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        return Some(
+            inner
+                .split(',')
+                .map(unquote)
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        );
+    }
+    if rest.starts_with(['{', '[', '|', '>', '&', '*']) {
+        return None;
+    }
+    if !rest.is_empty() {
+        return Some(vec![unquote(rest).to_owned()]);
+    }
+    let first = under.first()?;
+    let mut items = Vec::new();
+    for line in under {
+        let item = line.text.strip_prefix('-')?;
+        if line.indent != first.indent || item.trim_start().starts_with(['{', '[', '|', '>']) {
+            return None;
+        }
+        items.push(unquote(item).to_owned());
+    }
+    Some(items)
+}
+
+/// A workflow's push filter (ADR 0142, amended 2026-10-31, D6), read from its YAML by rule:
+/// `on` as an event, a list of events or a mapping; under `push`, `branches`,
+/// `branches-ignore` and `tags`. Paths filters are not read: they make a run on a branch the
+/// filter allows conditional, never possible where it was not.
+#[must_use]
+pub fn push_filter(workflow: &str) -> PushFilter {
+    let lines = yaml_lines(workflow);
+    let Some(at) = lines
+        .iter()
+        .position(|l| l.indent == 0 && key_of(l.text).is_some_and(|(k, _)| k == "on"))
+    else {
+        return PushFilter::NotOnPush;
+    };
+    let events = |listed: Option<Vec<String>>| match listed {
+        Some(events) if events.iter().any(|e| e == "push") => PushFilter::AnyBranch,
+        Some(_) => PushFilter::NotOnPush,
+        None => PushFilter::Unread,
+    };
+    let rest = key_of(lines[at].text).map_or("", |(_, r)| r);
+    let under = children(&lines, at);
+    if !rest.is_empty() {
+        return events(list_value(rest, &[]));
+    }
+    let Some(first) = under.first() else {
+        return PushFilter::Unread;
+    };
+    if first.text.starts_with('-') {
+        return events(list_value("", under));
+    }
+    let Some(push) = under
+        .iter()
+        .position(|l| l.indent == first.indent && key_of(l.text).is_some_and(|(k, _)| k == "push"))
+    else {
+        return PushFilter::NotOnPush;
+    };
+    let rest = key_of(under[push].text).map_or("", |(_, r)| r);
+    if !matches!(rest, "" | "null" | "~" | "{}") {
+        return PushFilter::Unread;
+    }
+    let filters = children(under, push);
+    let Some(first) = filters.first() else {
+        return PushFilter::AnyBranch;
+    };
+    let (mut branches, mut ignored, mut tags) = (None, None, false);
+    for (i, line) in filters.iter().enumerate() {
+        if line.indent != first.indent {
+            continue;
+        }
+        let Some((key, rest)) = key_of(line.text) else {
+            return PushFilter::Unread;
+        };
+        match key {
+            "branches" => branches = Some(list_value(rest, children(filters, i))),
+            "branches-ignore" => ignored = Some(list_value(rest, children(filters, i))),
+            "tags" | "tags-ignore" => tags = true,
+            _ => {}
+        }
+    }
+    match (branches, ignored) {
+        (Some(Some(patterns)), None) => PushFilter::Branches(patterns),
+        (None, Some(Some(patterns))) => PushFilter::BranchesIgnored(patterns),
+        (None, None) if tags => PushFilter::TagsOnly,
+        (None, None) => PushFilter::AnyBranch,
+        _ => PushFilter::Unread,
+    }
+}
+
+/// Whether a GitHub branch pattern matches `name`: `*` within a path segment, `**` across
+/// them. `None` for a pattern with `?`, `+` or `[`, which HQ does not read.
+fn pattern_matches(pattern: &str, name: &str) -> Option<bool> {
+    fn go(p: &[u8], s: &[u8]) -> bool {
+        match p {
+            [] => s.is_empty(),
+            [b'*', b'*', rest @ ..] => (0..=s.len()).any(|i| go(rest, &s[i..])),
+            [b'*', rest @ ..] => {
+                for i in 0..=s.len() {
+                    if go(rest, &s[i..]) {
+                        return true;
+                    }
+                    if s.get(i) == Some(&b'/') {
+                        return false;
+                    }
+                }
+                false
+            }
+            [c, rest @ ..] => s.first() == Some(c) && go(rest, &s[1..]),
+        }
+    }
+    if pattern.contains(['?', '+', '[']) {
+        return None;
+    }
+    Some(go(pattern.as_bytes(), name.as_bytes()))
+}
+
+impl PushFilter {
+    /// What a push of `branch` does with the workflow. Branch patterns are taken in order, a
+    /// `!` one excluding what the ones before it matched, as GitHub does.
+    #[must_use]
+    pub fn on_push_of(&self, branch: &str) -> OnPush {
+        let runs = |yes: bool| if yes { OnPush::Runs } else { OnPush::NotForIt };
+        match self {
+            Self::NotOnPush => OnPush::NotOnPush,
+            Self::AnyBranch => OnPush::Runs,
+            Self::TagsOnly => OnPush::NotForIt,
+            Self::Unread => OnPush::CannotTell,
+            Self::Branches(patterns) => {
+                let mut matched = false;
+                for p in patterns {
+                    let (negated, p) = p
+                        .strip_prefix('!')
+                        .map_or((false, p.as_str()), |p| (true, p));
+                    match pattern_matches(p, branch) {
+                        None => return OnPush::CannotTell,
+                        Some(true) => matched = !negated,
+                        Some(false) => {}
+                    }
+                }
+                runs(matched)
+            }
+            Self::BranchesIgnored(patterns) => {
+                for p in patterns {
+                    match pattern_matches(p, branch) {
+                        None => return OnPush::CannotTell,
+                        Some(true) => return OnPush::NotForIt,
+                        Some(false) => {}
+                    }
+                }
+                OnPush::Runs
+            }
+        }
+    }
+
+    /// The filter as the report says it.
+    fn said(&self) -> String {
+        match self {
+            Self::NotOnPush => "not on a push".to_owned(),
+            Self::AnyBranch => "on a push to any branch".to_owned(),
+            Self::Branches(p) => format!("on a push only to {}", listed(p, 6)),
+            Self::BranchesIgnored(p) => format!("on a push to any branch but {}", listed(p, 6)),
+            Self::TagsOnly => "on a push of tags only".to_owned(),
+            Self::Unread => "its push filter is not one HQ reads".to_owned(),
+        }
+    }
+}
+
+/// Whether a CI run can be had for a branch whose item's criteria ask for one (ADR 0142,
+/// amended 2026-10-31, D6): GitHub runs a workflow on a push only as its `on.push` says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ci {
+    /// The branch.
+    pub branch: String,
+    /// The criteria that ask for a CI run's result.
+    pub criteria: Vec<String>,
+    /// The criteria about CI that ask for no run's result (D25): what CI's steps make of the
+    /// work, which the check of the head measures.
+    pub steps: Vec<String>,
+    /// Each workflow at the branch's head, by file name, with its push filter; `None` when the
+    /// node did not hand them over.
+    pub workflows: Option<Vec<(String, PushFilter)>>,
+}
+
+impl Ci {
+    /// `Some(true)` when a push of the branch runs a workflow, `Some(false)` when none does
+    /// (or there is none), `None` when HQ cannot tell.
+    #[must_use]
+    pub fn can_be_had(&self) -> Option<bool> {
+        let workflows = self.workflows.as_ref()?;
+        let pushed: Vec<OnPush> = workflows
+            .iter()
+            .map(|(_, f)| f.on_push_of(&self.branch))
+            .collect();
+        if pushed.contains(&OnPush::Runs) {
+            return Some(true);
+        }
+        if pushed.contains(&OnPush::CannotTell) {
+            return None;
+        }
+        Some(false)
+    }
+
+    /// The report's lines: what the check of the head (`check`) gave for a criterion that asks
+    /// for no run, and whether a run can be had for one that does.
+    fn said(&self, check: Option<&HeadCheck>) -> String {
+        let quote = |c: &[String]| -> String {
+            c.iter()
+                .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut told = String::new();
+        if !self.steps.is_empty() {
+            told.push_str(&format!(
+                "- CI: {} asks what CI's steps make of the work, not for a run's result, so no \
+                 run is needed: the check of the head runs the lint steps CI runs, against \
+                 develop, and its result is the measure: {}.\n",
+                quote(&self.steps),
+                HeadCheck::said_of(check)
+            ));
+        }
+        if self.criteria.is_empty() {
+            return told;
+        }
+        told.push_str(&self.run_said(&quote(&self.criteria)));
+        told
+    }
+
+    /// The line on a CI run, for the criteria (`quoted`) that ask for one.
+    fn run_said(&self, quoted: &str) -> String {
+        let Some(workflows) = &self.workflows else {
+            return format!(
+                "- CI: not checked: the node did not hand HQ the workflows at {}'s head.\n",
+                self.branch
+            );
+        };
+        let each: Vec<String> = workflows
+            .iter()
+            .map(|(name, f)| format!("{name}: {}", f.said()))
+            .collect();
+        match self.can_be_had() {
+            Some(false) if workflows.is_empty() => format!(
+                "- CI: no CI run can be had for {}: there is no workflow at its head. {} cannot \
+                 be met as the fork stands: HQ will not pass the item on it; say so to the owner.\n",
+                self.branch, quoted
+            ),
+            Some(false) => format!(
+                "- CI: no CI run can be had for {}: no workflow at its head runs on a push to it \
+                 ({}). {} cannot be met as the fork stands: HQ will not pass the item on it; say \
+                 so to the owner.\n",
+                self.branch,
+                each.join("; "),
+                quoted
+            ),
+            Some(true) => {
+                let runs: Vec<&str> = workflows
+                    .iter()
+                    .filter(|(_, f)| f.on_push_of(&self.branch) == OnPush::Runs)
+                    .map(|(n, _)| n.as_str())
+                    .collect();
+                format!(
+                    "- CI: {} runs on a push to {}: a run comes only once the branch is pushed, \
+                     and {} needs that run's result.\n",
+                    runs.join(", "),
+                    self.branch,
+                    quoted
+                )
+            }
+            None => format!(
+                "- CI: cannot tell whether a push of {} runs a workflow ({}).\n",
+                self.branch,
+                each.join("; ")
+            ),
+        }
+    }
+}
+
+/// What HQ can say of CI for `branch`, whose item's `criteria` are about it (those that ask for
+/// a run's result apart from those that do not, [`asks_for_a_run`]), from the
+/// `(path, text)` of each workflow at its head, or `None` when the node did not tell them.
+#[must_use]
+pub fn ci(branch: &str, criteria: Vec<String>, workflows: Option<&[(String, String)]>) -> Ci {
+    let (criteria, steps) = criteria.into_iter().partition(|c| asks_for_a_run(c));
+    Ci {
+        branch: branch.to_owned(),
+        criteria,
+        steps,
+        workflows: workflows.map(|w| {
+            w.iter()
+                .map(|(path, text)| {
+                    let name = path.rsplit_once('/').map_or(path.as_str(), |(_, n)| n);
+                    (name.to_owned(), push_filter(text))
+                })
+                .collect()
+        }),
+    }
+}
+
+/// What the checks found on one item, ready to be said.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Report {
+    /// The worker's quotes, each with whether it is in its receipt.
+    pub quotes: Vec<(Quote, Seen)>,
+    /// The branch checked and its scope, when the item submitted one.
+    pub branch: Option<(String, Scope)>,
+    /// Each role README's coverage of its defaults, when the criteria ask for it.
+    pub coverage: Vec<Coverage>,
+    /// A README whose defaults file the branch's record does not hold, so was not checked.
+    pub unchecked: Vec<String>,
+    /// Whether a CI run can be had for the branch, when the criteria ask for one.
+    pub ci: Option<Ci>,
+    /// The newest check of the branch, when there is one: what a criterion measured by it reads.
+    pub check: Option<HeadCheck>,
+    /// The criteria about lint, which the check measures against develop (D22).
+    pub lint: Vec<String>,
+}
+
+/// The newest check of an item's newest branch, as the report says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadCheck {
+    /// Its id: `c<id>`.
+    pub id: i64,
+    /// The branch it checks.
+    pub branch: String,
+    /// Whether it passed; `None` while it waits or runs.
+    pub ok: Option<bool>,
+    /// Its line.
+    pub summary: String,
+}
+
+impl HeadCheck {
+    /// The check in a few words, or that none has come back.
+    fn said_of(check: Option<&Self>) -> String {
+        let Some(c) = check else {
+            return "no check of the head has been asked for".to_owned();
+        };
+        match c.ok {
+            None => format!(
+                "check c{} of {} has not finished: wait for its result",
+                c.id, c.branch
+            ),
+            Some(ok) => format!(
+                "check c{} of {} {}: {}",
+                c.id,
+                c.branch,
+                if ok { "passed" } else { "failed" },
+                super::cut::cut(&c.summary, 300)
+            ),
+        }
+    }
+}
+
+/// A list said in one line, at most `most` items, saying how many more.
+fn listed(items: &[String], most: usize) -> String {
+    let mut said = items
+        .iter()
+        .take(most)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > most {
+        said.push_str(&format!(" and {} more", items.len() - most));
+    }
+    said
+}
+
+impl Report {
+    /// Whether there is nothing to report: no quote, no branch, no README to check.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.quotes.is_empty()
+            && self.branch.is_none()
+            && self.coverage.is_empty()
+            && self.unchecked.is_empty()
+            && self.ci.is_none()
+            && self.lint.is_empty()
+    }
+
+    /// The CI check, when it found that no CI run can be had for the branch: no criterion that
+    /// asks for one can be met (ADR 0142, amended 2026-10-31, D6).
+    #[must_use]
+    pub fn no_ci_run(&self) -> Option<&Ci> {
+        self.ci
+            .as_ref()
+            .filter(|c| !c.criteria.is_empty() && c.can_be_had() == Some(false))
+    }
+
+    /// The files the branch must never have touched.
+    #[must_use]
+    pub fn forbidden(&self) -> &[String] {
+        self.branch
+            .as_ref()
+            .map_or(&[], |(_, s)| s.forbidden.as_slice())
+    }
+
+    /// Whether any check failed.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.quotes
+            .iter()
+            .any(|(_, s)| matches!(s, Seen::NotFound | Seen::NoReceipt | Seen::NotThisItems))
+            || self
+                .branch
+                .as_ref()
+                .is_some_and(|(_, s)| !s.forbidden.is_empty() || !s.outside.is_empty())
+            || self.coverage.iter().any(|c| !c.whole())
+            || self.no_ci_run().is_some()
+    }
+
+    /// The line on the criteria about lint (D22): the check of the head is their measure.
+    fn lint_said(&self) -> String {
+        if self.lint.is_empty() {
+            return String::new();
+        }
+        let quoted: Vec<String> = self
+            .lint
+            .iter()
+            .map(|c| format!("\"{}\"", super::cut::cut(c, 100)))
+            .collect();
+        format!(
+            "- Lint: {} is measured by the check of the head against develop: {}. Its verdict \
+             (no more findings than develop: met, or not met) is the criterion's: it \
+             compares each linter's count of findings with develop's, so a finding develop \
+             has too fails nothing. Reviewer: take the check's verdict for a \
+             criterion about lint, as for CI.\n",
+            quoted.join(", "),
+            HeadCheck::said_of(self.check.as_ref())
+        )
+    }
+
+    /// The report as the thread and the reviewer read it.
+    #[must_use]
+    pub fn said(&self) -> String {
+        let mut told = format!("{HEADER}\n");
+        if !self.quotes.is_empty() {
+            let found = self
+                .quotes
+                .iter()
+                .filter(|(_, s)| *s == Seen::Found)
+                .count();
+            told.push_str(&format!(
+                "- Quoted evidence: {found} of {} quoted lines are in their receipts.",
+                self.quotes.len()
+            ));
+            for (q, s) in self.quotes.iter().filter(|(_, s)| *s != Seen::Found) {
+                let why = match s {
+                    Seen::NotFound => "NOT in its result",
+                    Seen::PastTheCut => {
+                        "not in the start of the result the receipt keeps (cannot tell)"
+                    }
+                    Seen::NoReceipt => "no such receipt",
+                    Seen::NotThisItems => "not this item's receipt",
+                    Seen::Found => "",
+                };
+                told.push_str(&format!(
+                    "\n  - r{}: `{}`: {why}",
+                    q.receipt,
+                    super::cut::cut(&q.text, 120)
+                ));
+            }
+            told.push('\n');
+        }
+        if let Some((name, s)) = &self.branch {
+            told.push_str(&format!(
+                "- Branch scope: {name} changes {} file{}.",
+                s.changed.len(),
+                if s.changed.len() == 1 { "" } else { "s" }
+            ));
+            if s.forbidden.is_empty() {
+                told.push_str(" None is under group_vars/, host_vars/, an inventory or a vault.");
+            } else {
+                told.push_str(&format!(
+                    " FORBIDDEN (never to be touched): {}.",
+                    listed(&s.forbidden, 10)
+                ));
+            }
+            if s.named.is_empty() {
+                told.push_str(" The task names no paths, so nothing is out of scope by rule.");
+            } else if s.outside.is_empty() {
+                told.push_str(&format!(
+                    " All within the paths the task names ({}).",
+                    listed(&s.named, 6)
+                ));
+            } else {
+                told.push_str(&format!(
+                    " Outside the paths the task names ({}): {}.",
+                    listed(&s.named, 6),
+                    listed(&s.outside, 10)
+                ));
+            }
+            told.push('\n');
+        }
+        for c in &self.coverage {
+            if c.whole() {
+                told.push_str(&format!(
+                    "- Defaults: {} lists all {} defaults with their values.\n",
+                    c.readme, c.keys
+                ));
+                continue;
+            }
+            let wrong: Vec<String> = c
+                .wrong_value
+                .iter()
+                .map(|(k, v)| format!("{k} (default {v})"))
+                .collect();
+            told.push_str(&format!(
+                "- Defaults: {} covers {} of {} defaults.",
+                c.readme,
+                c.keys - c.missing.len() - c.wrong_value.len(),
+                c.keys
+            ));
+            if !c.missing.is_empty() {
+                told.push_str(&format!(" Not named: {}.", listed(&c.missing, 12)));
+            }
+            if !wrong.is_empty() {
+                told.push_str(&format!(
+                    " Named without its value: {}.",
+                    listed(&wrong, 12)
+                ));
+            }
+            told.push('\n');
+        }
+        for readme in &self.unchecked {
+            told.push_str(&format!(
+                "- Defaults: {readme} not checked: the branch's record holds no defaults file \
+                 beside it.\n"
+            ));
+        }
+        told.push_str(&self.lint_said());
+        if let Some(ci) = &self.ci {
+            told.push_str(&ci.said(self.check.as_ref()));
+        }
+        told
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kept<'a>(id: i64, tool: &'a str, excerpt: &'a str) -> Kept<'a> {
+        Kept {
+            id,
+            tool,
+            excerpt,
+            this_items: true,
+        }
+    }
+
+    #[test]
+    fn a_backtick_quote_belongs_to_the_receipt_named_before_it_on_its_line() {
+        let post = "Checked: r12 shows `web: running (healthy)` and r13 `db: up`.\n\
+                    Nothing here `unattributed`.";
+        let got = quotes(post);
+        assert_eq!(
+            got,
+            vec![
+                Quote {
+                    receipt: 12,
+                    text: "web: running (healthy)".to_owned()
+                },
+                Quote {
+                    receipt: 13,
+                    text: "db: up".to_owned()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_backtick_quote_before_any_receipt_takes_the_first_after_it() {
+        let got = quotes("`lint: 0 failures` (r7)");
+        assert_eq!(
+            got,
+            vec![Quote {
+                receipt: 7,
+                text: "lint: 0 failures".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_fenced_block_belongs_to_its_fence_or_the_line_before() {
+        let post = "From r21:\n```\nok: [jane-host]\n\nchanged=0\n```\n```r22\nPLAY RECAP\n```\n\
+                    ```\nno receipt\n```";
+        let got = quotes(post);
+        let said: Vec<(i64, &str)> = got.iter().map(|q| (q.receipt, q.text.as_str())).collect();
+        assert_eq!(
+            said,
+            vec![
+                (21, "ok: [jane-host]"),
+                (21, "changed=0"),
+                (22, "PLAY RECAP")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_receipts_own_name_in_backticks_is_not_a_quote() {
+        assert!(quotes("see `r12`").is_empty());
+        assert!(quotes("words like for12 and r12x are no receipts `x`").is_empty());
+    }
+
+    #[test]
+    fn a_quote_is_found_whitespace_aside() {
+        let receipts = [kept(1, "homelab_status", "web running healthy, db  up")];
+        let q = Quote {
+            receipt: 1,
+            text: "db up".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::Found);
+        let q = Quote {
+            receipt: 1,
+            text: "web   running\thealthy".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::Found);
+        let q = Quote {
+            receipt: 1,
+            text: "web running healthy, db up, cache up".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::NotFound);
+        let q = Quote {
+            receipt: 2,
+            text: "db up".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::NoReceipt);
+    }
+
+    #[test]
+    fn a_quote_not_in_a_cut_excerpt_cannot_be_told() {
+        let excerpt = format!("start of a long log{CUT}");
+        let receipts = [kept(3, "read_logs", &excerpt)];
+        let q = Quote {
+            receipt: 3,
+            text: "a line further down".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::PastTheCut);
+        let q = Quote {
+            receipt: 3,
+            text: "long log".to_owned(),
+        };
+        assert_eq!(seen(&q, &receipts), Seen::Found);
+    }
+
+    #[test]
+    fn a_receipt_of_another_items_is_not_this_items() {
+        let mut theirs = kept(4, "homelab_status", "web: up");
+        theirs.this_items = false;
+        let got = quotes_checked("r4 says `web: up`", &[theirs]);
+        assert_eq!(got[0].1, Seen::NotThisItems);
+    }
+
+    #[test]
+    fn the_receipts_tool_name_in_backticks_is_left_out() {
+        let receipts = [kept(4, "homelab_status", "web: up")];
+        let got = quotes_checked("`homelab_status` r4 says `web: up`", &receipts);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, Seen::Found);
+    }
+
+    #[test]
+    fn forbidden_paths_are_the_owners_values() {
+        for p in [
+            "group_vars/all.yml",
+            "host_vars/nas.yml",
+            "inventories/home/hosts",
+            "roles/x/files/vault.yml",
+            "./inventory",
+        ] {
+            assert!(forbidden_path(p), "{p}");
+        }
+        assert!(!forbidden_path("roles/jellyfin/defaults/main.yml"));
+    }
+
+    #[test]
+    fn a_task_names_paths_and_folders_but_not_branches_or_urls() {
+        let named = named_paths(
+            "Write `roles/jellyfin/README.md` from roles/jellyfin/defaults/main.yml; touch docs/ \
+             only. Branch hq/task-7-x, see https://example.com/a/b/c and and/or.",
+        );
+        assert_eq!(
+            named,
+            vec![
+                "roles/jellyfin/README.md",
+                "roles/jellyfin/defaults/main.yml",
+                "docs/"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_is_within_a_folder_a_file_or_a_trailing_path() {
+        assert!(within("roles/a/README.md", "roles/a/"));
+        assert!(within("roles/a/README.md", "roles/a/README.md"));
+        assert!(within("roles/a/README.md", "README.md"));
+        assert!(within("roles/a/README.md", "roles/*/README.md"));
+        assert!(within("roles/a/tasks/main.yml", "roles/*/tasks/*.yml"));
+        assert!(!within("roles/b/README.md", "roles/a/"));
+        assert!(!within("docs/a.md", "roles/"));
+    }
+
+    #[test]
+    fn scope_flags_forbidden_files_and_those_outside_the_named_paths() {
+        let changed: Vec<String> = ["roles/a/README.md", "group_vars/all.yml", "docs/x.md"]
+            .map(str::to_owned)
+            .to_vec();
+        let s = scope(&changed, "Document roles/a/ in its README.md", false);
+        assert_eq!(s.forbidden, vec!["group_vars/all.yml"]);
+        assert_eq!(s.outside, vec!["group_vars/all.yml", "docs/x.md"]);
+        let s = scope(&changed, "Tidy whatever needs it", false);
+        assert!(s.named.is_empty() && s.outside.is_empty());
+    }
+
+    #[test]
+    fn a_diff_says_its_files() {
+        let diff = "diff --git a/roles/a/README.md b/roles/a/README.md\n+x\n\
+                    diff --git a/old.md b/new.md\n";
+        assert_eq!(
+            changed_in_diff(diff),
+            vec!["roles/a/README.md", "old.md", "new.md"]
+        );
+    }
+
+    /// A move out of `group_vars/` is a change to it, and a name git quoted (one outside
+    /// ASCII, or with a quote in it) is read as the name it is.
+    #[test]
+    fn a_diff_says_both_sides_of_a_move_and_quoted_names_unquoted() {
+        let diff = "diff --git a/group_vars/all.yml b/roles/all.yml\n\
+                    similarity index 100%\n\
+                    rename from group_vars/all.yml\n\
+                    rename to roles/all.yml\n\
+                    diff --git \"a/group_vars/\\303\\251.yml\" \"b/group_vars/\\303\\251.yml\"\n\
+                    +x\n\
+                    diff --git \"a/docs/say \\\"hi\\\".md\" \"b/docs/say \\\"hi\\\".md\"\n";
+        let changed = changed_in_diff(diff);
+        assert_eq!(
+            changed,
+            vec![
+                "group_vars/all.yml",
+                "roles/all.yml",
+                "group_vars/\u{e9}.yml",
+                "docs/say \"hi\".md"
+            ]
+        );
+        let s = scope(&changed, "", false);
+        assert_eq!(
+            s.forbidden,
+            vec!["group_vars/all.yml", "group_vars/\u{e9}.yml"]
+        );
+    }
+
+    #[test]
+    fn the_criteria_ask_for_defaults_when_they_speak_of_a_readme_and_defaults() {
+        assert!(asks_for_defaults(&[
+            "The README lists every default with its value"
+        ]));
+        assert!(!asks_for_defaults(&["The lint passes", "README exists"]));
+    }
+
+    #[test]
+    fn role_readmes_are_paired_with_their_defaults() {
+        let changed = [
+            "roles/a/README.md",
+            "docs/README.md",
+            "roles/b/tasks/main.yml",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            role_readmes(&changed),
+            vec![(
+                "roles/a/README.md".to_owned(),
+                "roles/a/defaults/main.yml".to_owned()
+            )]
+        );
+    }
+
+    const DEFAULTS: &str = "---\n# Jellyfin\njellyfin_enabled: false\n\
+        jellyfin_port: \"8096\"  # the web port\njellyfin_data: '{{ docker_home }}/jellyfin'\n\
+        jellyfin_name: \"\"\njellyfin_env:\n  TZ: UTC\njellyfin_note: \"a # inside\"\n";
+
+    #[test]
+    fn top_level_defaults_ignore_comments_quotes_and_nested_keys() {
+        let got = top_level_defaults(DEFAULTS);
+        let want: Vec<(String, Option<String>)> = vec![
+            ("jellyfin_enabled".into(), Some("false".into())),
+            ("jellyfin_port".into(), Some("8096".into())),
+            (
+                "jellyfin_data".into(),
+                Some("{{ docker_home }}/jellyfin".into()),
+            ),
+            ("jellyfin_name".into(), Some(String::new())),
+            ("jellyfin_env".into(), None),
+            ("jellyfin_note".into(), Some("a # inside".into())),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_readme_that_lists_every_default_with_its_value_is_whole() {
+        let readme = "| Variable | Default |\n|---|---|\n| `jellyfin_enabled` | `False` |\n\
+            | `jellyfin_port` | `\"8096\"` |\n| `jellyfin_data` | `{{docker_home}}/jellyfin` |\n\
+            | `jellyfin_name` | `\"\"` |\n| `jellyfin_env` | a map |\n\
+            | `jellyfin_note` | a # inside |\n";
+        let c = coverage("roles/jellyfin/README.md", readme, DEFAULTS);
+        assert!(c.whole(), "{c:?}");
+        assert_eq!(c.keys, 6);
+    }
+
+    #[test]
+    fn a_readme_missing_a_default_or_its_value_says_which() {
+        let readme = "- jellyfin_enabled: false\n- jellyfin_port: 8920\n- jellyfin_data_dir: x\n\
+            - jellyfin_name: empty\n- jellyfin_env\n- jellyfin_note: a # inside\n";
+        let c = coverage("roles/jellyfin/README.md", readme, DEFAULTS);
+        assert_eq!(c.missing, vec!["jellyfin_data"]);
+        assert_eq!(
+            c.wrong_value,
+            vec![("jellyfin_port".to_owned(), "8096".to_owned())]
+        );
+    }
+
+    #[test]
+    fn the_report_says_each_check_as_a_fact() {
+        let report = Report {
+            quotes: vec![
+                (
+                    Quote {
+                        receipt: 12,
+                        text: "web: up".into(),
+                    },
+                    Seen::Found,
+                ),
+                (
+                    Quote {
+                        receipt: 12,
+                        text: "db: up".into(),
+                    },
+                    Seen::NotFound,
+                ),
+            ],
+            branch: Some((
+                "hq/task-7-readme".into(),
+                scope(
+                    &[
+                        "roles/a/README.md".to_owned(),
+                        "host_vars/nas.yml".to_owned(),
+                    ],
+                    "roles/a/",
+                    false,
+                ),
+            )),
+            coverage: vec![Coverage {
+                readme: "roles/a/README.md".into(),
+                keys: 3,
+                missing: vec!["a_port".into()],
+                wrong_value: vec![],
+            }],
+            unchecked: vec![],
+            ci: None,
+            check: None,
+            lint: vec![],
+        };
+        let said = report.said();
+        assert!(said.starts_with(HEADER), "{said}");
+        assert!(
+            said.contains("1 of 2 quoted lines are in their receipts"),
+            "{said}"
+        );
+        assert!(said.contains("r12: `db: up`: NOT in its result"), "{said}");
+        assert!(
+            said.contains("FORBIDDEN (never to be touched): host_vars/nas.yml"),
+            "{said}"
+        );
+        assert!(said.contains("Outside the paths the task names (roles/a/): host_vars/nas.yml"));
+        assert!(
+            said.contains("covers 2 of 3 defaults. Not named: a_port."),
+            "{said}"
+        );
+        assert!(report.failed());
+        assert_eq!(report.forbidden(), ["host_vars/nas.yml".to_owned()]);
+        assert!(Report::default().is_empty());
+    }
+
+    /// The fork's workflow as round 2 met it: CI on a push to main and develop alone.
+    const CI_MAIN_DEVELOP: &str = "---\nname: CI\n\n# Controls when the action will run.\non:\n  \
+        # Triggers the workflow on push or pull request events\n  push:\n    branches: [main, develop]\n  \
+        pull_request:\n    branches: [main]\n\n  workflow_dispatch:\n\njobs:\n  lint:\n    runs-on: ubuntu-latest\n";
+    const HQ_BRANCH: &str = "hq/task-932-ci-lint-rules";
+
+    #[test]
+    fn a_criterion_asks_for_ci_when_it_names_ci_or_a_workflow_run() {
+        let criteria = [
+            "The step is added to the workflow",
+            "A CI run on the branch passes",
+            "The tests pass on GitHub Actions",
+            "The specific rule is reverted",
+        ];
+        assert_eq!(
+            asks_for_ci(&criteria),
+            [
+                "A CI run on the branch passes",
+                "The tests pass on GitHub Actions"
+            ]
+        );
+        assert!(asks_for_ci(&["ci.yml runs the tests"]).len() == 1);
+        assert!(asks_for_ci(&["Decide which rules apply", "Specific circuits"]).is_empty());
+    }
+
+    /// D25 of round 3: 955's criterion asked what CI makes of the rule's findings, and HQ read
+    /// it as asking for a run no push of the branch could have.
+    #[test]
+    fn a_ci_criterion_asks_for_a_run_only_when_it_wants_a_run_s_result() {
+        assert!(asks_for_a_run("A CI run on the branch passes"));
+        assert!(asks_for_a_run("The tests pass on GitHub Actions"));
+        assert!(asks_for_a_run("CI is green on the branch"));
+        assert!(!asks_for_a_run(
+            "It reports today's offenders without failing CI on them"
+        ));
+        assert!(!asks_for_a_run("ci.yml runs the tests"));
+        let asked = vec![
+            "It reports today's offenders without failing CI on them".to_owned(),
+            "A CI run on the branch passes".to_owned(),
+        ];
+        let split = ci(HQ_BRANCH, asked.clone(), Some(&[]));
+        assert_eq!(split.criteria, ["A CI run on the branch passes"]);
+        assert_eq!(
+            split.steps,
+            ["It reports today's offenders without failing CI on them"]
+        );
+        // With no criterion asking for a run, none is refused, and the check is the measure.
+        let steps_only = Report {
+            ci: Some(ci(HQ_BRANCH, asked[..1].to_vec(), Some(&[]))),
+            check: Some(HeadCheck {
+                id: 61,
+                branch: HQ_BRANCH.to_owned(),
+                ok: Some(true),
+                summary: "yamllint 6 errors (develop 6): no more findings than develop: met"
+                    .to_owned(),
+            }),
+            ..Report::default()
+        };
+        assert!(steps_only.no_ci_run().is_none() && !steps_only.failed());
+        let said = steps_only.said();
+        assert!(
+            said.contains("asks what CI's steps make of the work, not for a run's result")
+                && said.contains("check c61 of hq/task-932-ci-lint-rules passed: yamllint 6"),
+            "{said}"
+        );
+        assert!(!said.contains("cannot be met"), "{said}");
+        // Both kinds: the run is still refused, and the check still said.
+        let both = Report {
+            ci: Some(split),
+            ..Report::default()
+        };
+        assert!(both.no_ci_run().is_some());
+        let said = both.said();
+        assert!(
+            said.contains("no check of the head has been asked for")
+                && said.contains("\"A CI run on the branch passes\" cannot be met"),
+            "{said}"
+        );
+    }
+
+    /// D22 of round 3: 949 linted exactly as develop does, and its reviewer read "passes"
+    /// literally.
+    #[test]
+    fn a_lint_criterion_is_measured_by_the_check_against_develop() {
+        assert_eq!(
+            asks_for_lint(&[
+                "Every image tag is pinned",
+                "ansible-lint and yamllint pass",
+                "The role lints clean",
+                "Linting finds nothing new",
+                "The client is unchanged",
+            ]),
+            [
+                "ansible-lint and yamllint pass",
+                "The role lints clean",
+                "Linting finds nothing new"
+            ]
+        );
+        let report = Report {
+            lint: vec!["ansible-lint and yamllint pass".to_owned()],
+            check: Some(HeadCheck {
+                id: 55,
+                branch: HQ_BRANCH.to_owned(),
+                ok: Some(true),
+                summary: "ansible-lint 14 findings (develop 14): no more findings than \
+                          develop: met"
+                    .to_owned(),
+            }),
+            ..Report::default()
+        };
+        assert!(!report.is_empty() && !report.failed());
+        let said = report.said();
+        assert!(
+            said.contains(
+                "- Lint: \"ansible-lint and yamllint pass\" is measured by the check of the \
+                 head against develop: check c55 of hq/task-932-ci-lint-rules passed"
+            ) && said.contains("take the check's verdict for a criterion about lint")
+                && said.contains("it compares each linter's count of findings with develop's"),
+            "{said}"
+        );
+        // No check yet: it says so, and fails nothing.
+        let waiting = Report {
+            lint: vec!["The role lints clean".to_owned()],
+            ..Report::default()
+        };
+        assert!(!waiting.failed());
+        assert!(
+            waiting
+                .said()
+                .contains("no check of the head has been asked for"),
+            "{}",
+            waiting.said()
+        );
+    }
+
+    #[test]
+    fn a_workflow_s_push_filter_is_read_in_its_block_and_flow_forms() {
+        assert_eq!(
+            push_filter(CI_MAIN_DEVELOP),
+            PushFilter::Branches(vec!["main".into(), "develop".into()])
+        );
+        let block = "on:\n  push:\n    branches:\n      - main\n      - 'release/**'\n";
+        assert_eq!(
+            push_filter(block),
+            PushFilter::Branches(vec!["main".into(), "release/**".into()])
+        );
+        assert_eq!(
+            push_filter("\"on\":\n  push:\n    branches: [\"**\"]\n"),
+            PushFilter::Branches(vec!["**".into()])
+        );
+        assert_eq!(push_filter("on: push\n"), PushFilter::AnyBranch);
+        assert_eq!(
+            push_filter("on: [push, pull_request]\n"),
+            PushFilter::AnyBranch
+        );
+        assert_eq!(push_filter("on: [pull_request]\n"), PushFilter::NotOnPush);
+        assert_eq!(push_filter("on:\n  - push\n"), PushFilter::AnyBranch);
+        assert_eq!(
+            push_filter("on:\n  push:\n  pull_request:\n"),
+            PushFilter::AnyBranch
+        );
+        assert_eq!(
+            push_filter("on:\n  pull_request:\n    branches:\n      - main\n"),
+            PushFilter::NotOnPush
+        );
+        assert_eq!(
+            push_filter("on:\n  workflow_dispatch:\n"),
+            PushFilter::NotOnPush
+        );
+        assert_eq!(
+            push_filter("on:\n  push:\n    branches-ignore: [main]\n"),
+            PushFilter::BranchesIgnored(vec!["main".into()])
+        );
+        assert_eq!(
+            push_filter("on:\n  push:\n    tags: ['v*']\n"),
+            PushFilter::TagsOnly
+        );
+        assert_eq!(
+            push_filter("on: { push: { branches: [main] } }\n"),
+            PushFilter::Unread
+        );
+        assert_eq!(
+            push_filter("name: no trigger\njobs: {}\n"),
+            PushFilter::NotOnPush
+        );
+    }
+
+    #[test]
+    fn a_push_filter_says_whether_a_push_of_the_branch_runs_it() {
+        let only = |p: &[&str]| PushFilter::Branches(p.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(
+            only(&["main", "develop"]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(only(&["**"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["hq/**"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["hq/*"]).on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(only(&["*"]).on_push_of(HQ_BRANCH), OnPush::NotForIt);
+        assert_eq!(
+            only(&["hq/**", "!hq/task-932-*"]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(
+            only(&["hq/task-93?-*"]).on_push_of(HQ_BRANCH),
+            OnPush::CannotTell
+        );
+        assert_eq!(
+            PushFilter::BranchesIgnored(vec!["hq/**".into()]).on_push_of(HQ_BRANCH),
+            OnPush::NotForIt
+        );
+        assert_eq!(
+            PushFilter::BranchesIgnored(vec!["main".into()]).on_push_of(HQ_BRANCH),
+            OnPush::Runs
+        );
+        assert_eq!(PushFilter::AnyBranch.on_push_of(HQ_BRANCH), OnPush::Runs);
+        assert_eq!(PushFilter::TagsOnly.on_push_of(HQ_BRANCH), OnPush::NotForIt);
+        assert_eq!(
+            PushFilter::NotOnPush.on_push_of(HQ_BRANCH),
+            OnPush::NotOnPush
+        );
+        assert_eq!(PushFilter::Unread.on_push_of(HQ_BRANCH), OnPush::CannotTell);
+    }
+
+    #[test]
+    fn a_ci_run_cannot_be_had_when_no_workflow_runs_on_a_push_of_the_branch() {
+        let asked = vec!["A CI run on the branch passes".to_owned()];
+        let workflows = [
+            (
+                ".github/workflows/ci.yml".to_owned(),
+                CI_MAIN_DEVELOP.to_owned(),
+            ),
+            (
+                ".github/workflows/integration.yml".to_owned(),
+                "on:\n  workflow_dispatch:\n".to_owned(),
+            ),
+        ];
+        let none = ci(HQ_BRANCH, asked.clone(), Some(&workflows));
+        assert_eq!(none.can_be_had(), Some(false));
+        let report = Report {
+            ci: Some(none),
+            ..Report::default()
+        };
+        assert!(report.failed() && !report.is_empty());
+        assert!(report.no_ci_run().is_some());
+        let said = report.said();
+        assert!(
+            said.contains(
+                "- CI: no CI run can be had for hq/task-932-ci-lint-rules: no workflow at its \
+                 head runs on a push to it (ci.yml: on a push only to main, develop; \
+                 integration.yml: not on a push)."
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains("\"A CI run on the branch passes\" cannot be met as the fork stands"),
+            "{said}"
+        );
+        // A workflow that runs on hq/ branches: a run can be had once the branch is pushed.
+        let every = [(
+            ".github/workflows/ci.yml".to_owned(),
+            "on:\n  push:\n    branches: [\"**\"]\n".to_owned(),
+        )];
+        let some = ci(HQ_BRANCH, asked.clone(), Some(&every));
+        assert_eq!(some.can_be_had(), Some(true));
+        let said = Report {
+            ci: Some(some),
+            ..Report::default()
+        }
+        .said();
+        assert!(
+            said.contains("- CI: ci.yml runs on a push to hq/task-932-ci-lint-rules"),
+            "{said}"
+        );
+        // A branch with no workflow at all: none can be had.
+        assert_eq!(
+            ci(HQ_BRANCH, asked.clone(), Some(&[])).can_be_had(),
+            Some(false)
+        );
+        // A filter HQ does not read: it cannot tell, and says so.
+        let odd = [(
+            ".github/workflows/ci.yml".to_owned(),
+            "on: {push: {}}\n".to_owned(),
+        )];
+        assert_eq!(ci(HQ_BRANCH, asked.clone(), Some(&odd)).can_be_had(), None);
+        // A node that did not hand the workflows over: not checked, never failed.
+        let untold = ci(HQ_BRANCH, asked, None);
+        assert_eq!(untold.can_be_had(), None);
+        let report = Report {
+            ci: Some(untold),
+            ..Report::default()
+        };
+        assert!(!report.failed() && report.no_ci_run().is_none());
+        assert!(
+            report.said().contains("- CI: not checked"),
+            "{}",
+            report.said()
+        );
+    }
+}

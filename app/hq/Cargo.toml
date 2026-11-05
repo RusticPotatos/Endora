@@ -24,6 +24,8 @@ tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "s
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+# The same tokio, with paused time for the ticker's tests (src/ticker.rs): no new crate.
+tokio = { version = "1.53.0", features = ["test-util"] }
 tower = { version = "0.5.3", features = ["util"] }
 
 [lints]

@@ -36,6 +36,8 @@ back is news, the owner's devices are never the team's.
 | --- | --- | --- | --- |
 | `domains/team` (HQ's engine) | `domains/team/features/*.feature` | `domains/team/tests/scenarios.rs` | `cargo test -p endora-team --test scenarios` |
 | `domains/capabilities` (the bridge) | `domains/capabilities/features/*.feature` | `domains/capabilities/tests/scenarios.rs` | `cargo test -p endora-capabilities --test scenarios` |
+| `app/worker` (a turn, as its process runs it) | `app/worker/features/*.feature` | `app/worker/tests/scenarios.rs`, against the real binary and fake HQ, node and model | `cargo test -p endora-worker --test scenarios` |
+| `app/node` (the relay's own count of model requests) | `app/node/features/*.feature` | `app/node/src/api/relay/census_scenarios.rs`, over the real router with fake HQ and provider; run by one `#[test]`, since the steps use the node's test fakes | `cargo test -p endora-node census_scenarios` |
 
 Each context owns its own scenarios, as it owns its domain (ADR 0050): a rule that lives in
 the bridge is tested in the bridge's crate, not through HQ. `cargo test --workspace` runs them

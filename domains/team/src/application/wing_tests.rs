@@ -1,7 +1,7 @@
 //! The engineering wing and the git flow (ADR 0115): a submitted branch recorded with its
 //! document and check, the check's result as a receipt that wakes or sends back, the owner's
 //! push offered only once the work is done and run only on their approval, hiring by the owner
-//! and by a lead's request within the wing's seats, the wing seeded once, and documents read.
+//! and documents read.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -10,9 +10,12 @@ use serde_json::{Value, json};
 use super::engine::{Author, Engine, Settings, Submission};
 use super::ports::{Clock, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::desk_ports::DeskStore;
+use crate::application::receipt_ports::ReceiptStore;
+use crate::application::wing_ports::WingStore;
 use crate::domain::wing::{WING_GOAL, WING_PROJECT};
 use crate::domain::{
-    Brain, Criterion, GoalId, MemberId, Priority, Refusal, Role, TaskId, TaskStatus, WakeReason,
+    Brain, Criterion, GoalId, MemberId, Priority, Refusal, TaskId, TaskStatus, WakeReason,
 };
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
@@ -36,30 +39,71 @@ fn engine(clock: &Hands) -> Hq<'_> {
     )
 }
 
-/// The team as the owner has it: the CEO, Ada the lead, Dee the tester, and the wing seeded.
+/// The wing as the tests have it: the goal and its project, Kit leading it on Claude Sonnet, Rae
+/// and Zed on Claude Haiku, and Kit's first task, the plan.
+struct Wing {
+    goal: GoalId,
+    lead: MemberId,
+    developers: Vec<MemberId>,
+    task: TaskId,
+}
+
+fn wing(hq: &Hq<'_>) -> Wing {
+    let lead = hq.hire("Kit", 25, 2, 5).unwrap();
+    hq.set_brain(lead, Brain::Sonnet.name()).unwrap();
+    let mut developers = Vec::new();
+    for (name, look) in [("Rae", 2), ("Zed", 4)] {
+        let id = hq.hire(name, 40, 2, look).unwrap();
+        hq.set_brain(id, Brain::Haiku.name()).unwrap();
+        developers.push(id);
+    }
+    let goal = hq.set_goal(WING_GOAL, "", Author::Owner).unwrap();
+    let project = hq.add_project(goal, WING_PROJECT, "", lead, None).unwrap();
+    let task = hq
+        .add_task_with(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: Some(project),
+                parent: None,
+                title: "Plan the clean-up".to_owned(),
+                description: String::new(),
+                assignee: Some(lead),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+            &[Criterion::new("Three branches are proposed", false)],
+        )
+        .unwrap();
+    Wing {
+        goal,
+        lead,
+        developers,
+        task,
+    }
+}
+
+/// The team as the owner has it: the CEO, Ada the lead, Dee the tester, and the wing.
 struct Team {
     ceo: MemberId,
-    ada: MemberId,
     dee: MemberId,
     kit: MemberId,
     rae: MemberId,
     goal: GoalId,
-    lab: GoalId,
     plan: TaskId,
 }
 
 fn team(hq: &Hq<'_>) -> Team {
     let ceo = {
-        let id = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
+        let id = hq.hire("Mara", 35, 1, 3).unwrap();
         hq.set_brain(id, "claude-opus-5-5").unwrap();
         id
     };
-    let ada = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dee = hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
-    let lab = hq
-        .set_goal("Keep the home lab healthy", "", Author::Owner)
+    hq.hire("Ada", 25, 2, 0).unwrap();
+    let dee = hq.hire("Dee", 20, 2, 1).unwrap();
+    hq.set_goal("Keep the home lab healthy", "", Author::Owner)
         .unwrap();
-    let seeded = hq.seed_wing().unwrap().expect("the wing is seeded");
+    let seeded = wing(hq);
     // Kit's first turn, on the plan, is over: the Mac takes one turn at a time (ADR 0131), and
     // these tests are about the branches of the others.
     hq.tell_mac(true, "ready");
@@ -70,12 +114,10 @@ fn team(hq: &Hq<'_>) -> Team {
     hq.tick().unwrap();
     Team {
         ceo,
-        ada,
         dee,
         kit: seeded.lead,
         rae: seeded.developers[0],
         goal: seeded.goal,
-        lab,
         plan: seeded.task,
     }
 }
@@ -113,7 +155,7 @@ fn quiet(hq: &Hq<'_>) {
 /// Kit hands Rae a branch's worth of work under the plan, with criteria.
 fn raes_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     hq.add_task_with(
-        Author::Member(t.kit),
+        Author::Owner,
         NewTask {
             goal: t.goal,
             project: None,
@@ -166,6 +208,9 @@ fn submission(can_push: bool) -> Submission {
         stat: " roles/deluge/tasks/main.yml | 9 ++---\n 2 files changed".to_owned(),
         diff: "diff --git a/roles/deluge/tasks/main.yml\n-old\n+new\n".to_owned(),
         can_push,
+        changed: Vec::new(),
+        texts: Vec::new(),
+        workflows: None,
     }
 }
 
@@ -323,7 +368,7 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
         .id;
     let sibling = |title: &str, to: MemberId| {
         hq.add_task_with(
-            Author::Member(t.kit),
+            Author::Owner,
             NewTask {
                 goal: t.goal,
                 project: None,
@@ -340,7 +385,7 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
     };
     let under = hq
         .add_task_with(
-            Author::Member(t.kit),
+            Author::Owner,
             NewTask {
                 goal: t.goal,
                 project: None,
@@ -389,28 +434,6 @@ fn a_kept_branch_may_be_checked_out_by_its_own_work_and_its_own_member_and_no_on
 // review: five of those turns asked the lead what to do, two did nothing, one checked. Review
 // wakes the tester when the work is submitted; a pass wakes her only for work already in
 // review, which she may have been waiting on, and only the tester review wakes.
-#[test]
-fn a_check_that_passes_on_work_in_review_wakes_its_tester_and_no_other() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let other = hq.hire("Ivy", Role::Reviewer, 20, 2, 1).unwrap();
-    let (task, _rae, _) = submitted(&hq, &t, true);
-    hq.store()
-        .set_task_status(task, TaskStatus::InReview)
-        .unwrap();
-    let handed = hq.next_check().unwrap().unwrap();
-    let before = hq.store().wakes().unwrap().len();
-    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
-        .unwrap();
-    let woken = wakes_after(&hq, before);
-    assert!(woken.contains(&(t.dee, WakeReason::CheckDone)), "{woken:?}");
-    assert!(
-        !woken.iter().any(|(m, _)| *m == other),
-        "one tester, as review wakes: {woken:?}"
-    );
-}
-
 #[test]
 fn a_check_that_passes_is_a_receipt_that_wakes_the_submitter() {
     let clock = Hands(AtomicI64::new(OCT_17));
@@ -583,11 +606,7 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
     let woken = wakes_after(&hq, before);
     assert!(woken.contains(&(t.kit, WakeReason::CheckDone)), "{woken:?}");
     assert!(woken.contains(&(t.rae, WakeReason::CheckDone)), "{woken:?}");
-    // The tester judges and does not run the lab's checks; work with no branch has nothing to check.
-    quiet(&hq);
-    let dee = woken_turn(&hq, t.dee, task);
-    let refused = ask(&dee).unwrap_err();
-    assert!(refused.contains("lead or developer"), "{refused}");
+    // Work with no branch has nothing to check.
     quiet(&hq);
     let other = raes_other_task(&hq, &t);
     let rae_again = woken_turn(&hq, t.rae, other);
@@ -604,7 +623,7 @@ fn a_kept_branch_is_checked_again_without_a_new_submission() {
 /// Another piece of Rae's work, with nothing submitted on it.
 fn raes_other_task(hq: &Hq<'_>, t: &Team) -> TaskId {
     hq.add_task_with(
-        Author::Member(t.kit),
+        Author::Owner,
         NewTask {
             goal: t.goal,
             project: None,
@@ -793,6 +812,8 @@ fn what_the_node_pushed_on_the_owners_word_is_a_landed_change_in_the_outcomes() 
     assert_eq!(before["week"]["checks_passed"], 1);
     assert_eq!(before["week"]["landed"], 0);
 
+    // The owner's word on the push: the cards are back (ADR 0115, amended 2026-10-31).
+    hq.set_delivery(Some(true), None).unwrap();
     hq.store().set_task_status(task, TaskStatus::Done).unwrap();
     hq.offer_push(task).unwrap();
     let item = hq
@@ -827,6 +848,7 @@ fn without_a_deploy_key_the_desk_offers_the_bundle_instead() {
     let t = team(&hq);
     let (task, _, _) = submitted(&hq, &t, false);
     let current = hq.store().task(task).unwrap().unwrap();
+    hq.set_delivery(Some(true), None).unwrap();
     hq.store().set_task_status(task, TaskStatus::Done).unwrap();
     hq.offer_push(current.id).unwrap();
     let item = hq
@@ -860,24 +882,14 @@ fn without_a_deploy_key_the_desk_offers_the_bundle_instead() {
 }
 
 #[test]
-fn the_owner_hires_and_a_second_ceo_is_refused() {
+fn the_owner_hires_any_title_on_any_model_endora_has() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
     let t = team(&hq);
-    let sam = hq
-        .hire_by_owner("Sam", Role::Developer, "claude-haiku-5-5", Some(t.kit))
-        .unwrap();
+    let sam = hq.hire_by_owner("Sam", "claude-haiku-5-5").unwrap();
     let members = hq.store().members().unwrap();
     let found = members.iter().find(|m| m.id == sam).unwrap();
-    assert_eq!(
-        (
-            found.role,
-            found.brain,
-            found.reports_to,
-            found.share_percent
-        ),
-        (Role::Developer, Brain::Haiku, Some(t.kit), 40)
-    );
+    assert_eq!((found.brain, found.share_percent), (Brain::Haiku, 40));
     let hired = hq
         .events_after(0)
         .unwrap()
@@ -888,535 +900,253 @@ fn the_owner_hires_and_a_second_ceo_is_refused() {
         (hired.data["name"].as_str(), hired.data["by"].as_str()),
         (Some("Sam"), Some("owner"))
     );
-    // Nobody reports to anyone unless the owner says so (ADR 0142).
-    let lee = hq
-        .hire_by_owner("Lee", Role::Researcher, "local", None)
-        .unwrap();
-    assert_eq!(members_of(&hq, lee).reports_to, None);
-    assert_eq!(
-        hq.hire_by_owner("Second", Role::Ceo, "claude-opus-5-5", None),
-        Err(super::EngineError::Refused(Refusal::OnlyOneCeo))
-    );
+    // A title is a name only (ADR 0142): a second CEO, or a researcher on Sonnet, is a member.
+    hq.hire_by_owner("Second", "claude-opus-5-5").unwrap();
+    hq.hire_by_owner("Pat", "claude-sonnet-5-5").unwrap();
     assert!(matches!(
-        hq.hire_by_owner("Pat", Role::Researcher, "claude-sonnet-5-5", None),
+        hq.hire_by_owner("Quinn", "gpt-5"),
         Err(super::EngineError::Refused(Refusal::NotABrain { .. }))
     ));
     assert_eq!(
-        hq.hire_by_owner("sam", Role::Developer, "local", None),
+        hq.hire_by_owner("sam", "local"),
         Err(super::EngineError::Refused(Refusal::NotAName)),
         "names stay unique"
-    );
-    assert!(
-        hq.hire_by_owner("Nobody", Role::Developer, "local", Some(MemberId(999)))
-            .is_err()
     );
     let _ = t.ceo;
 }
 
-fn members_of(hq: &Hq<'_>, id: MemberId) -> crate::domain::Member {
-    hq.store()
-        .members()
-        .unwrap()
-        .into_iter()
-        .find(|m| m.id == id)
-        .unwrap()
-}
+// --- Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31) ------------
 
+/// Without a deploy key, an accepted branch is listed with why it is not pushed, never put on
+/// the desk and never asked of the node.
 #[test]
-fn the_wing_is_seeded_once_and_an_old_team_keeps_what_it_had() {
+fn without_a_deploy_key_accepted_work_is_listed_not_pushed() {
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
-    let ceo = hq.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-    hq.set_brain(ceo, "claude-opus-5-5").unwrap();
-    hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    hq.hire("Dee", Role::Reviewer, 20, 2, 1).unwrap();
-    let seeded = hq.seed_wing().unwrap().expect("seeded");
-    let members = hq.store().members().unwrap();
-    let kit = members.iter().find(|m| m.name == "Kit").unwrap();
-    assert_eq!(
-        (kit.role, kit.brain, kit.reports_to),
-        (Role::Lead, Brain::Sonnet, None)
-    );
-    for name in ["Rae", "Zed"] {
-        let dev = members.iter().find(|m| m.name == name).unwrap();
-        assert_eq!(
-            (dev.role, dev.brain, dev.reports_to),
-            (Role::Developer, Brain::Haiku, None)
-        );
-        assert!(seeded.developers.contains(&dev.id));
-    }
-    let goal = hq.store().goal(seeded.goal).unwrap().unwrap();
-    assert_eq!(
-        (goal.title.as_str(), goal.status),
-        (WING_GOAL, crate::domain::GoalStatus::Active)
-    );
-    let note = hq.store().goal_note(seeded.goal).unwrap();
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, false);
+    let handed = hq.next_check().unwrap().expect("a check waits");
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["status"], "accepted", "{listed}");
     assert!(
-        note.contains("repo_checkout") && note.contains("never opens a pull request"),
-        "{note}"
+        listed[0]["why"]
+            .as_str()
+            .unwrap()
+            .contains("pushing is not set up"),
+        "{listed}"
     );
-    let project = hq
-        .store()
+}
+
+/// A branch whose check has not passed is not pushed by rule, whatever review said.
+#[test]
+fn a_branch_whose_check_did_not_pass_is_not_pushed() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, true);
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["why"], "no check of it passed", "{listed}");
+}
+
+/// The node's word on each step is taken once; a merge is asked only while merging is on, and
+/// a branch merged leaves the list.
+#[test]
+fn each_step_is_told_once_and_merging_waits_for_its_setting() {
+    use super::engine::Delivered;
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let (task, _, _) = submitted(&hq, &t, true);
+    let handed = hq.next_check().unwrap().expect("a check waits");
+    hq.check_done(handed.id, &handed.token, true, "syntax ok", "")
+        .unwrap();
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    let due = hq.deliveries().unwrap();
+    assert_eq!(due.push.len(), 1);
+    let branch = due.push[0].branch.id;
+    let merged = Delivered::Merged {
+        ok: true,
+        text: "merged".to_owned(),
+    };
+    assert!(hq.delivered(branch, &merged).is_err(), "not pushed yet");
+    let pushed = Delivered::Pushed {
+        ok: true,
+        text: "pushed".to_owned(),
+        needs: Vec::new(),
+    };
+    hq.delivered(branch, &pushed).unwrap();
+    assert!(hq.delivered(branch, &pushed).is_err(), "told once");
+    assert!(hq.deliveries().unwrap().merge.is_empty(), "merging is off");
+    hq.set_delivery(None, Some(true)).unwrap();
+    assert_eq!(hq.deliveries().unwrap().merge.len(), 1);
+    hq.delivered(branch, &merged).unwrap();
+    assert!(hq.deliveries().unwrap().merge.is_empty());
+    assert_eq!(hq.snapshot().unwrap()["accepted"], json!([]));
+    let landed = hq.snapshot().unwrap()["scorecard"]["outcomes"]["day"]["landed"].clone();
+    assert_eq!(landed, 1, "an automatic push is a landed change");
+}
+
+// --- A repository outside the lab (ADR 0115, amended 2026-11-01: round 4's F4) ---------------
+
+fn wing_project(hq: &Hq<'_>) -> crate::domain::ProjectId {
+    hq.store()
         .projects()
         .unwrap()
         .into_iter()
-        .find(|p| p.id == seeded.project)
-        .unwrap();
-    assert_eq!(
-        (project.title.as_str(), project.lead, project.goal),
-        (WING_PROJECT, kit.id, seeded.goal)
-    );
-    let task = hq.store().task(seeded.task).unwrap().unwrap();
-    assert_eq!(
-        (task.assignee, task.project),
-        (Some(kit.id), Some(seeded.project))
-    );
-    assert_eq!(task.criteria.len(), 2);
-    assert!(task.criteria[0].text.contains("by receipt"));
-    // With nobody reporting to anyone (ADR 0142), the wing is its lead.
-    assert_eq!(hq.wing_members().unwrap(), [kit.id]);
-    // Once: nothing is made twice, and a renamed or paused member stays as the owner left it.
-    hq.rename(kit.id, "Kai").unwrap();
-    assert_eq!(hq.seed_wing().unwrap(), None);
-    assert_eq!(hq.store().members().unwrap().len(), 6);
-    assert_eq!(hq.store().projects().unwrap().len(), 1);
-    assert_eq!(hq.store().tasks().unwrap().len(), 1);
-    // A team that already has the goal and a Kit (an older HQ) is completed, not doubled.
-    let other = engine(&clock);
-    {
-        let id = other.hire("Mara", Role::Ceo, 35, 1, 3).unwrap();
-        other.set_brain(id, "claude-opus-5-5").unwrap();
-        id
-    };
-    let kit = other.hire("Kit", Role::Lead, 25, 2, 5).unwrap();
-    let goal = other.set_goal(WING_GOAL, "mine", Author::Owner).unwrap();
-    let seeded = other.seed_wing().unwrap().unwrap();
-    assert_eq!((seeded.lead, seeded.goal), (kit, goal));
-    assert_eq!(other.store().goals().unwrap().len(), 1);
-    assert_eq!(
-        other.store().members().unwrap().len(),
-        4,
-        "Mara, Kit, Rae, Zed"
-    );
+        .find(|p| p.title == WING_PROJECT)
+        .expect("the wing's project")
+        .id
 }
 
-// ---- the check after a deploy (ADR 0115, amended) -------------------------------------------
+/// The owner names the repository a project's work is done in: a public GitHub address alone,
+/// kept in its one plain form, and taken away again with none.
+#[test]
+fn the_owner_names_an_outside_repository_on_a_project_and_only_a_public_github_one() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    let project = wing_project(&hq);
+    for refused in [
+        "https://gitlab.com/example/tiny",
+        "git@github.com:example/tiny.git",
+        // A credential in the address (split so it reads as no mailbox).
+        concat!("https://jane:secret", "@", "github.com/example/tiny"),
+        "http://github.com/example/tiny",
+    ] {
+        let why = hq
+            .set_project_repo(project, Some(refused))
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("only a public https://github.com/"), "{why}");
+    }
+    assert_eq!(hq.project_repo(project).unwrap(), None, "nothing kept");
+    assert_eq!(
+        hq.set_project_repo(project, Some("https://github.com/example/tiny.git"))
+            .unwrap()
+            .as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    // A turn on work under the project (Rae's task sits under the plan, which is in it) is
+    // told the repository; the node mirrors and hands out that one.
+    let task = raes_task(&hq, &t);
+    let rae = turn(&hq, t.rae);
+    use_tool(&hq, &rae, "claim", &json!({ "task": task.0 })).unwrap();
+    let (run, _) = hq.turn_of(&rae.token).unwrap().expect("a running turn");
+    assert_eq!(
+        hq.outside_repo_of_run(run.id).unwrap().as_deref(),
+        Some("https://github.com/example/tiny")
+    );
+    hq.set_project_repo(project, None).unwrap();
+    assert_eq!(hq.outside_repo_of_run(run.id).unwrap(), None);
+}
 
-/// The house's routine that takes the home lab's alarms, as the owner has it: in "Home lab
-/// upkeep", which Ada leads (ADR 0107, 0113, 0120).
-fn lab_routine(hq: &Hq<'_>, t: &Team) -> (crate::domain::RoutineId, crate::domain::ProjectId) {
-    let upkeep = hq
-        .add_project(t.lab, super::engine::LAB_UPKEEP, "", t.ada, None)
+/// A branch of an outside repository is kept on the node for judging: no check of the lab's is
+/// queued (ansible's checks say nothing of it), its item's criteria are its gate, and accepted,
+/// it is listed as never pushed: not due to the node, not carded, whatever the deploy key.
+#[test]
+fn a_branch_of_an_outside_repository_is_kept_for_judging_and_never_delivered() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
         .unwrap();
-    let routine = hq
-        .add_routine(
-            Author::Owner,
-            super::ports::NewRoutine {
-                title: "Check the home lab".to_owned(),
-                description: String::new(),
-                goal: t.lab,
-                project: Some(upkeep),
-                assignee: t.ada,
-                every_ms: 7 * 24 * 3_600_000,
-                on_lab_trouble: true,
+    let (task, _, recorded) = submitted(&hq, &t, true);
+    assert_eq!(recorded.check, 0, "no check is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let last = thread(&hq, task).pop().unwrap();
+    assert!(
+        last.contains("kept on the node for judging") && last.contains("never pushed"),
+        "{last}"
+    );
+    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
+    hq.offer_push(task).unwrap();
+    assert!(hq.deliveries().unwrap().push.is_empty());
+    let listed = hq.snapshot().unwrap()["accepted"].clone();
+    assert_eq!(listed[0]["status"], "accepted", "{listed}");
+    assert!(
+        listed[0]["why"].as_str().unwrap().contains("never pushed"),
+        "{listed}"
+    );
+    // With the cards back on the desk, still no push card for it.
+    hq.set_delivery(Some(true), None).unwrap();
+    all_turns_over(&hq);
+    let (other, _, _) = submitted(&hq, &t, true);
+    hq.store().set_task_status(other, TaskStatus::Done).unwrap();
+    hq.offer_push(other).unwrap();
+    assert!(hq.store().desk().unwrap().iter().all(|d| d.kind != "push"));
+    assert!(hq.deliveries().unwrap().push.is_empty());
+}
+
+/// #1048 of set 3: Sol's simpleeval fix was submitted and its gate open, and Sol asked for it
+/// to be checked again for a receipt to cite. HQ queued the lab's check on the outside branch;
+/// the check box fetched its bundle where the lab's branches live, got the node's 404, and the
+/// failed check shut the gate and counted as one of the item's failures, twice. No check of the
+/// lab's applies to an outside repository, so asking for one is refused, saying how the work is
+/// evidenced instead, and nothing is queued or shut.
+#[test]
+fn a_check_again_of_an_outside_branch_is_refused_and_the_gate_stays_open() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq);
+    hq.set_project_repo(wing_project(&hq), Some("https://github.com/example/tiny"))
+        .unwrap();
+    let (task, rae, _) = submitted(&hq, &t, true);
+    assert_eq!(hq.store().gate(task).unwrap(), Some(true));
+    let said = use_tool(
+        &hq,
+        &rae,
+        "recheck",
+        &json!({ "task": task.0, "why": "a receipt to cite for in_review" }),
+    )
+    .unwrap_err();
+    assert!(
+        said.contains("no check of the lab's applies to https://github.com/example/tiny")
+            && said.contains("set_status in_review")
+            && said.contains("repo_submit"),
+        "{said}"
+    );
+    assert!(hq.store().checks().unwrap().is_empty(), "nothing is queued");
+    assert!(hq.next_check().unwrap().is_none());
+    assert_eq!(
+        hq.store().gate(task).unwrap(),
+        Some(true),
+        "the gate stays open"
+    );
+    // As the refusal says: in review, citing the submission's receipt for each criterion.
+    let receipt = hq
+        .record_receipt(
+            &rae.token,
+            &super::engine::Called {
+                tool: "repo_submit".to_owned(),
+                args: r#"{"branch":"hq/task-3-tidy-the-deluge-role"}"#.to_owned(),
+                excerpt: "Submitted hq/task-3-tidy-the-deluge-role".to_owned(),
+                ok: true,
+                act: true,
+                confidential: false,
             },
         )
         .unwrap();
-    (routine, upkeep)
-}
-
-/// The newest item of `kind` waiting on the owner's desk.
-fn waiting(hq: &Hq<'_>, kind: &str) -> super::ports::DeskItem {
-    hq.store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == kind && d.status == "waiting")
-        .next_back()
-        .unwrap_or_else(|| panic!("no {kind} waits on the desk"))
-}
-
-/// A wing branch, accepted and pushed on the owner's word: returns its task and the card that
-/// asks the owner to say when it is deployed.
-fn pushed(hq: &Hq<'_>, t: &Team) -> (TaskId, super::ports::DeskItem) {
-    let (task, _, _) = submitted(hq, t, true);
-    hq.store().set_task_status(task, TaskStatus::Done).unwrap();
-    hq.offer_push(task).unwrap();
-    let push = waiting(hq, "push");
-    hq.decide(push.id, "approve").unwrap();
-    hq.push_asked(push.id).unwrap().expect("the node is asked");
-    hq.push_outcome(
-        push.id,
-        true,
-        "Pushed hq/task-3-tidy-the-deluge-role (a1b2c3d4e5f6) to the fork: merge it on GitHub.",
-    )
-    .unwrap();
-    all_turns_over(hq);
-    (task, waiting(hq, "deploy"))
-}
-
-/// The deploy check's task, the only one titled for the branch.
-fn deploy_check(hq: &Hq<'_>) -> crate::domain::Task {
-    let checks: Vec<_> = hq
-        .store()
-        .tasks()
-        .unwrap()
-        .into_iter()
-        .filter(|k| k.title.starts_with("Check the home lab after deploying "))
-        .collect();
-    assert_eq!(checks.len(), 1, "one check: {checks:?}");
-    checks[0].clone()
-}
-
-/// The member's started turn on `task`, the task claimed as the worker claims it before the
-/// model's first round.
-fn turn_on(hq: &Hq<'_>, member: MemberId, task: TaskId) -> RunContext {
-    hq.tell_mac(true, "ready");
-    hq.tick().unwrap();
-    hq.tick().unwrap();
-    let context = hq
-        .runner()
-        .started()
-        .into_iter()
-        .rfind(|c| c.member == member && c.task == Some(task))
-        .expect("a turn on the check");
-    use_tool(hq, &context, "claim", &json!({ "task": task.0 })).unwrap_or_else(|e| panic!("{e}"));
-    context
-}
-
-/// A reading the node took for the turn, as its receipt: `homelab_status`, read-only.
-fn reads_the_lab(hq: &Hq<'_>, context: &RunContext) -> i64 {
-    hq.record_receipt(
-        &context.token,
-        &super::engine::Called {
-            tool: "homelab_status".to_owned(),
-            args: String::new(),
-            excerpt: "deluge running (healthy), sonarr running (healthy)".to_owned(),
-            ok: true,
-            act: false,
-            confidential: false,
-        },
-    )
-    .unwrap()
-}
-
-/// The turn ends, as the runner reports it, and HQ sees it on its next tick.
-fn ends(hq: &Hq<'_>, context: &RunContext) {
-    hq.runner().finish(context.run, true);
-    hq.tick().unwrap();
-}
-
-/// Behaviour 1: The owner's Deployed starts the check through the routine that takes the lab's alarms:
-/// its goal, its project and the member it hands work to, with one live criterion. The
-/// routine's own task is left to its alarms.
-#[test]
-fn the_deployed_button_hands_the_lab_routines_member_a_live_check() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    let (routine, upkeep) = lab_routine(&hq, &t);
-    let (task, card) = pushed(&hq, &t);
-    assert_eq!(card.task, Some(task));
-    assert!(
-        card.text.contains("hq/task-3-tidy-the-deluge-role") && card.text.contains("Deployed"),
-        "{}",
-        card.text
-    );
-    let before = hq.store().wakes().unwrap().len();
-    let last_task = |hq: &Hq<'_>| {
-        hq.store()
-            .routines()
-            .unwrap()
-            .into_iter()
-            .find(|r| r.id == routine)
-            .unwrap()
-            .last_task
-    };
-    let routines_own = last_task(&hq);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    assert_eq!(
-        check.title,
-        "Check the home lab after deploying hq/task-3-tidy-the-deluge-role"
-    );
-    assert_eq!(
-        (check.goal, check.project, check.assignee),
-        (t.lab, Some(upkeep), Some(t.ada))
-    );
-    assert_eq!(check.criteria.len(), 1);
-    assert!(check.criteria[0].live, "{:?}", check.criteria);
-    assert!(
-        check.description.contains("The branch passes its checks"),
-        "the change's own criteria are quoted: {}",
-        check.description
-    );
-    assert_eq!(
-        hq.store().branches().unwrap().pop().unwrap().status,
-        "deployed"
-    );
-    assert!(wakes_after(&hq, before).contains(&(t.ada, WakeReason::Assigned)));
-    assert_eq!(
-        last_task(&hq),
-        routines_own,
-        "the alarms keep their own task"
-    );
-    assert!(
-        hq.events_after(0)
-            .unwrap()
-            .iter()
-            .any(|e| e.kind == crate::domain::EventKind::BranchDeployed.name()),
-        "the feed says it"
-    );
-}
-
-/// Behaviour 2: A second click, or a click after Won't deploy, starts nothing more.
-#[test]
-fn a_second_click_starts_no_second_check() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (_, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    assert!(hq.decide(card.id, "deployed").is_err());
-    assert!(hq.decide(card.id, "not_deploying").is_err());
-    deploy_check(&hq);
-}
-
-/// Behaviour 2b: Won't deploy: the branch says so and no check is made.
-#[test]
-fn wont_deploy_makes_no_check() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (_, card) = pushed(&hq, &t);
-    hq.decide(card.id, "not_deploying").unwrap();
-    assert!(hq.decide(card.id, "deployed").is_err());
-    assert_eq!(
-        hq.store().branches().unwrap().pop().unwrap().status,
-        "not_deployed"
-    );
-    assert!(
-        hq.store()
-            .tasks()
-            .unwrap()
-            .iter()
-            .all(|k| !k.title.starts_with("Check the home lab after deploying "))
-    );
-}
-
-/// Behaviour 3 and 4: The check's turn is offered HQ's four tools to say what it found, and nothing that
-/// makes work or reaches further; the node is told to give it the lab's reads alone, and the
-/// runner to start it without a shell. A call outside them is refused by HQ, whatever the
-/// model was told.
-#[test]
-fn the_checks_turn_has_the_lab_reads_and_nothing_more() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (_, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    let ada = turn_on(&hq, t.ada, check.id);
-    let (run, member) = hq.turn_of(&ada.token).unwrap().unwrap();
-    let mut offered: Vec<String> = super::protocol::tools_in(&hq, &run, &member)
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
-        .collect();
-    offered.sort();
-    assert_eq!(offered, ["claim", "my_turn", "post", "set_status"]);
-    for (tool, args) in [
-        ("create_task", json!({ "title": "x", "assignee": "Dee" })),
-        ("hand_to", json!({ "task": check.id.0, "to": "Dee" })),
-        ("ask_owner", json!({ "text": "x", "evidence": [] })),
-        ("read_document", json!({ "document": 1 })),
-        ("chess", json!({ "action": "board" })),
-        ("recheck", json!({ "task": check.id.0, "why": "x" })),
-    ] {
-        let said = use_tool(&hq, &ada, tool, &args).unwrap_err();
-        assert!(said.contains("post-deploy check"), "{tool}: {said}");
-    }
-    let said = use_tool(
+    // Rae's task has one criterion.
+    let evidence = json!([[format!("r{receipt}")]]);
+    let moved = use_tool(
         &hq,
-        &ada,
+        &rae,
         "set_status",
-        &json!({ "task": check.id.0, "status": "in_review", "reason": "x", "evidence": [] }),
-    )
-    .unwrap_err();
-    assert!(said.contains("post-deploy check"), "{said}");
-    assert_eq!(
-        hq.lab_tools_of(ada.run).unwrap(),
-        Some(
-            ["homelab_status", "container_logs", "nas_status"]
-                .map(str::to_owned)
-                .to_vec()
-        )
-    );
-    assert!(!hq.may_use_a_shell(ada.run).unwrap());
-    // Any other turn is as it was: no list, and a shell where the runner gives one.
-    let rae = woken_turn(&hq, t.rae, raes_task(&hq, &t));
-    assert_eq!(hq.lab_tools_of(rae.run).unwrap(), None);
-    assert!(hq.may_use_a_shell(rae.run).unwrap());
-}
-
-/// Behaviour 5: A fresh reading, cited: the check closes in its one turn and the change reads healthy,
-/// in its own thread and on the desk; nothing wakes the check again.
-#[test]
-fn a_check_with_a_fresh_reading_closes_healthy_in_one_turn() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (task, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    let ada = turn_on(&hq, t.ada, check.id);
-    let reading = reads_the_lab(&hq, &ada);
-    use_tool(
-        &hq,
-        &ada,
-        "set_status",
-        &json!({ "task": check.id.0, "status": "done", "reason": "deluge and sonarr healthy",
-                 "evidence": [[format!("r{reading}")]] }),
+        &json!({ "task": task.0, "status": "in_review", "reason": "its tests pass",
+                 "evidence": evidence }),
     )
     .unwrap_or_else(|e| panic!("{e}"));
-    ends(&hq, &ada);
-    assert_eq!(
-        hq.store().task(check.id).unwrap().unwrap().status,
-        TaskStatus::Done
-    );
-    let said = thread(&hq, task).pop().unwrap();
-    assert!(
-        said.contains("Post-deploy infrastructure check: Healthy.")
-            && said.contains(&format!("r{reading}"))
-            && said.contains("not that every part of the change works"),
-        "{said}"
-    );
-    assert!(
-        hq.store()
-            .desk()
-            .unwrap()
-            .iter()
-            .any(|d| d.kind == "notice" && d.text.contains(": Healthy")),
-        "the digest says it"
-    );
-    let runs = hq.store().runs().unwrap().len();
-    hq.wake(t.ada, Some(check.id), WakeReason::Mentioned)
-        .unwrap();
-    quiet(&hq);
-    assert!(
-        hq.store()
-            .runs()
-            .unwrap()
-            .iter()
-            .skip(runs)
-            .all(|r| r.task != Some(check.id)),
-        "one turn"
-    );
-}
-
-/// Behaviour 5 and 6: A turn that ends without a verdict is inconclusive: the check is closed, the change
-/// is not called healthy, and the owner is told.
-#[test]
-fn a_turn_without_a_verdict_is_inconclusive_and_never_healthy() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (task, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    let ada = turn_on(&hq, t.ada, check.id);
-    // Done without a reading of her own this turn is refused by the evidence rule.
-    assert!(
-        use_tool(
-            &hq,
-            &ada,
-            "set_status",
-            &json!({ "task": check.id.0, "status": "done", "reason": "looks fine",
-                     "evidence": [[format!("task {}", task.0)]] }),
-        )
-        .is_err()
-    );
-    ends(&hq, &ada);
-    assert_eq!(
-        hq.store().task(check.id).unwrap().unwrap().status,
-        TaskStatus::Dropped
-    );
-    let said = thread(&hq, task).pop().unwrap();
-    assert!(
-        said.contains("Post-deploy infrastructure check: Inconclusive."),
-        "{said}"
-    );
-    assert!(!said.contains("healthy"), "{said}");
-    let item = waiting(&hq, "deploy_check");
-    assert!(
-        item.text.contains(": Inconclusive") && !item.text.to_lowercase().contains("healthy"),
-        "{}",
-        item.text
-    );
-    assert!(crate::domain::desk::interrupts("deploy_check"));
-}
-
-/// Behaviour 6: The member finds a problem and says so: the check is closed as a problem, in her words,
-/// and the owner is told; never healthy.
-#[test]
-fn a_problem_found_is_reported_as_a_problem() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (task, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    let ada = turn_on(&hq, t.ada, check.id);
-    reads_the_lab(&hq, &ada);
-    use_tool(
-        &hq,
-        &ada,
-        "set_status",
-        &json!({ "task": check.id.0, "status": "blocked",
-                 "reason": "deluge restarts every minute since the deploy" }),
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
-    ends(&hq, &ada);
-    assert_eq!(
-        hq.store().task(check.id).unwrap().unwrap().status,
-        TaskStatus::Dropped
-    );
-    let said = thread(&hq, task).pop().unwrap();
-    assert!(
-        said.contains("Post-deploy infrastructure check: Unhealthy.")
-            && said.contains("deluge restarts every minute"),
-        "{said}"
-    );
-    let item = waiting(&hq, "deploy_check");
-    assert!(
-        item.text.contains(": Unhealthy") && !item.text.contains(": Healthy"),
-        "{}",
-        item.text
-    );
-}
-
-/// Behaviour 7: The lab's alarms still reach the routine's own task, not the check.
-#[test]
-fn an_alarm_during_a_check_goes_to_the_routines_own_task() {
-    let clock = Hands(AtomicI64::new(OCT_17));
-    let hq = engine(&clock);
-    let t = team(&hq);
-    lab_routine(&hq, &t);
-    let (_, card) = pushed(&hq, &t);
-    hq.decide(card.id, "deployed").unwrap();
-    let check = deploy_check(&hq);
-    let fired = hq.alarm("sonarr became unhealthy at 11:58").unwrap();
-    let (_, fired) = fired.expect("the routine takes the alarm");
-    let alarm_task = match fired {
-        super::Fired::Created(task) | super::Fired::Posted(task) => task,
-        super::Fired::Skipped(why) => panic!("{why}"),
-    };
-    assert_ne!(alarm_task, check.id);
+    let status = hq.store().task(task).unwrap().unwrap().status;
+    assert_eq!(status, TaskStatus::InReview, "{moved}");
 }

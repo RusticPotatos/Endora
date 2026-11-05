@@ -66,13 +66,6 @@ pub(super) async fn hq_snapshot(State(state): State<AppState>) -> Answer {
     let mut desk = answer.0["desk"].take();
     let desk = tokio::task::spawn_blocking(move || {
         for item in desk.as_array_mut().into_iter().flatten() {
-            // A branch to merge opens on GitHub from its card, ready to become a pull request.
-            if item["kind"] == "deploy" {
-                if let Some(url) = item["text"].as_str().and_then(|t| looked.lab.branch_url(t)) {
-                    item["branch_url"] = json!(url);
-                }
-                continue;
-            }
             if item["kind"] != "approval" {
                 continue;
             }
@@ -123,7 +116,21 @@ pub(super) async fn hq_events(State(state): State<AppState>, Query(q): Query<HqA
 /// recorded; a checking credential never reaches it (`crate::auth`), as it carries what the
 /// member was told and Confidential excerpts.
 pub(super) async fn hq_run_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/runs/{id}/replay"), None).await
+    let mut answer = ask(&state, format!("/v1/runs/{id}/replay"), None).await?;
+    scrubbed(&mut answer.0);
+    Ok(answer)
+}
+
+/// Every word of a replay scrubbed of secrets on its way to the owner's screen, with the
+/// scrubber the receipts and the kept conversations already pass through: what a turn was
+/// given and said may hold a key that reached HQ before the scrubber knew its shape.
+fn scrubbed(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = endora_capabilities::scrub_secrets(text),
+        serde_json::Value::Array(all) => all.iter_mut().for_each(scrubbed),
+        serde_json::Value::Object(all) => all.values_mut().for_each(scrubbed),
+        _ => {}
+    }
 }
 
 /// Owner-only retained questions; rebuild the bounded cursor route from numbers.
@@ -142,7 +149,9 @@ pub(super) async fn hq_task_consultations(
 
 /// Replay: a task's turns read back, oldest first.
 pub(super) async fn hq_task_replay(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
-    ask(&state, format!("/v1/tasks/{id}/replay"), None).await
+    let mut answer = ask(&state, format!("/v1/tasks/{id}/replay"), None).await?;
+    scrubbed(&mut answer.0);
+    Ok(answer)
 }
 
 #[derive(Deserialize)]
@@ -234,39 +243,27 @@ pub(super) async fn hq_decide(
 #[derive(Deserialize)]
 pub(super) struct HqHire {
     name: String,
-    role: String,
-    /// One brain, to the slot it belongs to: the way a hire was always asked.
+    /// Its model (ADR 0142); the house's own if not said.
     #[serde(default)]
     brain: Option<String>,
-    /// What it works with, the Mac or the house's model (ADR 0131).
-    #[serde(default)]
-    work_brain: Option<String>,
-    /// The Claude it judges with (ADR 0131).
-    #[serde(default)]
-    judgment_brain: Option<String>,
-    #[serde(default)]
-    reports_to: Option<i64>,
 }
 
-/// The owner hires a member (ADR 0115): HQ decides the rules (one CEO, a brain the role may
-/// use in each slot); the node records who joined.
+/// The owner hires a member (ADR 0115, 0142): HQ refuses a model it does not have; the node
+/// records who joined.
 pub(super) async fn hq_hire(State(state): State<AppState>, Json(req): Json<HqHire>) -> Answer {
     let answer = ask(
         &state,
         "/v1/members".to_owned(),
         Some(json!({
-            "name": req.name, "role": req.role, "brain": req.brain,
-            "work_brain": req.work_brain, "judgment_brain": req.judgment_brain,
-            "reports_to": req.reports_to
+            "name": req.name, "brain": req.brain
         })),
     )
     .await?;
     record(
         &state,
         &format!(
-            "you hired {} as {} (member {})",
+            "you hired {} (member {})",
             req.name.trim(),
-            req.role.trim(),
             answer.0["member"]
         ),
     );
@@ -291,36 +288,6 @@ pub(super) async fn hq_reply(
     )
     .await?;
     record(&state, &format!("you replied on task {id}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
-pub(super) struct HqRerun {
-    round: String,
-    #[serde(default)]
-    restart: bool,
-}
-
-/// The owner runs the Holodeck's scenarios again, one at a time; the earlier round is kept.
-pub(super) async fn hq_rerun_holodeck(
-    State(state): State<AppState>,
-    Json(req): Json<HqRerun>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/scenarios/rerun".to_owned(),
-        Some(json!({ "round": req.round, "restart": req.restart })),
-    )
-    .await?;
-    record(
-        &state,
-        &format!(
-            "you ran the Holodeck again{}: {} scenarios queued, the earlier round kept as \"{}\"",
-            if req.restart { ", starting over" } else { "" },
-            answer.0["queued"],
-            req.round
-        ),
-    );
     Ok(answer)
 }
 
@@ -427,30 +394,6 @@ pub(super) async fn hq_set_brain(
 }
 
 #[derive(Deserialize)]
-pub(super) struct HqWorkBrain {
-    work_brain: String,
-}
-
-/// The owner sets what a member does its work with (ADR 0131): the Mac or the house's model.
-/// HQ decides what is allowed; the node records what was set.
-pub(super) async fn hq_set_work_brain(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqWorkBrain>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/work-brain"),
-        Some(json!({ "work_brain": req.work_brain })),
-    )
-    .await?;
-    // HQ answers with one of its own brains' names, never what was asked.
-    let brain = answer.0["work_brain"].as_str().unwrap_or("").to_owned();
-    record(&state, &format!("you set member {id} to work with {brain}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
 pub(super) struct HqModel {
     model: String,
 }
@@ -470,34 +413,6 @@ pub(super) async fn hq_set_model(
     // HQ answers with one of its own brains' names, never what was asked.
     let brain = answer.0["model"].as_str().unwrap_or("").to_owned();
     record(&state, &format!("you set member {id}'s model to {brain}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
-pub(super) struct HqJudgmentBrain {
-    judgment_brain: String,
-}
-
-/// The owner sets the Claude a member judges with (ADR 0131), or `none` to take it away.
-pub(super) async fn hq_set_judgment_brain(
-    State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(req): Json<HqJudgmentBrain>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        format!("/v1/members/{id}/judgment-brain"),
-        Some(json!({ "judgment_brain": req.judgment_brain })),
-    )
-    .await?;
-    let brain = answer.0["judgment_brain"]
-        .as_str()
-        .unwrap_or("no one")
-        .to_owned();
-    record(
-        &state,
-        &format!("you set member {id} to judge with {brain}"),
-    );
     Ok(answer)
 }
 
@@ -544,28 +459,6 @@ pub(super) async fn hq_rename(
     .await?;
     let name = answer.0["name"].as_str().unwrap_or("").to_owned();
     record(&state, &format!("you renamed member {id} to {name}"));
-    Ok(answer)
-}
-
-#[derive(Deserialize)]
-pub(super) struct HqHouseLog {
-    #[serde(default)]
-    log: String,
-}
-
-/// The owner rewrites the house log, which the CEO keeps and the CEO and the lead read every
-/// turn (ADR 0111).
-pub(super) async fn hq_house_log(
-    State(state): State<AppState>,
-    Json(req): Json<HqHouseLog>,
-) -> Answer {
-    let answer = ask(
-        &state,
-        "/v1/house".to_owned(),
-        Some(json!({ "log": req.log })),
-    )
-    .await?;
-    record(&state, "you rewrote the house log");
     Ok(answer)
 }
 
@@ -731,60 +624,109 @@ pub(super) async fn hq_project_cap(
     Ok(answer)
 }
 
-/// The owner starts a scenario (the Holodeck plan's phase 5): `{project, member, seed}`, the
-/// seed optional.
+/// The owner starts a chess match (ADR 0135): `{project, kind: "chess", players: [white,
+/// black], seed}`, the seed optional.
 pub(super) async fn hq_start_scenario(
     State(state): State<AppState>,
     Json(req): Json<serde_json::Value>,
 ) -> Answer {
     let answer = ask(&state, "/v1/scenarios".to_owned(), Some(req.clone())).await?;
-    let listed = |all: &Vec<serde_json::Value>| {
-        all.iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let whom = match (req["crew"].as_array(), req["players"].as_array()) {
-        (Some(crew), _) => format!("Silent Station for members {}", listed(crew)),
-        (None, Some(players)) => format!("a chess match between members {}", listed(players)),
-        (None, None) => format!("a scenario for member {}", req["member"]),
-    };
+    let players = req["players"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
     record(
         &state,
         &format!(
-            "you started {whom} in project {} (seed {}): task {}",
+            "you started a chess match between members {players} in project {} (seed {}): task {}",
             req["project"], answer.0["seed"], answer.0["task"]
         ),
     );
     Ok(answer)
 }
 
-/// The owner starts a trial (the Holodeck plan's phase 7): `{name, project, kind, conditions:
-/// [{label, members}], seeds}`.
-pub(super) async fn hq_start_trial(
-    State(state): State<AppState>,
-    Json(req): Json<serde_json::Value>,
-) -> Answer {
-    let answer = ask(&state, "/v1/trials".to_owned(), Some(req.clone())).await?;
-    let runs = answer.0["tasks"].as_array().map_or(0, Vec::len);
-    record(
-        &state,
-        &format!(
-            "you started trial {}: {runs} runs",
-            req["name"].as_str().unwrap_or_default()
-        ),
-    );
-    Ok(answer)
-}
-
-/// A trial compared: its conditions side by side, every run, and a report to keep.
-pub(super) async fn hq_trial(State(state): State<AppState>, Path(name): Path<String>) -> Answer {
-    ask(&state, format!("/v1/trials/{name}"), None).await
-}
-
 /// A scenario as the owner's screen shows it: where it stands and its log, step by step.
+/// One task whole, as the owner opens it: the snapshot carries finished work in brief.
+pub(super) async fn hq_task_shown(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/tasks/{id}"), None).await
+}
+
 pub(super) async fn hq_scenario(State(state): State<AppState>, Path(task): Path<i64>) -> Answer {
     ask(&state, format!("/v1/scenarios/{task}"), None).await
+}
+
+#[derive(Deserialize)]
+pub(super) struct LeaguePage {
+    #[serde(default)]
+    page: Option<usize>,
+}
+
+/// The league's finished games, newest first, a page at a time, for the owner's Chess tab.
+pub(super) async fn hq_league_games(
+    State(state): State<AppState>,
+    Query(q): Query<LeaguePage>,
+) -> Answer {
+    let page = q.page.unwrap_or(1);
+    ask(&state, format!("/v1/league/games?page={page}"), None).await
+}
+
+/// A game in PGN as HQ wrote it, passed on as plain text named `file`, to copy or keep.
+async fn pgn_passed(state: &AppState, path: String, file: String) -> Response {
+    let hq = match client(state) {
+        Ok(hq) => hq,
+        Err(failed) => return failed.into_response(),
+    };
+    let answer = tokio::task::spawn_blocking(move || hq.get_text(&path))
+        .await
+        .map_err(|_| HqError::Unreachable("a worker thread failed".to_owned()))
+        .and_then(|got| got);
+    let pgn = match answer {
+        Ok(pgn) => pgn,
+        Err(error) => return failed(error).into_response(),
+    };
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8".to_owned(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("inline; filename=\"{file}\""),
+            ),
+        ],
+        pgn,
+    )
+        .into_response()
+}
+
+/// A Holodeck match in PGN: the league's games under the league, their sides the brains.
+pub(super) async fn hq_scenario_pgn(
+    State(state): State<AppState>,
+    Path(task): Path<i64>,
+) -> Response {
+    pgn_passed(
+        &state,
+        format!("/v1/scenarios/{task}/pgn"),
+        format!("endora-match-{task}.pgn"),
+    )
+    .await
+}
+
+/// A game of the office's chess in PGN.
+pub(super) async fn hq_chess_pgn(State(state): State<AppState>, Path(id): Path<i64>) -> Response {
+    pgn_passed(
+        &state,
+        format!("/v1/chess/{id}/pgn"),
+        format!("endora-office-chess-{id}.pgn"),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -823,7 +765,7 @@ pub(super) struct HqLoopRank {
     rank: u8,
 }
 
-/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 5 (the house's
+/// The owner sets the rank a loop's items start at (ADR 0142): 1 (Opus) to 6 (the house's
 /// model).
 pub(super) async fn hq_loop_rank(
     State(state): State<AppState>,
@@ -839,6 +781,95 @@ pub(super) async fn hq_loop_rank(
     record(
         &state,
         &format!("you set loop {id} to start at rank {}", req.rank),
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqLoopItems {
+    items: u8,
+}
+
+/// The owner sets how many items a loop has in hand at once (ADR 0142): 1 to 4, each with a
+/// different member.
+pub(super) async fn hq_loop_items(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopItems>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/items"),
+        Some(json!({ "items": req.items })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id} to {} items at once", req.items),
+    );
+    Ok(answer)
+}
+
+/// A loop's lessons (ADR 0142, amended 2026-10-31): the few lines every work turn on it reads.
+pub(super) async fn hq_loop_lessons(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/projects/{id}/lessons"), None).await
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqDelivery {
+    #[serde(default)]
+    cards: Option<bool>,
+    #[serde(default)]
+    merge_develop: Option<bool>,
+}
+
+/// The owner's settings for accepted work (ADR 0115, amended 2026-10-31): the "Ready to merge"
+/// and "Push" cards back on the desk, and HQ merging pushed branches into the fork's develop.
+pub(super) async fn hq_delivery(
+    State(state): State<AppState>,
+    Json(req): Json<HqDelivery>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/delivery".to_owned(),
+        Some(json!({ "cards": req.cards, "merge_develop": req.merge_develop })),
+    )
+    .await?;
+    let said = |on: Option<bool>, what: &str| {
+        on.map(|on| format!("{what} {}", if on { "on" } else { "off" }))
+    };
+    let changed: Vec<String> = [
+        said(req.cards, "merge cards on the desk"),
+        said(req.merge_develop, "merging develop"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    record(&state, &format!("you turned {}", changed.join(" and ")));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqLoopLessons {
+    lessons: Vec<String>,
+}
+
+/// The owner sets a loop's lessons, the whole list.
+pub(super) async fn hq_set_loop_lessons(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqLoopLessons>,
+) -> Answer {
+    let count = req.lessons.len();
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/lessons"),
+        Some(json!({ "lessons": req.lessons })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set loop {id}'s lessons ({count} lines)"),
     );
     Ok(answer)
 }
@@ -867,6 +898,34 @@ pub(super) async fn hq_project_tools(
                 .join(", ")
         ),
         None => format!("you took project {id}'s list of tools away"),
+    };
+    record(&state, &said);
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqProjectRepo {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// The owner names the repository outside the lab a project's work is in (ADR 0115, amended
+/// 2026-11-01: round 4's F4), or takes it away: HQ keeps a public GitHub address alone, and its
+/// refusal of anything else is passed on. Recorded.
+pub(super) async fn hq_project_repo(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqProjectRepo>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/repo"),
+        Some(json!({ "url": req.url })),
+    )
+    .await?;
+    let said = match answer.0["repo"].as_str() {
+        Some(repo) => format!("you named {repo} as project {id}'s repository outside the lab"),
+        None => format!("you took project {id}'s repository outside the lab away"),
     };
     record(&state, &said);
     Ok(answer)
@@ -903,31 +962,6 @@ pub(super) async fn hq_pool_top_up(
 mod tests {
     use super::super::relay::tests::{fake, node};
     use super::*;
-
-    #[test]
-    fn a_deploy_cards_branch_opens_on_the_fork_against_its_base() {
-        // Never fetched: a branch's address is made from the fork's name alone.
-        let docs = endora_capabilities::ansible_nas::Docs::new(
-            endora_capabilities::ansible_nas::Fork::of("owner/ansible-nas", "develop"),
-            Box::new(endora_capabilities::ansible_nas::Web),
-        );
-        let lab = super::super::contracts::LabKnowledge::new(docs, Vec::new());
-        assert_eq!(
-            lab.branch_url("hq/task-672-role-readmes is on your fork. Once you have merged it"),
-            Some(
-                "https://github.com/owner/ansible-nas/compare/develop...hq/task-672-role-readmes"
-                    .to_owned()
-            )
-        );
-        assert_eq!(
-            lab.branch_url("Push hq/task-671-lint-clean."),
-            Some(
-                "https://github.com/owner/ansible-nas/compare/develop...hq/task-671-lint-clean"
-                    .to_owned()
-            )
-        );
-        assert_eq!(lab.branch_url("no branch named here"), None);
-    }
 
     #[tokio::test]
     async fn retained_task_history_uses_a_fixed_read_route_and_preserves_the_page() {
@@ -1044,7 +1078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_renames_a_member_and_rewrites_the_house_log_through_the_node() {
+    async fn the_owner_renames_a_member_through_the_node() {
         let (url, seen) = fake(Arc::new(|path, _| {
             if path.ends_with("/name") {
                 return (
@@ -1066,14 +1100,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(renamed.0["name"], "Jane Doe");
-        let _ = hq_house_log(
-            State(state.clone()),
-            Json(HqHouseLog {
-                log: "- 17 Oct: the NAS has 16 GB.".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
         let sent: Vec<(String, serde_json::Value)> = seen
             .lock()
             .unwrap()
@@ -1082,28 +1108,18 @@ mod tests {
             .collect();
         assert_eq!(
             sent,
-            [
-                (
-                    "/v1/members/5/name".to_owned(),
-                    json!({ "name": "Jane Doe" })
-                ),
-                (
-                    "/v1/house".to_owned(),
-                    json!({ "log": "- 17 Oct: the NAS has 16 GB." })
-                ),
-            ]
+            [(
+                "/v1/members/5/name".to_owned(),
+                json!({ "name": "Jane Doe" })
+            ),]
         );
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
             .map(|r| r.summary().to_owned())
             .collect();
-        for line in [
-            "HQ: you renamed member 5 to Jane Doe",
-            "HQ: you rewrote the house log",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
+        let line = "HQ: you renamed member 5 to Jane Doe";
+        assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
     }
 
     #[tokio::test]
@@ -1148,68 +1164,6 @@ mod tests {
             audit
                 .iter()
                 .any(|a| a == "HQ: you set member 5 to run on claude-code"),
-            "{audit:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_owner_sets_both_of_a_members_brains_through_the_node_and_both_are_recorded() {
-        let (url, seen) = fake(Arc::new(|path, _| {
-            if path.ends_with("/work-brain") {
-                return (
-                    200,
-                    "application/json",
-                    json!({ "member": 1, "work_brain": "mac" }).to_string(),
-                );
-            }
-            (
-                200,
-                "application/json",
-                json!({ "member": 1, "judgment_brain": null }).to_string(),
-            )
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let work = hq_set_work_brain(
-            State(state.clone()),
-            Path(1),
-            Json(HqWorkBrain {
-                work_brain: "mac".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(work.0["work_brain"], "mac");
-        let judges = hq_set_judgment_brain(
-            State(state.clone()),
-            Path(1),
-            Json(HqJudgmentBrain {
-                judgment_brain: "none".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
-        assert!(judges.0["judgment_brain"].is_null());
-        let paths: Vec<String> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, _)| p.clone())
-            .collect();
-        assert_eq!(
-            paths,
-            ["/v1/members/1/work-brain", "/v1/members/1/judgment-brain"]
-        );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        assert!(
-            audit.contains(&"HQ: you set member 1 to work with mac".to_owned()),
-            "{audit:?}"
-        );
-        assert!(
-            audit.contains(&"HQ: you set member 1 to judge with no one".to_owned()),
             "{audit:?}"
         );
     }
@@ -1384,77 +1338,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_starts_and_reads_a_trial_through_the_node() {
-        let (url, seen) = fake(Arc::new(|path, _| {
-            let body = if path == "/v1/trials" {
-                json!({ "name": "who-lights-it", "tasks": [41, 42] })
-            } else {
-                json!({ "name": "who-lights-it", "markdown": "# Trial who-lights-it" })
-            };
-            (200, "application/json", body.to_string())
-        }));
-        let state = node(&url, "http://127.0.0.1:9");
-        let started = hq_start_trial(
-            State(state.clone()),
-            Json(
-                json!({ "name": "who-lights-it", "project": 3, "kind": "lighthouse",
-                         "conditions": [{ "label": "a", "members": [2] },
-                                        { "label": "b", "members": [7] }],
-                         "seeds": [7] }),
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(started.0["tasks"], json!([41, 42]));
-        let read = hq_trial(State(state.clone()), Path("who-lights-it".to_owned()))
-            .await
-            .unwrap();
-        assert!(read.0["markdown"].as_str().unwrap().starts_with("# Trial"));
-        let sent: Vec<String> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(p, _, _)| p.clone())
-            .collect();
-        assert_eq!(sent, ["/v1/trials", "/v1/trials/who-lights-it"]);
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
-            .unwrap()
-            .iter()
-            .map(|r| r.summary().to_owned())
-            .collect();
-        assert!(
-            audit
-                .iter()
-                .any(|a| a == "HQ: you started trial who-lights-it: 2 runs"),
-            "{audit:?}"
-        );
-    }
-
-    #[tokio::test]
     async fn the_owner_starts_and_reads_a_scenario_through_the_node() {
         let (url, seen) = fake(Arc::new(|path, _| {
             let body = if path == "/v1/scenarios" {
                 json!({ "task": 41, "seed": 7 })
             } else {
-                json!({ "task": 41, "end": "solved", "log": [] })
+                json!({ "task": 41, "end": "black_won", "log": [] })
             };
             (200, "application/json", body.to_string())
         }));
         let state = node(&url, "http://127.0.0.1:9");
-        let started = hq_start_scenario(
-            State(state.clone()),
-            Json(json!({ "project": 3, "member": 5, "seed": 7 })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(started.0["task"], 41);
-        let crewed = hq_start_scenario(
-            State(state.clone()),
-            Json(json!({ "project": 3, "kind": "silent_station", "crew": [2, 7, 8], "seed": 7 })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(crewed.0["task"], 41);
         let matched = hq_start_scenario(
             State(state.clone()),
             Json(json!({ "project": 3, "kind": "chess", "players": [2, 7], "seed": 7 })),
@@ -1463,76 +1356,173 @@ mod tests {
         .unwrap();
         assert_eq!(matched.0["task"], 41);
         let shown = hq_scenario(State(state.clone()), Path(41)).await.unwrap();
-        assert_eq!(shown.0["end"], "solved");
+        assert_eq!(shown.0["end"], "black_won");
         let sent: Vec<String> = seen
             .lock()
             .unwrap()
             .iter()
             .map(|(p, _, _)| p.clone())
             .collect();
-        assert_eq!(
-            sent,
-            [
-                "/v1/scenarios",
-                "/v1/scenarios",
-                "/v1/scenarios",
-                "/v1/scenarios/41",
-            ]
-        );
+        assert_eq!(sent, ["/v1/scenarios", "/v1/scenarios/41"]);
         let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
             .unwrap()
             .iter()
             .map(|r| r.summary().to_owned())
             .collect();
-        for line in [
-            "HQ: you started a scenario for member 5 in project 3 (seed 7): task 41",
-            "HQ: you started Silent Station for members 2, 7, 8 in project 3 (seed 7): task 41",
-            "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41",
-        ] {
-            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
-        }
+        let line =
+            "HQ: you started a chess match between members 2, 7 in project 3 (seed 7): task 41";
+        assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
     }
 
     #[tokio::test]
-    async fn the_owners_holodeck_rerun_passes_through_and_is_recorded() {
-        let (url, seen) = fake(Arc::new(|_, _| {
-            let body = json!({ "queued": 9, "round": "round 1" });
-            (200, "application/json", body.to_string())
+    async fn a_game_is_passed_on_as_pgn_in_plain_text() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            if path == "/v1/chess/9/pgn" {
+                return (
+                    404,
+                    "application/json",
+                    json!({ "error": "no such chess game" }).to_string(),
+                );
+            }
+            (
+                200,
+                "text/plain; charset=utf-8",
+                "[Event \"Endora model league\"]\n\n1. e4 *\n".to_owned(),
+            )
         }));
         let state = node(&url, "http://127.0.0.1:9");
-        let answer = hq_rerun_holodeck(
-            State(state.clone()),
-            Json(HqRerun {
-                round: "round 1".to_owned(),
-                restart: false,
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(answer.0["queued"], 9);
-        let sent: Vec<(String, serde_json::Value)> = seen
+        let res = hq_scenario_pgn(State(state.clone()), Path(41)).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
+        assert!(
+            res.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .contains("endora-match-41.pgn")
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            &bytes[..],
+            b"[Event \"Endora model league\"]\n\n1. e4 *\n".as_slice()
+        );
+        let missing = hq_chess_pgn(State(state.clone()), Path(9)).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let sent: Vec<String> = seen
             .lock()
             .unwrap()
             .iter()
-            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .map(|(p, _, _)| p.clone())
             .collect();
+        assert_eq!(sent, ["/v1/scenarios/41/pgn", "/v1/chess/9/pgn"]);
+    }
+
+    /// What a turn was given reaches the owner's screen only through the node, and the node
+    /// scrubs every word of a replay with the scrubber the receipts and the kept conversations
+    /// use: a key, a token or a link's password planted anywhere in it never reaches the page.
+    #[tokio::test]
+    async fn a_secret_planted_in_a_replay_never_reaches_the_page() {
+        let planted = [
+            "sk-ant-abcdefabcdefabcdefabcdef",
+            "ghp_1234567890abcdefghijklmnopqrstuv",
+            "hunter2",
+            "AKIAIOSFODNN7EXAMPLE",
+        ];
+        let turn = json!({
+            "run": 3, "task": 7,
+            "moments": [
+                { "kind": "briefing", "text": "You are Bo. The key is sk-ant-abcdefabcdefabcdefabcdef." },
+                { "kind": "call", "tool": "container_logs", "args": "password=hunter2",
+                  "excerpt": "pulled https://jane:hunter2@example.com/x.git" },
+            ],
+            "transcript": { "runtime": "worker", "est_tokens": 40, "text":
+                "--- tools ---\npost\n--- system ---\nYou are Bo.\n--- user ---\nUse ghp_1234567890abcdefghijklmnopqrstuv \
+                 and AKIAIOSFODNN7EXAMPLE.\n" },
+        });
+        let answered = turn.clone();
+        let (url, _) = fake(Arc::new(move |path, _| {
+            let body = if path.starts_with("/v1/tasks/") {
+                json!({ "task": 7, "runs": [answered.clone()] })
+            } else {
+                json!({ "replay": answered.clone() })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let one = hq_run_replay(State(state.clone()), Path(3))
+            .await
+            .unwrap()
+            .0;
+        let all = hq_task_replay(State(state), Path(7)).await.unwrap().0;
+        for page in [one.to_string(), all.to_string()] {
+            for secret in planted {
+                assert!(!page.contains(secret), "{secret} reached the page: {page}");
+            }
+            assert!(page.contains("[redacted]"), "{page}");
+            assert!(
+                page.contains("--- tools ---\\npost"),
+                "the rest is kept: {page}"
+            );
+            assert!(
+                page.contains("[redacted]@example.com/x.git"),
+                "a link keeps its host: {page}"
+            );
+        }
         assert_eq!(
-            sent,
-            [(
-                "/v1/scenarios/rerun".to_owned(),
-                json!({ "round": "round 1", "restart": false })
-            )]
+            all["runs"][0]["transcript"]["est_tokens"], 40,
+            "numbers stay numbers"
         );
-        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+    }
+
+    #[tokio::test]
+    async fn the_leagues_finished_games_are_asked_of_hq_a_page_at_a_time() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            let body = json!({ "page": 2, "pages": 3, "total": 21, "games": [] });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_league_games(State(state.clone()), Query(LeaguePage { page: Some(2) }))
+            .await
+            .unwrap();
+        assert_eq!(answer.0["pages"], 3);
+        let first = hq_league_games(State(state), Query(LeaguePage { page: None }))
+            .await
+            .unwrap();
+        assert_eq!(first.0["pages"], 3);
+        let sent: Vec<String> = seen
+            .lock()
             .unwrap()
             .iter()
-            .map(|r| r.summary().to_owned())
+            .map(|(p, _, _)| p.clone())
             .collect();
-        assert!(
-            audit.iter().any(|a| a
-                == "HQ: you ran the Holodeck again: 9 scenarios queued, the earlier round kept as \"round 1\""),
-            "{audit:?}"
-        );
+        assert_eq!(sent, ["/v1/league/games?page=2", "/v1/league/games?page=1"]);
+    }
+
+    #[tokio::test]
+    async fn an_opened_task_is_asked_of_hq_whole() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (
+                200,
+                "application/json",
+                json!({ "id": 7, "thread": [] }).to_string(),
+            )
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_task_shown(State(state), Path(7)).await.unwrap();
+        assert_eq!(answer.0["id"], 7);
+        let sent: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        assert_eq!(sent, ["/v1/tasks/7"]);
     }
 
     #[tokio::test]
@@ -1600,6 +1590,28 @@ mod tests {
                 .any(|a| a == "HQ: you moved task 676 into project 2"),
             "{audit:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_owners_outside_repository_of_a_project_passes_through_to_hq() {
+        let (url, seen) = fake(Arc::new(|_, body| {
+            let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+            let body = json!({ "project": 3, "repo": sent["url"] });
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let answer = hq_project_repo(
+            State(state.clone()),
+            Path(3),
+            Json(HqProjectRepo {
+                url: Some("https://github.com/example/tiny".to_owned()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["repo"], "https://github.com/example/tiny");
+        let sent = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(sent.0, "/v1/projects/3/repo");
     }
 
     #[tokio::test]

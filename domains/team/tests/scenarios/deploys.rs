@@ -2,8 +2,9 @@
 //! platform cut short is tried again as the same member, and raises nothing.
 
 use cucumber::then;
-use endora_team::application::TeamStore;
+
 use endora_team::application::ports::Run;
+use endora_team::application::run_ports::RunStore;
 use endora_team::domain::runs::own_attempts;
 use endora_team::domain::{RunStatus, WakeReason};
 
@@ -11,7 +12,7 @@ use super::Office;
 
 impl Office {
     /// `member`'s newest turn on the task titled `title`, as the HQ screen lists it.
-    fn newest_turn_of(&self, member: &str, title: &str) -> Run {
+    pub(super) fn newest_turn_of(&self, member: &str, title: &str) -> Run {
         let (id, task) = (self.member(member), self.task(title));
         self.hq
             .store()

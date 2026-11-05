@@ -138,6 +138,12 @@ and that has sat idle ten minutes has them woken again** (a match's side to move
 every player still at it), **three times at most with nothing done; then the world abandons
 it**, dropping its tasks and saying why. Any action resets the count.
 
+*Amended 2026-10-28:* a match is not abandoned. Live, Local claimed a checkmate that was not
+there and stopped moving, so the game went unrated: stopping was a way out of a game. **The
+side to move forfeits** (`forfeit <side>` in the log, on its last turn) and the other side
+wins. **A side may also resign** (the scenario tool's `resign`, kept as `resign <side>`). Both
+replay from the log like moves, so a league game ended either way is rated.
+
 ## Amendment (2026-10-20): a trial may vary the briefing
 
 The first Silent Station trial varied who captains, and three of four missions ended the same
@@ -176,8 +182,70 @@ from a seed, ADR 0121) spends none.
   twice; a rematch swaps the colours.
 - **The table is Elo**, from 1200 with K 32, summed from the finished games in the order played
   (`domain/league.rs`): arithmetic over the record. A game abandoned with no result is not
-  rated. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
+  rated; since 2026-10-28 a match is forfeited instead (above), so it is. The Holodeck card lists the brains ranked, one line each, how many pairs have yet to
   meet, and the games, each opening its board and log.
+
+## Amendment (2026-10-30): the other worlds retired, chess kept
+
+The owner decided on 2026-10-28, and confirmed on 2026-10-30, to retire the lighthouse, Silent
+Station, the trials and the owner's re-run of the Holodeck (the queue that started every
+scenario again). The owner prefers chess; the other worlds cost turns and code and were not
+being used. What stays: the chess world with its resigning and forfeits, the model league (start,
+tick, reset, ratings, and its pause), and the live board on the Holodeck card, stepped through
+move by move. The office chess board
+(0121) is a separate thing and is untouched.
+
+- **Nothing starts them any more.** Their domain modules (`domain/scenario.rs`,
+  `domain/station.rs`, `domain/trials.rs`), the engine's trials, the re-run queue and its tick,
+  their actions in the `scenario` tool, `POST /v1/trials`, `GET /v1/trials/{name}`,
+  `POST /v1/scenarios/rerun` (and the node's `/v1/hq/...` passes) and their console screens are
+  gone. `POST /v1/scenarios` starts a chess match alone and refuses any other kind, saying why.
+- **History is kept, not deleted.** No migration touches the store. A retired world's rows
+  (its task and parts, its log of actions, its `scenario:<task>` mark, a round's label, a
+  queued re-run, a trial's record) stay where they were. Reading the Holodeck passes over them:
+  a mark that is not chess is read as no world, so they are left out of the list, their page
+  is not found, the tick neither closes, wakes nor restarts them, and an old one left open
+  holds the league back no more than any other task does. Such a task is still left alone by
+  the stuck-work guards, as a world's task was.
+- **One game at a time** now means only that no match is being played (and the league's project
+  is not paused); the card's note that the league waits on queued scenarios goes with the queue.
+
+## Amendment (2026-10-30): PGN export and rating history
+
+- **Any game reads as PGN** (`domain/pgn.rs`, pure): the seven tags, a `Termination` in the
+  standard's words (a resignation or a rule's end `normal`, a side that stopped moving `time
+  forfeit`, an office game adjourned after a week `adjudication`, a match stopped with no result
+  `abandoned`), the numbered moves under 80 columns, the house's reason as a comment, and the
+  result. A league game is under "Endora model league", its sides the brains' labels and its
+  round its place among the league's games; another match is under "Endora Holodeck", and an
+  office game (0121) under "Endora office chess", their sides the members. `GET
+  /v1/scenarios/{task}/pgn` and `GET /v1/chess/{id}/pgn` answer in plain text; the node passes
+  them on at `/v1/hq/...`, and an open match on the Holodeck card offers Copy PGN and Download
+  PGN.
+- **Each brain's rating history** is its rating at the start and after each of its finished
+  games, derived by the same Elo pass as the table (no new table); the league card draws it as a
+  small inline line beside the brain.
+
+## Amendment (2026-10-31): the Chess tab
+
+The owner's notes of 31 Oct asked for a dedicated Chess area: every league game, live boards
+for those in play, and the month's bracket with each game's PGN. The league is not monthly: it
+is a round robin, one game a pair, and a round runs from one reset to the next. The owner
+accepted showing "Round N, since <reset day>" rather than a month that the code does not keep.
+
+- **HQ's console gains a fourth tab, Chess** (`47e-hq-chess.js`). Live: each league game in play,
+  its board with the last move lit, whose move it is and the last move. This round: the
+  bracket, brains against brains (won, lost, drawn, playing, not yet), and the standings. All
+  games: every finished game, newest first, ten to a page with Newer and Older, each with its
+  result, its moves, round and day, and its PGN. The Work tab's Holodeck card keeps the matches
+  and points to the Chess tab for the league.
+- **The standings rank by points (a win one, a draw a half), then rating** (`domain/league.rs`).
+- **The snapshot's league** says its round (`{number, since}`, the owner's day of the last
+  reset) and, for a game in play, its board, the board before the last move, its FEN, whose
+  move it is and the last move, so the console's existing refresh moves it.
+- **`GET /v1/league/games?page=N`** (the node's `/v1/hq/league/games`) lists every finished
+  league game of every round, the games each reset set aside included, newest first, ten to a
+  page. A game in play is not listed; one stopped with no result is listed as abandoned.
 
 ## Consequences
 

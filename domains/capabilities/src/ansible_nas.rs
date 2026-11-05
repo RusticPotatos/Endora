@@ -39,6 +39,16 @@ pub const ONLY_THE_DOCS: &str = "only the lab's ansible-nas docs can be read: a 
 /// The branch a fork is read at when GitHub does not say which is its default.
 pub const FALLBACK_BRANCH: &str = "main";
 
+/// Upstream ansible-nas on GitHub, `owner/name`: public, read by the node beside the fork and
+/// never written to (ADR 0106, amended 2026-10-31).
+pub const UPSTREAM_REPO: &str = "davestephens/ansible-nas";
+
+/// Where the node fetches upstream from, unauthenticated, as it does the fork.
+#[must_use]
+pub fn upstream_https_url() -> String {
+    format!("https://github.com/{UPSTREAM_REPO}.git")
+}
+
 /// The fork, as the environment names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fork {

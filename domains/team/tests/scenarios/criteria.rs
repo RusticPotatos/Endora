@@ -31,25 +31,17 @@ impl Office {
         self.note(made);
     }
 
-    /// `name`, in its running turn on the task `of`, hands `to` a part of it with `create_task`,
-    /// as its worker would, saying which criterion of the task the part serves if it does.
-    fn hands_a_part(
-        &mut self,
-        name: &str,
-        to: &str,
-        part: &str,
-        of: &str,
-        done: &str,
-        serves: Option<&str>,
-    ) {
+    /// `name`, in its running turn on the task `of`, splits a part of it off with
+    /// `create_task`, as its worker would.
+    fn splits_off_a_part(&mut self, name: &str, part: &str, of: &str, done: &str) {
         let task = self.task(of);
         let context = self.turn_of(name);
         assert_eq!(context.task, Some(task), "{name}'s turn is on another task");
         self.use_tool(
             name,
             "create_task",
-            &json!({ "title": part, "description": "a part of the task", "assignee": to,
-                     "criteria": [{ "text": done }], "serves": serves }),
+            &json!({ "title": part, "description": "a part of the task",
+                     "criteria": [{ "text": done }] }),
         );
     }
 
@@ -82,24 +74,20 @@ fn gives_done_when(w: &mut Office, to: String, title: String, done: String) {
     w.owner_gives(&to, &title, &[Criterion::new(&done, false)]);
 }
 
-#[when(regex = r#"^(\w+) hands (\w+) the part "([^"]+)" of "([^"]+)", done when "([^"]+)"$"#)]
-fn hands_a_part(w: &mut Office, by: String, to: String, part: String, of: String, done: String) {
-    w.hands_a_part(&by, &to, &part, &of, &done, None);
+/// The owner's screen and API give criteria a line each, read by `Criterion::from_lines` as
+/// HQ's route reads them.
+#[when(regex = r#"^the owner gives (\w+) the work "([^"]+)" with (\d+) lines of what done means$"#)]
+fn gives_with_lines(w: &mut Office, to: String, title: String, count: usize) {
+    let lines: Vec<String> = (1..=count).map(|n| format!("requirement {n}")).collect();
+    match Criterion::from_lines(&lines) {
+        Ok(criteria) => w.owner_gives(&to, &title, &criteria),
+        Err(why) => w.refused = Some(why),
+    }
 }
 
-#[when(
-    regex = r#"^(\w+) hands (\w+) the part "([^"]+)" of "([^"]+)", done when "([^"]+)", serving "([^"]+)"$"#
-)]
-fn hands_a_part_serving(
-    w: &mut Office,
-    by: String,
-    to: String,
-    part: String,
-    of: String,
-    done: String,
-    serves: String,
-) {
-    w.hands_a_part(&by, &to, &part, &of, &done, Some(&serves));
+#[when(regex = r#"^(\w+) splits off the part "([^"]+)" of "([^"]+)", done when "([^"]+)"$"#)]
+fn splits_off_a_part(w: &mut Office, by: String, part: String, of: String, done: String) {
+    w.splits_off_a_part(&by, &part, &of, &done);
 }
 
 #[when(regex = r#"^(\w+) asks the owner to approve "([^"]+)" because "([^"]+)"$"#)]

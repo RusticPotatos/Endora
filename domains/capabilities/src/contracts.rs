@@ -19,6 +19,25 @@ pub const TEAM_RESTARTS_AN_HOUR: usize = 3;
 pub const MOST_OF_A_LOG: usize = 16 * 1024;
 /// The most lines of a container's log a turn is given: the newest.
 pub const LOG_LINES: usize = 100;
+/// The lines of a log a turn on a house model (the NAS's or the Mac) reads unless it asks for
+/// more (ADR 0142, amended 2026-10-30): a slow model's turn is sized to what it can read.
+pub const HOUSE_LOG_LINES: usize = 40;
+/// The most of a log such a turn reads unless it asks for more.
+pub const HOUSE_MOST_OF_A_LOG: usize = 6 * 1024;
+
+/// How much of a log a turn reads, in lines and bytes: `asked` lines (1 to [`LOG_LINES`]), or
+/// by default all a turn is given, except that a turn on a house model is given
+/// [`HOUSE_LOG_LINES`] and [`HOUSE_MOST_OF_A_LOG`] unless it asks for more lines than that.
+#[must_use]
+pub fn log_size(on_a_house_model: bool, asked: Option<u64>) -> (usize, usize) {
+    let asked = asked.map(|n| usize::try_from(n).unwrap_or(LOG_LINES).clamp(1, LOG_LINES));
+    match (on_a_house_model, asked) {
+        (true, None) => (HOUSE_LOG_LINES, HOUSE_MOST_OF_A_LOG),
+        (true, Some(n)) if n <= HOUSE_LOG_LINES => (n, HOUSE_MOST_OF_A_LOG),
+        (_, Some(n)) => (n, MOST_OF_A_LOG),
+        (false, None) => (LOG_LINES, MOST_OF_A_LOG),
+    }
+}
 
 /// What kind of ability a contract is (ADR 0106).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,41 +75,6 @@ pub struct Contract {
 }
 
 impl Contract {
-    /// Whether a turn of a member in `role` may be given what this returns: a Confidential
-    /// contract (a log) by the bridge's rule, to a turn on the house's model or to the lead's on
-    /// a cloud model, as the owner decided (ADR 0109).
-    #[must_use]
-    pub fn may_be_seen_by(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        let tier = if self.tier == "confidential" {
-            endora_kernel::Tier::Confidential
-        } else {
-            endora_kernel::Tier::Internal
-        };
-        crate::bridge::may_see(tier, self.name, role, on_a_cloud_model)
-    }
-
-    /// Whether a turn of a member in `role` is offered this contract: what it may see, and an
-    /// act only for a member who works on the house, as the bridge's profiles say: the lead and
-    /// the developers. The CEO reads what the lead reads and directs; it takes no step on the
-    /// house itself (ADR 0111, 0120), and nor do the reviewer and the researcher (amended
-    /// 2026-10-19). The wing's git contracts (ADR 0115) go to
-    /// a lead or a developer, whatever its brain: the fork is public. The tester is offered the
-    /// checkout alone (amended 2026-10-19): checking a branch out is her reading of it, the one
-    /// receipt of her own she could not otherwise have; she submits nothing.
-    #[must_use]
-    pub fn offered_to(&self, role: &str, on_a_cloud_model: bool) -> bool {
-        if self.name == REPO_CHECKOUT {
-            return matches!(role, "lead" | "developer" | "reviewer");
-        }
-        if self.name == REPO_SUBMIT {
-            return matches!(role, "lead" | "developer");
-        }
-        if self.kind == Kind::AutomaticAct && !crate::bridge::may(role, crate::bridge::Kind::Act) {
-            return false;
-        }
-        self.may_be_seen_by(role, on_a_cloud_model)
-    }
-
     /// As an MCP tool: name, description and input schema.
     #[must_use]
     pub fn as_tool(&self) -> Value {
@@ -113,39 +97,45 @@ pub const ANSIBLE_NAS_DOC: &str = "ansible_nas_doc";
 pub const REPO_CHECKOUT: &str = "repo_checkout";
 /// The contract that takes a sandbox's branch as a bundle (ADR 0115).
 pub const REPO_SUBMIT: &str = "repo_submit";
+/// The contract that reads an image's tags from its public registry (amended 2026-10-30).
+pub const IMAGE_TAGS: &str = "image_tags";
 
 /// Every contract Endora offers the team, in the order a turn is offered them.
 #[must_use]
 pub fn all() -> Vec<Contract> {
-    let container = json!({ "type": "string", "description": "The container's name, as homelab_status lists it, e.g. sonarr." });
+    let container =
+        json!({ "type": "string", "description": "as homelab_status names it, e.g. sonarr" });
     vec![
         Contract {
             name: HOMELAB_STATUS,
-            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items. For each container its name, state, status text and health. Marked stale when Endora has not seen it for a minute. Free.",
+            description: "Read the home lab's state: each service (docker, sonarr, radarr) and its items; each container's name, state, status and health; when one was updated to a new image. Marked stale when unseen for a minute. Free.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {} }),
         },
         Contract {
             name: CONTAINER_LOGS,
-            description: "Read the newest 100 lines of one container's log, at most 16 KB, with secrets replaced by [redacted]. Not Endora's own containers. Free.",
+            description: "Read the newest lines of one container's log, secrets replaced by [redacted]: 100 lines and 16 KB at most, and on the house's own model 40 lines and 6 KB unless you ask for up to 100 with lines. Not Endora's own containers. Free.",
             kind: Kind::Read,
             tier: "confidential",
-            input: json!({ "type": "object", "properties": { "container": container }, "required": ["container"] }),
+            input: json!({ "type": "object", "properties": {
+                "container": container,
+                "lines": { "type": "integer", "minimum": 1, "maximum": LOG_LINES, "description": "how many of the newest lines" },
+            }, "required": ["container"] }),
         },
         Contract {
             name: RESTART_CONTAINER,
-            description: "Restart one container, and read back its state. A safe fix: it runs at once, and the owner is told, with your reason. At most one restart of a container an hour, and three in all an hour across the team. Never Endora's own containers, and never one a restart will not fix: already restarting, out of memory, or crash-looping (ask the owner instead). Say why in a sentence.",
+            description: "Restart one container and read back its state: a safe fix, run at once, and the owner is told your reason. At most once a container an hour, three an hour across the team. Never Endora's own, nor one a restart will not fix (restarting, out of memory, crash-looping), nor one others run in the network of, like gluetun: ask the owner. Say why in a sentence.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "container": container,
-                "why": { "type": "string", "description": "Why it needs a restart, in a sentence the owner reads." },
+                "why": { "type": "string", "description": "a sentence the owner reads" },
             }, "required": ["container", "why"] }),
         },
         Contract {
             name: HOMELAB_MAP,
-            description: "Read how the home lab is built, from Docker: for each container its image, state, restart policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what depends on it, e.g. \"gluetun → deluge, nzbget, prowlarr (run in its network)\": those stop when gluetun restarts and come back on their own. Names and wiring only. Read it before treating a stop as a fault. Free.",
+            description: "Read how the home lab is built, from Docker: for each container its image, state, restart policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what depends on it, e.g. \"gluetun → deluge, nzbget, prowlarr (run in its network)\": restarted alone, gluetun leaves them with no network, so it is the owner's to restart them together. Names and wiring only. Read it before treating a stop as a fault. Free.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {} }),
@@ -161,23 +151,36 @@ pub fn all() -> Vec<Contract> {
         },
         Contract {
             name: REPO_CHECKOUT,
-            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Free; the sandbox stays offline.",
+            description: "Check out the lab's ansible-nas fork into your sandbox at /work/repo: its default branch, or one of the team's hq/ branches. A branch your team submitted comes back whole before the owner has pushed it, on top of its base, to go on from or to review: your own work's (its task, the tasks under and above it) or one you submitted yourself. Git is set up there (commits are authored Endora HQ with the trailer added for you). Upstream ansible-nas comes with it, read-only, as upstream/<its default branch>, so `git log --oneline <base>..upstream/<branch>` shows what upstream has that the fork lacks (the checkout names both). Your sandbox keeps the item's work between turns: a checkout already there is said to be, and kept as it is, unless you ask to refresh it. Free; the sandbox stays offline.",
             kind: Kind::Read,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "branch": { "type": "string", "description": "The fork's default branch unless you name a team branch, hq/task-N-slug (a submitted one of your work)." },
                 "why": { "type": "string", "description": "Why, in a few words." },
+                "refresh": { "type": "boolean", "description": "Only when the checkout is already there: true fetches the node's latest into it as node/<branch>, beside your work, never over it." },
             }, "required": ["why"] }),
         },
         Contract {
             name: REPO_SUBMIT,
-            description: "Send your branch (hq/task-N-slug, N being your task's number, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it is named for your task, sits on the fork's default branch, changes at least one file and at most 200 files and 1 MB, and every commit is HQ's. A new head submitted while the task is in review sends it back: it needs a new review. Nothing is pushed: the owner pushes an accepted branch.",
+            description: "Send your branch (hq/task-N-slug, N being your task's number, committed in /work/repo) to Endora, which keeps it, writes its diff as a document on your task and runs the lab's checks (ansible syntax, ansible-lint, yamllint) on the dev node, judged against the fork's develop (it passes when no check is worse than on develop); the result comes back as a receipt. Refused unless it is named for your task, sits on the fork's default branch, changes at least one file and at most 200 files and 1 MB, and every commit is HQ's (none of upstream's: upstream is read-only, never a base). A new head submitted while the task is in review sends it back: it needs a new review. Nothing is pushed: the owner pushes an accepted branch.",
             kind: Kind::AutomaticAct,
             tier: "internal",
             input: json!({ "type": "object", "properties": {
                 "branch": { "type": "string", "description": "Your branch, hq/task-N-slug, N being your task's number." },
                 "why": { "type": "string", "description": "What the branch does, in a sentence the tester reads." },
             }, "required": ["branch", "why"] }),
+        },
+        Contract {
+            name: IMAGE_TAGS,
+            description: "Look up an image's tags on its public registry (Docker Hub, ghcr.io, quay.io, lscr.io), which Endora reads for you: the newest 30, highest version first, optionally only releases (semver_only, e.g. 1.2.3) or those starting with a prefix, and whether a tag exists. Use it to pin an image to a release that exists. Free.",
+            kind: Kind::Read,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {
+                "image": { "type": "string", "description": "The image, as a compose file or role names it, e.g. grafana/grafana, telegraf or ghcr.io/gethomepage/homepage:v1.4.5." },
+                "tag": { "type": "string", "description": "A tag to check exists, e.g. 12.0.0." },
+                "prefix": { "type": "string", "description": "Only tags starting with this, e.g. v1. or 12." },
+                "semver_only": { "type": "boolean", "description": "Only releases like 1.2.3 or v1.2.3." },
+            }, "required": ["image"] }),
         },
     ]
 }
@@ -303,18 +306,37 @@ fn millis_of(at: &str) -> Option<i64> {
 /// end on a line's edge, so what is kept is whole lines.
 #[must_use]
 pub fn newest_of(log: &str) -> String {
+    newest_within(log, LOG_LINES, MOST_OF_A_LOG)
+}
+
+/// The newest `most_lines` lines of a log, held to `most_bytes` from the newest end on a line's
+/// edge, so what is kept is whole lines.
+#[must_use]
+pub fn newest_within(log: &str, most_lines: usize, most_bytes: usize) -> String {
     let lines: Vec<&str> = log.lines().collect();
-    let newest = &lines[lines.len().saturating_sub(LOG_LINES)..];
+    let newest = &lines[lines.len().saturating_sub(most_lines)..];
     let mut kept: Vec<&str> = Vec::new();
     let mut size = 0;
     for line in newest.iter().rev() {
-        if size + line.len() + 1 > MOST_OF_A_LOG {
+        if size + line.len() + 1 > most_bytes {
             break;
         }
         size += line.len() + 1;
         kept.push(line);
     }
     kept.reverse();
+    if kept.is_empty() {
+        // The newest line alone is longer than the allowance: its end, marked as cut, rather
+        // than nothing, which would read as an empty log (review of 30 Oct).
+        if let Some(last) = newest.last().filter(|l| !l.is_empty()) {
+            let room = most_bytes.saturating_sub("[cut] ".len());
+            let mut from = last.len().saturating_sub(room);
+            while !last.is_char_boundary(from) {
+                from += 1;
+            }
+            return format!("[cut] {}", &last[from..]);
+        }
+    }
     kept.join("\n")
 }
 
@@ -391,7 +413,7 @@ mod tests {
     const NOON: i64 = 1_792_166_400_000;
 
     #[test]
-    fn seven_contracts_each_a_tool_with_a_schema() {
+    fn eight_contracts_each_a_tool_with_a_schema() {
         let tools: Vec<Value> = all().iter().map(Contract::as_tool).collect();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert_eq!(
@@ -403,7 +425,8 @@ mod tests {
                 HOMELAB_MAP,
                 ANSIBLE_NAS_DOC,
                 REPO_CHECKOUT,
-                REPO_SUBMIT
+                REPO_SUBMIT,
+                IMAGE_TAGS
             ]
         );
         for tool in &tools {
@@ -420,94 +443,41 @@ mod tests {
                 Kind::Read,
                 Kind::Read,
                 Kind::Read,
-                Kind::AutomaticAct
+                Kind::AutomaticAct,
+                Kind::Read
             ]
         );
         assert_eq!(all()[1].tier, "confidential", "logs are");
     }
 
+    /// Every member is offered every contract (ADR 0142, one team): none is Restricted, the
+    /// one tier the bridge never gives, so no title or model keeps one from a turn. What a
+    /// contract may do is its own guard's (Endora's own containers, the switches, the wing).
     #[test]
-    fn the_wings_git_goes_to_a_lead_or_a_developer_on_any_brain_and_a_tester_may_only_check_out() {
+    fn no_contract_is_restricted_so_every_turn_is_offered_each() {
+        for contract in all() {
+            assert!(
+                matches!(contract.tier, "internal" | "confidential"),
+                "{}",
+                contract.name
+            );
+        }
         let all = all();
         let (checkout, submit) = (&all[5], &all[6]);
         assert_eq!((checkout.name, submit.name), (REPO_CHECKOUT, REPO_SUBMIT));
-        for contract in [checkout, submit] {
-            assert_eq!(contract.tier, "internal", "the fork is public");
-            for role in ["lead", "developer"] {
-                for cloud in [false, true] {
-                    assert!(
-                        contract.offered_to(role, cloud),
-                        "{} to a {role}",
-                        contract.name
-                    );
-                }
-            }
-            for role in ["ceo", "researcher", ""] {
-                assert!(
-                    !contract.offered_to(role, false),
-                    "{} to a {role}",
-                    contract.name
-                );
-            }
-        }
-        // Live (task 670): the tester had no way to read a submitted branch, so no reading of
-        // her own, so no pass was ever possible. Checking it out is her reading (ADR 0115,
-        // amended); she submits nothing, on any brain.
-        for cloud in [false, true] {
-            assert!(checkout.offered_to("reviewer", cloud));
-            assert!(!submit.offered_to("reviewer", cloud));
-        }
-    }
-
-    #[test]
-    fn a_restart_is_offered_only_to_the_roles_that_act() {
-        // The bridge's profiles say who acts on the house: the lead and the developers. The
-        // reviewer, the researcher and the CEO only read, and a role not listed does nothing.
-        let all = all();
-        let restart = all.iter().find(|c| c.name == RESTART_CONTAINER).unwrap();
-        for cloud in [false, true] {
-            for role in ["lead", "developer"] {
-                assert!(restart.offered_to(role, cloud), "a {role}");
-            }
-            for role in ["ceo", "reviewer", "researcher", "owner", ""] {
-                assert!(!restart.offered_to(role, cloud), "a {role}");
-            }
-        }
-    }
-
-    #[test]
-    fn every_role_on_any_brain_is_offered_the_map_and_the_docs() {
-        let all = all();
+        assert_eq!(
+            (checkout.tier, submit.tier),
+            ("internal", "internal"),
+            "the fork is public"
+        );
         for contract in &all[3..5] {
             assert_eq!(contract.tier, "internal", "names and wiring only");
-            for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
-                for cloud in [false, true] {
-                    assert!(
-                        contract.offered_to(role, cloud),
-                        "{} to a {role}",
-                        contract.name
-                    );
-                }
-            }
         }
-    }
-
-    #[test]
-    fn a_log_goes_to_any_turn_on_any_model() {
-        // ADR 0141: Confidential is open to Claude.
-        let all = all();
-        let (status, logs, restart) = (&all[0], &all[1], &all[2]);
-        for role in ["lead", "developer", "reviewer", "researcher"] {
-            for cloud in [false, true] {
-                assert!(logs.may_be_seen_by(role, cloud), "{role}, cloud {cloud}");
-                assert!(status.may_be_seen_by(role, cloud) && restart.may_be_seen_by(role, cloud));
-            }
-        }
-        // The CEO reads the home lab as the lead does, its state and its logs, and never acts
-        // on it (ADR 0120, the owner's word of 2026-10-18).
-        assert!(status.offered_to("ceo", true) && logs.offered_to("ceo", true));
-        assert!(!restart.offered_to("ceo", true) && !restart.offered_to("ceo", false));
-        assert!(restart.offered_to("lead", true));
+        // A sandbox is offline: HQ twice failed to pin an image off latest for want of a
+        // registry to ask (2026-10-30). The tags are public.
+        let tags = all.iter().find(|c| c.name == IMAGE_TAGS).unwrap();
+        assert_eq!((tags.kind, tags.tier), (Kind::Read, "internal"));
+        assert_eq!(tags.input["required"], json!(["image"]));
     }
 
     #[test]
@@ -632,5 +602,93 @@ mod tests {
         assert!(kept.len() <= MOST_OF_A_LOG);
         assert!(kept.ends_with(&"x".repeat(400)));
         assert!(kept.lines().all(|l| l.len() == 405), "whole lines only");
+    }
+
+    /// A turn on a house model reads less of a log unless it asks (ADR 0142, amended
+    /// 2026-10-30); a Claude or DeepSeek turn reads what it always has. Asking never goes past
+    /// the most any turn is given.
+    #[test]
+    fn a_house_model_reads_40_lines_and_6_kb_of_a_log_unless_it_asks_for_more() {
+        assert_eq!(log_size(true, None), (40, 6 * 1024));
+        assert_eq!(log_size(false, None), (LOG_LINES, MOST_OF_A_LOG));
+        assert_eq!(log_size(true, Some(100)), (100, MOST_OF_A_LOG));
+        assert_eq!(log_size(true, Some(5)), (5, 6 * 1024));
+        assert_eq!(log_size(true, Some(10_000)), (LOG_LINES, MOST_OF_A_LOG));
+        assert_eq!(log_size(false, Some(0)), (1, MOST_OF_A_LOG));
+        let log: String = (1..=150).map(|i| format!("line {i}\n")).collect();
+        let kept = newest_within(&log, 40, 6 * 1024);
+        assert!(kept.starts_with("line 111\n") && kept.ends_with("line 150"));
+        let long: String = (1..=40)
+            .map(|i| format!("{i:04} {}\n", "x".repeat(400)))
+            .collect();
+        assert!(newest_within(&long, 40, 6 * 1024).len() <= 6 * 1024);
+        // A newest line longer than the whole allowance is cut to its end and marked, never
+        // dropped to an empty answer that reads as an empty log (review of 30 Oct).
+        let stack = format!("old line\n{}é{}\n", "a".repeat(7_000), "z".repeat(100));
+        let kept = newest_within(&stack, 40, 6 * 1024);
+        assert!(!kept.trim().is_empty(), "never empty for a log that is not");
+        assert!(kept.len() <= 6 * 1024, "{}", kept.len());
+        assert!(
+            kept.starts_with("[cut] ") && kept.ends_with(&"z".repeat(100)),
+            "{kept:.40}"
+        );
+    }
+
+    /// The contracts a house turn may start with say their rules briefly: each rule is kept.
+    #[test]
+    fn the_lab_contracts_say_their_rules_briefly() {
+        let about = |name: &str| {
+            all()
+                .into_iter()
+                .find(|c| c.name == name)
+                .map(|c| c.as_tool().to_string())
+                .unwrap()
+        };
+        for (name, most, rules) in [
+            (
+                HOMELAB_STATUS,
+                300,
+                &[
+                    "docker, sonarr, radarr",
+                    "health",
+                    "new image",
+                    "stale",
+                    "Free",
+                ][..],
+            ),
+            (
+                CONTAINER_LOGS,
+                550,
+                &[
+                    "[redacted]",
+                    "Not Endora's own",
+                    "40 lines",
+                    "up to 100",
+                    "Free",
+                ][..],
+            ),
+            (
+                RESTART_CONTAINER,
+                650,
+                &[
+                    "safe fix",
+                    "owner is told",
+                    "once a container an hour",
+                    "three an hour across the team",
+                    "Never Endora's own",
+                    "out of memory",
+                    "crash-looping",
+                    "gluetun",
+                    "ask the owner",
+                    "Say why",
+                ][..],
+            ),
+        ] {
+            let text = about(name);
+            assert!(text.len() <= most, "{name} is {} bytes: {text}", text.len());
+            for rule in rules {
+                assert!(text.contains(rule), "{name} lost {rule:?}: {text}");
+            }
+        }
     }
 }

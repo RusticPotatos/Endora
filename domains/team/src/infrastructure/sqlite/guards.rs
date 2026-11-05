@@ -7,7 +7,7 @@ use rusqlite::{OptionalExtension, params};
 use super::{SqliteTeamStore, backend, corrupt};
 use crate::application::guard_ports::GuardStore;
 use crate::application::ports::Stored;
-use crate::domain::closure::{Closed, Closure};
+use crate::domain::closure::{Closed, Closure, DoneWhy};
 use crate::domain::{MemberId, Millis, TaskId, TaskStatus};
 
 pub(super) const SCHEMA: &str = "
@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS closures (
     task INTEGER PRIMARY KEY REFERENCES tasks(id), status TEXT NOT NULL, why TEXT NOT NULL,
     duplicate_of INTEGER REFERENCES tasks(id), successor INTEGER REFERENCES tasks(id),
     by TEXT NOT NULL, at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS unverified_closings (
+    task INTEGER PRIMARY KEY REFERENCES tasks(id), by TEXT NOT NULL, at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS desk_attached (
     desk INTEGER NOT NULL REFERENCES desk(id), task INTEGER NOT NULL REFERENCES tasks(id),
@@ -50,8 +53,28 @@ impl GuardStore for SqliteTeamStore {
         Ok(added == 1)
     }
 
+    /// A completion nothing checked goes in `unverified_closings`, not `closures`: a build from
+    /// before it was named refuses a reason it does not know, so after a rollback it finds no
+    /// reason for that item rather than failing, or a false one (ADR 0124, amended 2026-11-03).
+    /// Each closing replaces the item's earlier one, in whichever table it was kept.
     fn record_closure(&self, c: &Closed) -> Stored<()> {
-        self.conn()?
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM unverified_closings WHERE task = ?1",
+            [c.task.0],
+        )
+        .map_err(backend)?;
+        if c.closure == Closure::Done(DoneWhy::CompletedUnverified) {
+            conn.execute("DELETE FROM closures WHERE task = ?1", [c.task.0])
+                .map_err(backend)?;
+            conn.execute(
+                "INSERT INTO unverified_closings (task, by, at_ms) VALUES (?1, ?2, ?3)",
+                params![c.task.0, c.by, c.at],
+            )
+            .map_err(backend)?;
+            return Ok(());
+        }
+        conn
             .execute(
                 "INSERT OR REPLACE INTO closures (task, status, why, duplicate_of, successor, by, at_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -89,7 +112,22 @@ impl GuardStore for SqliteTeamStore {
             .optional()
             .map_err(backend)?;
         let Some((status, why, duplicate_of, successor, by, at)) = row else {
-            return Ok(None);
+            return conn
+                .query_row(
+                    "SELECT by, at_ms FROM unverified_closings WHERE task = ?1",
+                    [task.0],
+                    |r| {
+                        Ok(Closed {
+                            task,
+                            closure: Closure::Done(DoneWhy::CompletedUnverified),
+                            successor: None,
+                            by: r.get(0)?,
+                            at: r.get(1)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(backend);
         };
         let status = TaskStatus::from_name(&status).ok_or_else(|| corrupt("a closure's status"))?;
         let closure = Closure::read(status, &why, duplicate_of.map(TaskId))
@@ -130,12 +168,12 @@ impl GuardStore for SqliteTeamStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::desk_ports::DeskStore;
     use crate::application::ports::TeamStore;
-    use crate::domain::Role;
 
     fn store_with_a_task() -> (SqliteTeamStore, TaskId, MemberId) {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let member = store.add_member("Jane", Role::Developer, 40, 1, 0).unwrap();
+        let member = store.add_member("Jane", 40, 1, 0).unwrap();
         let goal = store
             .add_goal(
                 "Keep the home lab healthy",
@@ -183,6 +221,54 @@ mod tests {
         let conn = store.conn().unwrap();
         assert!(conn.execute("DELETE FROM nudges", []).is_err());
         assert!(conn.execute("UPDATE nudges SET at_ms = 0", []).is_err());
+    }
+
+    /// A completion nothing checked is kept apart from `closures`, so a build from before it was
+    /// named (38668a2b, which refuses a reason it does not know) still reads every closure and
+    /// finds none for that item rather than a false "met its criteria"; this build reads it back
+    /// as completed, not verified, and a later closing replaces it (ADR 0124, amended 2026-11-03).
+    #[test]
+    fn a_completion_nothing_checked_is_kept_where_an_older_build_never_misreads_it() {
+        use crate::domain::closure::DoneWhy;
+        let (store, task, _) = store_with_a_task();
+        let closed = |closure| Closed {
+            task,
+            closure,
+            successor: None,
+            by: "endora".to_owned(),
+            at: 9,
+        };
+        store
+            .record_closure(&closed(Closure::Done(DoneWhy::CompletedUnverified)))
+            .unwrap();
+        let read = store.closure(task).unwrap().unwrap();
+        assert_eq!(read.closure, Closure::Done(DoneWhy::CompletedUnverified));
+        assert_eq!((read.by.as_str(), read.at), ("endora", 9));
+        let in_closures: i64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM closures", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            in_closures, 0,
+            "an older build finds no reason it cannot read"
+        );
+
+        store
+            .record_closure(&closed(Closure::Done(DoneWhy::MetCriteria)))
+            .unwrap();
+        assert_eq!(
+            store.closure(task).unwrap().unwrap().closure,
+            Closure::Done(DoneWhy::MetCriteria)
+        );
+        store
+            .record_closure(&closed(Closure::Done(DoneWhy::CompletedUnverified)))
+            .unwrap();
+        assert_eq!(
+            store.closure(task).unwrap().unwrap().closure,
+            Closure::Done(DoneWhy::CompletedUnverified),
+            "the newest closing is the one read"
+        );
     }
 
     /// A finding seen again says so on the desk card it put up, while the card waits; a card the

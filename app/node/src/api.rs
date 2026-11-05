@@ -90,10 +90,6 @@ pub struct AppState {
     /// The turns with a call to Anthropic in flight through HQ's model relay: a turn's calls
     /// go one at a time, so each is capped by what is left once the one before was charged.
     pub(crate) relay_calls: Arc<relay::TurnCalls>,
-    /// The bench's credential (ADR 0123), when `ENDORA_BENCH_TOKEN_FILE` names one: a token
-    /// that opens the model relay alone, for measuring an external agent harness, metered as
-    /// `bench` and capped by the day. `None`: no bench.
-    pub(crate) bench: Option<Arc<bench::Bench>>,
     /// How the home lab is built (ADR 0112): the lab's ansible-nas docs, the owner's retired
     /// list, and the map the team reads, kept a minute. From the environment
     /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`), read by
@@ -180,7 +176,6 @@ impl AppState {
             sound: None,
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
             relay_calls: Arc::default(),
-            bench: None,
             lab: Arc::new(contracts::LabKnowledge::unconfigured()),
             // Read as `main` reads them, with its defaults.
             installed_model: Arc::new((
@@ -205,31 +200,11 @@ impl AppState {
         self
     }
 
-    /// Opens the bench (ADR 0123) from `ENDORA_BENCH_TOKEN_FILE` and `ENDORA_BENCH_CAP_CENTS`,
-    /// when a file is named; says so, never the token.
-    #[must_use]
-    pub fn with_bench_from_env(self) -> Self {
-        let Some(bench) = bench::Bench::from_env() else {
-            return self;
-        };
-        #[allow(clippy::cast_precision_loss)]
-        let dollars = bench.cap_micros() as f64 / 1_000_000.0;
-        println!(
-            "bench: a credential for the model relay alone, Haiku or Sonnet, ${dollars:.2} a day"
-        );
-        self.with_bench(bench)
-    }
-
     /// Reads how the home lab is built (ADR 0112) from the environment: the ansible-nas fork,
     /// the retired list and the deploy key. Until then the node has no fork.
     #[must_use]
     pub fn with_lab_from_env(mut self) -> Self {
         self.lab = Arc::new(contracts::LabKnowledge::from_env());
-        self
-    }
-
-    pub(crate) fn with_bench(mut self, bench: bench::Bench) -> Self {
-        self.bench = Some(Arc::new(bench));
         self
     }
 
@@ -340,6 +315,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/events", get(hq_events))
         // Replay: a turn, or a task's turns, read back in full (the owner's only).
         .route("/v1/hq/runs/{id}/replay", get(hq_run_replay))
+        .route("/v1/hq/tasks/{id}", get(hq_task_shown))
         .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
         .route(
             "/v1/hq/tasks/{id}/consultations",
@@ -355,16 +331,10 @@ pub fn app(state: AppState) -> Router {
         // What a member thinks with (ADR 0109).
         .route("/v1/hq/members/{id}/brain", post(hq_set_brain))
         .route("/v1/hq/members/{id}/model", post(hq_set_model))
-        .route("/v1/hq/members/{id}/work-brain", post(hq_set_work_brain))
-        .route(
-            "/v1/hq/members/{id}/judgment-brain",
-            post(hq_set_judgment_brain),
-        )
         // What runs a member's turns (ADR 0117).
         .route("/v1/hq/members/{id}/runtime", post(hq_set_runtime))
         // The owner renames a member, and keeps the CEO's house log with it (ADR 0111).
         .route("/v1/hq/members/{id}/name", post(hq_rename))
-        .route("/v1/hq/house", post(hq_house_log))
         // The team's world (ADR 0122): the owner reads it, downloads it, and alone makes
         // something canon or demotes it.
         .route("/v1/hq/world", get(hq_world))
@@ -383,15 +353,26 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/projects/{id}", post(hq_change_project))
         .route("/v1/hq/projects/{id}/cap", post(hq_project_cap))
         .route("/v1/hq/projects/{id}/tools", post(hq_project_tools))
+        .route("/v1/hq/projects/{id}/repo", post(hq_project_repo))
         .route("/v1/hq/projects/{id}/rank", post(hq_loop_rank))
+        .route("/v1/hq/projects/{id}/items", post(hq_loop_items))
+        .route(
+            "/v1/hq/projects/{id}/lessons",
+            get(hq_loop_lessons).post(hq_set_loop_lessons),
+        )
+        // The owner's settings for accepted work: the cards back, merging develop (ADR 0115,
+        // amended 2026-10-31).
+        .route("/v1/hq/delivery", post(hq_delivery))
         .route("/v1/hq/one-team", post(hq_one_team))
         .route("/v1/hq/scenarios", post(hq_start_scenario))
-        .route("/v1/hq/scenarios/rerun", post(hq_rerun_holodeck))
         .route("/v1/hq/league", post(hq_start_league))
         .route("/v1/hq/league/reset", post(hq_reset_league))
+        // The league's finished games, a page at a time (the owner's Chess tab).
+        .route("/v1/hq/league/games", get(hq_league_games))
         .route("/v1/hq/scenarios/{task}", get(hq_scenario))
-        .route("/v1/hq/trials", post(hq_start_trial))
-        .route("/v1/hq/trials/{name}", get(hq_trial))
+        // A game in PGN, to copy or keep: a Holodeck match, or the office's chess.
+        .route("/v1/hq/scenarios/{task}/pgn", get(hq_scenario_pgn))
+        .route("/v1/hq/chess/{id}/pgn", get(hq_chess_pgn))
         // The owner tops the money pool up for one day (ADR 0113 rule 6).
         .route("/v1/hq/pool/top-up", post(hq_pool_top_up))
         // The owner hires (ADR 0115), and downloads a branch's bundle when the node cannot push.
@@ -427,6 +408,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sound/speakers/{id}/probe", post(sound_probe))
         // The owner's Mac as a brain for the team (ADR 0130). The heartbeat answers the
         // Mac's helper alone, by a token of its own (`crate::auth::Scope::Mac`).
+        .route("/v1/credits", get(credits::status).post(credits::change))
         .route("/v1/mac", get(mac::status))
         .route("/v1/mac/heartbeat", post(mac::heartbeat))
         .route("/v1/mac/settings", post(mac::change))
@@ -578,16 +560,13 @@ pub fn app(state: AppState) -> Router {
 /// node's self-signed certificate, and a turn's own token is its credential, not the owner's
 /// sign-in. Every route here needs a token: a turn's, or the runner's for its routes.
 pub fn team_relay(state: AppState) -> Router {
-    // The bench's token (ADR 0123) opens the model relay and nothing else here.
-    let fenced = relay_routes().route_layer(from_fn_with_state(state.clone(), bench::fenced));
     Router::new()
         .route("/team-relay/v1/messages", post(relay::messages))
         .route(
             "/team-relay/v1/messages/count_tokens",
             post(relay::count_tokens),
         )
-        .route("/team-relay/bench", get(bench::today_so_far))
-        .merge(fenced)
+        .merge(relay_routes())
         .with_state(state)
 }
 
@@ -642,6 +621,26 @@ mod mac;
 mod terminal;
 mod vault;
 use auth::*;
+/// The node's background upkeep: `f` runs with the node's state every `secs` seconds, the
+/// first time at once, off the async threads; a tick missed while the last one ran is skipped.
+pub(crate) fn every<F>(state: AppState, secs: u64, f: F)
+where
+    F: Fn(&AppState) + Send + Sync + 'static,
+{
+    let f = Arc::new(f);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(secs));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let (state, f) = (state.clone(), f.clone());
+            let _ = tokio::task::spawn_blocking(move || f(&state)).await;
+        }
+    });
+}
+
+pub(crate) use credits::spawn as spawn_credits;
+pub(crate) use delivery::spawn as spawn_delivery;
 pub(crate) use homelab::spawn as spawn_homelab;
 pub(crate) use mac::spawn as spawn_mac;
 
@@ -690,10 +689,12 @@ fn settings_map(
 mod hq;
 // HQ's model relay: a team member's only way to a model (ADR 0102, phase 4).
 mod relay;
-// The bench's credential: the model relay alone, for an external agent harness (ADR 0123).
-mod bench;
 // The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
 mod contracts;
+// Accepted work reaches the fork without a card (ADR 0115, amended 2026-10-31).
+mod delivery;
+// What is left with each paid model provider (the owner, 2026-10-30).
+mod credits;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).
 mod bridge;
 // What a Claude Code turn's sandbox reports its own tools did (ADR 0117).

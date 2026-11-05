@@ -1,22 +1,30 @@
 //! The team's application layer: the engine and the ports it needs.
 
 mod chess_tool;
+pub mod desk_ports;
 pub mod engine;
+pub mod event_ports;
 pub mod guard_ports;
 pub mod history_ports;
 pub mod map_ports;
+pub mod office_ports;
 pub mod ports;
 pub mod protocol;
 pub mod protocol_history;
 pub mod protocol_world;
+pub mod receipt_ports;
 pub mod replay;
+pub mod run_ports;
 mod scenario_tool;
+pub mod schedule_ports;
 pub mod scorecard;
+pub mod wing_ports;
 pub mod world_ports;
 
+pub use crate::domain::delivery::Found;
 pub use engine::{
-    Asked, Author, Engine, EngineError, Fired, KeptBranch, Proposal, Recorded, Settings,
-    Submission, TickReport, WingSeeded,
+    Asked, Author, Delivered, Deliveries, Due, Engine, EngineError, Fired, KeptBranch, ModelSet,
+    Recorded, Settings, Submission, TickReport,
 };
 pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 
@@ -103,3 +111,12 @@ mod turn_kinds_tests;
 
 #[cfg(test)]
 mod loops_tests;
+
+#[cfg(test)]
+mod mechanical_tests;
+
+#[cfg(test)]
+mod briefing_size_tests;
+
+#[cfg(test)]
+mod lessons_tests;

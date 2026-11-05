@@ -213,6 +213,13 @@ like one (`e2e`). This loosens nothing that matters: every reference read is jud
 the record as before (it exists, it is about this work, a live criterion's is fresh), so a
 stray one cannot pass a claim, and a model's words are still not evidence.
 
+**Amended 2026-11-04: words beside an id in one criterion's list.** HQ's record to 3 Nov has 48
+calls refused whole for a line a member wrote beside a good id in one criterion's list
+(`["r4031", "the :ro statement is in the thread"]`), 14 of them on the held-out set of 2 Nov.
+Such a line is that id's gloss and is let go. A criterion whose list holds only words is
+refused as before, and so is any piece naming a document without an id. Replayed offline,
+41 of the 48 now read; the 7 left are refused by these same rules.
+
 ## Alternatives considered
 
 - **The worker reports its own receipts.** Rejected: the model's process would be the one

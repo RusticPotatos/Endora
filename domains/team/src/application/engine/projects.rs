@@ -11,37 +11,12 @@
 use serde_json::json;
 
 use super::{Author, Done, Engine, EngineError, one_line};
-use crate::application::ports::{Clock, DeskItem, NewProject, NewTask, TeamStore, WorkerAdapter};
+use crate::application::ports::{Clock, DeskItem, NewProject, TeamStore, WorkerAdapter};
 use crate::domain::projects::{self, Level, dollars};
 use crate::domain::{
-    EventKind, Evidence, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Pause, Priority,
-    Project, ProjectId, ProjectStatus, Refusal, Role, RunId, RunStatus, Task, TaskId, WakeReason,
+    EventKind, GoalId, GoalStatus, MemberId, Micros, Millis, Pause, Project, ProjectId,
+    ProjectStatus, Refusal, RunId, RunStatus, Task, TaskId, WakeReason,
 };
-
-/// The project HQ makes, once, for the home lab's routines and alarms (ADR 0113).
-pub const LAB_UPKEEP: &str = "Home lab upkeep";
-
-/// The most pieces of evidence a proposal names.
-const MOST_EVIDENCE: usize = 20;
-
-/// A project a lead or the CEO proposes, as its tool gives it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Proposal {
-    /// The goal it would serve.
-    pub goal: GoalId,
-    /// What it is.
-    pub title: String,
-    /// Why it is worth doing.
-    pub reason: String,
-    /// Who would lead it.
-    pub lead: MemberId,
-    /// The monthly cap asked for, if any: the owner's to grant.
-    pub cap: Option<Micros>,
-    /// The tasks it points at.
-    pub tasks: Vec<TaskId>,
-    /// The events (alarms, say) it points at.
-    pub events: Vec<i64>,
-}
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     // ---- reading --------------------------------------------------------------------------
@@ -166,12 +141,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- the owner's projects ------------------------------------------------------------
 
-    /// The owner makes a project, active at once: under an active goal, led by a lead or the
-    /// CEO, with a cap if they give one (all the caps together within the pool's month).
+    /// The owner makes a project, active at once: under an active goal, led by any member,
+    /// with a cap if they give one (all the caps together within the pool's month).
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a goal or member that does not exist, a goal that is not
-    /// active, or no title; [`Refusal::NotAProjectLead`]; [`Refusal::CapsOverPool`].
+    /// active, or no title; [`Refusal::CapsOverPool`].
     pub fn add_project(
         &self,
         goal: GoalId,
@@ -181,6 +156,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         cap: Option<Micros>,
     ) -> Done<ProjectId> {
         let _held = self.held();
+        // The owner's project may be any member's: one team (ADR 0142) has no leads.
         let (title, reason) = self.project_words(goal, title, reason, lead)?;
         if let Some(cap) = cap {
             self.may_cap(cap, None)?;
@@ -206,7 +182,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A project's title and reason, each on one line, once its goal is active and its lead
-    /// may lead.
+    /// is a member.
     fn project_words(
         &self,
         goal: GoalId,
@@ -218,7 +194,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if found.status != GoalStatus::Active {
             return Err(EngineError::Unknown("active goal to serve"));
         }
-        projects::may_lead(self.member(lead)?.role).map_err(EngineError::Refused)?;
+        self.member(lead)?;
         let title = one_line(title, 120);
         if title.is_empty() {
             return Err(EngineError::Unknown("project title"));
@@ -257,11 +233,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 if from != ProjectStatus::Paused {
                     return refuse();
                 }
-                if let Some(cap) = project.cap {
-                    let spent = self.spent_this_month(id)?;
-                    if level_spent(spent, cap) {
-                        return Err(EngineError::Refused(Refusal::CapNotAboveSpend { spent }));
-                    }
+                let spent = self.spent_this_month(id)?;
+                if project.cap.is_some_and(|cap| level_spent(spent, cap)) {
+                    return Err(EngineError::Refused(Refusal::CapNotAboveSpend { spent }));
                 }
                 project.status = ProjectStatus::Active;
                 project.pause = None;
@@ -352,8 +326,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.after_closing(task.id)?;
         }
         let ids: Vec<TaskId> = open.iter().map(|t| t.id).collect();
-        for run in self.store.runs()? {
-            if !run.status.live() || !run.task.is_some_and(|t| ids.contains(&t)) {
+        for run in self.store.live_runs()? {
+            if !run.task.is_some_and(|t| ids.contains(&t)) {
                 continue;
             }
             if run.status == RunStatus::Running {
@@ -438,15 +412,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn set_project_tools(&self, id: ProjectId, tools: Option<Vec<String>>) -> Done<()> {
         let _held = self.held();
         let project = self.project(id)?;
-        let tools = tools.map(|all| {
-            let mut kept: Vec<String> = Vec::new();
-            for name in all.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
-                if !kept.iter().any(|k| k == name) {
-                    kept.push(name.to_owned());
-                }
-            }
-            kept
-        });
+        let tools = tools.map(|all| each_once(&all));
         self.store
             .set_setting(&projects::tools_key(id), &json!(tools).to_string())?;
         self.emit(
@@ -456,17 +422,82 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         )
     }
 
-    /// The tools a project's work is given, if the owner narrowed them.
+    /// The owner names the repository outside the lab a project's work is done in (ADR 0115,
+    /// amended 2026-11-01), or (`None`) takes it away. Only a public GitHub address is kept, in
+    /// its one plain form, which is returned.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a project there is not; any other address, as
+    /// [`crate::domain::Refusal::Scenario`] with why; a store failure.
+    pub fn set_project_repo(&self, id: ProjectId, url: Option<&str>) -> Done<Option<String>> {
+        let _held = self.held();
+        let project = self.project(id)?;
+        let kept = url
+            .map(endora_kernel::lab::outside_repo)
+            .transpose()
+            .map_err(|why| EngineError::Refused(crate::domain::Refusal::Scenario(why)))?;
+        self.store
+            .set_setting(&projects::repo_key(id), kept.as_deref().unwrap_or(""))?;
+        self.emit(
+            EventKind::ProjectChanged,
+            json!({ "project": id.0, "title": project.title, "by": "owner", "what": "repo",
+                    "repo": kept }),
+        )?;
+        Ok(kept)
+    }
+
+    /// The repository outside the lab a project's work is done in, if the owner named one.
     ///
     /// # Errors
     /// A store failure.
+    pub fn project_repo(&self, id: ProjectId) -> Done<Option<String>> {
+        Ok(self
+            .store
+            .setting(&projects::repo_key(id))?
+            .filter(|url| !url.is_empty()))
+    }
+
+    /// The repository outside the lab `task` is done in: its project's, or the nearest
+    /// project's above it (a part of a piece of work is done where the whole is).
+    pub(super) fn outside_repo_of_task(&self, task: TaskId) -> Done<Option<String>> {
+        let mut at = self.store.task(task)?;
+        for _ in 0..16 {
+            let Some(t) = at else {
+                return Ok(None);
+            };
+            if let Some(project) = t.project {
+                return self.project_repo(project);
+            }
+            let Some(parent) = t.parent else {
+                return Ok(None);
+            };
+            at = self.store.task(parent)?;
+        }
+        Ok(None)
+    }
+
+    /// The repository outside the lab a turn's work is done in, for the node: it mirrors that
+    /// one, and `repo_checkout` and `repo_submit` work in it instead of the fork.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn outside_repo_of_run(&self, run: RunId) -> Done<Option<String>> {
+        let Some(task) = self.store.run(run)?.and_then(|r| r.task) else {
+            return Ok(None);
+        };
+        self.outside_repo_of_task(task)
+    }
+
+    /// The tools a project's work is given, if the owner narrowed them.
     pub fn project_tools(&self, id: ProjectId) -> Done<Option<Vec<String>>> {
         Ok(projects::tools_read(
             self.store.setting(&projects::tools_key(id))?.as_deref(),
         ))
     }
 
-    /// The project a turn's work is in and the tools it gives that work, if it narrows them.
+    /// The project a turn's work is in and the tools it gives that work, if it narrows them:
+    /// its list and the read-only lookups that come with the list's tools
+    /// ([`projects::tools_given`]).
     pub(super) fn project_tools_of_run(&self, run: RunId) -> Done<Option<(Project, Vec<String>)>> {
         let task = self.store.run(run)?.and_then(|r| r.task);
         let Some(id) = self.project_of(task)? else {
@@ -475,20 +506,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(tools) = self.project_tools(id)? else {
             return Ok(None);
         };
-        Ok(Some((self.project(id)?, tools)))
+        Ok(Some((self.project(id)?, projects::tools_given(&tools))))
     }
 
     /// Why a turn on a narrowed project's work is refused one of HQ's tools, if it is: any
     /// but its own four and what the project gives it.
-    ///
-    /// # Errors
-    /// A store failure.
     pub fn project_refuses(&self, run: RunId, tool: &str) -> Done<Option<String>> {
         let Some((project, tools)) = self.project_tools_of_run(run)? else {
             return Ok(None);
         };
         // HQ's own tools only come here; with `team` listed, the member keeps them all.
-        if crate::domain::deploy::HQ_TOOLS.contains(&tool)
+        if crate::domain::lab_tools::HQ_TOOLS.contains(&tool)
             || tools
                 .iter()
                 .any(|t| t == tool || t == crate::domain::projects::TEAM)
@@ -498,7 +526,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some(format!(
             "{tool} is not among the tools of project \"{}\": its work is given {} and nothing else",
             project.title,
-            crate::domain::deploy::HQ_TOOLS
+            crate::domain::lab_tools::HQ_TOOLS
                 .iter()
                 .map(|t| (*t).to_owned())
                 .chain(tools)
@@ -627,10 +655,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if project.status != ProjectStatus::Paused || project.pause != Some(Pause::Budget) {
                 continue;
             }
-            if let Some(cap) = project.cap {
-                if level_spent(self.spent_this_month(project.id)?, cap) {
-                    continue;
-                }
+            let under = match project.cap {
+                Some(cap) => !level_spent(self.spent_this_month(project.id)?, cap),
+                None => true,
+            };
+            if !under {
+                continue;
             }
             project.status = ProjectStatus::Active;
             project.pause = None;
@@ -639,259 +669,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit_project(&project, "endora", "the month turned")?;
         }
         Ok(())
-    }
-
-    // ---- proposals -------------------------------------------------------------------------
-
-    /// The evidence a proposal names, each piece checked to be in HQ's record.
-    fn evidence(&self, tasks: &[TaskId], events: &[i64]) -> Done<Vec<Evidence>> {
-        let mut all: Vec<Evidence> = tasks.iter().copied().map(Evidence::Task).collect();
-        all.extend(events.iter().copied().map(Evidence::Event));
-        all.dedup();
-        if all.is_empty() {
-            return Err(EngineError::Refused(Refusal::NoEvidence));
-        }
-        if all.len() > MOST_EVIDENCE {
-            return Err(EngineError::Refused(Refusal::TooLong(MOST_EVIDENCE)));
-        }
-        for piece in &all {
-            let there = match piece {
-                Evidence::Task(task) => self.store.task(*task)?.is_some(),
-                Evidence::Event(event) => self.store.has_event(*event)?,
-            };
-            if !there {
-                return Err(EngineError::Refused(Refusal::NoSuchEvidence(piece.said())));
-            }
-        }
-        Ok(all)
-    }
-
-    /// A turn of a lead's proposes a project, with evidence from HQ's record: it waits for the
-    /// CEO, who decides (ADR 0120: leads propose, the CEO decides and proposes none). A cap
-    /// asked for is the owner's to grant: until then the project has none of its own (the
-    /// pool's and the members' limits still hold).
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyLeadsPropose`]; [`Refusal::NotAProjectLead`];
-    /// [`Refusal::NoEvidence`] or [`Refusal::NoSuchEvidence`]; [`Refusal::CapsOverPool`];
-    /// [`EngineError::Unknown`] for a goal that is not active, a member there is not, or no
-    /// title or reason.
-    pub fn propose_project(&self, run: RunId, proposal: &Proposal) -> Done<ProjectId> {
-        let _held = self.held();
-        let turn = self.running(run)?;
-        let member = self.member(turn.member)?;
-        projects::may_propose(member.role).map_err(EngineError::Refused)?;
-        let (title, reason) = self.project_words(
-            proposal.goal,
-            &proposal.title,
-            &proposal.reason,
-            proposal.lead,
-        )?;
-        if reason.is_empty() {
-            return Err(EngineError::Unknown("reason for the project"));
-        }
-        let evidence = self.evidence(&proposal.tasks, &proposal.events)?;
-        if let Some(cap) = proposal.cap {
-            self.may_cap(cap, None)?;
-        }
-        let id = self.store.add_project(
-            &NewProject {
-                goal: proposal.goal,
-                title,
-                reason,
-                lead: proposal.lead,
-                status: ProjectStatus::Proposed,
-                cap: None,
-                asked_cap: proposal.cap,
-                created_by: member.name.clone(),
-                proposer: Some(member.id),
-                proposed_in: turn.task,
-                evidence,
-            },
-            self.clock.now(),
-        )?;
-        let project = self.project(id)?;
-        self.emit_project(&project, &member.name, "proposed")?;
-        if let Some(task) = turn.task {
-            self.mark_progress(member.id, task)?;
-        }
-        Ok(id)
-    }
-
-    /// A proposed project starts: active, its lead handed a first task in it to plan its
-    /// work, and a cap asked for put to the owner with the CEO's recommendation.
-    fn start_project(&self, project: &mut Project, ceo: &Member, why: &str) -> Done<()> {
-        let asked = project.asked_cap;
-        project.status = ProjectStatus::Active;
-        project.pause = None;
-        self.save_project(project)?;
-        self.emit_project(project, &ceo.name, "started")?;
-        self.add_task_held_lock(
-            Author::Endora,
-            NewTask {
-                goal: project.goal,
-                project: Some(project.id),
-                parent: None,
-                title: project.title.clone(),
-                description: format!(
-                    "{}\n\nThis is the first task of project #{}, which you lead: plan its work \
-                     and hand its parts on with create_task. Its tasks stay in the project.",
-                    project.reason, project.id
-                ),
-                assignee: Some(project.lead),
-                priority: Priority::Normal,
-                waits_on: Vec::new(),
-            },
-        )?;
-        let Some(cap) = asked else {
-            return Ok(());
-        };
-        self.project_desk(
-            "project_cap",
-            project,
-            Some(ceo.id),
-            &format!(
-                "A cap for project #{} {}: {} a month.\nThe CEO recommends: {}",
-                project.id,
-                project.title,
-                dollars(cap),
-                one_line(why, 600)
-            ),
-        )?;
-        Ok(())
-    }
-
-    /// A turn of the CEO's decides a proposed project: `accept` starts it (a cap asked for,
-    /// or the one the CEO gives, goes to the owner with the CEO's `why` as its recommendation),
-    /// or it is sent back, dropped. Either way the CEO's word is posted in the thread the
-    /// proposal was made in, and its proposer woken to read it.
-    ///
-    /// # Errors
-    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`EngineError::Unknown`] for a project
-    /// that is not waiting for the CEO, or no why; [`Refusal::CapsOverPool`].
-    pub fn decide_project(
-        &self,
-        run: RunId,
-        id: ProjectId,
-        accept: bool,
-        why: &str,
-        cap: Option<Micros>,
-        cited: &[crate::domain::Ref],
-    ) -> Done<ProjectStatus> {
-        let _held = self.held();
-        let (turn, ceo) = self.the_ceos_turn(run)?;
-        // The CEO decides on evidence from HQ's record, as a proposal is made on it (ADR 0114).
-        self.judge_decision(cited, turn.id)?;
-        let why = if cited.is_empty() {
-            why.to_owned()
-        } else {
-            format!("{} (evidence: {})", why.trim(), self.evidence_said(cited)?)
-        };
-        let why = why.as_str();
-        let mut project = self.project(id)?;
-        if project.status != ProjectStatus::Proposed {
-            return Err(EngineError::Unknown("proposed project with that number"));
-        }
-        let why = one_line(why, 600);
-        if why.is_empty() {
-            return Err(EngineError::Unknown("why"));
-        }
-        let word = if accept {
-            project.asked_cap = cap.or(project.asked_cap);
-            if let Some(cap) = project.asked_cap {
-                self.may_cap(cap, Some(id))?;
-            }
-            self.start_project(&mut project, &ceo, &why)?;
-            "accepted"
-        } else {
-            project.status = ProjectStatus::Dropped;
-            project.asked_cap = None;
-            self.save_project(&mut project)?;
-            self.emit_project(&project, &ceo.name, "sent back")?;
-            "sent back"
-        };
-        if let Some(task) = turn.task {
-            self.mark_progress(ceo.id, task)?;
-        }
-        let open = match project.proposed_in {
-            Some(task) => Some(self.task(task)?).filter(|t| !t.status.finished()),
-            None => None,
-        };
-        if let Some(task) = open {
-            self.post_held_lock(
-                Author::Member(ceo.id),
-                task.id,
-                &format!("Project #{} {}: {word}. {why}", id.0, project.title),
-            )?;
-            if let Some(proposer) = project.proposer.filter(|p| *p != ceo.id) {
-                self.wake_held_lock(proposer, Some(task.id), WakeReason::ProposalDecided)?;
-            }
-        }
-        Ok(project.status)
-    }
-
-    // ---- at start -------------------------------------------------------------------------
-
-    /// Once, on a store made before projects: the home lab's routines and their open work go
-    /// in one active project, "Home lab upkeep", under the goal of the routine that takes the
-    /// alarms, led by the earliest lead at work (or the CEO), with no cap. The CEO's own
-    /// routines (its daily review) stay out of it: they look over the whole house. Nothing once
-    /// any project exists, or with no routine that takes the alarms. Returns the project made.
-    ///
-    /// # Errors
-    /// A store failure.
-    pub fn migrate_projects(&self) -> Done<Option<ProjectId>> {
-        let _held = self.held();
-        if !self.store.projects()?.is_empty() {
-            return Ok(None);
-        }
-        let routines = self.store.routines()?;
-        let Some(goal) = routines.iter().find(|r| r.on_lab_trouble).map(|r| r.goal) else {
-            return Ok(None);
-        };
-        let members = self.store.members()?;
-        let first = |role: Role| {
-            members
-                .iter()
-                .filter(|m| m.role == role && !m.paused)
-                .map(|m| m.id)
-                .min()
-        };
-        let Some(lead) = first(Role::Lead).or_else(|| first(Role::Ceo)) else {
-            return Ok(None);
-        };
-        let id = self.store.add_project(
-            &NewProject {
-                goal,
-                title: LAB_UPKEEP.to_owned(),
-                reason: "The home lab's routine checks and alarms, and the work they bring."
-                    .to_owned(),
-                lead,
-                status: ProjectStatus::Active,
-                cap: None,
-                asked_cap: None,
-                created_by: "endora".to_owned(),
-                proposer: None,
-                proposed_in: None,
-                evidence: Vec::new(),
-            },
-            self.clock.now(),
-        )?;
-        let the_ceos = |id: MemberId| members.iter().any(|m| m.id == id && m.role == Role::Ceo);
-        for mut routine in routines {
-            if routine.goal != goal || the_ceos(routine.assignee) {
-                continue;
-            }
-            routine.project = Some(id);
-            self.store.save_routine(&routine)?;
-        }
-        for task in self.store.tasks()? {
-            if task.goal == goal && task.project.is_none() && !task.status.finished() {
-                self.store.set_task_project(task.id, Some(id))?;
-            }
-        }
-        self.emit_project(&self.project(id)?, "endora", "made for the home lab")?;
-        Ok(Some(id))
     }
 
     /// The owner puts an open task into an active project: its lead, tools and money are then
@@ -932,7 +709,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 project.title
             ),
         )?;
-        if let Some(member) = found.owner.or(found.assignee) {
+        if let Some(member) = found.holder() {
             self.wake_held_lock(member, Some(task), WakeReason::Assigned)?;
         }
         Ok(())
@@ -968,6 +745,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 }
 
 /// Whether `spent` is all of `cap`, as a budget pause judges it.
+/// Tool names trimmed, each once, in the order given.
+fn each_once(all: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for name in all.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        if !kept.iter().any(|k| k == name) {
+            kept.push(name.to_owned());
+        }
+    }
+    kept
+}
+
 const fn level_spent(spent: Micros, cap: Micros) -> bool {
     matches!(projects::level(spent, cap), Level::Spent)
 }

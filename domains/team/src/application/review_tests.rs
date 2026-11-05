@@ -7,8 +7,9 @@ use serde_json::json;
 use super::engine::{Author, Engine, Settings};
 use super::ports::{Clock, DeskItem, NewRoutine, NewTask, RunContext, TeamStore};
 use super::protocol::call;
+use crate::application::desk_ports::DeskStore;
 use crate::domain::routines::HOUR_MS;
-use crate::domain::{Priority, Role, TaskId, TaskStatus};
+use crate::domain::{Priority, TaskId, TaskStatus};
 use crate::infrastructure::{SimulatedRunner, SqliteTeamStore};
 
 struct Hands(AtomicI64);
@@ -33,10 +34,10 @@ fn team(clock: &Hands, with_reviewer: bool, lab: bool) -> (Hq<'_>, Team, RunCont
         clock,
         Settings::default(),
     );
-    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
-    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    let lead = hq.hire("Ada", 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
     if with_reviewer {
-        hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+        hq.hire("Grace", 20, 2, 1).unwrap();
     }
     let goal = hq
         .set_goal("Keep the home lab healthy", "", Author::Owner)

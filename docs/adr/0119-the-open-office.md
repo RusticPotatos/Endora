@@ -4,6 +4,13 @@
 
 Amended by [0142](0142-one-team-of-loops.md), 2026-10-27: one team of loops.
 
+Amended 2026-11-04 by the owner (frontend only): the HQ screen draws a small research studio in place
+of the open floor: areas told apart by floors, glass stubs and steps; desks under the board lit only
+for a running turn; the owner's corner with the desk, the kill switch, the day's spend and the review
+table; the library alcove; the lounge with the chess table (`47f-hq-studio.js`; the place is in
+[where-things-go](../where-things-go.md)). The office's items, proposals and history stay as data and
+are no longer drawn. Nothing in the engine changed.
+
 Accepted, 2026-10-18, by the owner. Prepared with AI assistance (Claude). Amends
 [0118](0118-elastic-staffing-and-notebooks.md) (downtime, and what a downtime turn may write in a
 notebook) and [0102](0102-endora-hq.md)'s office view (the walled wing and the four anonymous
@@ -43,7 +50,7 @@ worked with whom, and nothing in it could change without a code change and a dep
    rule as the roster; members with no lead above them but the CEO join the first pod). A pod is
    a cluster of desks, two to a row, one for every member of the team, labelled as the roster
    labels the team ("Ops · Ada", "Engineering · Kit"). Between the two desks of a row is an
-   aisle where their members stand facing each other. The layout is computed from the snapshot
+   aisle where their members sit, each on a chair at its own desk's end by its computer. The layout is computed from the snapshot
    on every refresh: a hire grows a pod, a third lead makes a third pod, and a team of more than
    six goes three to a row. A member on furlough keeps its desk, drawn empty with a small "away"
    card, after those at work. The walled wing and the four anonymous desks are gone; the board

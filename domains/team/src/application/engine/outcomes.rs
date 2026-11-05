@@ -25,7 +25,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// The outcomes for the last day and the last week ending now, the turns that wait now, and
     /// when talk against work was last measured, if it has been. `runs` are the turns that count
     /// as work, `events` the feed without the leads' reports.
-    pub(super) fn outcomes_shown(&self, runs: &[Run], events: &[Event]) -> Done<Value> {
+    pub(super) fn outcomes_shown(
+        &self,
+        runs: &[Run],
+        events: &[Event],
+        kept_from: Option<Millis>,
+    ) -> Done<Value> {
         let now = self.clock.now();
         let branches = self.store.branches()?;
         let checks = self.store.checks()?;
@@ -36,6 +41,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             branches: &branches,
             checks: &checks,
             consults: &consults,
+            kept_from,
         };
         let talk = self.talk_kept()?;
         let day = outcomes(&record, &Window::rolling(now, WINDOWS[0].0));

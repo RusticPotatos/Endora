@@ -122,6 +122,11 @@ endora_ansible_nas_repo: ""
 endora_ansible_nas_ref: ""
 # Containers you retired but kept, shown on the team's map: name=note;name=note
 endora_lab_retired: ""
+# Your own values (name, city, anyone you live with), comma separated, for the privacy scan of
+# HQ's branches before they are pushed to your public fork (ADR 0115, amended 2026-10-31). Keep
+# them in your vault (endora_personal_values: "{{ vault_endora_personal_values }}"), never in a
+# tracked file. Empty: the scan reads shapes and the secret tripwire only.
+endora_personal_values: ""
 # A host folder holding one file `key`, an ed25519 deploy key (mode 0600) for the engineering
 # wing's pushes (ADR 0115). Empty: the node cannot push.
 endora_git_push_key_dir: ""
