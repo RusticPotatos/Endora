@@ -1074,10 +1074,11 @@ pub(crate) fn instructions(
     } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT) {
         told.push_str(
             "\n\nThe wing's git: repo_checkout brings the item's repository into /work/repo (the \
-             lab's ansible-nas fork, unless your briefing names one outside the lab) with git set up (your commits are authored Endora HQ and carry the trailer for \
-             you). Work on a branch named hq/task-N-<slug> for your task (N is your task's \
-             number), commit in small steps with the shell, then repo_submit that branch: \
-             Endora keeps it, writes its diff as a document on the task and runs the lab's \
+             lab's ansible-nas fork, unless your briefing names one outside the lab) with git \
+             set up (your commits are authored Endora HQ and carry the trailer for you). Work \
+             on a branch named hq/task-N-<slug> for your task (N is your task's number), \
+             commit in small steps with the shell, then repo_submit that branch: Endora keeps \
+             it and writes its diff as a document on the task, and on the fork runs the lab's \
              checks; the result comes back as a receipt. A branch of your work that is \
              submitted stays kept on the node, and repo_checkout with its name (branch: \
              hq/task-N-<slug>) brings it back whole in a later turn, on top of its base: go on \
