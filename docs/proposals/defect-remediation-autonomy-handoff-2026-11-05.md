@@ -1,6 +1,6 @@
 # Defect remediation and autonomy handoff (2026-11-05)
 
-Status: final draft for the researcher's acceptance. Every disposition below is the researcher's.
+Status: final. Every disposition below is the researcher's (its round-9 decision).
 The owner's brief and every round's verbatim decision and evidence are kept outside git, in the
 research folder (`.local/research-climb/defect-remediation/`, rounds 0–9); the two earlier climbs'
 ledgers and results there are unchanged.
@@ -21,11 +21,12 @@ drains with 0 turns running and 0 cut, NAS smoke passing, and NAS, HQ and the Pi
 reporting `ea72ecf0`. Eleven commits: A `1a445775`, `1c6a05d0`; B `4af2311e`, `2343a8b1`; C
 `fae5596d`, `279ff4e6`, `b81b3708`, `9e2e18f5`; O11 `33d1fcc6`, `ea72ecf0`.
 
-**Apparatus for the next climb:** branch `apparatus-v6` = the released engine merged under the
-harness rig (v5, contract 2) plus protocol v6 (`b66e3c35`). Frozen manifest, contracts and graders
-together: combined hash beginning `127fe61c712f` (exposed seeds 0–3; the full manifest is
-`MANIFEST.sha256` in the research folder's round 9, from `python3 freeze.py --contract 2 --seeds
-0 1 2 3`).
+**Apparatus for the next climb:** branch `apparatus-v6` (local, not pushed) = the released engine
+merged under the harness rig (v5, contract 2) plus protocol v6 (`b66e3c35`), accepted by the
+researcher. Its development manifest, contracts and graders together, has a combined hash
+beginning `127fe61c712f` (exposed seeds 0–3; the full manifest is `MANIFEST.sha256` in the research
+folder's round 9). That manifest is development evidence, not a confirmation manifest (see the
+freeze order below). The live engine remains `ea72ecf0`; the apparatus changes no engine code.
 
 ## Status words
 
@@ -51,11 +52,11 @@ together: combined hash beginning `127fe61c712f` (exposed seeds 0–3; the full 
 | O7 | One anonymous failed `git ls-remote` to github.com while the rig was set up | remediation r1 | apparatus | containment controls demonstrated; incident retained | controls must be reused |
 | O8 | Outside-repository briefing still says never edit "any inventory" | remediation r1 | policy | deferred: **prerequisite** | no — correct before the freeze |
 | O9 | `workflow_paths` skips vault-named workflows in outside repositories | remediation r1 | unresolved | deferred | no |
-| O10a | A turn that ends by asking the owner loses its transcript | remediation r3 | unresolved; suspected engine defect | investigated, unresolved | no |
+| O10a | Suspected transcript loss when a turn ends by asking the owner | remediation r3 | unresolved; suspected engine defect | investigated, unresolved | no |
 | O10b | The runner's late `ended` after such a turn is refused (409) | remediation r3 | policy | deferred (explained) | yes |
-| H4a | Regression-test additions allowed in the needle family only | harness r19, r23 | apparatus | fixed in apparatus v6 (pending acceptance) | after acceptance |
-| H4b | Needle precision missing from the task words | harness r19–r20 | apparatus | carried forward in apparatus v6 (pending acceptance) | after acceptance |
-| H4c | Grader defects: decoy mentions, test/method names | harness r13–r14 | apparatus | controls retained in apparatus v6 (pending acceptance) | after acceptance |
+| H4a | Regression-test additions allowed in the needle family only | harness r19, r23 | apparatus | resolved in the accepted local apparatus v6 | yes (no engine deployment needed) |
+| H4b | Needle precision missing from the task words | harness r19–r20 | apparatus | resolved in the accepted local apparatus v6 | yes, if contract 2 is selected |
+| H4c | Grader defects: decoy mentions, test/method names | harness r13–r14 | apparatus | resolved in the accepted local apparatus v6 | yes; keep the controls and historical versions |
 
 ### A — the path guard (H1)
 
@@ -96,7 +97,10 @@ together: combined hash beginning `127fe61c712f` (exposed seeds 0–3; the full 
 - **Reproduction.** The climb's witnessed losses (2 of 8; baseline 1 of 2 in round 5) and offline
   red scenarios: no submission state in a retried turn's briefing or kept checkout; a revision
   submitted again recorded as a new submission (second check, gate shut, review voided).
-- **Cause.** Resume context said only "Go on from it"; HQ's record of a branch was not idempotent.
+- **Cause.** Missing submission context is the supported contributor to the historical losses:
+  resume context said only "Go on from it". Separately, HQ's record of a branch was not
+  idempotent; that was reproduced offline as a recovery hazard (a turn that resubmits would void
+  its own review), not shown to have caused the original losses.
 - **Correction (no new storage).** HQ tells a retried turn, or any turn on an item with a
   submission, its newest submission acknowledged as finished (branch, full head, status), any newer
   work-in-progress head apart, or that none is acknowledged and the node may hold one; a commit is
@@ -127,12 +131,23 @@ turns running, `NO_DRAIN`, or an HQ that is down or old stops it before any rest
 recipes set `pipefail`. Controls: `test-release.sh` (38), `test-hq-drain.sh` (38),
 `test-deploy-recipes.sh` (16, the real `make` recipes against fakes). ADR 0134 amended.
 
-### O1–O10
+### The unresolved and deferred findings
 
-None of O1–O3 has a demonstrated engine contribution; they are kept for observation in the next
-climb, not corrected here. O10a — a turn that ends by asking the owner has HQ end its run as the
-question lands, so the worker's end-of-turn transcript is refused — needs confirmation on the real
-node before any correction.
+No correction was made for any of these. Evidence pointers are to the research folder.
+
+| ID | Reproduction | Cause, or the uncertainty | Evidence reviewed | Remaining risk | Next action |
+|---|---|---|---|---|---|
+| O1 | Not reproduced here; one confirmation failure (impossible-104729, a timeout after asking) | Model decision, provisional: no engine contribution shown (blocking was available) | agentic-harness round 23 | A task the model should block may wait on the owner | Observe in the next climb; correct only on a demonstrated engine contribution |
+| O2 | Not reproduced here; two confirmation failures (tool_failure-104729, -155921, "blocked") | Unproven: inherited context is plausible, not demonstrated | agentic-harness round 23 | A turn may look for files it never checked out | Inspect the actual briefing and tool list on a fresh failure before any change |
+| O3 | Not reproduced as a consequential failure | Model decision, provisional | minimum-viable-autonomy reports | Cost, not correctness | Act only on a concrete unnecessary call with a consequence |
+| O4 | Reproduced by design: outside-repository work is never applied (ADR 0115) | Apparatus: the old grader credited proposals; non-delivery itself is policy | minimum-viable-autonomy rounds 1–2 | Outcome claims without application | Build and validate the apply-and-verify path below before any outcome claim |
+| O5 | Observed once: a receipt refused, then a corrected one taken | Policy enforcement working as designed | minimum-viable-autonomy reports | None shown | None; reopen only if a valid receipt is refused |
+| O6 | Seen once in a rig run (remediation round 1, lab case): `in_review` accepted citing only a checkout receipt after the submission was refused | Unknown whether a branch was a required criterion and whether acceptance or delivery can advance without one | remediation round 1 records | Review on evidence that does not show the change | Establish the evidence boundary for review, acceptance and delivery |
+| O7 | One anonymous, failed `git ls-remote https://github.com/example/shopkeep` before the rig's environment rewrite (no credentials, the repository does not exist) | The node's git ignores the global config file; the rewrite had to go through `GIT_CONFIG_*` | remediation round 1; containment probes in rounds 2–5 | A rig that leaks to the network | Reuse the sandbox, the environment rewrite and the dead proxy for every process |
+| O8 | Present in source: an outside checkout's text forbids "any inventory" and carries the lab's framing | Policy: lab-only wording given to every repository | remediation round 1 | Confuses work in outside repositories | Prerequisite below: correct and test before the next freeze |
+| O9 | Present in source: `workflow_paths` skips vault-named workflows in outside repositories | Unknown whether it ever omits evidence a CI criterion needs | remediation round 1 | A CI criterion judged without its workflow | Act only on a reproducer that loses needed evidence |
+| O10a | Suspected transcript loss: on the stand-in relay, HQ refused the end-of-turn transcript of every turn that ended by asking the owner (HQ ends the run as the question lands) | Not confirmed on the real node | remediation rounds 2–3 records | Such turns may keep no transcript | Confirm on the real node; then decide the retention contract |
+| O10b | Every such turn's late runner report got 409 | Explained: the run had ended and its lease was removed | remediation round 3 | None shown | None |
 
 ### H4 — the apparatus
 
@@ -144,7 +159,8 @@ others still fail; a changed or weakened test fails everywhere. Controls in ever
 (`test_file_added`, `test_appended`, `test_weakened`); the tests hold v6's changes from v5 to exactly
 the declared ones, keep v5's verdicts unchanged, and keep the round-13 decoy and name controls
 (H4c). All 72 probe tests and the rig's other suites pass. Round 23's frozen verdicts stand as
-graded. `freeze.py` writes the task contracts beside the graders and hashes them together.
+graded. `freeze.py` writes the task contracts beside the graders and hashes them together. The
+researcher accepted v6 and recomputed every manifest entry independently.
 
 ## Review of the minimum-viable-autonomy protocol (brief §6)
 
@@ -174,13 +190,25 @@ Not started here.
    prohibition ("never edit … any inventory", the ansible-nas framing); the fork's checkout keeps
    it. Test: a worker scenario that an outside checkout's text omits it and a fork checkout's
    includes it, and a team scenario for the briefing's lab paragraph on an outside item.
-3. Apparatus v6 accepted, with its contracts-and-graders manifest reported before any run.
+3. Apparatus v6 (accepted), contract 2 selected, and a confirmation manifest made in the freeze
+   order below and reported before any run.
 4. The disposable arrangement built here, reused: real HQ, node and worker binaries on loopback;
    GitHub addresses rewritten to local bare repositories through `GIT_CONFIG_*` environment
    `insteadOf`; the worker under `sandbox-exec` (localhost only, writes only in the run folder);
    containment probes before every attempt; a dead proxy for leaks.
 5. A model decision: the local open-weight model for mechanism checks; Claude only through a
    disposable, capped key when Claude-specific behaviour is the question (the owner's decision).
+6. Its own approved budget and model choice, measurable success criteria, and confirmation and
+   stop rules, decided before it starts. This proposal does not authorize running it.
+
+### The freeze order
+
+1. Freeze the candidate, the task generator and the graders: report their source hashes.
+2. Then the researcher selects the held-back confirmation seeds, independently.
+3. Then generate those seeds' exact contracts with the unchanged sources (`freeze.py --seeds …`),
+   and report the final combined manifest before anything runs.
+
+The exposed-seed manifest made here is development evidence, never the confirmation manifest.
 
 ### The minimum apply-and-verify arrangement
 
