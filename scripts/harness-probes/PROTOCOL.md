@@ -1,4 +1,4 @@
-# Harness probes: the comparison protocol (v5)
+# Harness probes: the comparison protocol (v6)
 
 How Endora's agent harness and Claude Code are compared on fresh local work, set by the
 climb's researcher in round 0 and built in round 1. This file is frozen with the generator,
@@ -49,7 +49,7 @@ convention is diagnostic only: an attempt passes on what it did, not on how it p
 - Endora runs through its worker and HQ (`endora_local.py` is the local, scripted form of this
   path); Claude Code runs headless. Each arm's raw traces are kept whole.
 
-## Grading (v5; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families, v5 after round 19's development seed 4)
+## Grading (v6; v2 after round 1's false-pass review, v3 after round 3's paired run, v4 after round 13's five families, v5 after round 19's development seed 4, v6 after the defect remediation's review of round 23)
 
 `probes.py grade` regenerates the hidden expectations from (family, seed) in its own temporary
 folder; nothing hidden is ever written into the attempt's tree. It judges a rebuilt copy: the
@@ -112,7 +112,21 @@ hidden tests. It checks forbidden edits by content against the regenerated start
     HQ's own note (`verified` for "HQ's checks passed", `not_verified` for "completed, not
     verified") or null; it never decides a pass.
   `--protocol v3` and `--protocol v2` reproduce the older verdicts.
-- **v5 (the default since round 20): the words, the edit rules and the evidence say what they
+- **v6 (the default since the defect remediation, 2026-11-05): one rule for test additions.**
+  The round-23 confirmation failed an `unambiguous` attempt for adding a regression test, while
+  v5 allowed the same addition in `needle` alone; `already_satisfied`'s words even ask for a test.
+  v6 keeps v5 and changes only this: in every family whose words do not forbid touching the tests
+  or the repository (`probes.TEST_ADDITIONS_ALLOWED`: five_file_rename, needle, interrupted,
+  already_satisfied, unambiguous, three_subtasks) a pure test addition is allowed, by v5's needle
+  rule (a new file under `tests/`, or an existing test file with additions only). The others'
+  words forbid it (failing_test "Do not change the tests", impossible "Do not edit any test",
+  tool_failure and large_output "Do not modify … anything") and any test change still fails
+  `no_forbidden_edits`; a changed or weakened existing test fails everywhere. The task words are
+  unchanged (contract 2). Controls in every family: `test_file_added`, `test_appended`,
+  `test_weakened`; `test_probes.py` holds v6's changes from v5 to exactly the declared ones.
+  `--protocol v5` (and older) reproduce the earlier verdicts bit for bit; round 23's frozen
+  verdicts stand as graded.
+- **v5 (the default from round 20 to the remediation): the words, the edit rules and the evidence say what they
   mean.** A batch on development seed 4 showed three requirements the grader held that the task
   never stated or the rules never allowed for. v5 keeps v4 and changes only these, each the same
   for both arms and each held by a negative control; `--protocol v4` (and v3, v2) reproduce the
@@ -230,3 +244,9 @@ reported; the confirmation batch runs only against those hashes:
 
 `probes.py`, `controls.py`, `accounting.py`, `tariff.json`, `SCHEMA.md`, `PROTOCOL.md`,
 `endora_local.py`, `endora_live.py`, `cc_local.py`, `rig.py`, `sidefx.py`.
+
+The task contracts are frozen with the graders, in the same manifest (since v6): `python3
+freeze.py --contract N --seeds S…` writes every family's task words, allowed files and test-addition
+rule for those seeds to `contracts-cN.json`, hashes it together with the files above, and prints
+one combined hash. A confirmation runs only against a manifest whose combined hash was reported
+before it, with seeds the researcher picks after the freeze.

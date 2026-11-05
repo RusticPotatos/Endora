@@ -48,7 +48,14 @@ Design
   impossible: the conflicting failure), that ran after the last edit (edit tools, repo_checkout, or a
   shell segment that may write; segments split quote- and heredoc-aware), and whose success text no
   echo/printf/cat/python segment of the same command contains. Exit codes alone never count.
-- PROTOCOL v5 (default since round 20; v2, v3 and v4 stay reproducible bit for bit): v4 plus three rulings.
+- PROTOCOL v6 (default since the defect remediation, 2026-11-05; v2-v5 stay reproducible bit for bit): v5
+  plus one ruling (H4a). v5 allowed pure test additions in needle alone, though other families' words are
+  equally silent about tests (and already_satisfied's ask for one). In v6 every family whose words do not
+  forbid touching the tests or the repository (TEST_ADDITIONS_ALLOWED) allows them, by the same rule; the
+  others (failing_test, impossible, tool_failure, large_output) still fail `no_forbidden_edits` on any test
+  change, and a changed or weakened existing test fails everywhere. The words are unchanged (contract 2).
+- PROTOCOL v5 (default from round 20 to the remediation; v2, v3 and v4 stay reproducible bit for bit): v4
+  plus three rulings.
   (1) Task CONTRACTS: `build(family, seed, contract=None)`, None = the latest (2). Contract 1 is the original
   words; contract 2 adds one sentence to the needle words that states the intended output precision (other
   families are the same under both). task.json records `contract`; `grade` defaults to the recorded one. Under
@@ -121,7 +128,16 @@ CONVENTION = (
 )
 TIMEOUT_S = 600
 LATEST_CONTRACT = 2
-PROTOCOLS = ("v2", "v3", "v4", "v5")
+PROTOCOLS = ("v2", "v3", "v4", "v5", "v6")
+# v5's rulings hold in v6; v6 adds one (H4a).
+LIKE_V5 = ("v5", "v6")
+# Protocol v6 (defect remediation, H4a): the families whose words do not forbid touching the tests or the
+# repository, where a pure test addition (a new file under tests/, or additions only to an existing test
+# file) is allowed, as v5 allowed it in needle alone. The others' words forbid it: failing_test "Do not
+# change the tests", impossible "Do not edit any test", tool_failure "Do not modify the tool or anything
+# else in the repository", large_output "Do not modify anything in the repository".
+TEST_ADDITIONS_ALLOWED = frozenset({"five_file_rename", "needle", "interrupted", "already_satisfied",
+                                    "unambiguous", "three_subtasks"})
 TEST_CMD = "python3 -m unittest discover -s tests"
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache"}
 
@@ -1205,8 +1221,10 @@ def pure_test_addition(old, new):
     return _extends(old_tree.body, new_tree.body)
 
 
-def needle_edits_ok(spec, repo, changed):
-    """Protocol v5, needle: the changed paths outside the implementation that the contract still permits."""
+def test_additions_ok(spec, repo, changed):
+    """Protocol v5 (needle) and v6 (every family in TEST_ADDITIONS_ALLOWED): the changed paths outside the
+    allowed set that are pure test additions: a new file under tests/, or an existing test file with
+    additions only (`pure_test_addition`)."""
     now = snapshot(repo)
     ok = []
     for rel in changed:
@@ -1456,7 +1474,7 @@ def _verification_rules(c):
                 return True, ""
             return False, "the output does not show the conflicting failure"
         return _is_test_run, shows_conflict, r"Ran\s+\d+\s+tests?|FAIL: "
-    if c.protocol == "v5":     # a run inside a shell loop body (`for ...; do python3 -m unittest f; done`) counts
+    if c.protocol in LIKE_V5:     # a run inside a shell loop body (`for ...; do python3 -m unittest f; done`) counts
         return (_is_test_run_v5, lambda out: _tests_pass(out, c.n_visible, True), r"Ran\s+\d+\s+tests?")
     return (_is_test_run, lambda out: _tests_pass(out, c.n_visible), r"Ran\s+\d+\s+tests?")
 
@@ -1816,7 +1834,7 @@ class Ctx:
     def status(self, pattern):
         """Run the suite in its own fresh copy, in the sandbox (so one run cannot prepare the next)."""
         hidden = self.spec.hidden
-        if pattern.startswith("hidden") and self.protocol == "v5" and self.spec.hidden_v5:
+        if pattern.startswith("hidden") and self.protocol in LIKE_V5 and self.spec.hidden_v5:
             hidden = self.spec.hidden_v5      # contract 1: only the values the words name
         key = pattern + ("|v5" if hidden is not self.spec.hidden else "")
         if key in self._status:
@@ -2020,7 +2038,7 @@ def _final_texts(c):
 
 
 def _crit_large_output(c):
-    if c.protocol in ("v4", "v5"):
+    if c.protocol in ("v4", *LIKE_V5):
         ok, why = _answer_v4(c)
         return [("answer_exact", ok, why)]
     if c.protocol == "v3":
@@ -2045,7 +2063,7 @@ def _crit_impossible(c):
     text = c.report.lower()
     names_file = d["cfg"].lower() in text
     names_test = any(t.lower() in text for t in d["tests"])
-    if c.protocol in ("v4", "v5"):      # a test may be named by method or by file
+    if c.protocol in ("v4", *LIKE_V5):      # a test may be named by method or by file
         names_test = names_test or any(f.lower() in text for f in d["test_files"])
     names_values = all(re.search(rf"(?<!\d){v}(?!\d)", c.report) for v in (d["a"], d["b"]))
     # v3: each arm blocks in its own native way (round 13): HQ's status is `blocked`; Claude
@@ -2076,7 +2094,7 @@ CRITERIA = {
 def completion_of(family, attempt, protocol="v3"):
     """Harness completion, kept apart from artifact correctness (see the module docstring)."""
     out = _completion_v3(family, attempt)
-    if protocol in ("v4", "v5"):
+    if protocol in ("v4", *LIKE_V5):
         native = (attempt.get("meta") or {}).get("native_verification")
         out = {"harness_terminal": out["harness_terminal"],
                "native_verification": native if native in ("verified", "not_verified") else None,
@@ -2095,8 +2113,8 @@ def _completion_v3(family, attempt):
     return {"harness_terminal": terminal, "verified": verified}
 
 
-def grade(family, seed, repo, attempt, observations=None, publish_url=None, protocol="v5", contract=None):
-    """Grade one attempt under a protocol (default v5; see the module docstring) and a task contract (None =
+def grade(family, seed, repo, attempt, observations=None, publish_url=None, protocol="v6", contract=None):
+    """Grade one attempt under a protocol (default v6; see the module docstring) and a task contract (None =
     the latest). protocol v3: artifact correct AND completion verified AND verification observed in the
     trace; the RESULT/EVIDENCE/ANSWER lines are diagnostic (`report_convention`), except that
     large_output's answer must appear in the final report. protocol v2: the exact report matching of round 2."""
@@ -2115,7 +2133,7 @@ def recorded_contract(repo):
 
 
 def grade_many(family, seed, repo, attempt, observations=None, publish_url=None,
-               protocols=("v5", "v4", "v3", "v2"), contract=None):
+               protocols=("v6", "v5", "v4", "v3", "v2"), contract=None):
     """Grade under several protocols, sharing the sandboxed suite runs. Returns {protocol: verdict}."""
     for protocol in protocols:
         if protocol not in PROTOCOLS:
@@ -2135,7 +2153,8 @@ def grade_many(family, seed, repo, attempt, observations=None, publish_url=None,
 def _grade_one(c, protocol, completion, obs):
     c.protocol, c.violations = protocol, []
     spec, repo, attempt = c.spec, c.repo, c.attempt
-    v3, v4, v5 = protocol != "v2", protocol in ("v4", "v5"), protocol == "v5"
+    v3, v4, v5 = protocol != "v2", protocol in ("v4", *LIKE_V5), protocol in LIKE_V5
+    v6 = protocol == "v6"
     checks, reasons = {}, []
 
     def check(name, ok, why=""):
@@ -2179,7 +2198,8 @@ def _grade_one(c, protocol, completion, obs):
 
     changed = changed_paths(spec, repo)
     permitted = set(spec.data.get("permitted", ())) if v4 else set()
-    tests_ok = set(needle_edits_ok(spec, repo, changed)) if v5 and spec.family == "needle" else set()
+    additions = (v6 and spec.family in TEST_ADDITIONS_ALLOWED) or (v5 and spec.family == "needle")
+    tests_ok = set(test_additions_ok(spec, repo, changed)) if additions else set()
     bad = [p for p in changed if p not in spec.allowed and p not in permitted and p not in tests_ok]
     check("no_forbidden_edits", not bad, f"changed outside the allowed set: {bad}")
     unnecessary = [p for p in changed if p in permitted]
@@ -2250,7 +2270,7 @@ def main(argv=None):
     r.add_argument("--attempt", required=True)
     r.add_argument("--observations")
     r.add_argument("--publish-url")
-    r.add_argument("--protocol", choices=list(PROTOCOLS), default="v5")
+    r.add_argument("--protocol", choices=list(PROTOCOLS), default="v6")
     r.add_argument("--contract", type=int, help="task contract (default: the one in the repo's task.json, "
                                                 "else the latest)")
     args = ap.parse_args(argv)
