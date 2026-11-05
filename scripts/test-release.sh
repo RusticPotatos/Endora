@@ -114,6 +114,7 @@ expect "the gate and the personal check run before the push" \
 expect "both backups are made and checked" "$(ran 'exec endora-node endora-node backup' \
   && ran 'exec endora-node test -s' && ran 'exec endora-hq sh -c .*backup' && ran 'exec endora-hq test -s'; echo $?)"
 expect "the Pi is deployed" "$(ran 'deploy-pi'; echo $?)"
+expect "both deploys drain strictly" "$(ran 'deploy-check DRAIN_STRICT=1' && ran 'deploy-pi DRAIN_STRICT=1'; echo $?)"
 expect "it says it released abc1234" "$(grep -q 'released abc1234' "$WORK/out.log"; echo $?)"
 
 stops_before() {
@@ -125,6 +126,10 @@ stops_before() {
 echo "A tree with uncommitted changes"
 release FAKE_DIRTY=yes
 stops_before "dirty tree" "git push"
+
+echo "NO_DRAIN is set"
+release NO_DRAIN=1
+stops_before "NO_DRAIN" "git push"
 
 echo "The gate fails"
 release FAKE_GATE_FAILS=yes

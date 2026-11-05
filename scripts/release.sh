@@ -12,6 +12,7 @@ ROOT=$PWD
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [ -f local.mk ] || stop "local.mk is missing: it holds the addresses"
 [ -z "$(git status --porcelain)" ] || stop "the tree has uncommitted changes: commit or set them aside"
+[ -z "${NO_DRAIN:-}" ] || stop "NO_DRAIN is set: a release always drains HQ before it restarts anything"
 # Housekeeping only: a prune that fails stops nothing.
 if [ -f scripts/prune-builds.sh ]; then
   PRUNE_BUILDS_KEEP="Endora-gate $(basename "$ROOT")" sh scripts/prune-builds.sh 15 "$(dirname "$ROOT")" | tail -1 || true
@@ -38,14 +39,16 @@ docker --context nas exec endora-hq sh -c 'ENDORA_DB="$HQ_DB" endora-node backup
   || { head -3 $L/backup-hq.log; stop "HQ's backup failed"; }
 docker --context nas exec endora-hq test -s $HQ_DB_COPY || stop "HQ's backup is missing or empty"
 echo "backups: $NODE_DB $HQ_DB_COPY"
-make deploy-check >$L/deploy-check.log 2>&1 \
+# DRAIN_STRICT=1: a drain that did not happen (refused, cap passed with turns running, NO_DRAIN
+# in local.mk) stops the deploy before any restart (scripts/hq-drain.sh, test-deploy-recipes.sh).
+make deploy-check DRAIN_STRICT=1 >$L/deploy-check.log 2>&1 \
   || { grep -E '^drain|test result|FAILED' $L/deploy-check.log; stop "the NAS deploy or its smoke failed"; }
 grep -E '^drain|test result' $L/deploy-check.log || true
 PI=$(make -s -f Makefile -f - v <<<'v: ; @echo $(ENDORA_PI_SSH)')
 [ -n "$PI" ] || stop "ENDORA_PI_SSH is not set in local.mk"
 ssh "$PI" "docker tag endora-node:latest endora-node:before-$H && docker tag endora-workbench:latest endora-workbench:before-$H" \
   || stop "the Pi's rollback tags failed"
-make deploy-pi >$L/deploy-pi.log 2>&1 || { grep -E '^drain' $L/deploy-pi.log; stop "the Pi deploy failed"; }
+make deploy-pi DRAIN_STRICT=1 >$L/deploy-pi.log 2>&1 || { grep -E '^drain' $L/deploy-pi.log; stop "the Pi deploy failed"; }
 grep -E '^drain' $L/deploy-pi.log || true
 URL=$(make -s -f Makefile -f - v <<<'v: ; @echo $(ENDORA_URL)')
 HEALTH=$(curl -sk --fail --max-time 10 "$URL/health") || stop "the NAS did not answer its health check"
