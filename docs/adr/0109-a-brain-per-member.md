@@ -44,7 +44,14 @@ was never told. Now, before any call of a reply runs, the worker checks it: if i
 question to the owner or a move of the turn's own task on that is not the reply's only such call
 and its last, every call is refused with why, nothing runs, and the round counts against the
 turn's. Nothing is reordered or run on the model's behalf; an action the node puts on the desk
-is known to end the turn only once it has run and is not counted. Scenarios:
+is known to end the turn only once it has run and is not counted. *Amended again the same day
+(defect remediation, round 2):* the refusal also says that a turn-ending call ends the turn the
+moment it runs, so nothing can follow it in that turn, and that a decision the owner must make
+is asked first. Told only "one call, last", a model in the live check sent `set_status` alone,
+meaning to ask next, and the question was never sent (1 of 10 runs; 0 of 11 with the fuller
+refusal). A refused reply's calls never reach the repeat guard, so the same question sent again
+unchanged goes to HQ; a question HQ itself refused, sent again unchanged straight after, is
+answered from the guard and not sent. Scenarios:
 `app/worker/features/a-reply-whose-turn-ending-call-is-not-last-runs-nothing.feature`.
 
 ## Context

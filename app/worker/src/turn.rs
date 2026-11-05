@@ -2155,9 +2155,10 @@ pub(crate) fn turn_ending_not_last(task: Option<i64>, calls: &[Call]) -> Option<
     }
     Some(format!(
         "Refused: nothing in this reply ran. A call that ends the turn (ask_owner, or set_status \
-         moving your own task to in_review, blocked or done) must be the only one in a reply and \
-         its last; this reply had {} ({}){}. Send the calls you still want again, with at most \
-         one turn-ending call, last.",
+         moving your own task to in_review, blocked or done) ends it the moment it runs, so \
+         nothing can come after it, in this reply or this turn; this reply had {} ({}){}. Choose \
+         one: if the owner must decide, send ask_owner now and leave the task as it is until the \
+         answer. Send the calls you still want again, with that one turn-ending call last.",
         ending.len(),
         ending.join(", "),
         if last_ends { "" } else { ", not last" }

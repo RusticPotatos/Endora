@@ -427,6 +427,52 @@ fn replies_then(w: &mut Turn, first: String, second: String) {
     run_rounds(w, vec![first, second]);
 }
 
+#[when(expr = "the model replies {string}, then {string}, then {string}")]
+fn replies_then_then(w: &mut Turn, first: String, second: String, third: String) {
+    run_rounds(w, vec![first, second, third]);
+}
+
+/// More replies than any turn has rounds.
+#[when(expr = "the model replies {string} every round")]
+fn replies_every_round(w: &mut Turn, reply: String) {
+    run_rounds(w, vec![reply; 64]);
+}
+
+/// What every tool result told the model after its `nth` reply holds `words`.
+fn told_after(w: &Turn, nth: usize, words: &str) {
+    let messages = w.to_model[nth]["messages"]
+        .as_array()
+        .expect("a round after that reply");
+    let last_reply = messages
+        .iter()
+        .rposition(|m| m["role"] == "assistant")
+        .expect("the reply");
+    let results: Vec<&str> = messages[last_reply..]
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert!(!results.is_empty(), "no results told");
+    for result in results {
+        assert!(result.contains(words), "{result}");
+    }
+}
+
+#[then(expr = "the model was told {string} after its first reply")]
+fn told_after_first(w: &mut Turn, words: String) {
+    told_after(w, 1, &words);
+}
+
+#[then(expr = "the model was told {string} after its second reply")]
+fn told_after_second(w: &mut Turn, words: String) {
+    told_after(w, 2, &words);
+}
+
+#[then("the turn ran out of rounds")]
+fn ran_out(w: &mut Turn) {
+    assert!(w.stderr.contains("rounds ran out"), "{}", w.stderr);
+}
+
 #[then(expr = "HQ was called with {string}")]
 fn hq_called_with(w: &mut Turn, calls: String) {
     assert_eq!(w.hq_called.join(", "), calls, "{}", w.stderr);

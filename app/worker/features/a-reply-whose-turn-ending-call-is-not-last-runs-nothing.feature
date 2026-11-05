@@ -57,3 +57,34 @@ Feature: A reply whose turn-ending call is not its last runs nothing
     When the model replies "ask_owner", then "ask_owner r12"
     Then HQ was called with "ask_owner, ask_owner"
     And the turn ended asking the owner
+
+  # Seed: a refusal that only says "one call, last" fails the Thens. In the defect remediation's
+  # live runs (5 Nov) a model told only that sent set_status alone, meaning to ask next; the
+  # turn ended and the question was never sent.
+  Scenario: The refusal says the turn ends when the call runs, and that the owner's decision goes first
+    When the model replies "set_status 7 in_review, ask_owner", then "ask_owner"
+    Then the model was told "ends it the moment it runs" after its first reply
+    And the model was told "if the owner must decide, send ask_owner now" after its first reply
+    And the model was told "(set_status, ask_owner)" after its first reply
+    And the turn ended asking the owner
+
+  # Seed: a refusal that counted no round, or ran a call once refused, fails a Then.
+  Scenario: A model that keeps replying with both runs nothing and ends out of rounds
+    When the model replies "set_status 7 in_review, ask_owner" every round
+    Then HQ was called with "post"
+    And the turn ran out of rounds
+
+  # Seed: a preflight refusal remembered by the repeat guard fails the first Then.
+  Scenario: After the worker's own refusal the same question, unchanged, is sent
+    When the model replies "ask_owner, set_status 7 in_review", then "ask_owner"
+    Then HQ was called with "ask_owner"
+    And the turn ended asking the owner
+
+  # Seed: a guard that sent an unchanged question HQ had just refused fails the first Then.
+  Scenario: After HQ refuses a question, the same question unchanged is not sent again, and a corrected one is
+    Given HQ refuses the first question to the owner as not evidence
+    When the model replies "ask_owner", then "ask_owner", then "ask_owner r12"
+    Then HQ was called with "ask_owner, ask_owner"
+    And the model was told "You already have this result" after its second reply
+    And the turn ended asking the owner
+
