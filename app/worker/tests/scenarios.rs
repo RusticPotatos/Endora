@@ -154,13 +154,18 @@ fn node_with_repo() -> String {
 }
 
 /// A node that offers the repository's contracts (only the checkout, to a turn that may only
-/// read) and answers every checkout with `handed`, as the node's text with a receipt after it.
-fn node_handing(handed: Value, read_only: bool) -> String {
+/// read), and the home lab's tools with `lab`, and answers every checkout with `handed`, as the node's text with a receipt after it.
+fn node_handing(handed: Value, read_only: bool, lab: bool) -> String {
     fake(Box::new(move |sent, _| {
         if sent.is_null() {
             let mut tools = vec![
                 json!({ "name": "repo_checkout", "kind": "read", "description": "Check out." }),
             ];
+            if lab {
+                for name in ["homelab_status", "container_logs", "restart_container"] {
+                    tools.push(json!({ "name": name, "kind": "read", "description": "The lab." }));
+                }
+            }
             if !read_only {
                 tools.push(
                     json!({ "name": "repo_submit", "kind": "act", "description": "Submit." }),
@@ -329,6 +334,8 @@ struct Turn {
     handed: Option<Value>,
     /// Whether the node offers the turn only the checkout, as it does a reviewer.
     read_only: bool,
+    /// Whether the node offers the home lab's tools beside the repository's.
+    lab_tools: bool,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -488,7 +495,7 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let (hq, to_hq) = hq_answering(w.refuse_first_ask);
     let (model, to_model) = model_replying(rounds);
     let contracts = match (&w.handed, w.kept_head.is_some()) {
-        (Some(handed), _) => node_handing(handed.clone(), w.read_only),
+        (Some(handed), _) => node_handing(handed.clone(), w.read_only, w.lab_tools),
         (None, true) => node_with_repo(),
         (None, false) => node(),
     };
@@ -620,6 +627,11 @@ fn hands_out_kept_outside(w: &mut Turn, branch: String) {
 #[given(expr = "the node hands out the team's kept branch {string} of the lab's fork")]
 fn hands_out_kept_fork(w: &mut Turn, branch: String) {
     w.handed = Some(handed_out(&branch, "develop", false));
+}
+
+#[given("the node offers the home lab's tools too")]
+fn offers_lab_tools(w: &mut Turn) {
+    w.lab_tools = true;
 }
 
 #[given("the turn may only read")]

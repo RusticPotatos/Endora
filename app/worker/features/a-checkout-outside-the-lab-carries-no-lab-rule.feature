@@ -55,3 +55,30 @@ Feature: A checkout outside the lab carries no rule of the lab's
     When the model replies "repo_checkout main"
     Then the model's instructions say "In the lab's fork, never edit"
     And the model's instructions do not say "repo_checkout brings the lab's ansible-nas fork"
+
+  # Seed: the home lab's rules said whenever the node offers anything fail the Thens (O8, round 1
+  # of the second autonomy climb: repo_checkout alone brought "use homelab_status" and "a proposal
+  # to change ansible-nas").
+  Scenario: A developer offered only the repository is told nothing of the home lab
+    Given the node hands out "main" of a repository outside the lab
+    When the model replies "repo_checkout main"
+    Then the model's instructions do not say "homelab_status"
+    And the model's instructions do not say "managed by ansible-nas"
+    And the model's instructions say "try to work around a refusal"
+
+  Scenario: A reviewer offered only the repository is told nothing of the home lab
+    Given the node hands out the team's kept branch "hq/task-7-fix" of a repository outside the lab
+    And the turn may only read
+    When the model replies "repo_checkout hq/task-7-fix"
+    Then the model's instructions do not say "homelab_status"
+    And the model's instructions do not say "managed by ansible-nas"
+    And the model's instructions say "try to work around a refusal"
+
+  # Seed: the home lab's rules dropped for every turn fail the Thens.
+  Scenario: A turn offered the home lab's tools keeps the home lab's rules
+    Given the node hands out "develop" of the lab's fork
+    And the node offers the home lab's tools too
+    When the model replies "repo_checkout develop"
+    Then the model's instructions say "restart_container is a safe fix"
+    And the model's instructions say "managed by ansible-nas"
+    And the model's instructions say "try to work around a refusal"

@@ -256,7 +256,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         told.push_str(&who);
         // What it knows, first: its situation's pieces of the world (ADR 0118, 0122).
         told.push_str(memory);
-        told.push_str(self.wing_rules(member)?);
+        told.push_str(self.wing_rules(member, run.task)?);
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
             return Ok(told);

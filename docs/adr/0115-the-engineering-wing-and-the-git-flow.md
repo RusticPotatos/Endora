@@ -507,6 +507,13 @@ there and that names that project's own code (the defect-remediation handoff's O
 - **The worker's instructions scope it.** The git paragraph says `repo_checkout` brings the item's
   repository (the fork unless the briefing names one outside the lab), that an outside branch is
   never pushed, and states the fork's rule as the fork's.
+- **The home lab's rules follow the home lab's tools.** A turn the node offers only the wing's git
+  is told how Endora's tools are authorized (an approval names the criterion it serves; never work
+  around a refusal), not the home lab's own rules (`homelab_status`, restarts, changes as
+  ansible-nas proposals). A turn offered any other node tool keeps them, said up front or, when its
+  tools are found later, when they are found.
+- **The fork's own rules follow the item.** A member of the wing on an item outside the lab is not
+  told the fork's `AGENTS.md` rule; on the fork's items it still is.
 - **Unchanged.** What the node and HQ refuse, non-delivery outside the lab, and the files HQ reads
   for its checks.
 

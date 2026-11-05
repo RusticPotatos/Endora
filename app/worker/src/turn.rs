@@ -962,6 +962,19 @@ fn lab_rules(on_the_node: &[String]) -> String {
         .filter(|t| on_the_node.iter().any(|n| n == t))
         .collect();
     let mut told = String::new();
+    // A turn offered only the wing's git works in a repository, not the home lab: it is told
+    // how Endora's tools are authorized, never the home lab's own rules (O8: repo_checkout alone
+    // brought "use homelab_status" and "a proposal to change ansible-nas" to an outside item).
+    if !on_the_node.is_empty() && on_the_node.iter().all(|n| is_repo_tool(n)) {
+        told.push_str(
+            "\n\nEndora's tools say whether they read or act; an action that needs the owner's \
+             approval says which of your task's criteria it serves (serves), then goes on their \
+             desk and ends your turn, and you are woken when they decide. One that serves none \
+             of them is refused, and never reaches the desk. Never try to work around a \
+             refusal.",
+        );
+        return told;
+    }
     if !on_the_node.is_empty() {
         if lab.is_empty() {
             told.push_str("\n\nThe home lab tools are Endora's contracts:\n");

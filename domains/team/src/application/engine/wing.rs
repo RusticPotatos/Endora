@@ -988,10 +988,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// What a member of the wing is told about the fork's own rules: its `AGENTS.md` is the
     /// repository's rules when it exists, and one is proposed when it is missing; its lead is
     /// told the draft in Endora's library is the first branch to propose (ADR 0116). Nothing
-    /// for anyone outside the wing.
-    pub(super) fn wing_rules(&self, member: &crate::domain::Member) -> Done<&'static str> {
+    /// for anyone outside the wing, nor on an item in a repository outside the lab (ADR 0115,
+    /// amended 2026-11-05), whose briefing names that repository instead.
+    pub(super) fn wing_rules(
+        &self,
+        member: &crate::domain::Member,
+        task: Option<TaskId>,
+    ) -> Done<&'static str> {
         if !self.wing_members()?.contains(&member.id) {
             return Ok("");
+        }
+        if let Some(task) = task {
+            if self.outside_repo_of_task(task)?.is_some() {
+                return Ok("");
+            }
         }
         Ok(wing::FORK_RULES)
     }

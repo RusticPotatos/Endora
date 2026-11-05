@@ -70,6 +70,18 @@ fn a_loop(w: &mut Office, title: String, goal: String) {
     w.makes_loop(&title, lead);
 }
 
+/// A loop for `goal` led by `lead`: whoever leads a loop under "Improve the lab" is of the
+/// engineering wing (ADR 0115).
+#[given(expr = "the loop {string} for the goal {string}, led by {word}")]
+fn a_loop_led_by(w: &mut Office, title: String, goal: String, lead: String) {
+    let goal =
+        w.hq.set_goal(&goal, "", Author::Owner)
+            .expect("the owner sets a goal");
+    w.goal = Some(goal);
+    let lead = w.member(&lead);
+    w.makes_loop(&title, lead);
+}
+
 #[given(regex = r#"^the owner sets the loop "(.+)" to (\d+) items? at a time$"#)]
 #[when(regex = r#"^the owner sets the loop "(.+)" to (\d+) items? at a time$"#)]
 fn items_at_a_time(w: &mut Office, title: String, items: u8) {
