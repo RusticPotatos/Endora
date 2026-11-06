@@ -105,3 +105,18 @@ Feature: What wakes an item in the loops
     Then "Pin the homepage image" has no failures and is still Mara's
     And "Pin the homepage image" still waits for its review
     And HQ refused no wake of Mara's on "Pin the homepage image"
+
+  # Seed (climb 2, 6 Nov): the owner's "Leave it as it is" on one check of a standing loop never
+  # reached the loop's next check, whose notes kept members' posts only; the member asked the same
+  # question again.
+  Scenario: The owner's answer on an earlier item reaches the loop's next item
+    Given the loop "ansible-nas" has the item "Look after the host"
+    When the loop hands out its items
+    And Bo asks the owner "jdoe is locked: unlock the account, or leave it?"
+    And the owner answers the question about "Look after the host": "Leave it as it is; do not change it."
+    And "Look after the host" is done
+    And the loop "ansible-nas" gets the item "Look after the host again"
+    And the loop hands out its items
+    Then Bo's turn starts on "Look after the host again"
+    And Bo's briefing says "- owner on #"
+    And Bo's briefing says "Leave it as it is; do not change it."

@@ -785,8 +785,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// What a turn in the loops is told besides its task (ADR 0142): the map, most confirmed
-    /// first, and what its loop did lately. Both are members' words, so the turn's input is
-    /// marked as of unknown origin.
+    /// first, and what its loop did lately: its members' notes and the owner's. Members' words
+    /// are among them, so the turn's input is marked as of unknown origin.
     pub(super) fn loops_said(&self, run: &crate::application::ports::Run) -> Done<String> {
         let mut told = String::new();
         let relevance = self.item_relevance(run)?;
@@ -815,7 +815,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(project) = self.task(task)?.project else {
             return Ok(told);
         };
-        let names: Vec<String> = self.store.members()?.into_iter().map(|m| m.name).collect();
+        // Its members' words, and the owner's (climb 2, 6 Nov): the owner's decision on one of the
+        // loop's items reaches its next item, or the member asks the same question again.
+        let mut names: Vec<String> = self.store.members()?.into_iter().map(|m| m.name).collect();
+        names.push(self.author_name(super::Author::Owner)?);
         let mut notes: Vec<(TaskId, String, crate::application::ports::Post)> = Vec::new();
         for other in self.store.tasks()? {
             if other.project != Some(project) || other.id == task {

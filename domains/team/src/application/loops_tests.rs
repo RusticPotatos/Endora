@@ -1183,6 +1183,117 @@ fn a_loop_turn_is_told_what_the_loop_did_lately() {
     assert!(next.told.contains("yamllint line lengths"), "{}", next.told);
 }
 
+/// The owner's decision on a loop's earlier item reaches the loop's next item (climb 2, 6 Nov):
+/// the owner's "Leave it as it is" on #1 never reached #2, whose notes kept members' posts only,
+/// and the member asked the same question again. It comes as the owner's words, under "owner".
+#[test]
+fn a_loop_turn_is_told_the_owners_decision_on_an_earlier_item() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Look after the host", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": first.0, "text": "jdoe is locked on the host; asking the owner." }),
+    )
+    .unwrap();
+    hq.post(Author::Owner, first, "Leave it as it is; do not change it.")
+        .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    item(&hq, &f, "Look after the host again", Priority::Normal);
+    let next = turn_of(&hq, f.bo);
+    assert!(
+        next.told.contains(&format!(
+            "- owner on #{}: Leave it as it is; do not change it.",
+            first.0
+        )),
+        "{}",
+        next.told
+    );
+    assert!(
+        next.told
+            .contains(&format!("- Bo on #{}: jdoe is locked on the host", first.0)),
+        "the member's words stay the member's: {}",
+        next.told
+    );
+}
+
+/// A loop's notes never cross into another loop: the owner's words on another project's item
+/// stay out, as its members' do.
+#[test]
+fn the_owners_words_on_another_loops_item_stay_out_of_the_notes() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let mara = hq.store().members().unwrap()[0].id;
+    let other = hq
+        .add_project(f.goal, "another loop", "other work", mara, None)
+        .unwrap();
+    let theirs = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal: f.goal,
+                project: Some(other),
+                parent: None,
+                title: "Look after the host elsewhere".to_owned(),
+                description: String::new(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.post(Author::Owner, theirs, "Unlock jdoe over there.")
+        .unwrap();
+    hq.store()
+        .set_task_status(theirs, TaskStatus::Done)
+        .unwrap();
+    let first = item(&hq, &f, "Look after the host", Priority::Normal);
+    let bo = turn_of(&hq, f.bo);
+    use_tool(
+        &hq,
+        &bo,
+        "post",
+        &serde_json::json!({ "task": first.0, "text": "The host reads healthy." }),
+    )
+    .unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    item(&hq, &f, "Look after the host again", Priority::Normal);
+    let next = turn_of(&hq, f.bo);
+    assert!(
+        next.told.contains("The host reads healthy."),
+        "{}",
+        next.told
+    );
+    assert!(!next.told.contains("Unlock jdoe"), "{}", next.told);
+}
+
+/// The owner's line in the notes is cut like any other note's.
+#[test]
+fn the_owners_note_is_cut_to_a_line_like_any_other() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Look after the host", Priority::Normal);
+    let long = format!("Leave the host as it is. {}TAIL-NOT-SHOWN", "x".repeat(300));
+    hq.post(Author::Owner, first, &long).unwrap();
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    item(&hq, &f, "Look after the host again", Priority::Normal);
+    let next = turn_of(&hq, f.bo);
+    assert!(
+        next.told.contains("- owner on #") && next.told.contains("Leave the host as it is."),
+        "{}",
+        next.told
+    );
+    assert!(!next.told.contains("TAIL-NOT-SHOWN"), "{}", next.told);
+}
+
 /// Production, 27 Oct: HQ restarted and a migration of ADR 0131's gave Bo and Rae back a Claude,
 /// taking them out of the loops. A member that is one model stays so across a restart.
 #[test]

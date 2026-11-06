@@ -77,6 +77,23 @@ fn loop_has_item(w: &mut Office, project: String, title: String) {
     w.loop_item(&project, &title, "", &[]);
 }
 
+/// The loop gets another item while the scenario runs, as the owner's routine would add it.
+#[when(expr = "the loop {string} gets the item {string}")]
+fn loop_gets_item(w: &mut Office, project: String, title: String) {
+    w.loop_item(&project, &title, "", &[]);
+}
+
+/// The item is done: its running turns end as their workers would, and it is recorded done, as
+/// HQ records an item it closes.
+#[when(expr = "{string} is done")]
+fn item_is_done(w: &mut Office, title: String) {
+    w.finish_running();
+    let task = w.task(&title);
+    w.hq.store()
+        .set_task_status(task, TaskStatus::Done)
+        .expect("the store records it done");
+}
+
 #[given(expr = "the loop {string} starts at {word}'s rank")]
 fn loop_starts_at(w: &mut Office, project: String, name: String) {
     let project = w.project(&project).id;
