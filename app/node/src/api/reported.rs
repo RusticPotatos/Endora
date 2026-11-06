@@ -49,7 +49,8 @@ fn text_of(value: &serde_json::Value) -> String {
 fn args_of(tool: &str, input: &serde_json::Value) -> String {
     let field = |k: &str| input[k].as_str().map(str::to_owned);
     let main = match tool {
-        "Bash" => field("command"),
+        // The workbench's shell (climb 2, S1) says its command, as Claude Code's Bash does.
+        "Bash" | "shell" => field("command"),
         "Read" | "Edit" | "Write" | "NotebookEdit" => field("file_path"),
         "Glob" | "Grep" => field("pattern"),
         _ => None,
@@ -67,26 +68,29 @@ fn excerpt_of(response: &serde_json::Value) -> String {
     text_of(response)
 }
 
-/// Whether the workbench's shell says its command completed: neither timed out nor killed.
+/// Whether the workbench's shell says its command completed: neither timed out nor killed. A
+/// worker shell's receipt is `ok` exactly then: its observation was acquired. That is not exit
+/// success (the exit code is in the arguments), not a healthy environment, and not task success.
 fn shell_completed(response: &serde_json::Value) -> bool {
     response["timed_out"] != true && response["killed"] != true && response["exit_code"].is_i64()
 }
 
-/// The workbench's shell's status as the receipt's arguments end: its exit code, or that it
-/// timed out or was killed, and what the shell cut. From the report's fields alone.
+/// The workbench's shell's status as the receipt's arguments begin: its exit code, or that it
+/// timed out or was killed, and what the shell cut, then a space. From the report's fields alone.
 fn shell_status(response: &serde_json::Value) -> String {
     let mut status = if response["timed_out"] == true {
-        " [timed out]".to_owned()
+        "[timed out]".to_owned()
     } else if let Some(code) = response["exit_code"].as_i64() {
-        format!(" [exit {code}]")
+        format!("[exit {code}]")
     } else {
-        " [killed]".to_owned()
+        "[killed]".to_owned()
     };
     if let (Some(cut), Some(printed)) = (response["cut"].as_u64(), response["printed"].as_u64()) {
         if cut > 0 {
             status.push_str(&format!(" [output cut: {cut} of {printed} bytes]"));
         }
     }
+    status.push(' ');
     status
 }
 
@@ -145,8 +149,8 @@ pub(super) async fn sandbox_receipt(
             || says_error(&said["tool_response"])
             || says_error(&said["error"])
     };
-    // The shell's status, written from the report's own fields, never from what it printed; kept
-    // at the end of the arguments, past any cut.
+    // The shell's status, written from the report's own fields, never from what it printed; it
+    // leads the arguments, so every cut after it (the node's here, HQ's at 120 characters) keeps it.
     let status = if worker_shell {
         shell_status(&said["tool_response"])
     } else {
@@ -161,7 +165,7 @@ pub(super) async fn sandbox_receipt(
         "token": token,
         "tool": tool,
         "args": format!(
-            "{}{status}",
+            "{status}{}",
             hidden(args_of(&tool, &said["tool_input"]))
                 .chars()
                 .take(400usize.saturating_sub(status.chars().count()))
@@ -453,7 +457,7 @@ mod tests {
             sent[0]
         );
         assert!(
-            sent[0]["args"].as_str().unwrap().contains("[exit 1]"),
+            sent[0]["args"].as_str().unwrap().starts_with("[exit 1] "),
             "{}",
             sent[0]
         );
@@ -464,13 +468,16 @@ mod tests {
         );
         assert_eq!(sent[1]["ok"], false, "{}", sent[1]);
         assert!(
-            sent[1]["args"].as_str().unwrap().contains("[timed out]"),
+            sent[1]["args"]
+                .as_str()
+                .unwrap()
+                .starts_with("[timed out] "),
             "{}",
             sent[1]
         );
         assert_eq!(sent[2]["ok"], false, "{}", sent[2]);
         assert!(
-            sent[2]["args"].as_str().unwrap().contains("[killed]"),
+            sent[2]["args"].as_str().unwrap().starts_with("[killed] "),
             "{}",
             sent[2]
         );
@@ -478,10 +485,30 @@ mod tests {
             sent[3]["args"]
                 .as_str()
                 .unwrap()
-                .contains("[output cut: 2500 of 4000 bytes]"),
+                .starts_with("[exit 0] [output cut: 2500 of 4000 bytes] "),
             "{}",
             sent[3]
         );
+        // A long command: the status still leads, so HQ's own cut (120 characters) keeps it.
+        let mut long = report_of(json!(1), false, false, 0);
+        long["tool_input"]["command"] =
+            json!(format!("./hostctl check {}", "--verbose ".repeat(60)));
+        let (status, _) = answer(&state, report(Some("worker"), &long)).await;
+        assert_eq!(status, StatusCode::OK);
+        let last: serde_json::Value = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(p, _, _)| p == "/v1/team/receipt")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .unwrap();
+        let args = last["args"].as_str().unwrap();
+        assert!(
+            args.starts_with("[exit 1] ./hostctl check --verbose"),
+            "{args}"
+        );
+        assert!(args.chars().count() <= 400, "{}", args.chars().count());
         let other = json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash",
             "tool_input": { "command": "ls" }, "tool_response": { "stdout": "", "stderr": "" } });
         let (refused, _) = answer(&state, report(Some("worker"), &other)).await;

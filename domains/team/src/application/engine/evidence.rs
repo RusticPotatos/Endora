@@ -32,7 +32,9 @@ pub struct Called {
     pub args: String,
     /// The start of what it gave back.
     pub excerpt: String,
-    /// Whether it did what was asked.
+    /// Whether it did what was asked. For the workbench's shell (a sandbox receipt, climb 2 S1):
+    /// that the command completed and its observation was acquired, never that it exited 0
+    /// (its exit code leads the arguments), that the environment is healthy or the task done.
     pub ok: bool,
     /// Whether the tool changes something.
     pub act: bool,

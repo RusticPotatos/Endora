@@ -7,6 +7,7 @@ use crate::application::desk_ports::DeskStore;
 use crate::application::schedule_ports::ScheduleStore;
 use crate::application::wing_ports::WingStore;
 
+use crate::application::receipt_ports::ReceiptStore;
 use crate::application::run_ports::RunStore;
 
 use super::engine::{Author, Engine, Settings};
@@ -2609,35 +2610,145 @@ fn s1_a_cited_post_gets_no_attachment() {
     assert!(!newest_post(&hq, task, "Bo").text.contains("Attached by HQ"));
 }
 
-/// RED (S1): a question to the owner that cites nothing carries this run's receipts for its
-/// task, attached by HQ and not cited.
+/// The turn the loop has started on `task`, whoever's it is.
+fn a_turn_on(hq: &Hq<'_>, task: TaskId) -> super::ports::RunContext {
+    hq.tick().unwrap();
+    hq.runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.task == Some(task))
+        .expect("a turn on the item")
+}
+
+/// S1 (round 36): a question carries no attached receipts, so the same request from two items,
+/// each turn with its own ten receipts, stays one card on the owner's desk, as before.
 #[test]
-fn s1_an_uncited_question_carries_this_runs_receipts() {
+fn s1_the_same_question_with_different_receipts_stays_one_card() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Look after the host", Priority::Normal);
+    let mara = hq.store().members().unwrap()[0].id;
+    let other = hq
+        .add_project(f.goal, "another loop", "other work", mara, None)
+        .unwrap();
+    let second = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal: f.goal,
+                project: Some(other),
+                parent: None,
+                title: "Look after the other host".to_owned(),
+                description: String::new(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    let ask = "Account jdoe is locked after 5 failed logins: unlock it, or leave it locked?";
+    for task in [first, second] {
+        let turn = a_turn_on(&hq, task);
+        for n in 0..10 {
+            shell_receipt(&hq, &turn, &format!("reading {n} of #{}", task.0));
+        }
+        use_tool(&hq, &turn, "ask_owner", &serde_json::json!({ "text": ask })).unwrap();
+    }
+    let cards: Vec<_> = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "question" && d.status == "waiting")
+        .collect();
+    assert_eq!(cards.len(), 1, "one ask, one card: {cards:#?}");
+    assert!(
+        !cards[0].text.contains("Attached by HQ"),
+        "{}",
+        cards[0].text
+    );
+}
+
+/// S1 (round 36): a long shell command's status survives HQ's own cut of a receipt's arguments
+/// (120 characters), because the node writes it first; the stored receipt says it.
+#[test]
+fn s1_a_long_commands_status_survives_hqs_cut() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    item(&hq, &f, "Look after the host", Priority::Normal);
+    let now = turn_of(&hq, f.bo);
+    let id = hq
+        .record_sandbox_receipt(
+            &now.token,
+            &super::engine::Called {
+                tool: "shell".to_owned(),
+                args: format!(
+                    "[exit 1] [output cut: 2500 of 4000 bytes] ./hostctl check {}",
+                    "--verbose ".repeat(60)
+                ),
+                excerpt: "FAIL accounts: jdoe LOCKED".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    let stored = hq.store().call_receipt(id).unwrap().expect("the receipt");
+    assert!(stored.sandbox);
+    assert!(
+        stored
+            .args
+            .starts_with("[exit 1] [output cut: 2500 of 4000 bytes] ./hostctl"),
+        "{}",
+        stored.args
+    );
+}
+
+/// S1 (round 36), the disclosed change for Claude Code turns: receipts a turn's sandbox reported
+/// (its hook's Bash) leave an uncited post unsupported; a post citing one of them is a citation,
+/// judged as before, and not marked.
+#[test]
+fn s1_a_claude_code_turns_sandbox_receipts_leave_an_uncited_post_unsupported() {
     let clock = Hands(AtomicI64::new(NOON));
     let hq = hq(&clock);
     let f = five(&hq);
     let task = item(&hq, &f, "Look after the host", Priority::Normal);
     let now = turn_of(&hq, f.bo);
-    let id = shell_receipt(&hq, &now, "FAIL accounts: jdoe LOCKED");
+    let bash = hq
+        .record_sandbox_receipt(
+            &now.token,
+            &super::engine::Called {
+                tool: "Bash".to_owned(),
+                args: "git status".to_owned(),
+                excerpt: "clean".to_owned(),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
     use_tool(
         &hq,
         &now,
-        "ask_owner",
-        &serde_json::json!({ "text": "Unlock jdoe, or leave it locked?" }),
+        "post",
+        &serde_json::json!({ "task": task.0, "text": "Clean." }),
     )
     .unwrap();
-    let card = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .find(|d| d.kind == "question" && d.task == Some(task))
-        .expect("the question");
     assert!(
-        card.text.contains(&format!(
-            "Attached by HQ, not cited: r{id} (sandbox-reported)"
-        )),
-        "{}",
-        card.text
+        newest_post(&hq, task, "Bo").unsupported,
+        "a sandbox's word alone"
+    );
+    use_tool(
+        &hq,
+        &now,
+        "post",
+        &serde_json::json!({ "task": task.0, "text": "Clean, see the receipt.", "evidence": [format!("r{bash}")] }),
+    )
+    .unwrap();
+    assert!(
+        !newest_post(&hq, task, "Bo").unsupported,
+        "a citation is judged as before"
     );
 }
