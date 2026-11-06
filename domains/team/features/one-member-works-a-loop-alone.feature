@@ -111,9 +111,35 @@ Feature: One member works a loop alone
     Then Sol's briefing says "You work this loop alone"
     And Sol's briefing does not say "Once HQ's check"
     And Sol's briefing says "no check of the lab's applies to it: there is nothing to wait for"
-    And Sol's briefing says "submit your branch with repo_submit, then set it ready (set_status in_review)"
+    And Sol's briefing says "submit any changes with repo_submit before setting it ready (set_status in_review)"
     And Sol's briefing says "kept on the node for judging, never pushed or deployed"
     And Sol's briefing says "closes it, with no review"
+
+  # Round 8. Seed: a briefing that makes every outside item submit a branch to close fails the Then.
+  Scenario: An outside inspection that needs no change closes without a branch
+    Given the owner names "https://github.com/example/tiny" as the repository of the loop "solo arm"
+    And the loop "solo arm" has the routine "Look after the environment" for Sol, which fires now
+    And a tick passes
+    When Sol's turn starts
+    Then Sol's briefing says "If no changes were needed, do not create a branch merely to close the item"
+    When Sol takes "Look after the environment" and reads media's logs: "media: listening on 8096, ready"
+    And Sol sets "Look after the environment" ready, citing her reading
+    Then the task "Look after the environment" is done
+
+  # Round 8 control: a non-routine item outside the lab, told the same route, closes as the
+  # submission and the gate already behave: the outside submission opens the gate itself.
+  Scenario: A non-routine item outside the lab is submitted, set ready and done
+    Given the owner names "https://github.com/example/tiny" as the repository of the loop "solo arm"
+    And the loop "solo arm" has the item "Walk shared containers once": "Make self-referential containers evaluate."
+    And a tick passes
+    When Sol's turn starts
+    Then Sol's briefing says "no check of the lab's applies to it: there is nothing to wait for"
+    And Sol's briefing does not say "Once HQ's check"
+    When Sol takes "Walk shared containers once" and reads media's logs: "media: listening on 8096, ready"
+    And Sol submits the branch "hq/task-1-walk-shared-containers", changing "simpleeval.py"
+    Then the gate of "Walk shared containers once" is open
+    When Sol sets "Walk shared containers once" ready, citing her reading
+    Then the task "Walk shared containers once" is done
 
   # Seed: the gated wording on a routine's item in the lab fails the Thens.
   Scenario: A routine's item in the lab is told setting it ready closes it, with no check first

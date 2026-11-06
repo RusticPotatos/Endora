@@ -1162,11 +1162,13 @@ pub(super) fn alone_route(gate: bool, outside: bool) -> &'static str {
                 (set_status in_review) closes it, with no review.";
     }
     if outside {
+        // Round 8: changes are submitted, but work that needed none closes without a branch
         return "This item's repository is outside the lab, so no check of the lab's applies to \
-                it: there is nothing to wait for. When the work meets its criteria, submit your \
-                branch with repo_submit, then set it ready (set_status in_review): that closes it, \
-                with no review. The branch is kept on the node for judging, never pushed or \
-                deployed.";
+                it: there is nothing to wait for. When the work meets its criteria, submit any \
+                changes with repo_submit before setting it ready (set_status in_review). If no \
+                changes were needed, do not create a branch merely to close the item. Setting it \
+                ready closes it, with no review. A submitted branch is kept on the node for \
+                judging, never pushed or deployed.";
     }
     "This item needs no check of HQ's first: no gate stands between your work and setting it \
      ready. When it meets its criteria (and any branch is submitted), setting it ready \
@@ -1192,7 +1194,10 @@ mod alone_route_tests {
     fn an_outside_item_is_told_there_is_nothing_to_wait_for_and_nothing_is_deployed() {
         let said = alone_route(false, true);
         assert!(said.contains("no check of the lab's applies to it: there is nothing to wait for"));
-        assert!(said.contains("repo_submit"));
+        assert!(said.contains("submit any changes with repo_submit before setting it ready"));
+        assert!(said.contains(
+            "If no changes were needed, do not create a branch merely to close the item"
+        ));
         assert!(said.contains("never pushed or deployed"));
         assert!(!alone_route(false, false).contains("outside the lab"));
     }
