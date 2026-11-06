@@ -135,7 +135,24 @@ fn hq_answering(refuse_first_ask: bool) -> (String, Seen) {
 
 /// The node, offering no contracts.
 fn node() -> String {
-    fake(Box::new(|_, _| (200, json!({ "tools": [] }).to_string()))).0
+    node_seeing(false).0
+}
+
+/// The node, offering no contracts, keeping every request it is sent (S1: a shell's receipts),
+/// recording each shell report as receipt 61, or, with `refuse`, recording none.
+fn node_seeing(refuse: bool) -> (String, Seen) {
+    fake(Box::new(move |sent, _| {
+        if sent["tool_name"] == "shell" {
+            if refuse {
+                return (
+                    503,
+                    json!({ "error": "HQ is not set up on this node" }).to_string(),
+                );
+            }
+            return (200, json!({ "receipt": 61 }).to_string());
+        }
+        (200, json!({ "tools": [] }).to_string())
+    }))
 }
 
 /// A node that offers the repository's two contracts, and answers nothing else.
@@ -336,6 +353,10 @@ struct Turn {
     read_only: bool,
     /// Whether the node offers the home lab's tools beside the repository's.
     lab_tools: bool,
+    /// Every request the node was sent, when the scenario's node keeps them (S1).
+    node_sent: Vec<Value>,
+    /// Whether the node records no receipt (S1).
+    no_receipts: bool,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -494,10 +515,15 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let dir = w.dir.clone().expect("a turn in the workbench");
     let (hq, to_hq) = hq_answering(w.refuse_first_ask);
     let (model, to_model) = model_replying(rounds);
+    let mut node_seen: Option<Seen> = None;
     let contracts = match (&w.handed, w.kept_head.is_some()) {
         (Some(handed), _) => node_handing(handed.clone(), w.read_only, w.lab_tools),
         (None, true) => node_with_repo(),
-        (None, false) => node(),
+        (None, false) => {
+            let (url, seen) = node_seeing(w.no_receipts);
+            node_seen = Some(seen);
+            url
+        }
     };
     let env = [
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
@@ -537,6 +563,54 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
         })
         .collect();
     w.to_model = to_model.lock().unwrap().clone();
+    w.node_sent = node_seen
+        .map(|s| s.lock().unwrap().clone())
+        .unwrap_or_default();
+}
+
+/// The sandbox receipt the node was sent for the shell's `command` (S1).
+fn shell_receipt(w: &Turn, command: &str) -> Value {
+    w.node_sent
+        .iter()
+        .find(|b| b["tool_name"] == "shell" && b["tool_input"]["command"] == command)
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no sandbox receipt for {command:?}; the node was sent: {:#?}",
+                w.node_sent
+            )
+        })
+}
+
+#[then(expr = "the node was sent a sandbox receipt of the shell's {string}")]
+fn sent_a_receipt(w: &mut Turn, command: String) {
+    shell_receipt(w, &command);
+}
+
+#[then(expr = "the receipt of {string} says the command completed")]
+fn receipt_completed(w: &mut Turn, command: String) {
+    let r = shell_receipt(w, &command);
+    assert_eq!(r["hook_event_name"], "PostToolUse", "{r:#}");
+    assert_eq!(r["tool_response"]["timed_out"], false, "{r:#}");
+    assert_eq!(r["tool_response"]["killed"], false, "{r:#}");
+}
+
+#[then(expr = "the receipt of {string} records exit code {int}")]
+fn receipt_exit(w: &mut Turn, command: String, code: i64) {
+    let r = shell_receipt(w, &command);
+    assert_eq!(r["tool_response"]["exit_code"], code, "{r:#}");
+}
+
+#[given("the node cannot record receipts")]
+fn node_cannot_record(w: &mut Turn) {
+    w.no_receipts = true;
+}
+
+#[then(expr = "the workbench file {string} holds {int} line(s)")]
+fn workbench_file_lines(w: &mut Turn, name: String, lines: usize) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    let text = std::fs::read_to_string(dir.join(&name)).expect("the file");
+    assert_eq!(text.lines().count(), lines, "{text}");
 }
 
 #[when(expr = "the model replies {string}")]

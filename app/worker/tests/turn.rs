@@ -1845,17 +1845,33 @@ fn a_shell_call_runs_in_the_sandbox_and_the_turn_says_what_it_ran() {
 
     let to_model = to_model.lock().unwrap().clone();
     let then = &to_model[1].body["messages"];
-    assert_eq!(
-        then[3],
-        json!({ "role": "tool", "tool_call_id": "call_1",
-                "content": format!("exit 2\n{}\noops\n", dir.display()) })
+    // Climb 2, S1: how it ended carries the receipt, or why none was recorded (this test's node
+    // records none), on the first line; the output after it is as it was.
+    let content = then[3]["content"].as_str().unwrap();
+    assert_eq!(then[3]["tool_call_id"], "call_1");
+    assert!(
+        content.starts_with("exit 2 The command ran; no receipt was recorded: "),
+        "{content}"
+    );
+    assert!(!content.contains(".."), "{content}");
+    assert!(
+        content.ends_with(&format!(".\n{}\noops\n", dir.display())),
+        "{content}"
     );
     assert_eq!(
         then[4]["content"], "Refused: say why you run it, in `why`",
         "a command without its reason is not run"
     );
     let then = &to_model[2].body["messages"];
-    assert_eq!(then[6]["content"], format!("exit 0\n{}\n", "a".repeat(80)));
+    let long_read = then[6]["content"].as_str().unwrap();
+    assert!(
+        long_read.starts_with("exit 0 The command ran; no receipt was recorded: "),
+        "{long_read}"
+    );
+    assert!(
+        long_read.ends_with(&format!(".\n{}\n", "a".repeat(80))),
+        "{long_read}"
+    );
 
     let to_hq = to_hq.lock().unwrap().clone();
     assert!(

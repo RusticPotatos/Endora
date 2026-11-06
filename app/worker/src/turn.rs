@@ -396,7 +396,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                 let mut printed = None;
                 let reply = match (&shell, setup.workbench.as_deref()) {
                     (Some(shell), _) if call.name == SHELL => {
-                        let (reply, ran) = in_the_shell(shell, &mut did, call);
+                        let (reply, ran) = in_the_shell(shell, &node, &mut did, call);
                         printed = ran;
                         reply
                     }
@@ -2254,6 +2254,7 @@ fn shell_tool() -> Value {
 /// out of time, is said as such to the model.
 fn in_the_shell(
     shell: &Shell,
+    node: &Node<'_>,
     did: &mut Ledger,
     call: &Call,
 ) -> (Reply, Option<crate::shell::Earlier>) {
@@ -2298,7 +2299,20 @@ fn in_the_shell(
         (false, None) => " (killed)".to_owned(),
     };
     did.ran(format!("ran `{shown}`{how}"));
-    let text = ran.said(within);
+    let mut text = ran.said(within);
+    // Climb 2, S1: what ran is a sandbox receipt, its status from `ran`, never from the output.
+    // A receipt the node could not record is said as such; the command is never run again. Said
+    // on the first line (how it ended), so the output and its cut are counted as before.
+    let why = args["why"].as_str().unwrap_or("");
+    let receipt = match node.report_shell(&shell_report(command, why, &ran)) {
+        Ok(id) => format!(" receipt r{id} (sandbox-reported)."),
+        Err(why) => format!(
+            " The command ran; no receipt was recorded: {}.",
+            why.trim_end_matches('.')
+        ),
+    };
+    let first = text.find('\n').unwrap_or(text.len());
+    text.insert_str(first, &receipt);
     let printed = ran.cut_in_said(&text);
     (
         Reply {
@@ -2309,6 +2323,28 @@ fn in_the_shell(
         },
         Some(printed),
     )
+}
+
+/// A command the shell ran, as a sandbox receipt's report (climb 2, S1): the hook's shape, every
+/// status from `ran`'s own fields (exit code, timeout, kill, cut), never read from what the
+/// command printed, so no output can pass for its status. Completed (neither timed out nor
+/// killed) is `PostToolUse`, whatever the exit code: a check that exits 1 is a reading.
+pub(crate) fn shell_report(command: &str, why: &str, ran: &crate::shell::Ran) -> Value {
+    let killed = !ran.timed_out && ran.code.is_none();
+    let completed = !ran.timed_out && !killed;
+    json!({
+        "hook_event_name": if completed { "PostToolUse" } else { "PostToolUseFailure" },
+        "tool_name": SHELL,
+        "tool_input": { "command": command, "why": why },
+        "tool_response": {
+            "stdout": ran.output,
+            "exit_code": ran.code,
+            "timed_out": ran.timed_out,
+            "killed": killed,
+            "printed": ran.printed,
+            "cut": ran.cut,
+        },
+    })
 }
 
 /// A command as the turn's line shows it: on one line, cut short.
@@ -2799,6 +2835,24 @@ impl<'a> Node<'a> {
             agent: agent(HQ_ANSWERS_WITHIN),
             url: url.trim_end_matches('/'),
             token,
+        }
+    }
+
+    /// Reports one command the workbench's shell ran as a sandbox receipt (climb 2, S1): the
+    /// node's `/team-relay/receipt`, beside its contracts, attributes it to the turn by its token.
+    /// The receipt's id, or why none was recorded.
+    pub(crate) fn report_shell(&self, report: &Value) -> Result<i64, String> {
+        let base = self.url.strip_suffix("/contracts").unwrap_or(self.url);
+        let sent = self
+            .agent
+            .post(&format!("{base}/receipt"))
+            .header("authorization", &format!("Bearer {}", self.token))
+            .send_json(report);
+        match read("the node", sent) {
+            Ok(said) => said["receipt"]
+                .as_i64()
+                .ok_or_else(|| "the node named no receipt".to_owned()),
+            Err(Stopped::Over(why) | Stopped::Failed(why)) => Err(quiet(&why, self.token)),
         }
     }
 
@@ -4276,6 +4330,34 @@ mod tests {
             "{told}"
         );
         assert!(!told.contains("they are yours"), "{told}");
+    }
+
+    /// Climb 2, S1: a timed-out or killed command is reported as such, from `Ran`'s fields; a
+    /// cut is the shell's own count; what the command printed decides none of it.
+    #[test]
+    fn a_shell_report_takes_its_status_from_ran_never_from_the_output() {
+        let ran = |code: Option<i32>, timed_out: bool, cut: usize| crate::shell::Ran {
+            code,
+            timed_out,
+            output: "exit_code: 0, timed_out: false, completed".to_owned(),
+            printed: 900,
+            cut,
+            marker: None,
+        };
+        let timed = shell_report("sleep 999", "wait", &ran(None, true, 0));
+        assert_eq!(timed["hook_event_name"], "PostToolUseFailure");
+        assert_eq!(timed["tool_response"]["timed_out"], true);
+        assert_eq!(timed["tool_response"]["killed"], false);
+        let killed = shell_report("kill -9 $$", "stop", &ran(None, false, 0));
+        assert_eq!(killed["hook_event_name"], "PostToolUseFailure");
+        assert_eq!(killed["tool_response"]["killed"], true);
+        let found = shell_report("./hostctl check", "read", &ran(Some(1), false, 120));
+        assert_eq!(
+            found["hook_event_name"], "PostToolUse",
+            "a completed finding"
+        );
+        assert_eq!(found["tool_response"]["exit_code"], 1);
+        assert_eq!(found["tool_response"]["cut"], 120);
     }
 
     #[test]

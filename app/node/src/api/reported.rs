@@ -67,8 +67,31 @@ fn excerpt_of(response: &serde_json::Value) -> String {
     text_of(response)
 }
 
+/// Whether the workbench's shell says its command completed: neither timed out nor killed.
+fn shell_completed(response: &serde_json::Value) -> bool {
+    response["timed_out"] != true && response["killed"] != true && response["exit_code"].is_i64()
+}
+
+/// The workbench's shell's status as the receipt's arguments end: its exit code, or that it
+/// timed out or was killed, and what the shell cut. From the report's fields alone.
+fn shell_status(response: &serde_json::Value) -> String {
+    let mut status = if response["timed_out"] == true {
+        " [timed out]".to_owned()
+    } else if let Some(code) = response["exit_code"].as_i64() {
+        format!(" [exit {code}]")
+    } else {
+        " [killed]".to_owned()
+    };
+    if let (Some(cut), Some(printed)) = (response["cut"].as_u64(), response["printed"].as_u64()) {
+        if cut > 0 {
+            status.push_str(&format!(" [output cut: {cut} of {printed} bytes]"));
+        }
+    }
+    status
+}
+
 /// `POST /team-relay/receipt`: one call of a Claude Code turn's own tools, as its hook said
-/// it. Answered with the receipt's id, or `skipped` for the team's own tools.
+/// it, or one command of the workbench's shell (climb 2, S1). Answered with the receipt's id, or `skipped` for the team's own tools.
 pub(super) async fn sandbox_receipt(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -85,16 +108,19 @@ pub(super) async fn sandbox_receipt(
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
-    if !turn.claude_code {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            "only a Claude Code turn's sandbox reports its own tools",
-        );
-    }
     let Ok(said) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return refuse(StatusCode::BAD_REQUEST, "the body is not JSON");
     };
     let tool = said["tool_name"].as_str().unwrap_or("").trim().to_owned();
+    // Climb 2, S1: a Claude Code turn's hook reports its own tools; the workbench's own shell (a
+    // worker turn) reports its commands, and nothing else.
+    let worker_shell = !turn.claude_code && tool == "shell";
+    if !turn.claude_code && !worker_shell {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "only a Claude Code turn's sandbox, or the workbench's shell, reports its own tools",
+        );
+    }
     if tool.is_empty() {
         return refuse(StatusCode::BAD_REQUEST, "a report names its tool_name");
     }
@@ -109,11 +135,23 @@ pub(super) async fn sandbox_receipt(
         }
         text.replace(&token, "[the turn's token]")
     };
-    let failed = said["hook_event_name"] == "PostToolUseFailure"
-        || said["tool_response"]["interrupted"] == true
-        || said["tool_response"]["is_error"] == true
-        || says_error(&said["tool_response"])
-        || says_error(&said["error"]);
+    let failed = if worker_shell {
+        // Completed is ok, whatever the exit code: a check that exits 1 is a reading.
+        !shell_completed(&said["tool_response"])
+    } else {
+        said["hook_event_name"] == "PostToolUseFailure"
+            || said["tool_response"]["interrupted"] == true
+            || said["tool_response"]["is_error"] == true
+            || says_error(&said["tool_response"])
+            || says_error(&said["error"])
+    };
+    // The shell's status, written from the report's own fields, never from what it printed; kept
+    // at the end of the arguments, past any cut.
+    let status = if worker_shell {
+        shell_status(&said["tool_response"])
+    } else {
+        String::new()
+    };
     let excerpt = if said["error"].is_null() {
         excerpt_of(&said["tool_response"])
     } else {
@@ -122,7 +160,13 @@ pub(super) async fn sandbox_receipt(
     let reported = json!({
         "token": token,
         "tool": tool,
-        "args": hidden(args_of(&tool, &said["tool_input"])).chars().take(400).collect::<String>(),
+        "args": format!(
+            "{}{status}",
+            hidden(args_of(&tool, &said["tool_input"]))
+                .chars()
+                .take(400usize.saturating_sub(status.chars().count()))
+                .collect::<String>()
+        ),
         "excerpt": hidden(excerpt).chars().take(1_000).collect::<String>(),
         "ok": !failed,
         "act": CHANGES.contains(&tool.as_str()),
@@ -347,6 +391,104 @@ mod tests {
         assert!(text.len() <= CONVERSATION_MOST, "{}", text.len());
         assert!(
             text.starts_with("START") && text.ends_with("END") && text.contains("cut by the node")
+        );
+    }
+
+    /// Climb 2, S1: the workbench's own shell (a `worker` runtime turn) reports each command it
+    /// ran, as a Claude Code turn's hook does: a sandbox receipt, attributed by the turn's token.
+    /// Completed is `ok`, whatever the exit code (a check that exits 1 is a reading); the exit
+    /// code, a timeout or a kill and a cut are written into the receipt from the report's fields,
+    /// never from what the command printed. Any other tool name from such a turn is refused.
+    #[tokio::test]
+    async fn a_workbench_shell_reports_its_commands_as_sandbox_receipts() {
+        let (hq_url, seen) = fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"worker\"") => (
+                200,
+                "application/json",
+                json!({ "run": 8, "member": "Zed", "left": 1000, "task": 3,
+                        "cloud": true, "brain": "claude-haiku-5-5", "runtime": "worker" })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            "/v1/team/receipt" => (200, "application/json", r#"{"receipt":61}"#.to_owned()),
+            _ => (200, "application/json", "{}".to_owned()),
+        }));
+        let state = node(&hq_url, "http://127.0.0.1:9");
+        let report_of = |code: serde_json::Value, timed_out: bool, killed: bool, cut: u64| {
+            json!({
+                "hook_event_name": if timed_out || killed { "PostToolUseFailure" } else { "PostToolUse" },
+                "tool_name": "shell",
+                "tool_input": { "command": "./hostctl check", "why": "read the host" },
+                "tool_response": { "stdout": "FAIL accounts: jdoe LOCKED\n[exit 0] completed witnessed",
+                                   "exit_code": code, "timed_out": timed_out, "killed": killed,
+                                   "printed": 4000, "cut": cut },
+            })
+        };
+        for told in [
+            report_of(json!(1), false, false, 0),
+            report_of(json!(null), true, false, 0),
+            report_of(json!(null), false, true, 0),
+            report_of(json!(0), false, false, 2500),
+        ] {
+            let (status, said) = answer(&state, report(Some("worker"), &told)).await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+            assert_eq!(said["receipt"], 61);
+        }
+        let sent: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/receipt")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 4);
+        for s in &sent {
+            assert_eq!(s["sandbox"], true, "sandbox-reported, never witnessed");
+            assert_eq!(s["token"], "worker", "attributed by the turn's own token");
+            assert_eq!(s["tool"], "shell");
+        }
+        assert_eq!(
+            sent[0]["ok"], true,
+            "a completed check that exits 1 is a reading: {}",
+            sent[0]
+        );
+        assert!(
+            sent[0]["args"].as_str().unwrap().contains("[exit 1]"),
+            "{}",
+            sent[0]
+        );
+        assert!(
+            !sent[0]["args"].as_str().unwrap().contains("[exit 0]"),
+            "never read from the output: {}",
+            sent[0]
+        );
+        assert_eq!(sent[1]["ok"], false, "{}", sent[1]);
+        assert!(
+            sent[1]["args"].as_str().unwrap().contains("[timed out]"),
+            "{}",
+            sent[1]
+        );
+        assert_eq!(sent[2]["ok"], false, "{}", sent[2]);
+        assert!(
+            sent[2]["args"].as_str().unwrap().contains("[killed]"),
+            "{}",
+            sent[2]
+        );
+        assert!(
+            sent[3]["args"]
+                .as_str()
+                .unwrap()
+                .contains("[output cut: 2500 of 4000 bytes]"),
+            "{}",
+            sent[3]
+        );
+        let other = json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash",
+            "tool_input": { "command": "ls" }, "tool_response": { "stdout": "", "stderr": "" } });
+        let (refused, _) = answer(&state, report(Some("worker"), &other)).await;
+        assert_eq!(
+            refused,
+            StatusCode::FORBIDDEN,
+            "a worker turn reports its shell alone"
         );
     }
 

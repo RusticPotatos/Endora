@@ -505,17 +505,54 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::NoSuchEvidence`] for a reference not in the record, and what
     /// [`Engine::post_in`] refuses.
     pub fn post_citing(&self, run: RunId, task: TaskId, text: &str, cited: &[Ref]) -> Done<()> {
-        {
+        let attached = {
             let _held = self.held();
             self.all_there(cited)?;
+            // Climb 2, S1: what cites nothing carries this run's own receipts for its task,
+            // attached by HQ and never taken for a citation.
+            if cited.is_empty() {
+                self.attached_receipts(run, task)?
+            } else {
+                None
+            }
+        };
+        match attached {
+            Some(line) => self.post_in_marked(run, task, &format!("{text}\n{line}"), true, cited),
+            None => self.post_in_marked(run, task, text, true, cited),
         }
-        self.post_in_marked(run, task, text, true, cited)
     }
 
-    /// Whether a turn has any receipt in HQ's record, held or refused: a post in such a turn
-    /// rests on something the node wrote, so it is never unsupported (ADR 0114, amended).
-    pub(super) fn has_receipts(&self, run: RunId) -> Done<bool> {
-        Ok(!self.store.call_receipts_of(run)?.is_empty())
+    /// This run's own receipts for `task` (climb 2, S1), as the line HQ attaches to what the turn
+    /// says without citing: ok calls only, of this run and this task alone (never another run's,
+    /// never another task's), each marked when its sandbox reported it. `None` when it has none.
+    pub(super) fn attached_receipts(&self, run: RunId, task: TaskId) -> Done<Option<String>> {
+        let ids: Vec<String> = self
+            .store
+            .call_receipts_of(run)?
+            .into_iter()
+            .filter(|r| r.ok && r.run == run && r.task == Some(task))
+            .map(|r| {
+                if r.sandbox {
+                    format!("r{} (sandbox-reported)", r.id)
+                } else {
+                    format!("r{}", r.id)
+                }
+            })
+            .collect();
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Attached by HQ, not cited: {}",
+            ids.join(", ")
+        )))
+    }
+
+    /// Whether a turn has a receipt the node witnessed (climb 2, S1): what an uncited post's
+    /// support rests on. A receipt its own sandbox reported is not a reading of the lab, so it
+    /// does not clear the unsupported mark, attached or not.
+    pub(super) fn has_witnessed_receipts(&self, run: RunId) -> Done<bool> {
+        Ok(self.store.call_receipts_of(run)?.iter().any(|r| !r.sandbox))
     }
 
     /// Whether what waits in a task's review is a draft for the owner, not work.

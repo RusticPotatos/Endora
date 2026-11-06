@@ -2488,3 +2488,156 @@ fn a_turn_on_its_own_item_is_offered_no_protocol_moves() {
     let listed = listed_for(&hq, &review);
     assert!(listed.iter().any(|n| n == "my_turn"), "{listed:?}");
 }
+
+// ---- S1, a turn's own receipts attached to what it says uncited (climb 2, round 36) ----------
+
+/// A receipt of the workbench's shell for `turn`, as the node records it: sandbox-reported.
+fn shell_receipt(hq: &Hq<'_>, turn: &super::ports::RunContext, excerpt: &str) -> i64 {
+    hq.record_sandbox_receipt(
+        &turn.token,
+        &super::engine::Called {
+            tool: "shell".to_owned(),
+            args: "./hostctl check [exit 1]".to_owned(),
+            excerpt: excerpt.to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap()
+}
+
+/// The newest post `author` wrote on `task`.
+fn newest_post(hq: &Hq<'_>, task: TaskId, author: &str) -> super::ports::Post {
+    hq.store()
+        .thread(task)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|p| p.author == author)
+        .expect("a post of theirs")
+}
+
+/// RED (S1): a post that cites nothing attaches this run's own receipts for its task, marked as
+/// attached by HQ and not cited; another run's receipts are not attached; and receipts the
+/// sandbox reported, attached, leave an uncited post unsupported as before.
+#[test]
+fn s1_an_uncited_post_attaches_this_runs_receipts_and_sandbox_alone_stays_unsupported() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let first = item(&hq, &f, "Look after the host", Priority::Normal);
+    let earlier = turn_of(&hq, f.bo);
+    let stale = shell_receipt(&hq, &earlier, "FAIL accounts: jdoe LOCKED (earlier)");
+    hq.runner().finish(earlier.run, true);
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    let second = item(&hq, &f, "Look after the host again", Priority::Normal);
+    let now = turn_of(&hq, f.bo);
+    let fresh = shell_receipt(&hq, &now, "FAIL accounts: jdoe LOCKED");
+    use_tool(
+        &hq,
+        &now,
+        "post",
+        &serde_json::json!({ "task": second.0, "text": "The host reads FAIL on accounts." }),
+    )
+    .unwrap();
+    let post = newest_post(&hq, second, "Bo");
+    assert!(
+        post.text.contains(&format!(
+            "Attached by HQ, not cited: r{fresh} (sandbox-reported)"
+        )),
+        "{}",
+        post.text
+    );
+    assert!(
+        !post.text.contains(&format!("r{stale}")),
+        "another run's receipt: {}",
+        post.text
+    );
+    assert!(
+        post.unsupported,
+        "sandbox receipts, attached, do not clear the marker"
+    );
+}
+
+/// GUARD (S1): a turn with a receipt the node witnessed still clears the marker, as before.
+#[test]
+fn s1_a_witnessed_receipt_still_supports_an_uncited_post() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let task = item(&hq, &f, "Look after the host", Priority::Normal);
+    let now = turn_of(&hq, f.bo);
+    hq.record_receipt(
+        &now.token,
+        &super::engine::Called {
+            tool: "homelab_status".to_owned(),
+            args: String::new(),
+            excerpt: "all up".to_owned(),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .unwrap();
+    use_tool(
+        &hq,
+        &now,
+        "post",
+        &serde_json::json!({ "task": task.0, "text": "All up." }),
+    )
+    .unwrap();
+    assert!(!newest_post(&hq, task, "Bo").unsupported);
+}
+
+/// GUARD (S1): a post that cites its evidence gets no attachment; the citation stands alone.
+#[test]
+fn s1_a_cited_post_gets_no_attachment() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let task = item(&hq, &f, "Look after the host", Priority::Normal);
+    let now = turn_of(&hq, f.bo);
+    let id = shell_receipt(&hq, &now, "FAIL accounts: jdoe LOCKED");
+    use_tool(
+        &hq,
+        &now,
+        "post",
+        &serde_json::json!({ "task": task.0, "text": "Locked.", "evidence": [format!("r{id}")] }),
+    )
+    .unwrap();
+    assert!(!newest_post(&hq, task, "Bo").text.contains("Attached by HQ"));
+}
+
+/// RED (S1): a question to the owner that cites nothing carries this run's receipts for its
+/// task, attached by HQ and not cited.
+#[test]
+fn s1_an_uncited_question_carries_this_runs_receipts() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let task = item(&hq, &f, "Look after the host", Priority::Normal);
+    let now = turn_of(&hq, f.bo);
+    let id = shell_receipt(&hq, &now, "FAIL accounts: jdoe LOCKED");
+    use_tool(
+        &hq,
+        &now,
+        "ask_owner",
+        &serde_json::json!({ "text": "Unlock jdoe, or leave it locked?" }),
+    )
+    .unwrap();
+    let card = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .find(|d| d.kind == "question" && d.task == Some(task))
+        .expect("the question");
+    assert!(
+        card.text.contains(&format!(
+            "Attached by HQ, not cited: r{id} (sandbox-reported)"
+        )),
+        "{}",
+        card.text
+    );
+}

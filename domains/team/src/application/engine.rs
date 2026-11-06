@@ -1098,7 +1098,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // Unsupported only when it states something of the member's own, cites nothing, and
         // its turn has no receipt (ADR 0114, amended). The worker's last word (`answers`
         // false) is what the model said as it stopped, never tagged.
-        let unsupported = answers && cited.is_empty() && !self.has_receipts(run.id)?;
+        // Climb 2, S1: only a receipt the node witnessed supports what cites nothing.
+        let unsupported = answers && cited.is_empty() && !self.has_witnessed_receipts(run.id)?;
         self.post_authored_held_lock_marked(
             Author::Member(member.id),
             task,
@@ -2531,7 +2532,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // amended 2026-11-01).
         self.not_asked_again(task)?;
         // There is no chain: a question goes to the owner's desk (ADR 0142).
-        let text = self.with_evidence(&text, cited)?;
+        let mut text = self.with_evidence(&text, cited)?;
+        // Climb 2, S1: a question that cites nothing carries this run's receipts for its task,
+        // attached by HQ and never taken for a citation.
+        if cited.is_empty() {
+            if let Some(line) = self.attached_receipts(run, task)? {
+                text = format!("{text}\n{line}");
+            }
+        }
         let checked = review::checked(&text, lab.as_deref());
         self.ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
             .map(Asked::Desk)
