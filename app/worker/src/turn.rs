@@ -989,10 +989,13 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
         .into_iter()
         .filter(|t| lab.contains(t))
         .collect();
-    // Acting is not observing (round 40): a turn whose lab tools only act is told it cannot look.
+    // Acting is not observing (rounds 40–41): act-only tools are said to be so, and an action
+    // still needs a fresh reading from a tool the turn may use; the thread's are context only.
     let looking = if lookers.is_empty() {
-        "None of them reads the lab: this turn you cannot look at it yourself, so say so, and act \
-         only on a reading the thread already holds."
+        "They act and do not read the lab: before you act, take a fresh reading with an available \
+         tool you are authorized to use. Readings earlier in the thread are context, not the \
+         state now. If no available tool can take the reading a step needs, say so and leave the \
+         step undone."
     } else {
         "Look with them yourself before you move anything on, and never say you cannot read the \
          home lab."
@@ -1023,7 +1026,7 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
     }
     if lab.contains(&"restart_container") {
         let diagnose = if lookers.is_empty() {
-            "diagnose first, from the readings the thread holds"
+            "diagnose first from a fresh reading taken this turn"
         } else {
             "look and diagnose first"
         };
@@ -1042,16 +1045,17 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
         );
     } else {
         rules.push(
-            "- After a fix, confirm it held before you call it fixed; with no way to come back \
-             this turn, say the fix is done but not yet confirmed to hold."
+            "- After a fix, confirm it held before you call it fixed. Say what the action did, as \
+             its result shows it; until a reading confirms the fix held, say that confirmation is \
+             still outstanding, and do not call the problem fixed."
                 .to_owned(),
         );
     }
     rules.push(format!("- {approval}"));
     rules.push("- On the home lab, never try to work around a refusal.".to_owned());
     rules.push(if lookers.is_empty() {
-        "- Say about the home lab only what a reading in the thread shows, naming its containers \
-         as it names them."
+        "- Say about the home lab only what a reading taken this turn showed, naming its \
+         containers as it names them."
             .to_owned()
     } else {
         "- Say about the home lab only what these tools showed you, naming its containers as \
@@ -4557,12 +4561,28 @@ mod tests {
     fn acting_is_not_observing_and_verifying_stays_without_check_back() {
         let restart = vec!["restart_container".to_owned()];
         let told = instructions_for(true, &restart, &restart, false, false);
-        assert!(told.contains("None of them reads the lab"), "{told}");
-        assert!(!told.contains("what these tools showed you"), "{told}");
-        assert!(
-            told.contains("only what a reading in the thread shows"),
-            "{told}"
-        );
+        // Round 41: the act-only tools' limit, not a blanket claim the turn cannot observe; the
+        // thread's readings are context, never the fresh reading an action needs.
+        for said in [
+            "They act and do not read the lab",
+            "an available tool you are authorized to use",
+            "context, not the state now",
+            "say so and leave the step undone",
+            "diagnose first from a fresh reading taken this turn",
+            "only what a reading taken this turn showed",
+        ] {
+            assert!(told.contains(said), "{said}: {told}");
+        }
+        for unsaid in [
+            "None of them reads the lab",
+            "cannot look at it yourself",
+            "act only on a reading the thread already holds",
+            "from the readings the thread holds",
+            "only what a reading in the thread shows",
+            "what these tools showed you",
+        ] {
+            assert!(!told.contains(unsaid), "{unsaid}: {told}");
+        }
         assert!(
             !told.contains("never say you cannot read the home lab"),
             "{told}"
@@ -4573,7 +4593,11 @@ mod tests {
         );
         assert!(told.contains("diagnose first"), "{told}");
         assert!(told.contains("confirm it held"), "{told}");
-        assert!(told.contains("not yet confirmed to hold"), "{told}");
+        // Round 41: what the action did, as its result shows; never fixed before it is confirmed.
+        assert!(told.contains("confirmation is still outstanding"), "{told}");
+        assert!(told.contains("do not call the problem fixed"), "{told}");
+        assert!(!told.contains("say the fix is done"), "{told}");
+        assert!(!told.contains("not yet confirmed to hold"), "{told}");
         assert!(!told.contains("call check_back"), "{told}");
         assert!(
             !told.contains("homelab_map"),

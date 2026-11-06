@@ -2560,7 +2560,11 @@ fn a_claude_code_turn_is_hqs_bookkeeping_then_claude_code_headless_then_its_last
     // Climb 2, S4: rendered from the tools this turn actually has; this HQ offers no check_back,
     // so the turn is told to confirm a fix held without being told to call it.
     assert!(!rules.contains("call check_back"), "{rules}");
-    assert!(rules.contains("not yet confirmed to hold"), "{rules}");
+    assert!(
+        rules.contains("confirmation is still outstanding"),
+        "{rules}"
+    );
+    assert!(!rules.contains("say the fix is done"), "{rules}");
     assert_eq!(
         read("cwd").trim(),
         std::fs::canonicalize(&work).unwrap().display().to_string()
