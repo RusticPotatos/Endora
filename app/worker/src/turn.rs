@@ -1049,11 +1049,15 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
     }
     rules.push(format!("- {approval}"));
     rules.push("- On the home lab, never try to work around a refusal.".to_owned());
-    rules.push(
+    rules.push(if lookers.is_empty() {
+        "- Say about the home lab only what a reading in the thread shows, naming its containers \
+         as it names them."
+            .to_owned()
+    } else {
         "- Say about the home lab only what these tools showed you, naming its containers as \
          they name them."
-            .to_owned(),
-    );
+            .to_owned()
+    });
     rules.push(
         "- Report something as a problem only when a tool shows it causing harm: an item stuck \
          in a queue, a container down or unhealthy, a failure that repeats. Errors or odd lines \
@@ -4554,6 +4558,11 @@ mod tests {
         let restart = vec!["restart_container".to_owned()];
         let told = instructions_for(true, &restart, &restart, false, false);
         assert!(told.contains("None of them reads the lab"), "{told}");
+        assert!(!told.contains("what these tools showed you"), "{told}");
+        assert!(
+            told.contains("only what a reading in the thread shows"),
+            "{told}"
+        );
         assert!(
             !told.contains("never say you cannot read the home lab"),
             "{told}"
