@@ -1003,8 +1003,7 @@ fn lab_rules(on_the_node: &[String]) -> String {
              owner's approval says which of your task's criteria it serves (serves), then goes \
              on their desk and ends your turn, and you are woken when they decide. One that \
              serves none of them is refused, and never reaches the desk.\n\
-             - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
-             never try to work around a refusal.\n\
+             - On the home lab, never try to work around a refusal.\n\
              - Say about the home lab only what these tools showed you, naming its containers as \
              they name them.\n\
              - Report something as a problem only when a tool shows it causing harm: an item \
@@ -1051,10 +1050,13 @@ pub(crate) fn instructions(
         "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
          from there.\n\
          3. End the turn with exactly one of these: move the task on with set_status and say \
-         why; create sub-tasks of your own when the work needs them; or put a concrete plan or \
-         question to the owner with ask_owner (asking ends your turn, and you are woken when \
-         they answer).",
+         why; create sub-tasks of your own when the work needs them; or, when a decision only \
+         the owner can make is needed, put it to them with ask_owner (asking ends your turn, and \
+         you are woken when they answer).",
     );
+    // Climb 2, S3: when to ask, the kernel's one statement, as HQ's ask_owner says it too.
+    told.push_str("\n\nWhen to ask the owner: ");
+    told.push_str(&endora_kernel::escalation::when_to_ask());
     told.push_str(&lab_rules(on_the_node));
     if shell {
         told.push_str(
@@ -4280,7 +4282,8 @@ mod tests {
     fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
         let told = instructions(true, &[], false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 3, "{told}");
+        // Climb 2, S3: when to ask the owner is a paragraph of its own, after the steps.
+        assert_eq!(parts.len(), 4, "{told}");
         assert!(!parts[0].contains('\n'), "{told}");
         let steps: Vec<&str> = parts[1].lines().collect();
         assert_eq!(steps[0], "Take your turn in these steps:");
@@ -4302,10 +4305,18 @@ mod tests {
         // owner's, one rule a line.
         let told = instructions(false, &lab(), false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 5, "{told}");
+        // Climb 2, S3: when to ask the owner is a paragraph of its own, after the steps.
+        assert_eq!(parts.len(), 6, "{told}");
+        assert_eq!(
+            parts[2],
+            format!(
+                "When to ask the owner: {}",
+                endora_kernel::escalation::when_to_ask()
+            )
+        );
         // And how the lab is built (ADR 0112), the house log's text, as a paragraph.
-        assert_eq!(parts[3], endora_kernel::lab::lab_built_paragraph());
-        let rules: Vec<&str> = parts[2].lines().collect();
+        assert_eq!(parts[4], endora_kernel::lab::lab_built_paragraph());
+        let rules: Vec<&str> = parts[3].lines().collect();
         assert_eq!(rules.len(), 9, "{told}");
         assert!(
             told.contains(
@@ -4355,9 +4366,10 @@ mod tests {
         // own.
         let told = instructions(true, &lab(), true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 6, "{told}");
+        // Climb 2, S3: one paragraph more (when to ask the owner).
+        assert_eq!(parts.len(), 7, "{told}");
         assert_eq!(
-            parts[4],
+            parts[5],
             "When the owner corrects you, or you learn something about this house that the team \
              will need again, tell it as a story with tell_story (when it matters, the tempting \
              move, what to do instead, and why) so nobody asks twice; cite a story by its handle \
@@ -4393,7 +4405,8 @@ mod tests {
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
         let told = instructions(true, &lab(), true, true);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 7, "{told}");
+        // Climb 2, S3: when to ask the owner is a paragraph of its own, after the steps.
+        assert_eq!(parts.len(), 8, "{told}");
         assert!(!told.contains("You cannot run commands"), "{told}");
         assert!(
             parts[1].contains(
@@ -4402,7 +4415,7 @@ mod tests {
             "{told}"
         );
         assert_eq!(
-            parts[4],
+            parts[5],
             "You have a real shell in a sandbox: run commands, git and python there with the \
              shell tool, and say why. The sandbox has no internet, and the house's services are \
              not reachable from the shell, so use the house through the team's tools. Your \

@@ -739,8 +739,8 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             "ask_owner",
             650,
             &[
-                "only what the owner alone decides",
-                "money beyond the caps",
+                "only what exceeds your authority",
+                "found or named",
                 "ends your turn",
                 "HQ asks the owner itself",
             ][..],
@@ -774,4 +774,26 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             assert!(!text.contains(retired), "{name} says {retired:?}: {text}");
         }
     }
+}
+
+/// Climb 2, S3: HQ's ask_owner says when to ask in the kernel's one statement, which the worker's
+/// instructions also carry; the old list that contradicted the worker's rule is gone.
+#[test]
+fn ask_owner_says_when_to_ask_in_the_kernels_one_statement() {
+    let all = tools();
+    let ask = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_owner")
+        .expect("the ask_owner tool");
+    let said = ask["description"].as_str().unwrap();
+    assert!(
+        said.contains(endora_kernel::escalation::when_to_ask_briefly()),
+        "{said}"
+    );
+    assert!(
+        !said.contains("only what the owner alone decides"),
+        "{said}"
+    );
 }

@@ -301,7 +301,13 @@ pub fn tools() -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a decision on the owner's desk, citing evidence: only what the owner alone decides (money beyond the caps, credentials, accepting a risk, an irreversible step, taste). It ends your turn until the answer. Decide the rest yourself: HQ asks the owner itself when work keeps failing.",
+            // Climb 2, S3: when to ask is the kernel's one statement (briefly here; whole in the
+            // worker's instructions).
+            &format!(
+                "Put a decision on the owner's desk, with evidence: {} It ends your turn. HQ \
+                 asks the owner itself when work keeps failing.",
+                endora_kernel::escalation::when_to_ask_briefly()
+            ),
             json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),

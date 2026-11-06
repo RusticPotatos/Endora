@@ -19,6 +19,7 @@
 
 pub mod autonomy;
 pub mod error;
+pub mod escalation;
 pub mod exit_code;
 pub mod ids;
 pub mod lab;
