@@ -1274,6 +1274,125 @@ fn the_owners_words_on_another_loops_item_stay_out_of_the_notes() {
     assert!(!next.told.contains("Unlock jdoe"), "{}", next.told);
 }
 
+/// The owner's short answer stays in the notes though the members repeated its only word of the
+/// item's (climb 2, 6 Nov: "Leave it as it is; do not change it." was dropped when "change" was
+/// on three of four notes); members' notes are still kept only when they name the item.
+#[test]
+fn the_owners_answer_is_kept_though_members_repeat_its_only_word_of_the_items() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    let check = |title: &str| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal: f.goal,
+                project: Some(f.loop_),
+                parent: None,
+                title: title.to_owned(),
+                description: "Read the printer, the disk, the kernel and the jdoe account."
+                    .to_owned(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    let first = check("Look after the host");
+    let bo = turn_of(&hq, f.bo);
+    for text in [
+        "jdoe locked; the printer is off.",
+        "jdoe locked; the disk is fine.",
+        "jdoe locked; the kernel update is pending.",
+        "Coffee break.",
+    ] {
+        use_tool(
+            &hq,
+            &bo,
+            "post",
+            &serde_json::json!({ "task": first.0, "text": text }),
+        )
+        .unwrap();
+    }
+    hq.post(Author::Owner, first, "Leave jdoe locked.").unwrap();
+    hq.runner().finish(bo.run, true);
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    check("Look after the host again");
+    let next = turn_of(&hq, f.bo);
+    assert!(
+        next.told
+            .contains(&format!("- owner on #{}: Leave jdoe locked.", first.0)),
+        "{}",
+        next.told
+    );
+    assert!(next.told.contains("the printer is off"), "{}", next.told);
+    assert!(
+        !next.told.contains("Coffee break."),
+        "a member's note naming nothing of the item's is still left out: {}",
+        next.told
+    );
+    assert!(
+        next.told
+            .contains("The loop's notes on its other items: ask_record with project"),
+        "{}",
+        next.told
+    );
+}
+
+/// The notes keep their limit and their order: the newest six, the owner's among them by time,
+/// never put ahead of newer notes.
+#[test]
+fn the_owners_note_keeps_its_place_in_time_and_the_notes_their_limit() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let hq = hq(&clock);
+    let f = five(&hq);
+    // Six things the item names, one on each member's note, so every member note is about it.
+    let things = ["printer", "disk", "kernel", "backup", "metrics", "ntp"];
+    let check = |title: &str| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal: f.goal,
+                project: Some(f.loop_),
+                parent: None,
+                title: title.to_owned(),
+                description: format!("Read the {}.", things.join(", the ")),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    let first = check("Look after the host");
+    hq.post(Author::Owner, first, "Old owner word: leave it.")
+        .unwrap();
+    let bo = turn_of(&hq, f.bo);
+    for thing in things {
+        clock.0.fetch_add(60_000, Ordering::SeqCst);
+        use_tool(
+            &hq,
+            &bo,
+            "post",
+            &serde_json::json!({ "task": first.0, "text": format!("Read the {thing}: fine.") }),
+        )
+        .unwrap();
+    }
+    hq.runner().finish(bo.run, true);
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
+    check("Look after the host again");
+    let next = turn_of(&hq, f.bo);
+    let notes = next.told.matches(&format!(" on #{}: ", first.0)).count();
+    assert_eq!(notes, 6, "{}", next.told);
+    assert!(
+        !next.told.contains("Old owner word"),
+        "the oldest note falls out, the owner's too: {}",
+        next.told
+    );
+    assert!(next.told.contains("Read the ntp: fine."), "{}", next.told);
+}
+
 /// The owner's line in the notes is cut like any other note's.
 #[test]
 fn the_owners_note_is_cut_to_a_line_like_any_other() {

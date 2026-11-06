@@ -831,11 +831,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .map(|p| (other.id, other.title.clone(), p)),
             );
         }
-        // On an item, the notes of the loop's items that name what it names.
-        let (notes, skipped) = match &relevance {
-            Some(r) => r.keep(notes, |(_, title, p)| format!("{title} {}", p.text)),
-            None => (notes, 0),
+        // On an item, the members' notes of the loop's items that name what it names; the
+        // owner's always (climb 2, 6 Nov: a short answer, "Leave it as it is; do not change it.",
+        // was dropped when the members had repeated its only word of the item's).
+        let owner = self.author_name(super::Author::Owner)?;
+        let (owners, members): (Vec<_>, Vec<_>) =
+            notes.into_iter().partition(|(_, _, p)| p.author == owner);
+        let (mut notes, skipped) = match &relevance {
+            Some(r) => r.keep(members, |(_, title, p)| format!("{title} {}", p.text)),
+            None => (members, 0),
         };
+        notes.extend(owners);
         let mut lately: Vec<(crate::domain::Millis, String)> = notes
             .into_iter()
             .map(|(id, _, post)| {
