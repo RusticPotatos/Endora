@@ -97,6 +97,34 @@ Feature: One member works a loop alone
     Then Sol's briefing says "You work this loop alone"
     And Sol's briefing says "closes it, with no review"
     And Sol's briefing says "Three failures do not take it a rank up: after 9 it is blocked"
+    And Sol's briefing says "Once HQ's check of your newest submission has passed"
+
+  # Climb 3, round 7 (calibration ST rep 2): a solo member on a routine's item in a repository
+  # outside the lab was told to wait for "HQ's check" of its submission, a check that does not
+  # exist there; it scheduled a check-back past the episode's end and the item was dropped.
+  # Seed: the gated wording told on every solo item fails the Thens.
+  Scenario: A routine's item outside the lab is told there is no check to wait for
+    Given the owner names "https://github.com/example/tiny" as the repository of the loop "solo arm"
+    And the loop "solo arm" has the routine "Look after the environment" for Sol, which fires now
+    And a tick passes
+    When Sol's turn starts
+    Then Sol's briefing says "You work this loop alone"
+    And Sol's briefing does not say "Once HQ's check"
+    And Sol's briefing says "no check of the lab's applies to it: there is nothing to wait for"
+    And Sol's briefing says "submit your branch with repo_submit, then set it ready (set_status in_review)"
+    And Sol's briefing says "kept on the node for judging, never pushed or deployed"
+    And Sol's briefing says "closes it, with no review"
+
+  # Seed: the gated wording on a routine's item in the lab fails the Thens.
+  Scenario: A routine's item in the lab is told setting it ready closes it, with no check first
+    Given the loop "solo arm" has the routine "Look after the environment" for Sol, which fires now
+    And a tick passes
+    When Sol's turn starts
+    Then Sol's briefing says "You work this loop alone"
+    And Sol's briefing does not say "Once HQ's check"
+    And Sol's briefing does not say "outside the lab: no check"
+    And Sol's briefing says "no gate stands between your work and setting it ready"
+    And Sol's briefing says "closes it, with no review"
 
   Scenario: A CI criterion no push can meet is hers to block, with the reason
     Given the loop "solo arm" has the item "Run the lint rules' tests in CI", with the criteria

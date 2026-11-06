@@ -270,15 +270,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let Some(task) = run.task else {
             return Ok(String::new());
         };
-        if self.solo_of(&self.task(task)?)? != Some(member.id) {
+        let item = self.task(task)?;
+        if self.solo_of(&item)? != Some(member.id) {
             return Ok(String::new());
         }
+        // Climb 3, round 7: the way to done is said as it is for this item. Only work that needs
+        // the gate waits for HQ's check of its newest head (ready_alone); a routine's item or the
+        // home lab's needs none, and a repository outside the lab has no check of the lab's at all
+        // (calibration ST rep 2 waited for one past the episode's end).
+        let gate = crate::domain::review::needs_gate(
+            self.routine_of(item.id)?.is_some(),
+            self.the_home_labs(&item)?,
+        );
+        let outside = self.outside_repo_of_task(item.id)?.is_some();
         Ok(format!(
             "You work this loop alone: nobody reviews your item and nobody takes it over. Check \
-             its criteria yourself. Once HQ's check of your newest submission has passed, setting \
-             it ready (set_status in_review) closes it, with no review. Three failures do not \
-             take it a rank up: after {FAILURES_ALONE} it is blocked; if it cannot be done, block \
-             it yourself with the reason.\n"
+             its criteria yourself. {} Three failures do not take it a rank up: after \
+             {FAILURES_ALONE} it is blocked; if it cannot be done, block it yourself with the \
+             reason.\n",
+            alone_route(gate, outside)
         ))
     }
 
@@ -1139,5 +1149,51 @@ fn map_lines_within(told: &mut String, lines: &[serde_json::Value]) {
             return;
         }
         told.push_str(&said);
+    }
+}
+
+/// How an item of a loop worked alone becomes done, as it is for that item (climb 3, round 7):
+/// `gate` when the work needs the gate (HQ's check of its newest head) before it is set ready,
+/// `outside` when its repository is outside the lab, where no check of the lab's applies.
+#[must_use]
+pub(super) fn alone_route(gate: bool, outside: bool) -> &'static str {
+    if gate && !outside {
+        return "Once HQ's check of your newest submission has passed, setting it ready \
+                (set_status in_review) closes it, with no review.";
+    }
+    if outside {
+        return "This item's repository is outside the lab, so no check of the lab's applies to \
+                it: there is nothing to wait for. When the work meets its criteria, submit your \
+                branch with repo_submit, then set it ready (set_status in_review): that closes it, \
+                with no review. The branch is kept on the node for judging, never pushed or \
+                deployed.";
+    }
+    "This item needs no check of HQ's first: no gate stands between your work and setting it \
+     ready. When it meets its criteria (and any branch is submitted), setting it ready \
+     (set_status in_review) closes it, with no review."
+}
+
+#[cfg(test)]
+mod alone_route_tests {
+    use super::alone_route;
+
+    #[test]
+    fn only_gated_lab_work_waits_for_hqs_check() {
+        assert!(alone_route(true, false).contains("Once HQ's check of your newest submission"));
+        for (gate, outside) in [(false, false), (false, true), (true, true)] {
+            let said = alone_route(gate, outside);
+            assert!(!said.contains("Once HQ's check"), "{said}");
+            assert!(said.contains("set_status in_review"), "{said}");
+            assert!(said.contains("closes it, with no review"), "{said}");
+        }
+    }
+
+    #[test]
+    fn an_outside_item_is_told_there_is_nothing_to_wait_for_and_nothing_is_deployed() {
+        let said = alone_route(false, true);
+        assert!(said.contains("no check of the lab's applies to it: there is nothing to wait for"));
+        assert!(said.contains("repo_submit"));
+        assert!(said.contains("never pushed or deployed"));
+        assert!(!alone_route(false, false).contains("outside the lab"));
     }
 }
