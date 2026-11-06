@@ -985,17 +985,24 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
         ));
         return told;
     }
-    told.push_str(&format!(
-        "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: {}. Look \
-         with them yourself before you move anything on, and never say you cannot read the home \
-         lab.\n",
-        lab.join(", ")
-    ));
-    let mut rules: Vec<String> = Vec::new();
     let lookers: Vec<&str> = ["homelab_status", "container_logs"]
         .into_iter()
         .filter(|t| lab.contains(t))
         .collect();
+    // Acting is not observing (round 40): a turn whose lab tools only act is told it cannot look.
+    let looking = if lookers.is_empty() {
+        "None of them reads the lab: this turn you cannot look at it yourself, so say so, and act \
+         only on a reading the thread already holds."
+    } else {
+        "Look with them yourself before you move anything on, and never say you cannot read the \
+         home lab."
+    };
+    told.push_str(&format!(
+        "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: {}. \
+         {looking}\n",
+        lab.join(", ")
+    ));
+    let mut rules: Vec<String> = Vec::new();
     match lookers.as_slice() {
         [one, two] => rules.push(format!(
             "- {one} and {two} only look: use them freely to see what is wrong and why."
@@ -1015,17 +1022,28 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
         );
     }
     if lab.contains(&"restart_container") {
-        rules.push(
+        let diagnose = if lookers.is_empty() {
+            "diagnose first, from the readings the thread holds"
+        } else {
+            "look and diagnose first"
+        };
+        rules.push(format!(
             "- restart_container is a safe fix you may make on your own, within its limits (one \
-             restart of a container an hour, three in all), and the owner is told: look and \
-             diagnose first, and say why."
-                .to_owned(),
-        );
+             restart of a container an hour, three in all), and the owner is told: {diagnose}, and \
+             say why."
+        ));
     }
+    // The obligation to confirm a fix is always said; only the tool for it is the turn's or not.
     if available.iter().any(|n| n == "check_back") {
         rules.push(
             "- After a fix, check back to confirm it held: call check_back with the minutes to \
              wait and what you will look at."
+                .to_owned(),
+        );
+    } else {
+        rules.push(
+            "- After a fix, confirm it held before you call it fixed; with no way to come back \
+             this turn, say the fix is done but not yet confirmed to hold."
                 .to_owned(),
         );
     }
@@ -1044,9 +1062,14 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
             .to_owned(),
     );
     told.push_str(&rules.join("\n"));
-    // How the lab is built (ADR 0112): one text, shared with HQ's house log.
+    // How the lab is built (ADR 0112): one text, shared with HQ's house log; homelab_map named
+    // only when the turn has it (round 40).
     told.push_str("\n\n");
-    told.push_str(&endora_kernel::lab::lab_built_paragraph());
+    if available.iter().any(|n| n == "homelab_map") {
+        told.push_str(&endora_kernel::lab::lab_built_paragraph());
+    } else {
+        told.push_str(&endora_kernel::lab::lab_built_paragraph_without_map());
+    }
     told
 }
 
@@ -1056,17 +1079,29 @@ fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
 /// lead on Claude offered `homelab_status` said three times that its tools could not read the
 /// home lab, reading HQ's briefing, which lists only HQ's tools, as all it had); `lessons`,
 /// whether it tells the team's lessons as stories (`tell_story`); `shell`, whether it is in the
-/// workbench, with a shell.
+/// workbench, with a shell. Since climb 2's S4 every caller passes the turn's own tools to
+/// [`instructions_for`]; this, with every tool a turn was once told of, is the tests'.
+#[cfg(test)]
 pub(crate) fn instructions(
     posted: bool,
     on_the_node: &[String],
     lessons: bool,
     shell: bool,
 ) -> String {
-    // HQ's check_back with the node's tools, as every turn was told before climb 2's S4: kept
-    // for a caller that does not know the turn's HQ tools (a Claude Code turn's opening).
+    // Every tool a turn was told of before climb 2's S4, beside the node's: HQ's task tools,
+    // check_back and homelab_map. For the tests of what is said with them all.
     let mut available = on_the_node.to_vec();
-    available.push("check_back".to_owned());
+    for t in [
+        "my_turn",
+        "post",
+        "set_status",
+        "create_task",
+        "ask_owner",
+        "check_back",
+        "homelab_map",
+    ] {
+        available.push(t.to_owned());
+    }
     instructions_for(posted, on_the_node, &available, lessons, shell)
 }
 
@@ -1094,14 +1129,39 @@ pub(crate) fn instructions_for(
              do anything. You cannot run commands, ping, open files or browse: never offer to.\n",
         );
     }
-    told.push_str(
-        "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
-         from there.\n\
-         3. End the turn with exactly one of these: move the task on with set_status and say \
-         why; create sub-tasks of your own when the work needs them; or, when a decision only \
-         the owner can make is needed, put it to them with ask_owner (asking ends your turn, and \
-         you are woken when they answer).",
-    );
+    // Climb 2, S4 (round 40): the steps name only the task tools the turn has; a downtime turn
+    // (my_turn and chess) is told none.
+    let has = |t: &str| available.iter().any(|n| n == t);
+    let mut endings: Vec<&str> = Vec::new();
+    if has("set_status") {
+        endings.push("move the task on with set_status and say why");
+    }
+    if has("create_task") {
+        endings.push("create sub-tasks of your own when the work needs them");
+    }
+    if has("ask_owner") {
+        endings.push(
+            "or, when a decision only the owner can make is needed, put it to them with ask_owner \
+             (asking ends your turn, and you are woken when they answer)",
+        );
+    }
+    if has("post") {
+        told.push_str(
+            "2. Post in the task's thread what you found, briefly, so whoever comes next can go \
+             on from there.\n",
+        );
+    }
+    let last = if has("post") { 3 } else { 2 };
+    if endings.is_empty() {
+        told.push_str(&format!(
+            "{last}. When your part is done, stop calling tools and reply in one or two sentences."
+        ));
+    } else {
+        told.push_str(&format!(
+            "{last}. End the turn with exactly one of these: {}.",
+            endings.join("; ")
+        ));
+    }
     // Climb 2, S3: when to ask, the kernel's one statement, as HQ's ask_owner says it too.
     told.push_str("\n\nWhen to ask the owner: ");
     told.push_str(&endora_kernel::escalation::when_to_ask());
@@ -1172,7 +1232,18 @@ pub(crate) fn instructions_for(
              its handle rather than retelling it.",
         );
     }
-    // How done is shown (ADR 0114): from the record, never from what a model says.
+    // How done is shown (ADR 0114): from the record, never from what a model says. A turn with no
+    // way to close work (downtime) is told only to keep it short (climb 2, S4).
+    if !has("set_status") {
+        told.push_str(
+            "\n\nKeep it short, and never say you did what you did not do. When your part is \
+             done, stop calling tools and reply in one or two sentences.",
+        );
+        if posted {
+            told.push_str(" That reply goes in your task's thread.");
+        }
+        return told;
+    }
     told.push_str(
         "\n\nDone is shown, never said: your task's criteria (in my_turn) say what done means. \
          Each result of Endora's tools names its receipt (receipt r12): cite those ids in \
@@ -4473,6 +4544,59 @@ mod tests {
         let told = instructions_for(true, &full, &full, false, false);
         assert!(!told.contains("call check_back"), "{told}");
         assert!(told.contains("look and diagnose first"), "{told}");
+    }
+
+    /// Climb 2, S4 (round 40): a restart-only turn is told none of its tools reads the lab, with the
+    /// restart's limits and diagnosis kept; the obligation to confirm a fix stays without
+    /// check_back; the lab's paragraph names homelab_map only when it is offered.
+    #[test]
+    fn acting_is_not_observing_and_verifying_stays_without_check_back() {
+        let restart = vec!["restart_container".to_owned()];
+        let told = instructions_for(true, &restart, &restart, false, false);
+        assert!(told.contains("None of them reads the lab"), "{told}");
+        assert!(
+            !told.contains("never say you cannot read the home lab"),
+            "{told}"
+        );
+        assert!(
+            told.contains("one restart of a container an hour, three in all"),
+            "{told}"
+        );
+        assert!(told.contains("diagnose first"), "{told}");
+        assert!(told.contains("confirm it held"), "{told}");
+        assert!(told.contains("not yet confirmed to hold"), "{told}");
+        assert!(!told.contains("call check_back"), "{told}");
+        assert!(
+            !told.contains("homelab_map"),
+            "no homelab_map offered: {told}"
+        );
+        assert!(
+            told.contains("behind gluetun"),
+            "the shared facts stay: {told}"
+        );
+        let mut with_map = restart.clone();
+        with_map.push("homelab_map".to_owned());
+        let told = instructions_for(true, &restart, &with_map, false, false);
+        assert!(told.contains("homelab_map shows who owns what"), "{told}");
+    }
+
+    /// Climb 2, S4 (round 40): a downtime turn offered only my_turn and chess is told no task tool
+    /// to call; when to ask the owner stays as policy.
+    #[test]
+    fn a_downtime_turn_is_told_no_task_tool_it_lacks() {
+        let downtime = vec!["my_turn".to_owned(), "chess".to_owned()];
+        let told = instructions_for(false, &[], &downtime, false, false);
+        for absent in [
+            "set_status",
+            "create_task",
+            "ask_owner",
+            "Post in the task's thread",
+            "check_back",
+        ] {
+            assert!(!told.contains(absent), "{absent}: {told}");
+        }
+        assert!(told.contains("When to ask the owner: "), "{told}");
+        assert!(told.ends_with("reply in one or two sentences."), "{told}");
     }
 
     /// Climb 2, S4: a turn offered the wing's git with no shell is told it has no shell to work a

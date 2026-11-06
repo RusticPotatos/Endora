@@ -24,6 +24,21 @@ pub fn lab_built_paragraph() -> String {
     LAB_BUILT.join(" ")
 }
 
+/// [`lab_built_paragraph`] for a turn not offered `homelab_map` (climb 2, S4): the same facts
+/// from the same sentences, without telling it to call a tool it does not have.
+#[must_use]
+pub fn lab_built_paragraph_without_map() -> String {
+    lab_built_paragraph()
+        .replace(
+            " homelab_map shows who owns what and what depends on what.",
+            "",
+        )
+        .replace(
+            "check homelab_map and the current state",
+            "check the current state",
+        )
+}
+
 /// Whether a path is one the team may never touch (ADR 0115): the owner's values live in
 /// `group_vars/*.yml`, `host_vars/` and every inventory, and anything named for a vault. The
 /// node refuses a branch that changes one at submission, and HQ checks it again at review, by
@@ -183,6 +198,24 @@ mod tests {
             let why = outside_repo(said).unwrap_err();
             assert!(why.contains(OUTSIDE_REPO_SHAPE), "{said}: {why}");
         }
+    }
+
+    /// Climb 2, S4: without homelab_map, the same facts from the same sentences, with no
+    /// instruction to call a tool the turn lacks.
+    #[test]
+    fn the_paragraph_without_the_map_keeps_its_facts_and_names_no_map() {
+        let said = lab_built_paragraph_without_map();
+        assert!(!said.contains("homelab_map"), "{said}");
+        assert!(
+            said.starts_with("The home lab is managed by ansible-nas"),
+            "{said}"
+        );
+        assert!(said.contains("behind gluetun"), "{said}");
+        assert!(
+            said.contains("check the current state before treating that as a fault"),
+            "{said}"
+        );
+        assert!(!said.contains("  "), "{said}");
     }
 
     #[test]

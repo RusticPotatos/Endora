@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use crate::repo;
 use crate::turn::{
     self, Answered, Call, Hq, Ledger, Node, POST_AT_MOST, PROTOCOL, REPO_CHECKOUT, REPO_SUBMIT,
-    Reply, SHELL, Setup, Stopped, Taken, beside, in_the_repo, instructions, is_repo_tool,
+    Reply, SHELL, Setup, Stopped, Taken, beside, in_the_repo, instructions_for, is_repo_tool,
     member_of, quiet, run, task_of,
 };
 
@@ -423,7 +423,8 @@ fn turn_with_claude_code(setup: &Setup) -> Result<Taken, Stopped> {
     let mcp = files.join("mcp.json");
     let told = format!(
         "{}{CLAUDE_CODE_RULES}",
-        instructions(task.is_some(), &on_the_node, lessons, true)
+        // Climb 2, S4: from the tools this turn actually has, HQ's and the node's.
+        instructions_for(task.is_some(), &on_the_node, &names, lessons, true)
     );
     let worker = std::env::current_exe()
         .map_or_else(|_| "endora-worker".to_owned(), |p| p.display().to_string());
