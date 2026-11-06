@@ -19,6 +19,9 @@ Feature: When to ask the owner is said once, the same everywhere
     Then the model's instructions say "Ask the owner only for a decision your own authority does not cover"
     And the model's instructions say "for one you discover yourself"
     And the model's instructions say "it is not a reason to propose the step"
+    And the model's instructions say "irreversible or data-losing steps"
+    And the model's instructions say "taste the owner kept"
+    And the model's instructions say "not a choice they have already given you"
     And the model's instructions say "Asking requests a decision and changes nothing"
     And the model's instructions say "try to work around a refusal"
     And the model's instructions do not say "Anything else on the home lab is the owner's to decide"
@@ -27,5 +30,6 @@ Feature: When to ask the owner is said once, the same everywhere
     Given the node hands out "main" of a repository outside the lab
     When the model replies "repo_checkout main"
     Then the model's instructions say "Ask the owner only for a decision your own authority does not cover"
+    And the model's instructions say "taste the owner kept"
     And the model's instructions say "for one you discover yourself"
     And the model's instructions do not say "Anything else on the home lab is the owner's to decide"

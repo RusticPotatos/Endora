@@ -739,7 +739,7 @@ fn the_tools_a_house_turn_starts_with_say_their_rules_briefly() {
             "ask_owner",
             650,
             &[
-                "only what exceeds your authority",
+                "taste the owner kept",
                 "found or named",
                 "ends your turn",
                 "HQ asks the owner itself",
@@ -789,11 +789,31 @@ fn ask_owner_says_when_to_ask_in_the_kernels_one_statement() {
         .expect("the ask_owner tool");
     let said = ask["description"].as_str().unwrap();
     assert!(
-        said.contains(endora_kernel::escalation::when_to_ask_briefly()),
+        said.contains(&endora_kernel::escalation::when_to_ask_briefly()),
         "{said}"
     );
     assert!(
         !said.contains("only what the owner alone decides"),
         "{said}"
     );
+}
+
+/// Climb 2, S3 (round 33): the tool and the worker share one category clause, which keeps the
+/// owner's reserved taste and names data-losing steps.
+#[test]
+fn ask_owner_carries_the_shared_category_clause_with_taste_and_data_loss() {
+    let all = tools();
+    let ask = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_owner")
+        .expect("the ask_owner tool");
+    let said = ask["description"].as_str().unwrap();
+    assert!(
+        said.contains(endora_kernel::escalation::DECISIONS),
+        "{said}"
+    );
+    assert!(said.contains("taste the owner kept"), "{said}");
+    assert!(said.contains("data-losing"), "{said}");
 }
