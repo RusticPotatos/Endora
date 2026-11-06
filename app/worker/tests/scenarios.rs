@@ -172,7 +172,7 @@ fn node_with_repo() -> String {
 
 /// A node that offers the repository's contracts (only the checkout, to a turn that may only
 /// read), and the home lab's tools with `lab`, and answers every checkout with `handed`, as the node's text with a receipt after it.
-fn node_handing(handed: Value, read_only: bool, lab: bool) -> String {
+fn node_handing(handed: Value, read_only: bool, lab: bool, extra: Vec<String>) -> String {
     fake(Box::new(move |sent, _| {
         if sent.is_null() {
             let mut tools = vec![
@@ -182,6 +182,10 @@ fn node_handing(handed: Value, read_only: bool, lab: bool) -> String {
                 for name in ["homelab_status", "container_logs", "restart_container"] {
                     tools.push(json!({ "name": name, "kind": "read", "description": "The lab." }));
                 }
+            }
+            // Climb 2, S4: a node tool the scenario names, offered beside the repository's.
+            for name in &extra {
+                tools.push(json!({ "name": name, "kind": "read", "description": "A node tool." }));
             }
             if !read_only {
                 tools.push(
@@ -353,6 +357,8 @@ struct Turn {
     read_only: bool,
     /// Whether the node offers the home lab's tools beside the repository's.
     lab_tools: bool,
+    /// Node tools the scenario names, offered beside the repository's (S4).
+    extra_tools: Vec<String>,
     /// Every request the node was sent, when the scenario's node keeps them (S1).
     node_sent: Vec<Value>,
     /// Whether the node records no receipt (S1).
@@ -517,7 +523,12 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let (model, to_model) = model_replying(rounds);
     let mut node_seen: Option<Seen> = None;
     let contracts = match (&w.handed, w.kept_head.is_some()) {
-        (Some(handed), _) => node_handing(handed.clone(), w.read_only, w.lab_tools),
+        (Some(handed), _) => node_handing(
+            handed.clone(),
+            w.read_only,
+            w.lab_tools,
+            w.extra_tools.clone(),
+        ),
         (None, true) => node_with_repo(),
         (None, false) => {
             let (url, seen) = node_seeing(w.no_receipts);
@@ -706,6 +717,11 @@ fn hands_out_kept_fork(w: &mut Turn, branch: String) {
 #[given("the node offers the home lab's tools too")]
 fn offers_lab_tools(w: &mut Turn) {
     w.lab_tools = true;
+}
+
+#[given(expr = "the node offers {string} too")]
+fn node_offers_too(w: &mut Turn, name: String) {
+    w.extra_tools.push(name);
 }
 
 #[given("the turn may only read")]

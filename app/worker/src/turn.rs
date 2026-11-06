@@ -723,6 +723,11 @@ fn opening(
     lessons: bool,
     shell: bool,
 ) -> Opening {
+    // Climb 2, S4: every tool the turn has, offered now or to be found, HQ's and the node's.
+    let available: Vec<String> = offered
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
     let claude_searches = api == Api::Anthropic && offered.len() > DEFER_PAST;
     let deferred = if api == Api::OpenAi && offered.len() > DEFER_PAST {
         let (now, later): (Vec<Value>, Vec<Value>) =
@@ -737,9 +742,9 @@ fn opening(
     // with no task: a chess move, a look round) they are named, to be found.
     let lab_found_later = !deferred.is_empty() && !task;
     let mut told = if lab_found_later {
-        instructions(task, &[], lessons, shell)
+        instructions_for(task, &[], &available, lessons, shell)
     } else {
-        instructions(task, on_the_node, lessons, shell)
+        instructions_for(task, on_the_node, &available, lessons, shell)
     };
     let lab_later: Vec<&str> = LAB_TOOLS
         .into_iter()
@@ -797,7 +802,7 @@ fn opening(
         .collect();
     talk.given_tools =
         crate::transcript::tools(&now.iter().filter_map(name).collect::<Vec<_>>(), &held_back);
-    let rules_later = lab_found_later.then(|| lab_rules(on_the_node));
+    let rules_later = lab_found_later.then(|| lab_rules(on_the_node, &available));
     Opening {
         talk,
         deferred,
@@ -956,65 +961,92 @@ fn search(deferred: &mut Vec<Value>, query: &str) -> (Vec<Value>, String) {
 /// The home lab's rules, for a turn whose node tools include the lab's: said in the opening
 /// where those tools are up front, and with `find_tools`' reply where they are found later
 /// (review of 30 Oct: an idle house turn could bring in `restart_container` without them).
-fn lab_rules(on_the_node: &[String]) -> String {
+/// Climb 2, S4: each tool's rule is said only when that tool is the turn's (`available`: every
+/// tool offered or to be found, HQ's and the node's); a turn with none of the lab's tools is told
+/// how Endora's tools are authorized, never the home lab's own rules.
+fn lab_rules(on_the_node: &[String], available: &[String]) -> String {
     let lab: Vec<&str> = LAB_TOOLS
         .into_iter()
         .filter(|t| on_the_node.iter().any(|n| n == t))
         .collect();
     let mut told = String::new();
-    // A turn offered only the wing's git works in a repository, not the home lab: it is told
-    // how Endora's tools are authorized, never the home lab's own rules (O8: repo_checkout alone
-    // brought "use homelab_status" and "a proposal to change ansible-nas" to an outside item).
-    if !on_the_node.is_empty() && on_the_node.iter().all(|n| is_repo_tool(n)) {
-        told.push_str(
-            "\n\nEndora's tools say whether they read or act; an action that needs the owner's \
-             approval says which of your task's criteria it serves (serves), then goes on their \
-             desk and ends your turn, and you are woken when they decide. One that serves none \
-             of them is refused, and never reaches the desk. Never try to work around a \
-             refusal.",
-        );
+    if on_the_node.is_empty() {
         return told;
     }
-    if !on_the_node.is_empty() {
-        if lab.is_empty() {
-            told.push_str("\n\nThe home lab tools are Endora's contracts:\n");
-        } else {
-            told.push_str(&format!(
-                "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: \
-                 {}. Look with them yourself before you move anything on, and never say you \
-                 cannot read the home lab.\n",
-                lab.join(", ")
-            ));
-        }
-        told.push_str(
-            "\
-             - homelab_status and container_logs only look: use them freely to see what is \
-             wrong and why.\n\
-             - An alarm is a moment, not the state now: check homelab_status before you act, \
-             since what alarmed may be back up (Endora says so in the thread). If everything \
-             has recovered, say so and close the task: a routine's check as done, other work \
-             moved on with set_status.\n\
-             - restart_container is a safe fix you may make on your own, within its limits (one \
-             restart of a container an hour, three in all), and the owner is told: look and \
-             diagnose first, and say why.\n\
-             - After a fix, check back to confirm it held: call check_back with the minutes to \
-             wait and what you will look at.\n\
-             - Endora's other tools say whether they read or act; an action that needs the \
-             owner's approval says which of your task's criteria it serves (serves), then goes \
-             on their desk and ends your turn, and you are woken when they decide. One that \
-             serves none of them is refused, and never reaches the desk.\n\
-             - On the home lab, never try to work around a refusal.\n\
-             - Say about the home lab only what these tools showed you, naming its containers as \
-             they name them.\n\
-             - Report something as a problem only when a tool shows it causing harm: an item \
-             stuck in a queue, a container down or unhealthy, a failure that repeats. Errors or \
-             odd lines in a log are evidence to explain, not problems in themselves. Normal \
-             operation (e.g. an RSS sync that finds releases and grabs none) is not a problem.",
-        );
-        // How the lab is built (ADR 0112): one text, shared with HQ's house log.
-        told.push_str("\n\n");
-        told.push_str(&endora_kernel::lab::lab_built_paragraph());
+    let approval = "Endora's tools say whether they read or act; an action that needs the \
+                    owner's approval says which of your task's criteria it serves (serves), then \
+                    goes on their desk and ends your turn, and you are woken when they decide. One \
+                    that serves none of them is refused, and never reaches the desk.";
+    // No tool of the lab's (the wing's git, image_tags beside it): how Endora's tools are
+    // authorized, never the home lab's own rules (O8; climb 2, S4).
+    if lab.is_empty() {
+        told.push_str(&format!(
+            "\n\n{approval} Never try to work around a refusal."
+        ));
+        return told;
     }
+    told.push_str(&format!(
+        "\n\nThe home lab tools are Endora's contracts, and this turn they are yours: {}. Look \
+         with them yourself before you move anything on, and never say you cannot read the home \
+         lab.\n",
+        lab.join(", ")
+    ));
+    let mut rules: Vec<String> = Vec::new();
+    let lookers: Vec<&str> = ["homelab_status", "container_logs"]
+        .into_iter()
+        .filter(|t| lab.contains(t))
+        .collect();
+    match lookers.as_slice() {
+        [one, two] => rules.push(format!(
+            "- {one} and {two} only look: use them freely to see what is wrong and why."
+        )),
+        [one] => rules.push(format!(
+            "- {one} only looks: use it freely to see what is wrong and why."
+        )),
+        _ => {}
+    }
+    if lab.contains(&"homelab_status") {
+        rules.push(
+            "- An alarm is a moment, not the state now: check homelab_status before you act, \
+             since what alarmed may be back up (Endora says so in the thread). If everything has \
+             recovered, say so and close the task: a routine's check as done, other work moved on \
+             with set_status."
+                .to_owned(),
+        );
+    }
+    if lab.contains(&"restart_container") {
+        rules.push(
+            "- restart_container is a safe fix you may make on your own, within its limits (one \
+             restart of a container an hour, three in all), and the owner is told: look and \
+             diagnose first, and say why."
+                .to_owned(),
+        );
+    }
+    if available.iter().any(|n| n == "check_back") {
+        rules.push(
+            "- After a fix, check back to confirm it held: call check_back with the minutes to \
+             wait and what you will look at."
+                .to_owned(),
+        );
+    }
+    rules.push(format!("- {approval}"));
+    rules.push("- On the home lab, never try to work around a refusal.".to_owned());
+    rules.push(
+        "- Say about the home lab only what these tools showed you, naming its containers as \
+         they name them."
+            .to_owned(),
+    );
+    rules.push(
+        "- Report something as a problem only when a tool shows it causing harm: an item stuck \
+         in a queue, a container down or unhealthy, a failure that repeats. Errors or odd lines \
+         in a log are evidence to explain, not problems in themselves. Normal operation (e.g. an \
+         RSS sync that finds releases and grabs none) is not a problem."
+            .to_owned(),
+    );
+    told.push_str(&rules.join("\n"));
+    // How the lab is built (ADR 0112): one text, shared with HQ's house log.
+    told.push_str("\n\n");
+    told.push_str(&endora_kernel::lab::lab_built_paragraph());
     told
 }
 
@@ -1028,6 +1060,22 @@ fn lab_rules(on_the_node: &[String]) -> String {
 pub(crate) fn instructions(
     posted: bool,
     on_the_node: &[String],
+    lessons: bool,
+    shell: bool,
+) -> String {
+    // HQ's check_back with the node's tools, as every turn was told before climb 2's S4: kept
+    // for a caller that does not know the turn's HQ tools (a Claude Code turn's opening).
+    let mut available = on_the_node.to_vec();
+    available.push("check_back".to_owned());
+    instructions_for(posted, on_the_node, &available, lessons, shell)
+}
+
+/// [`instructions`], told only of the tools the turn has (climb 2, S4): `available` is every
+/// tool offered or to be found, HQ's and the node's.
+pub(crate) fn instructions_for(
+    posted: bool,
+    on_the_node: &[String],
+    available: &[String],
     lessons: bool,
     shell: bool,
 ) -> String {
@@ -1057,7 +1105,7 @@ pub(crate) fn instructions(
     // Climb 2, S3: when to ask, the kernel's one statement, as HQ's ask_owner says it too.
     told.push_str("\n\nWhen to ask the owner: ");
     told.push_str(&endora_kernel::escalation::when_to_ask());
-    told.push_str(&lab_rules(on_the_node));
+    told.push_str(&lab_rules(on_the_node, available));
     if shell {
         told.push_str(
             "\n\nYou have a real shell in a sandbox: run commands, git and \
@@ -1073,10 +1121,17 @@ pub(crate) fn instructions(
             "."
         });
     }
-    // A checkout without a submission is the tester's: a branch is read, not worked on.
-    if on_the_node.iter().any(|n| n == REPO_CHECKOUT)
+    // Climb 2, S4: the wing's git is worked in the shell; a turn offered it with no shell is
+    // told so, and never told to read or commit in a shell it does not have.
+    if !shell && on_the_node.iter().any(|n| is_repo_tool(n)) {
+        told.push_str(
+            "\n\nThe wing's git (repo_checkout) is offered, but this turn has no shell to read or \
+             change a checkout in: say so, rather than saying you read or changed one.",
+        );
+    } else if on_the_node.iter().any(|n| n == REPO_CHECKOUT)
         && !on_the_node.iter().any(|n| n == REPO_SUBMIT)
     {
+        // A checkout without a submission is the tester's: a branch is read, not worked on.
         told.push_str(
             "\n\nThe wing's git, for your reading: repo_checkout with a branch's name \
              (hq/task-N-<slug>, as the task's thread gives it) puts the team's submitted branch \
@@ -3118,7 +3173,7 @@ mod tests {
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
-        let mut later = Some(lab_rules(&on_the_node));
+        let mut later = Some(lab_rules(&on_the_node, &on_the_node));
         let other = vec![json!({ "name": "read_doc" })];
         assert_eq!(
             rules_for_found(&other, &mut later),
@@ -4180,6 +4235,46 @@ mod tests {
         }
     }
 
+    /// Climb 2, S4: a house turn with one lab tool to be found is told that one is to be found,
+    /// and the rules said when it is brought in are that tool's alone, with check_back's rule
+    /// only when HQ offers check_back.
+    #[test]
+    fn a_tool_found_later_brings_its_own_rules_only() {
+        let lab = vec!["homelab_status".to_owned()];
+        let offered: Vec<Value> = (0..20)
+            .map(|i| json!({ "name": format!("tool_{i}"), "description": "Read a thing." }))
+            .chain(std::iter::once(
+                json!({ "name": "homelab_status", "description": "The lab." }),
+            ))
+            .collect();
+        let Opening {
+            talk, rules_later, ..
+        } = opening(
+            Api::OpenAi,
+            offered,
+            String::new(),
+            &lab,
+            false,
+            false,
+            false,
+        );
+        let system = talk.messages[0]["content"].as_str().unwrap().to_owned();
+        assert!(
+            system.contains("(homelab_status) are yours too, through find_tools"),
+            "{system}"
+        );
+        assert!(!system.contains("restart_container"), "{system}");
+        let mut later = rules_later;
+        let found = vec![json!({ "name": "homelab_status" })];
+        let rules = rules_for_found(&found, &mut later).expect("the lab's rules, once");
+        assert!(rules.contains("they are yours: homelab_status."), "{rules}");
+        assert!(
+            !rules.contains("restart_container") && !rules.contains("container_logs"),
+            "{rules}"
+        );
+        assert!(!rules.contains("check_back"), "HQ offered none: {rules}");
+    }
+
     #[test]
     fn a_house_turn_is_told_the_labs_rules_where_its_tools_are_up_front() {
         let lab: Vec<String> = LAB_TOOLS.iter().map(|t| (*t).to_owned()).collect();
@@ -4324,12 +4419,77 @@ mod tests {
             told.contains("they are yours: homelab_status, restart_container."),
             "{told}"
         );
+        // Climb 2, S4: a node tool that is not the lab's brings none of the lab's rules (this
+        // test asserted the opposite before: the rules for tools the turn did not have).
         let told = instructions(true, &["weather".to_owned()], false, false);
         assert!(
-            told.contains("The home lab tools are Endora's contracts:\n- homelab_status"),
+            !told.contains("The home lab tools are Endora's contracts"),
             "{told}"
         );
-        assert!(!told.contains("they are yours"), "{told}");
+        assert!(!told.contains("homelab_status"), "{told}");
+        assert!(
+            told.contains("Never try to work around a refusal."),
+            "{told}"
+        );
+    }
+
+    /// Climb 2, S4: each tool's rule only with its tool. A repository turn offered image_tags is
+    /// told nothing of the lab; one lab tool brings its own rule alone; check_back's rule comes
+    /// only when HQ offers check_back; the full set keeps its limits.
+    #[test]
+    fn a_turn_is_told_the_rules_of_its_own_tools_only() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>();
+        let repo = names(&["repo_checkout", "repo_submit", "image_tags"]);
+        let told = instructions_for(true, &repo, &names(&["my_turn", "post"]), false, true);
+        for absent in [
+            "homelab_status",
+            "container_logs",
+            "restart_container",
+            "check_back",
+        ] {
+            assert!(!told.contains(absent), "{absent}: {told}");
+        }
+        let one = names(&["homelab_status"]);
+        let told = instructions_for(true, &one, &one, false, false);
+        assert!(told.contains("they are yours: homelab_status."), "{told}");
+        assert!(told.contains("- homelab_status only looks"), "{told}");
+        assert!(
+            !told.contains("container_logs") && !told.contains("restart_container"),
+            "{told}"
+        );
+        assert!(
+            !told.contains("check_back"),
+            "no check_back offered: {told}"
+        );
+        let full = names(&["homelab_status", "container_logs", "restart_container"]);
+        let mut with_back = full.clone();
+        with_back.push("check_back".to_owned());
+        let told = instructions_for(true, &full, &with_back, false, false);
+        assert!(
+            told.contains("one restart of a container an hour, three in all"),
+            "{told}"
+        );
+        assert!(told.contains("call check_back"), "{told}");
+        let told = instructions_for(true, &full, &full, false, false);
+        assert!(!told.contains("call check_back"), "{told}");
+        assert!(told.contains("look and diagnose first"), "{told}");
+    }
+
+    /// Climb 2, S4: a turn offered the wing's git with no shell is told it has no shell to work a
+    /// checkout in, and never told to read or commit in one.
+    #[test]
+    fn a_turn_without_a_shell_is_not_told_to_use_one() {
+        let repo = vec!["repo_checkout".to_owned(), "repo_submit".to_owned()];
+        let told = instructions_for(true, &repo, &repo, false, false);
+        assert!(
+            !told.contains("with the shell") && !told.contains("in the shell"),
+            "{told}"
+        );
+        assert!(!told.contains("You have a real shell"), "{told}");
+        assert!(
+            told.contains("this turn has no shell to read or change a checkout in"),
+            "{told}"
+        );
     }
 
     /// Climb 2, S1: a timed-out or killed command is reported as such, from `Ran`'s fields; a
