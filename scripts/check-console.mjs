@@ -2171,6 +2171,50 @@ if (failures.length) {
   console.log("hq: the studio is drawn from the snapshot, the furloughed out of it");
 }
 
+// The HQ agents map (the owner's decision M5): the Core team, the items each holds by project,
+// what runs and what waits on the owner, from HQ's read only. Opened from HQ's bar; an item opens
+// its Live Work map; a line moves only for a running turn; every word stays text.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`HQ.error = ""; HQ.selected = null;
+    HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+      members: [], tasks: [], runs: [], recent_runs: [] }; NAV = { v: "hq" };`, context);
+  if (!runInContext("viewHQ()", context).includes('data-act="agents:open:map"')) fail("agents: HQ's bar does not open the agents map");
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path) => { asked.push(String(path)); return Promise.reject(new Error("no network in the console check")); };
+  await runInContext('dispatch("agents:open:map")', context);
+  await new Promise((done) => setTimeout(done, 0));
+  context.fetch = realFetch;
+  if (runInContext("NAV.v", context) !== "agents") fail("agents: the bar's button does not open the map");
+  if (!asked.some((p) => p.endsWith("/v1/hq/team-map"))) fail(`agents: opening the map asks the node nothing: ${asked}`);
+  if (!runInContext("viewAgents()", context).includes("HQ did not answer")) fail("agents: a map HQ did not answer does not say so");
+  const H = 3600000;
+  runInContext(`AGENTS.error = ""; AGENTS.map = {
+    running: 0, queued: 0, blocked: 2, said: "Nothing is running. 3 cards wait on you.", desk_total: 3, desk_oldest: 0,
+    desk: [{ project: "Harness <b>climb</b>", count: 2, kinds: [{ kind: "question", count: 1 }, { kind: "project_budget", count: 1 }] },
+           { project: "other", count: 1, kinds: [{ kind: "privacy", count: 1 }] }],
+    members: [
+      { name: "Sol", brain: "Claude Haiku", state: "idle", last_seen: ${H}, last_work: { at: ${H}, task: 7 }, live: [],
+        groups: [{ project: "Harness <b>climb</b>", items: [{ task: 7, title: "Probe <i>seed</i>", status: "blocked", asks_owner: true }] }] },
+      { name: "Bo", brain: "Local", state: "working", last_seen: ${H}, last_work: null,
+        live: [{ run: 41, task: 9, heard: ${2 * H}, moving: true }], groups: [] },
+      { name: "Cy", brain: "Mac", state: "furloughed", last_seen: null, last_work: null, live: [], groups: [] }],
+    unheld: [{ task: 8, title: "Find what stops gluetun", status: "blocked", asks_owner: false }] }; NAV = { v: "agents", id: "" };`, context);
+  const map = runInContext("viewAgents()", context);
+  for (const said of ["Nothing is running. 3 cards wait on you.", "Harness &lt;b&gt;climb&lt;/b&gt;", "Probe &lt;i&gt;seed&lt;/i&gt;",
+    'data-act="live:task:7"', "ag-asks", "ag-moving", "R41", "Held by nobody", "Find what stops gluetun", "Furloughed", "Cy",
+    "1 question", "1 project budget", "Claude Haiku", "last seen"]) {
+    if (!map.includes(said)) fail(`agents: the map does not show ${said}`);
+  }
+  // Only the running turn's line moves; the idle member's card has none.
+  if ((map.match(/ag-moving/g) || []).length !== 1) fail("agents: a line moves that no running turn backs");
+  runInContext(`AGENTS.map.members[1].live[0].moving = false; AGENTS.map.members[1].state = "unknown";`, context);
+  const still = runInContext("viewAgents()", context);
+  if (still.includes("ag-moving") || !still.includes("no signal since")) fail("agents: a silent running turn still moves, or does not say since when");
+  console.log("agents: the team's map, from HQ's read: who holds what by project, only running turns move, the desk by project, text as text");
+}
+
 // The Live Work map (the owner's decision M3): one item's path, state, handoffs, evidence and
 // what waits on the owner, from HQ's read only. Opened from the item under Looking at; every word
 // stays text; the stall, the failed check and the owner's decisions are drawn as such.

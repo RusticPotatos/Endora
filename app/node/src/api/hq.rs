@@ -159,6 +159,11 @@ pub(super) async fn hq_task_live(State(state): State<AppState>, Path(id): Path<i
     ask(&state, format!("/v1/tasks/{id}/live"), None).await
 }
 
+/// The HQ agents map (the owner's decision M5): HQ's read, passed on as it is.
+pub(super) async fn hq_team_map(State(state): State<AppState>) -> Answer {
+    ask(&state, "/v1/team-map".to_owned(), None).await
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqGoal {
     title: String,

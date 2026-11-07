@@ -479,6 +479,41 @@
   .hq-replay-moment.t-warn, .hq-replay-moment.t-desk { border-left-color: var(--hq-amber); }
   .hq-replay-moment.t-bad { border-left-color: var(--hq-red); }
 
+  /* ---- HQ: the agents map (M5): you on top with your desk by project, the members below with the
+     items they hold. A line moves only while a turn runs; red is blocked; "?" asks you. */
+  main:has(.hq-agents) { max-width: 1440px; }
+  .ag-hero { display: grid; gap: 4px; padding: 12px 14px; border-radius: 8px; border-left: 4px solid var(--hq-green); background: var(--hq-panel-2); margin-bottom: 12px; }
+  .ag-hero b { font-size: 18px; }
+  .ag-hero small { color: var(--hq-muted); }
+  .ag-owner { border: 2px solid var(--hq-amber); border-radius: 8px; padding: 10px 12px; max-width: 760px; margin: 0 auto; display: grid; gap: 6px; }
+  .ag-owner > div { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ag-chip { border: 1px solid var(--hq-amber); color: var(--hq-amber); border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600; }
+  .ag h3 { margin: 0; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .ag-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--hq-muted); flex: none; }
+  .ag-owner .ag-dot { background: var(--hq-amber); }
+  .ag-sub { margin: 0; font-size: 12px; color: var(--hq-muted); }
+  .ag-team { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 22px 12px; margin-top: 26px; position: relative; padding-top: 14px; border-top: 2px solid var(--hq-line); }
+  .ag-card { position: relative; border: 1px solid var(--hq-line); border-radius: 8px; padding: 9px 10px; display: grid; gap: 4px; align-content: start; min-width: 0; background: var(--hq-panel); }
+  .ag-stem { position: absolute; left: 50%; top: -16px; width: 2px; height: 14px; background: var(--hq-line); }
+  .ag-working .ag-dot { background: var(--hq-green); }
+  .ag-unknown .ag-dot, .ag-queued .ag-dot { background: var(--hq-amber); }
+  .ag-card:has(.ag-bad) { border-color: var(--hq-red); }
+  .ag-card:has(.ag-bad) > h3 .ag-dot { background: var(--hq-red); }
+  .ag-items { display: grid; gap: 4px; }
+  .ag-proj { margin: 4px 0 0; font-size: 11px; color: var(--hq-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .ag-item { all: unset; box-sizing: border-box; cursor: pointer; display: block; min-height: 32px; padding: 6px 8px; border-radius: 6px; font: 12px/1.35 var(--hq-mono); border: 1px solid var(--hq-line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ag-item:focus-visible { outline: 2px solid var(--hq-blue); }
+  .ag-item.ag-bad { border-color: var(--hq-red); color: var(--hq-red); background: color-mix(in srgb, var(--hq-red) 7%, transparent); }
+  .ag-item.ag-review { border-color: var(--hq-blue); color: var(--hq-blue); }
+  .ag-live { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+  .ag-wire { width: 34px; height: 3px; background: var(--hq-line); }
+  .ag-moving .ag-wire { background: repeating-linear-gradient(90deg, var(--hq-green) 0 6px, transparent 6px 10px); background-size: 20px 3px; }
+  .ag-live small { color: var(--hq-muted); }
+  .ag-away { margin: 14px 0 0; font-size: 12.5px; color: var(--hq-muted); }
+  @media (prefers-reduced-motion: no-preference) { .ag-moving .ag-wire { animation: ag-flow .8s linear infinite; } @keyframes ag-flow { to { background-position: 20px 0; } } }
+  @media (prefers-reduced-motion: reduce) { .ag-moving .ag-wire::after { content: "active"; margin-left: 40px; font-size: 11px; color: var(--hq-green); } }
+  @media (max-width: 760px) { .ag-team { grid-template-columns: minmax(0, 1fr); border-top: 0; border-left: 2px solid var(--hq-line); padding: 0 0 0 12px; gap: 12px; margin-top: 14px; } .ag-stem { left: -14px; top: 16px; width: 12px; height: 2px; } }
+
   /* ---- HQ: the Live Work map (M3): one strip of an item's steps, left to right; top to bottom
      on a phone. Your decisions sit above the strip, a stall is a hatched gap, a hollow mark is
      unresolved. The rail draws once, in record order, never on a loop. */

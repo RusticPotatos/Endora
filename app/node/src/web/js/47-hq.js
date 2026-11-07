@@ -87,10 +87,13 @@ async function loadHQ() {
 function hqStartPolling() {
   if (HQ.polling) return;
   HQ.polling = setInterval(async () => {
-    if (NAV.v !== "hq") { clearInterval(HQ.polling); HQ.polling = null; return; }
+    // The agents map reads with HQ's poll too (M5); any other screen stops it.
+    if (NAV.v !== "hq" && NAV.v !== "agents") { clearInterval(HQ.polling); HQ.polling = null; return; }
     // The Mac's state changes with the owner's keyboard, not with HQ's events: read it every
     // twelve seconds, and redraw only when it moved.
     HQ.macTick += 1;
+    // A running turn that falls silent stops moving without any new event: read the map again.
+    if (NAV.v === "agents" && HQ.macTick % 10 === 0) { await loadAgents(); if (NAV.v === "agents") render(); }
     if (HQ.macTick % 4 === 0) {
       const before = JSON.stringify([HQ.mac, HQ.credits]);
       await hqLoadMac();
@@ -109,6 +112,7 @@ function hqStartPolling() {
       for (const e of events) { hqTell(e, true); HQ.last = Math.max(HQ.last, e.id); }
       HQ.snap = await api("GET", "/v1/hq");
       hqLandings();
+      if (NAV.v === "agents") { await loadAgents(); render(); return; }
       if (NAV.v === "hq" && !hqTyping()) render();
     } catch (_) { /* the next poll tries again */ }
   }, 3000);
@@ -997,6 +1001,7 @@ function viewHQ() {
       ${s.stopped && s.stopped_by === "tripwire" ? `<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>` : ""}
       <span class="hq-grow"></span>
       <div class="hq-row">
+        <button class="hq-btn tall" data-act="agents:open:map">Agents map</button>
         <button class="hq-btn tall" data-act="hq:work" aria-expanded="${HQ.working ? "true" : "false"}">Give work</button>
         <button class="hq-btn tall stop" aria-pressed="${s.stopped ? "true" : "false"}" data-act="${s.stopped ? "hq:resume" : "hq:stop"}">${s.stopped ? "Resume" : "Kill switch"}</button>
       </div>

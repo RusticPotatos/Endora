@@ -40,6 +40,7 @@ pub mod routines;
 pub mod runs;
 pub mod runtime;
 pub mod situations;
+pub mod team_map;
 pub mod turns;
 pub mod wakes;
 pub mod wing;

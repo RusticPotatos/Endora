@@ -1,0 +1,24 @@
+{
+  "about": "The research organisation's roles and who sends what to whom, as the owner drew it on 7 Nov 2026 (the researcher-worker and research-steward skills describe the same roles). The research map is drawn from this file: change a role or a relationship here and the map changes. tier = row from the top, col = column 1-4.",
+  "roles": [
+    { "id": "owner", "name": "Owner", "tier": 1, "col": 1, "does": "direction, budget, credentials, releases; overrules anyone" },
+    { "id": "researcher", "name": "Independent Researcher", "tier": 1, "col": 4, "does": "hypotheses, measurement, acceptance, verdicts" },
+    { "id": "director", "name": "Outcome Director", "tier": 2, "col": 3, "does": "checkpoint-only strategy review; recommends" },
+    { "id": "steward", "name": "Steward", "tier": 3, "col": 2, "does": "continuity: relays, routes, keeps the objective moving" },
+    { "id": "product", "name": "Product Work", "tier": 3, "col": 3, "group": true, "does": "side projects the steward routes" },
+    { "id": "workers", "name": "Workers", "tier": 4, "col": 2, "group": true, "does": "execution and raw evidence" },
+    { "id": "evidence", "name": "Verified Evidence", "tier": 5, "col": 2, "does": "results that passed their checks" }
+  ],
+  "relations": [
+    { "from": "owner", "to": "director", "label": "Vision and direction" },
+    { "from": "researcher", "to": "director", "label": "Scientific findings" },
+    { "from": "director", "to": "steward", "label": "Strategy recommendations" },
+    { "from": "owner", "to": "steward", "label": "Approved decisions" },
+    { "from": "steward", "to": "owner", "label": "Decisions requiring authority" },
+    { "from": "steward", "to": "workers", "label": "Assignments" },
+    { "from": "steward", "to": "product", "label": "Routes" },
+    { "from": "researcher", "to": "workers", "label": "Experiment design" },
+    { "from": "workers", "to": "evidence", "label": "Results" },
+    { "from": "evidence", "to": "researcher", "label": "Evidence" }
+  ]
+}
