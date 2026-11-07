@@ -246,7 +246,7 @@ shared/
   protocol/            # The handheld's wire types
 crates/
   endora-application/  # Orchestration: the activity feed, the owner's export and delete
-  endora-infrastructure/ # Adapters: SQLite store, HQ and sound clients, the relay, vault
+  endora-infrastructure/ # Adapters: SQLite store, HQ and sound clients, the relay
 clients/
   terminal/            # The handheld (talks to the node over HTTP only)
 ```

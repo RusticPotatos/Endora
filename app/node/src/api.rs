@@ -95,9 +95,6 @@ pub struct AppState {
     /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`), read by
     /// [`with_lab_from_env`](Self::with_lab_from_env); none until then.
     pub(crate) lab: Arc<contracts::LabKnowledge>,
-    /// The house's vault and the passkeys that unlock it (ADR 0127). Not configured until
-    /// `ENDORA_VAULT_URL` is set ([`with_vault`](Self::with_vault)).
-    pub vault: Arc<crate::vault::Vault>,
     /// What the node last heard from the owner's Mac, and what HQ was last told of it
     /// (ADR 0130). In memory: the Mac says it again every thirty seconds.
     pub(crate) mac: Arc<mac::MacBrain>,
@@ -140,14 +137,7 @@ impl AppState {
             config.as_ref(),
         ))));
         let capabilities = Arc::new(endora_infrastructure::default_capabilities());
-        let vault = Arc::new(crate::vault::Vault::new(
-            None,
-            store.clone(),
-            None,
-            crate::vault::DEFAULT_RP_ID,
-        ));
         Self {
-            vault,
             mac: Arc::default(),
             console: Arc::new(endora_capabilities::infrastructure::terminal::Adapter::new(
                 config.clone(),
@@ -205,13 +195,6 @@ impl AppState {
     #[must_use]
     pub fn with_lab_from_env(mut self) -> Self {
         self.lab = Arc::new(contracts::LabKnowledge::from_env());
-        self
-    }
-
-    /// Gives the node its vault (ADR 0127).
-    #[must_use]
-    pub fn with_vault(mut self, vault: crate::vault::Vault) -> Self {
-        self.vault = Arc::new(vault);
         self
     }
 
@@ -426,28 +409,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/session", get(whether_sign_in_exists).post(sign_in))
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         // A read-only credential for `make smoke`, behind a full one.
-        // The vault and its passkey unlock (ADR 0127). Only the status and the unlock answer
-        // without a sign-in (`crate::auth::may_pass`); the passkey is the unlock's credential.
-        .route("/v1/vault", get(vault::status))
-        .route("/v1/vault/unlock/begin", post(vault::begin_unlock))
-        .route("/v1/vault/unlock", post(vault::unlock))
-        .route("/v1/vault/passkeys", get(vault::passkeys))
-        .route("/v1/vault/passkeys/begin", post(vault::begin_registration))
-        .route(
-            "/v1/vault/passkeys/finish",
-            post(vault::finish_registration),
-        )
-        .route(
-            "/v1/vault/passkeys/{id}/remove",
-            post(vault::remove_passkey),
-        )
-        .route("/v1/vault/ceremony", post(vault::begin_ceremony))
-        .route("/v1/vault/initialise", post(vault::initialise))
-        .route("/v1/vault/enrol", post(vault::enrol))
-        .route("/v1/vault/adopt", post(vault::adopt))
-        .route("/v1/vault/recover", post(vault::recover))
-        .route("/v1/vault/keys-into-vault", post(vault::keys_into_vault))
-        .route("/v1/vault/start-over", post(vault::start_over))
         .route("/v1/session/checks", post(mint_a_checking_token))
         .route("/v1/session/dashboard", post(mint_a_dashboard_token))
         .route("/v1/homelab/overview", get(homelab::overview))
@@ -623,7 +584,6 @@ mod auth;
 mod homelab;
 mod mac;
 mod terminal;
-mod vault;
 use auth::*;
 /// The node's background upkeep: `f` runs with the node's state every `secs` seconds, the
 /// first time at once, off the async threads; a tick missed while the last one ran is skipped.

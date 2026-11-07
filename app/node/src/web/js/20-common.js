@@ -18,7 +18,6 @@ const UNDER_SETTINGS = [
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
   { view: "skills", icon: "skills", label: "Tools", note: "what the team may use from the house, and which ask you first" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
-  { view: "vault", icon: "lock", label: "Vault", note: "the house's secrets, and the passkeys that unlock them" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
 

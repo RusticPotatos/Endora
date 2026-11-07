@@ -2,6 +2,11 @@
 
 ## Status
 
+**Superseded by [0144](0144-endora-keeps-its-own-secrets.md), 2026-11-07**: Endora keeps its own
+secrets in its built-in store (0125); OpenBao is not part of Endora but the owner's personal
+home service, in ansible-nas's `openbao` role. Everything below describes code that has been
+removed, kept as the record.
+
 Proposed, 2026-10-18, for the owner to accept at the merge. Prepared with AI assistance
 (Claude). **Amended 2026-11-07** (owner decision MR9): OpenBao moved out of Endora into its own
 ansible-nas role, and Endora's node is a client of it; see "Amendment, 2026-11-07" at the end,

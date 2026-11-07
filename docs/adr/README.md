@@ -308,7 +308,7 @@ of an existing record and take the next number.
 | [0124](0124-guards-against-how-agent-teams-fail.md) | Guards against how agent teams fail | — |
 | [0125](0125-secrets-at-rest-in-the-node.md) | Secrets at rest in the node | Proposed |
 | [0126](0126-the-teams-map.md) | The team's map | — |
-| [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | Proposed |
+| [0127](0127-openbao-and-the-passkey-unlock.md) | OpenBao and the passkey unlock | Superseded by 0144 |
 | [0128](0128-an-airplay-2-door.md) | An AirPlay 2 door | Proposed |
 | [0129](0129-the-teams-history-and-asking-the-past.md) | The team's history, and asking the past | — |
 | [0130](0130-the-macs-brain.md) | The Mac's brain | — |
@@ -325,6 +325,7 @@ of an existing record and take the next number.
 | [0141](0141-confidential-open-to-claude.md) | Confidential data is open to Claude; Restricted stays home | - |
 | [0142](0142-one-team-of-loops.md) | One team of loops: members are ranked models, loops replace the company | Supersedes 0110, 0111, 0120, 0137, 0138 |
 | [0143](0143-hq-opens-on-the-agents-map.md) | HQ opens on the agents map; the other places are secondary | Amends 0136, 0119, 0121 |
+| [0144](0144-endora-keeps-its-own-secrets.md) | Endora keeps its own secrets; OpenBao is not part of Endora | Supersedes 0127 |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

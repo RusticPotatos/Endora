@@ -138,8 +138,9 @@ value.
 
 ### The path to OpenBao Transit
 
-*Built by [0127](0127-openbao-and-the-passkey-unlock.md): the `openbao` key source, and the
-owner's switch that makes the move.*
+*Built by [0127](0127-openbao-and-the-passkey-unlock.md), then removed by
+[0144](0144-endora-keeps-its-own-secrets.md): Endora keeps its own secrets under the key file,
+and OpenBao is the owner's own service, not Endora's. The seam below remains.*
 
 A Transit `KeySource` wraps a data key by asking Transit to encrypt it (`transit/encrypt/<key>`
 with the key id as context) and unwraps by asking it to decrypt; its `name()` is recorded with

@@ -44,8 +44,8 @@ open everything. So:
    ```
 
 2. Exclude `secrets.key` from the house's backup of the data folder (the nightly
-   `backups/daily-*.db` copies are beside it and stay included), the way the vault
-   password is kept out of the checkout's backup.
+   `backups/daily-*.db` copies are beside it and stay included), the way the Ansible
+   vault password is kept out of the checkout's backup.
 3. On a restore, put it back beside the database before the node starts (as `0600`):
    `base64 -d > secrets.key` from the copy.
 
@@ -65,157 +65,27 @@ Their keys permit broader operations, but this adapter only sends fixed GETs.
 TLS uses the existing HTTP library's verified trust roots; do not disable TLS.
 HTTP is possible on a trusted private network, but does not encrypt keys.
 
-## The vault (ADR 0127)
+## Endora's secrets, and OpenBao (ADR 0144)
 
-OpenBao keeps the house's secrets and locks itself on every restart. Since 7 Nov 2026 it is its
-own service, run by ansible-nas's `openbao` role on its own network, and the node is a client of
-it (ADR 0127, amended 2026-11-07). A vault Endora initialised unlocks with one passkey tap in the
-console; one you initialised yourself (as the house's was, on the move) is unsealed on the NAS
-with your shares.
+Endora keeps and owns its secrets: every key, token and password you give it is sealed in its
+database under `secrets.key` (above), and nothing else is needed to open them. **OpenBao is not
+part of Endora.** If you run it, it is your own home service, from ansible-nas's `openbao` role
+and documented there; Endora neither reaches nor unlocks it, and has no Vault screen.
 
-### Setting it up
+Upgrading a node that was given the vault (ADR 0127):
 
-1. **Run it.** In your ansible-nas, `openbao_enabled: true`, and run the playbook with the
-   `openbao` tag (its page: `website/docs/applications/other/openbao.md` there). It makes the
-   vault's network, `openbao`. Then give the node its address and that network, with the
-   `endora` role or, for `make deploy` from your Mac, in `local.mk`:
+1. **Delete the leftover settings**: `ENDORA_VAULT_URL`, `ENDORA_VAULT_NETWORK` and
+   `ENDORA_PASSKEY_RP_ID` from `local.mk`, or `endora_vault_url`, `endora_vault_network` and
+   `endora_passkey_rp_id` from your ansible-nas variables. They are ignored either way.
+2. **Deploy as usual.** The node leaves the vault's network and starts with its own store. The
+   old `endora_vault` network, if any is left, can go: `docker network rm endora_vault`.
+3. **Nothing in OpenBao changes**, and the node's database keeps its two vault tables
+   (`vault_passkeys`, `vault_state`), unread, so rolling back to the previous release finds
+   them as they were.
 
-   ```yaml
-   endora_vault_url: http://openbao:8200        # ENDORA_VAULT_URL = http://openbao:8200
-   endora_vault_network: openbao                # ENDORA_VAULT_NETWORK = openbao
-   ```
-
-   The vault's role first: the node will not start on a network that does not exist. Check it:
-   the role's run ends `OpenBao is not initialised`, and the node's log says `vault: OpenBao,
-   unlocked with a passkey for endora.home.arpa`. It uses about 20 MB (capped at 256 MB).
-2. **Open the console by its name**: `https://endora.home.arpa:8787`. Passkeys are bound to that
-   name; opened by the NAS's address, the Vault screen says so and offers nothing.
-3. **Settings › Vault › Add a passkey.** Your iPhone (iOS 18 or later) offers to save a passkey
-   for Endora; Face ID. A passkey that cannot do PRF is refused with the reason.
-4. **Initialise the vault**, one more tap. You are shown **three break-glass shares, once**:
-   save them now, in your password manager, or on paper apart from it. Any two of them open the
-   vault if every passkey is lost; Endora never shows them again.
-5. **Add a second passkey** (an iPad, a security key): Add a passkey asks your phone first,
-   then the new one twice. Any registered passkey then unlocks on its own.
-6. **When you are ready, Endora's own keys** (folded under the passkeys): moving them into the
-   vault means a copy of the NAS's disk opens nothing without the vault, and that **after every
-   restart Endora waits for your tap**. It cannot be undone from the console.
-
-### After a reboot
-
-The console shows **Vault locked → Unlock**; tap it and Face ID. If Endora's own keys are in
-the vault, the whole console is the unlock screen until you do, before sign-in.
-
-### If something is lost
-
-- **A passkey** (a lost phone): remove it under Settings › Vault from another device, and add
-  the new phone. The last passkey that can unlock cannot be removed.
-- **Every passkey**: on the NAS, unlock with two break-glass shares,
-
-  ```sh
-  docker exec -it openbao bao operator unseal -address=http://127.0.0.1:8200
-  ```
-
-  twice (it asks for a share each time, without echoing it), restart the node if it was
-  waiting (`docker restart endora-node`), sign in, and under **Settings › Vault › Lost every
-  passkey?** give two shares and a new passkey. The vault makes three new shares — save them;
-  the old ones stop working — and only the new passkey can unlock until you add others.
-- **The vault's data**: restore `openbao_data_directory` from the backup; your shares and passkeys
-  still fit it. If it is gone for good and Endora's keys were not in it, **Start over** (folded
-  on the Vault screen) forgets this node's copy so a new vault can be initialised. If Endora's
-  keys were in it, they are gone with it: `endora-node secrets forget --i-have-lost-the-key`
-  (above) is the way out.
-
-Back up `openbao_data_directory` with everything else; keep the break-glass shares apart from
-it, the way the secrets key is kept apart from the database.
-
-### Moving the vault into its own role (once, 7 Nov 2026)
-
-The vault moved out of Endora's collection into ansible-nas's `openbao` role. The house's vault
-was empty and sealed, and the saved item could not be told apart (shares or root token), so the
-owner **initialises it afresh** after the move: nothing in it was in use, and the old data is
-kept twice (an archive and the folder set aside). Every value below is typed by the owner, at
-OpenBao's own prompt, on the NAS; none is ever given to an agent, a chat, a file or a log.
-`<docker_home>` is `/mnt/docker` on a default ansible-nas.
-
-1. **Stop and back up the old vault** (on the NAS):
-
-   ```sh
-   docker stop endora-openbao
-   sudo tar -C <docker_home> -czpf <docker_home>/openbao-before-move-20261107.tgz openbao
-   sudo tar -tzvf <docker_home>/openbao-before-move-20261107.tgz | grep -E 'openbao/(vault\.db|raft/raft\.db)$'
-   ```
-
-   Both files must be listed, neither with size 0. If not, stop here.
-2. **Set the old data aside**, so the new vault starts empty:
-   `sudo mv <docker_home>/openbao <docker_home>/openbao.before-reinit-20261107`
-3. **Run the vault's role**: merge ansible-nas's `feat/openbao-role`, then from the Mac, in the
-   ansible-nas checkout, `git checkout develop && git pull && make run-remote TAGS=openbao`.
-   The run ends `OpenBao is not initialised (no vault data in <docker_home>/openbao)`;
-   `docker ps -a --filter name=openbao` shows `openbao` (unhealthy until unsealed: expected) and
-   no `endora-openbao`.
-4. **Initialise it** (on the NAS, in a terminal that is not being recorded):
-
-   ```sh
-   docker exec -it openbao bao operator init -address=http://127.0.0.1:8200 -key-shares=3 -key-threshold=2
-   ```
-
-   Three shares, any two open it (§2 of the ADR). It prints them and an initial root token,
-   once. In macOS Passwords, save each share as its own item, `OpenBao unseal share 1 of 3
-   (threshold 2)`, `… 2 of 3 …`, `… 3 of 3 …`, and the token as another,
-   `OpenBao root token (initial, 2026-11-07)`. Copy the three shares into the paper and USB
-   emergency kit too. Then clear the terminal (`clear && printf '\033[3J'`, or ⌘K).
-5. **Unseal it** with two of the new shares: run
-   `docker exec -it openbao bao operator unseal -address=http://127.0.0.1:8200` twice, pasting a
-   share at the hidden `Unseal Key` prompt each time, never on the command line.
-6. **Check it**, from status output only:
-
-   ```sh
-   docker exec openbao bao status -address=http://127.0.0.1:8200   # Initialized true, Sealed false, Total Shares 3, Threshold 2
-   docker inspect -f '{{.State.Health.Status}}' openbao             # healthy, within a minute
-   ```
-
-7. **Point the node at it**: `ENDORA_VAULT_URL = http://openbao:8200` and
-   `ENDORA_VAULT_NETWORK = openbao` in `local.mk`, then `make deploy-check`. In the console
-   (`https://endora.home.arpa:8787`), Settings › Vault › Start over › **Forget the vault's
-   state**: the node's copy belonged to the old vault. Then `docker network rm endora_vault`
-   on the NAS (the old, now empty network).
-8. **Only after step 6 passed**: delete the old Passwords item, `secrets key for openbao vault`.
-
-The root token can do anything, and Endora's own initialisation revokes its token at once
-(§2.5); a terminal initialisation does not. To revoke it once nothing needs it (a new one can
-be made later from two shares with `bao operator generate-root`):
-
-```sh
-docker exec -it openbao sh -c 'printf "Root token: "; read -rs T; echo; BAO_TOKEN="$T" bao token revoke -self -address=http://127.0.0.1:8200'
-```
-
-#### Rollback: back to the vault in Endora's collection, data intact
-
-ansible-nas pins a collection commit that still has the old role, so it can run again.
-
-1. **Back up what is there now**, and check it:
-
-   ```sh
-   docker stop openbao
-   sudo tar -C <docker_home> -czpf <docker_home>/openbao-before-rollback-$(date +%Y%m%d%H%M).tgz openbao
-   sudo tar -tzvf <docker_home>/openbao-before-rollback-*.tgz | grep -E 'openbao/(vault\.db|raft/raft\.db)$'
-   ```
-
-   (Before step 4 of the move there is no new vault yet: skip this and step 3's choice.)
-2. **Remove the new container**, so two servers never open one folder: `docker rm -f openbao`.
-3. **Choose the data.** To keep the new vault (unseals with the new shares), leave
-   `<docker_home>/openbao` as it is. To go back to the vault from before the move:
-   `sudo mv <docker_home>/openbao <docker_home>/openbao.after-move-$(date +%Y%m%d%H%M)` then
-   `sudo mv <docker_home>/openbao.before-reinit-20261107 <docker_home>/openbao`.
-4. **Give the node its own network again**: remove `ENDORA_VAULT_NETWORK` from `local.mk` and
-   `make deploy-check` (the node makes `endora_vault`, which the old role needs).
-5. **Run the old role**: on ansible-nas `develop`, `git revert -m 1 <the merge of
-   feat/openbao-role>`, then `make run-remote TAGS=openbao`. It starts `endora-openbao` on the
-   same folder.
-6. **Unseal and check**: `docker exec -it endora-openbao bao operator unseal
-   -address=http://127.0.0.1:8200` twice, then `docker exec endora-openbao bao status
-   -address=http://127.0.0.1:8200` shows `Sealed false`.
+A node whose own keys were moved into OpenBao (Settings › Vault › Endora's own keys, a one-way
+switch nobody on the house's node used) refuses to start, naming OpenBao, and changes nothing:
+roll back to the previous release to reach those credentials.
 
 ## The AirPlay 2 door (ADR 0128)
 

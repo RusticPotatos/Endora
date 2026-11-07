@@ -29,8 +29,10 @@
         endora_time_zone: America/New_York
         endora_data_dir: /data/endora
         endora_hq: true
+        # Left over in an inventory from before OpenBao left Endora (ADR 0144): rendered nowhere.
         endora_vault_url: http://openbao:8200
         endora_vault_network: openbao
+        endora_passkey_rp_id: endora.home.arpa
 
     - name: Nothing switched on
       ansible.builtin.template:
@@ -150,16 +152,9 @@
           - "'ENDORA_HQ_DEMO=1' in full"
           - "bare | select('match', 'ENDORA_HQ') | list | length == 0"
           - "'ENDORA_MODEL_URL=http://host.docker.internal:11434/v1' in full"
-          # The vault (ADR 0127): its address when given, nothing when not; the passkey's name
-          # is the node's default unless set.
-          - "'ENDORA_VAULT_URL=http://openbao:8200' in full"
-          - "bare | select('match', 'ENDORA_VAULT_URL') | list | length == 0"
-          # The vault is its own service (ADR 0127, amended 2026-11-07): the node joins the
-          # network the ansible-nas openbao role makes, named, as an existing network; without
-          # one, the compose file's own private network as before.
-          - "'ENDORA_VAULT_NETWORK=openbao' in full"
-          - "'ENDORA_VAULT_NETWORK_EXTERNAL=true' in full"
-          - "bare | select('match', 'ENDORA_VAULT_NETWORK') | list | length == 0"
+          # OpenBao is not part of Endora (ADR 0144): no vault address, network or passkey
+          # name is rendered, even from a leftover inventory variable.
+          - "full | select('match', 'ENDORA_VAULT') | list | length == 0"
           - "full | select('match', 'ENDORA_PASSKEY_RP_ID') | list | length == 0"
           # Off by default: the data volume rather than a folder, and never a mail copy (the
           # chat's mail reader was retired, ADR 0136).

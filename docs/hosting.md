@@ -246,10 +246,10 @@ is the same: **the node is only reachable through something that authenticates.*
   host, or `ENDORA_ADDR=0.0.0.0:8787` reachable from outside) with no proxy. That
   hands full read/write of your data to anyone who finds it.
 
-## 4. HTTPS: passkeys need it
+## 4. HTTPS
 
-The vault's passkey unlock (ADR 0127) only works on a secure page, HTTPS or `localhost`, and a
-console on a plain-HTTP LAN address cannot use it. Give the console an HTTPS origin:
+The console carries your password, your sign-in code and the tokens you give it, so give it an
+HTTPS origin:
 
 - **Built-in self-signed HTTPS (easiest — no domain, proxy, or extra tools):**
   set **`ENDORA_TLS=1`** on the node (the compose does this by default). It

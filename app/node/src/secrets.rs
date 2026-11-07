@@ -40,67 +40,39 @@ pub fn key_file_from_env(database: &str) -> PathBuf {
     )
 }
 
-/// The vault's address as the node uses it, from `raw` (`ENDORA_VAULT_URL`, ADR 0127): `None`
-/// when unset or blank (as compose leaves a blanked variable), the address without a trailing
-/// slash when it is `http://` or `https://` and a host, and otherwise why not. The vault is its
-/// own service (ADR 0127, amended 2026-11-07), reached at this address; a credential never
-/// belongs in it, and the refusal never repeats the address, in case it holds one.
-///
-/// # Errors
-/// The reason, when the address is not one the node can use.
-pub fn vault_address(raw: Option<&str>) -> Result<Option<String>, String> {
-    let Some(url) = raw.map(str::trim).filter(|u| !u.is_empty()) else {
-        return Ok(None);
-    };
-    let Some(rest) = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-    else {
-        return Err(
-            "ENDORA_VAULT_URL must start with http:// or https:// (e.g. http://openbao:8200)"
-                .to_owned(),
-        );
-    };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if host.contains('@') {
-        return Err(
-            "ENDORA_VAULT_URL must hold no credential: give only the vault's address".to_owned(),
-        );
-    }
-    if host.is_empty() || host.starts_with(':') {
-        return Err("ENDORA_VAULT_URL names no host (e.g. http://openbao:8200)".to_owned());
-    }
-    Ok(Some(url.trim_end_matches('/').to_owned()))
-}
-
-/// The vault this node is given (`ENDORA_VAULT_URL`), if any.
-///
-/// # Errors
-/// When the address is not one the node can use: it says why, and the node does not start.
-pub fn vault_from_env()
--> Result<Option<std::sync::Arc<dyn endora_infrastructure::openbao::OpenBaoApi>>, Box<dyn Error>> {
-    let raw = std::env::var("ENDORA_VAULT_URL").ok();
-    let Some(url) = vault_address(raw.as_deref())? else {
-        return Ok(None);
-    };
-    Ok(Some(std::sync::Arc::new(
-        endora_infrastructure::openbao::HttpOpenBao::new(&url),
-    )))
-}
-
 /// Opens the node's store with its secrets sealed under the key file — made on the first
-/// start, required on every later one — or, once the node's keys are in the vault (ADR 0127),
-/// through the vault, *waiting* for it if it is locked.
+/// start, required on every later one (ADR 0125). Endora keeps its own secrets: no vault is
+/// asked (ADR 0144).
 ///
 /// # Errors
 /// If the key file is missing over sealed secrets, does not open them, or the database
 /// cannot be opened or migrated.
 pub fn open_store(database: &str) -> Result<SqliteStore, Box<dyn Error>> {
-    crate::vault::open_node_store(
-        database,
-        &key_file_from_env(database),
-        vault_from_env()?.as_ref(),
-    )
+    open_own_store(database, &key_file_from_env(database))
+}
+
+/// Opens the store at `database` under `key_file`. A database whose data keys an older Endora
+/// moved into OpenBao (ADR 0127's one-way switch) is refused, saying so, and left exactly as it
+/// was: this node cannot open those keys, and a fresh key would hide them.
+///
+/// # Errors
+/// As [`open_store`], and for keys an older Endora moved into OpenBao.
+pub fn open_own_store(database: &str, key_file: &Path) -> Result<SqliteStore, Box<dyn Error>> {
+    let db = endora_persistence::Db::open(database)?;
+    if db
+        .key_sources_on_disk()?
+        .iter()
+        .any(|source| source != "file")
+    {
+        return Err(
+            "this database's keys were moved into OpenBao by an older Endora, which \
+                    this one no longer uses (ADR 0144): roll back to that release to open them; \
+                    nothing has been changed"
+                .into(),
+        );
+    }
+    drop(db);
+    Ok(SqliteStore::open_sealed(database, key_file)?)
 }
 
 /// Handles `secrets …` if that is what `args` say, returning `None` otherwise.
@@ -134,6 +106,10 @@ fn forget(database: &str) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(test)]
+#[path = "secrets_scenarios.rs"]
+mod scenarios;
+
+#[cfg(test)]
 mod tests {
     use super::{dispatch, key_file};
     use std::path::PathBuf;
@@ -154,6 +130,34 @@ mod tests {
             PathBuf::from("/data/secrets.key"),
             "set-but-empty is unset, as compose leaves a blanked variable"
         );
+    }
+
+    /// OpenBao is not part of Endora (ADR 0144): neither the compose file nor the collection's
+    /// `endora` role gives the node a vault address or a vault network any more.
+    #[test]
+    fn no_vault_address_or_network_is_given_to_the_node() {
+        let files = [
+            (
+                "docker-compose.yml",
+                include_str!("../../../docker-compose.yml"),
+            ),
+            ("Makefile", include_str!("../../../Makefile")),
+            (
+                "the role's defaults",
+                include_str!("../../../deploy/ansible/collection/roles/endora/defaults/main.yml"),
+            ),
+            (
+                "the role's endora.env",
+                include_str!(
+                    "../../../deploy/ansible/collection/roles/endora/templates/endora.env.j2"
+                ),
+            ),
+        ];
+        for (name, text) in files {
+            for gone in ["ENDORA_VAULT", "endora_vault", "openbao"] {
+                assert!(!text.contains(gone), "{name} still names {gone}");
+            }
+        }
     }
 
     #[test]

@@ -228,10 +228,6 @@ async function reload() {
     const state = await api("GET", "/v1/session");
     SIGNIN_EXISTS = !!(state && state.set_up);
   } catch (_) { /* an older node has no such route; the sign-in screen is the safe fallback */ }
-  // Also without a credential: whether the vault is locked (ADR 0127). A node waiting for it
-  // can answer nothing else, so the unlock is all there is to draw.
-  await loadVault();
-  if (VAULT && VAULT.node_waiting) { render(); return; }
   // The activity feed and the house's tools, then what the screen showing needs.
   const [activity, caps] = await Promise.all([
     api("GET", `/v1/activity?limit=${ACTIVITY_PAGE}`),
@@ -286,12 +282,11 @@ async function loadView(v, id) {
   if (v === "replay") await loadReplay(id);
   if (v === "live") await loadWorkMap(id);
   if (v === "speakers") await loadSound();
-  if (v === "vault") { await loadVault(); await loadVaultPasskeys(); }
 }
 
 // The screens `loadView` fetches for.
 const FETCHES_ITS_OWN = ["models", "connections", "spotify",
-  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "live", "speakers", "vault"];
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "live", "speakers"];
 
 function go(v, id) {
   // The agents map was a screen of its own (M5); it is HQ's first place now (M6).

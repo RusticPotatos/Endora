@@ -9,6 +9,20 @@ tagged release.
 
 ### Removed
 
+- **OpenBao leaves Endora entirely** (collection 0.16.0;
+  [ADR 0144](docs/adr/0144-endora-keeps-its-own-secrets.md), superseding
+  [0127](docs/adr/0127-openbao-and-the-passkey-unlock.md)). Endora keeps and owns its secrets in
+  its built-in encrypted store under `secrets.key` (ADR 0125); OpenBao is the owner's own home
+  service, in ansible-nas's `openbao` role. Gone: the node's OpenBao client and startup check,
+  every `/v1/vault` route, the passkey (WebAuthn) verifier that served only the vault, the
+  console's Settings › Vault screen (passkeys, unlock, initialise, Start over), the "waiting for
+  the vault" start, `ENDORA_VAULT_URL`, `ENDORA_VAULT_NETWORK` and `ENDORA_PASSKEY_RP_ID`, the
+  compose file's vault network, and the `endora` role's `endora_vault_url`,
+  `endora_vault_network` and `endora_passkey_rp_id`. **Delete those from `local.mk` and your
+  inventory**; they are ignored. Kept: sign-in (password and code), secrets at rest, and the
+  database's `vault_passkeys` and `vault_state` tables, unread, so a rollback finds them. A
+  database whose keys an older node moved into OpenBao is refused at start, unchanged.
+
 - **The `openbao` role leaves the `endora.homelab` collection** (0.15.0;
   [ADR 0127](docs/adr/0127-openbao-and-the-passkey-unlock.md), amended 2026-11-07).
   **Breaking** for anyone running it from the collection. The house's vault is its own service,

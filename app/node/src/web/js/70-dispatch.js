@@ -1,7 +1,4 @@
 function render() {
-  // The node itself is waiting for the vault (ADR 0127): nothing else can load until it
-  // opens, sign-in included, so the unlock is the whole screen.
-  if (VAULT && VAULT.node_waiting) { app.innerHTML = viewVaultLocked(); return; }
   // Nothing else can load without a token, so nothing else is worth drawing.
   if (NEEDS_TOKEN) { app.innerHTML = viewNeedsToken(); return; }
   const v = NAV.v;
@@ -35,7 +32,6 @@ function render() {
     : v === "settings" ? viewSettings()
     : v === "models" ? viewModels()
     : v === "signin" ? viewSignin()
-    : v === "vault" ? viewVault()
     // A screen nobody knows any more opens HQ.
     : viewHQ();
   if (kept) {
@@ -78,8 +74,6 @@ async function dispatch(act) {
     if (await workMapDispatch(verb, noun, id)) return;
     if (await agentsDispatch(verb, noun, id)) return;
     if (await soundDispatch(verb, noun, id, arg)) return;
-    // The vault and its passkeys (ADR 0127).
-    if (await vaultDispatch(verb, noun, id)) return;
     // Spotify: one sign-in, held by the node, started or finished from any device.
     if (verb === "spotify") {
       try {

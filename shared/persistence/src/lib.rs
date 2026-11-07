@@ -18,7 +18,6 @@ pub mod secrets;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
@@ -44,9 +43,6 @@ pub struct Db {
     /// The data keys, once a [`KeySource`] is attached. Locked after `conn` when both are
     /// held, never before.
     secrets: Arc<RwLock<Option<Keyring>>>,
-    /// The data keys are wrapped by a vault that is sealed (ADR 0127): until a source is
-    /// attached, asking for a secret says so rather than "no key source".
-    waiting_for_vault: Arc<AtomicBool>,
 }
 
 impl Db {
@@ -94,16 +90,7 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             secrets: Arc::new(RwLock::new(None)),
-            waiting_for_vault: Arc::new(AtomicBool::new(false)),
         })
-    }
-
-    /// Marks this database as waiting for a sealed vault (ADR 0127): its data keys are
-    /// wrapped by OpenBao's Transit key and cannot be unwrapped until the vault is unlocked.
-    /// Until [`attach_key_source`](Self::attach_key_source) succeeds, everything that needs
-    /// a secret fails saying so, and nothing can be sealed.
-    pub fn wait_for_the_vault(&self) {
-        self.waiting_for_vault.store(true, Ordering::SeqCst);
     }
 
     /// Whether the data keys are open: a key source is attached.
@@ -112,9 +99,9 @@ impl Db {
         self.read_secrets().is_ok_and(|guard| guard.is_some())
     }
 
-    /// The names of the key sources that wrapped this database's data keys (`file`,
-    /// `openbao`), read without unwrapping any: how the node knows, before it opens them,
-    /// whether it needs the key file or the vault. Empty when there are no keys yet.
+    /// The names of the key sources that wrapped this database's data keys (`file`, or
+    /// `openbao` from an older Endora, ADR 0144), read without unwrapping any: how the node
+    /// knows, before it opens them, whether its key file can. Empty when there are no keys yet.
     ///
     /// # Errors
     /// [`RepositoryError::Backend`] if the database cannot be read.
@@ -138,16 +125,6 @@ impl Db {
             }
         }
         Ok(names)
-    }
-
-    fn no_keys(&self) -> RepositoryError {
-        if self.waiting_for_vault.load(Ordering::SeqCst) {
-            return backend(
-                "the vault is locked, so stored credentials cannot be opened: unlock it in \
-                 the console (Settings › Vault)",
-            );
-        }
-        no_key_source()
     }
 
     /// Whether this database already holds data keys — which is to say, secrets sealed
@@ -228,7 +205,6 @@ impl Db {
             active,
             keys,
         });
-        self.waiting_for_vault.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -241,7 +217,7 @@ impl Db {
             return Ok(String::new());
         }
         let guard = self.read_secrets()?;
-        let ring = guard.as_ref().ok_or_else(|| self.no_keys())?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
         ring.seal(plaintext)
     }
 
@@ -258,7 +234,7 @@ impl Db {
             return Ok(String::new());
         }
         let guard = self.read_secrets()?;
-        let ring = guard.as_ref().ok_or_else(|| self.no_keys())?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
         ring.unseal(label, stored)
     }
 
@@ -276,7 +252,7 @@ impl Db {
     pub fn seal_plaintext(&self, columns: &[SecretColumn]) -> Result<usize, RepositoryError> {
         let mut conn = self.lock()?;
         let guard = self.read_secrets()?;
-        let ring = guard.as_ref().ok_or_else(|| self.no_keys())?;
+        let ring = guard.as_ref().ok_or_else(no_key_source)?;
         let tx = conn.transaction().map_err(backend)?;
         let mut sealed = 0;
         for column in columns {
@@ -319,7 +295,7 @@ impl Db {
     pub fn rekey(&self, columns: &[SecretColumn]) -> Result<String, RepositoryError> {
         let mut conn = self.lock()?;
         let mut guard = self.write_secrets()?;
-        let ring = guard.as_mut().ok_or_else(|| self.no_keys())?;
+        let ring = guard.as_mut().ok_or_else(no_key_source)?;
         let kid = secrets::new_kid();
         let key = DataKey::random();
         let wrapped = ring.source.wrap(&kid, &key)?;
@@ -381,7 +357,7 @@ impl Db {
     pub fn rewrap(&self, source: Arc<dyn KeySource>) -> Result<(), RepositoryError> {
         let mut conn = self.lock()?;
         let mut guard = self.write_secrets()?;
-        let ring = guard.as_mut().ok_or_else(|| self.no_keys())?;
+        let ring = guard.as_mut().ok_or_else(no_key_source)?;
         let tx = conn.transaction().map_err(backend)?;
         for (kid, key) in &ring.keys {
             tx.execute(

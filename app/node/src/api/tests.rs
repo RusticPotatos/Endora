@@ -1739,60 +1739,62 @@ async fn no_secret_reaches_the_logs_the_answers_or_the_database_in_the_clear() {
     }
 }
 
-/// The vault (ADR 0127): its status and the unlock answer before anyone signs in, and nothing
-/// else of it does. A node with no vault configured says so.
+/// OpenBao is not part of Endora (ADR 0144): a node given no vault address and no vault network
+/// starts and serves the console and its API, and every route the vault had is a plain 404,
+/// signed or not.
 #[tokio::test]
-async fn the_vault_status_and_unlock_answer_unsigned_and_nothing_else_of_the_vault_does() {
+async fn a_node_with_no_vault_serves_and_has_no_vault_routes() {
     let router = app(test_state());
-    let unsigned = |method: &str, path: &str| {
-        Request::builder()
+    let page = router.clone().oneshot(unsigned("/")).await.unwrap();
+    assert_eq!(page.status(), StatusCode::OK, "the console is served");
+    let health = router
+        .clone()
+        .oneshot(get("/v1/capabilities"))
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK, "the API answers");
+    for (method, path) in [
+        ("GET", "/v1/vault"),
+        ("POST", "/v1/vault/unlock/begin"),
+        ("POST", "/v1/vault/unlock"),
+        ("GET", "/v1/vault/passkeys"),
+        ("POST", "/v1/vault/passkeys/begin"),
+        ("POST", "/v1/vault/passkeys/finish"),
+        ("POST", "/v1/vault/passkeys/abc/remove"),
+        ("POST", "/v1/vault/ceremony"),
+        ("POST", "/v1/vault/initialise"),
+        ("POST", "/v1/vault/enrol"),
+        ("POST", "/v1/vault/adopt"),
+        ("POST", "/v1/vault/recover"),
+        ("POST", "/v1/vault/keys-into-vault"),
+        ("POST", "/v1/vault/start-over"),
+    ] {
+        let signed = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let response = router.clone().oneshot(signed).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{method} {path} still answers"
+        );
+        let bare = Request::builder()
             .method(method)
             .uri(path)
             .header("content-type", "application/json")
             .body(Body::from("{}"))
-            .unwrap()
-    };
-    let status = router
-        .clone()
-        .oneshot(unsigned("GET", "/v1/vault"))
-        .await
-        .unwrap();
-    assert_eq!(status.status(), StatusCode::OK);
-    let status = json_body(status).await;
-    assert_eq!(status["vault"], "not configured");
-    assert_eq!(status["rp_id"], "endora.home.arpa");
-    assert_eq!(status["node_waiting"], false);
-
-    let begin = router
-        .clone()
-        .oneshot(unsigned("POST", "/v1/vault/unlock/begin"))
-        .await
-        .unwrap();
-    assert_eq!(
-        begin.status(),
-        StatusCode::BAD_REQUEST,
-        "let through, and refused for want of a passkey"
-    );
-    for path in [
-        "/v1/vault/passkeys/begin",
-        "/v1/vault/ceremony",
-        "/v1/vault/initialise",
-        "/v1/vault/keys-into-vault",
-        "/v1/vault/start-over",
-    ] {
-        let res = router
-            .clone()
-            .oneshot(unsigned("POST", path))
-            .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{path}");
+        let response = router.clone().oneshot(bare).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::OK,
+            "{method} {path} answers unsigned"
+        );
     }
-    let listed = router.oneshot(get("/v1/vault/passkeys")).await.unwrap();
-    assert_eq!(
-        listed.status(),
-        StatusCode::OK,
-        "signed, the owner may list"
-    );
 }
 
 /// Endora is HQ (ADR 0136): the chat and everything that served only it are gone from the

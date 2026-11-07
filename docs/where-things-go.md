@@ -19,7 +19,7 @@ Settings.
 | Destination | What belongs there | What does not |
 |---|---|---|
 | **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history, the chess league and the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
-| **Home lab** | The lab's containers, logs, jobs, now | Credentials (Vault), models (AI) |
+| **Home lab** | The lab's containers, logs, jobs, now | Credentials (Connections, AI), models (AI) |
 | **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
 | **Settings** | Everything you set up once, in the sections below | Day-to-day controls |
@@ -32,14 +32,16 @@ Settings.
 | Connections | Outside services and tool servers Endora talks to (Home Assistant, the lab's services) |
 | Tools | What the team's turns may use from the house, and which ask you first (each skill's stance, ADR 0108) |
 | Your sign-in | Your password, authenticator, script tokens |
-| Vault | The house's secrets and the passkeys that unlock them |
 | Your data | Export, delete; never what the team runs on |
 
 **Rules of thumb**
 
 - Set up once → Settings. Looked at or flipped often → the screen it belongs to, with a link to
   its Settings place.
-- A model, wherever it runs → **AI**. A secret → **Vault**. An outside service → **Connections**.
+- A model, wherever it runs → **AI**. An outside service → **Connections**. A secret Endora
+  uses → the place of what uses it (a model's key in **AI**, a service's token in
+  **Connections**), sealed in Endora's own store ([ADR 0144](adr/0144-endora-keeps-its-own-secrets.md));
+  never a vault screen. OpenBao is the owner's own service, in ansible-nas, not Endora's.
 - One thing, one home. If two screens need it, one owns it and the other shows a line and a link.
 - A new top-level menu entry needs a reason the existing ones cannot hold it, in its ADR.
 - The team is one team of loops ([ADR 0142](adr/0142-one-team-of-loops.md)): members are ranked
@@ -119,7 +121,7 @@ Settings.
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
 | `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's places in `47-hq.js` (`HQ_PLACES`), the agents map in `47h-hq-agents.js`, the studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess league in `47e-hq-chess.js`; the console's own scenarios in `app/node/src/web/features/`, run by `scripts/check-console.mjs` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
-| `deploy/ansible/collection/` | The `endora.homelab` collection: how Endora's part of the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change. Services Endora is only a client of live in ansible-nas, not here: the house's vault is its `openbao` role (ADR 0127, amended 2026-11-07) |
+| `deploy/ansible/collection/` | The `endora.homelab` collection: how Endora's part of the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change. Services that are not Endora's live in ansible-nas, not here: OpenBao, the owner's own vault, is its `openbao` role, and Endora does not use it (ADR 0144) |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
 | `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi, which stops at any failing stage; `test-release.sh` holds it to that against fakes); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo); `harness-probes/` (the agentic-harness climb's rig: seeded probe families, their graders, both arms' runners and accounting; see its `PROTOCOL.md`; its runs' data stays outside the repo); `research-map/` (the research team's checkpoint map: `org.json` declares the roles and who sends what to whom, `render.mjs` draws a still page from a snapshot the steward writes; tests run with `node --test scripts/research-map`; the snapshots stay outside the repo) |
 | `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |

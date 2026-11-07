@@ -248,13 +248,6 @@ runInContext(
   LAST_ACTIVITY = ["Checked your home"];
   LAST_ACTIVITY_MSG = "2";
   STEP_LIST = [{ skill: "weather", status: "running", label: "Checking the weather" }];
-  // The vault (ADR 0127): set up and locked, one passkey that unlocks and one that cannot yet,
-  // and the break-glass shares on screen — the branches that exist only between two states.
-  VAULT = { vault: "locked", set_up: true, keys_in_vault: false, node_waiting: false,
-            passkeys: 2, can_unlock: 1, adopting: false, rp_id: "endora.home.arpa" };
-  VAULT_PASSKEYS = [{ id: "Y3JlZC1h", label: "Jane Doe's <b>phone</b>", created_ms: 1, last_used_ms: 2, can_unlock: true },
-                    { id: "Y3JlZC1i", label: "Security key", created_ms: 3, last_used_ms: 0, can_unlock: false }];
-  VAULT_SHARES = ["placeholder-share-one", "placeholder-share-two", "placeholder-share-three"];
   `,
   context,
 );
@@ -3756,7 +3749,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const wanted = ["hq", "lab", "music", "speakers", "house", "media", "audit", "settings"];
   if (JSON.stringify(menu) !== JSON.stringify(wanted)) fail(`hq first: the menu is ${menu.join(", ")}, not ${wanted.join(", ")}`);
   const sections = runInContext("UNDER_SETTINGS.map((p) => p.view)", context);
-  const kept = ["models", "connections", "skills", "signin", "vault", "data"];
+  const kept = ["models", "connections", "skills", "signin", "data"];
   if (JSON.stringify(sections) !== JSON.stringify(kept)) fail(`hq first: Settings holds ${sections.join(", ")}, not ${kept.join(", ")}`);
   if (runInContext(`UNDER_SETTINGS.find((p) => p.view === "skills").label`, context) !== "Tools") fail("hq first: Skills is not shown as the tools the team may use");
   const settings = String(runInContext("viewSettings()", context));
@@ -3790,6 +3783,19 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const kept = retiredViews.filter((v) => new RegExp(`function ${v}\\(`).test(source));
   if (kept.length) fail(`chat retired: the console still has ${kept.join(", ")}`);
   console.log("chat retired: no retired route is asked and no retired screen is left");
+}
+
+// OpenBao is not part of Endora (ADR 0144): Core keeps its secrets in its
+// own store, so the console has no vault screen, no passkey ceremony and asks no vault route.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  if (/"\/v1\/vault|`\/v1\/vault/.test(source)) fail("no vault: the console still asks a /v1/vault route");
+  const left = [...source.matchAll(/^function ((?:view|load)Vault[A-Za-z]*|vault[A-Z][A-Za-z]*)\(/gm)].map((m) => m[1]);
+  if (left.length) fail(`no vault: the console still has ${left.join(", ")}`);
+  if (/\bVAULT(?:_[A-Z]+)?\s*=/.test(source)) fail("no vault: the console still keeps vault state");
+  if (/navigator\.credentials/.test(source)) fail("no vault: the console still runs a passkey ceremony");
+  if (/view: "vault"|"go:vault"|v === "vault"/.test(source)) fail("no vault: a screen still leads to the vault");
+  console.log("no vault: no vault screen, passkey ceremony or vault route is left in the console");
 }
 
 // Signing in with a password manager (Apple Passwords in Safari, and the rest): with no

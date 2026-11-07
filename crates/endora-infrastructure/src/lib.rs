@@ -13,12 +13,10 @@ pub mod hq;
 pub mod ids;
 pub mod model_server;
 pub mod model_watch;
-pub mod openbao;
 pub mod relay;
 pub mod sound;
 pub mod sqlite;
 pub mod time_zone;
-pub mod vault_store;
 
 pub use clock::SystemClock;
 pub use model_server::{
