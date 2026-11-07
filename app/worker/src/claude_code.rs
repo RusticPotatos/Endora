@@ -739,6 +739,7 @@ pub fn serve() -> i32 {
                             &node,
                             &on_the_node,
                             setup.task,
+                            Some(&setup.dir),
                             &mut answered,
                             &mut did,
                             &call,

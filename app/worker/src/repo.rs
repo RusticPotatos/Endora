@@ -292,6 +292,44 @@ pub fn already_there(work: &Path, asked: Option<&str>) -> Option<AlreadyThere> {
     })
 }
 
+/// What the sandbox holds of `task`'s work, for a closing call (correction-placement review):
+/// every `hq/task-<task>-*` branch in `work/repo` with its full head, read with git, never from
+/// what the checkout noted (which the model can write). No checkout is a reading of no branches;
+/// a checkout git cannot enumerate is unknown, never an empty list.
+#[must_use]
+pub fn sandbox_reading(work: &Path, task: i64) -> serde_json::Value {
+    let repo = work.join(REPO_DIR);
+    if !repo.exists() {
+        return serde_json::json!({ "state": "read", "branches": [] });
+    }
+    // git matches a pattern whole or up to a slash, so the team's branches are listed and the
+    // task's picked from them.
+    let own = format!("{BRANCH_PREFIX}task-{task}-");
+    let listed = git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname)",
+            &format!("refs/heads/{BRANCH_PREFIX}"),
+        ],
+    );
+    let listed = match listed {
+        Ok(listed) => listed,
+        Err(why) => return serde_json::json!({ "state": "unknown", "why": why }),
+    };
+    let mut branches = Vec::new();
+    for line in listed.lines().filter(|l| !l.trim().is_empty()) {
+        let Some((branch, head)) = line.split_once(' ') else {
+            let why = format!("git listed a branch it could not name: {line}");
+            return serde_json::json!({ "state": "unknown", "why": why });
+        };
+        if branch.starts_with(&own) {
+            branches.push(serde_json::json!({ "branch": branch, "head": head }));
+        }
+    }
+    serde_json::json!({ "state": "read", "branches": branches })
+}
+
 /// Takes over the checkout kept in `work` for `member`'s turn on `task`: its commits carry
 /// this member's trailer from now on. What it was checked out from is kept.
 ///

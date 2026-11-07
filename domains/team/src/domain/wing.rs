@@ -120,3 +120,169 @@ pub struct Check {
 
 /// How long a check may run before it is given up as lost.
 pub const CHECK_LOST_AFTER_MS: Millis = 30 * 60 * 1000;
+
+/// How a successful `repo_checkout` receipt names a checkout of the repository's default branch
+/// (correction-placement review): `checked out the base at <full head>: <branch> (<n> KB)`. The
+/// full head comes first, so HQ's excerpt limit never cuts it, whatever the branch is called.
+pub const BASE_CHECKOUT: &str = "checked out the base at ";
+
+/// The full revision a node receipt names as the default branch it handed over, when the
+/// receipt names one: 40 hexadecimal characters right after [`BASE_CHECKOUT`]. An older,
+/// abbreviated receipt names none.
+#[must_use]
+pub fn base_revision(excerpt: &str) -> Option<&str> {
+    let rest = excerpt.strip_prefix(BASE_CHECKOUT)?;
+    let head = rest.get(..40)?;
+    let full = head.bytes().all(|b| b.is_ascii_hexdigit())
+        && rest[40..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_hexdigit());
+    full.then_some(head)
+}
+
+/// One task branch the worker read in its sandbox: its name and full head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBranch {
+    /// `hq/task-N-<slug>`.
+    pub branch: String,
+    /// Its full head.
+    pub head: String,
+}
+
+/// What the worker said of its sandbox beside a closing call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxReport {
+    /// Read: the task's branches, perhaps none.
+    Read(Vec<HeldBranch>),
+    /// It could not be read, or what came could not be understood: why.
+    Unknown(String),
+}
+
+/// A revision the member chose to leave unsubmitted as it closes the item, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftUnsubmitted {
+    /// The branch.
+    pub branch: String,
+    /// Its exact full head.
+    pub head: String,
+    /// Why, never empty.
+    pub why: String,
+}
+
+/// Why an item may not be closed over what its sandbox holds, if it may not (correction-placement
+/// review): each reported task-branch head must be a finished submission of this item on that
+/// branch at that exact head, the default branch's revision the node handed over, or named as left
+/// unsubmitted with a reason. Work kept only in progress is not finished; a kept branch's checkout
+/// is no baseline.
+#[must_use]
+pub fn outstanding(
+    report: &SandboxReport,
+    finished: &[(String, String)],
+    in_progress: &[(String, String)],
+    bases: &[String],
+    left: &[LeftUnsubmitted],
+) -> Option<String> {
+    let held = match report {
+        SandboxReport::Unknown(why) => {
+            return Some(format!(
+                "your sandbox could not be read ({why}), so HQ cannot tell whether it holds work \
+                 never submitted: nothing changed"
+            ));
+        }
+        SandboxReport::Read(held) => held,
+    };
+    let pending: Vec<&HeldBranch> = held
+        .iter()
+        .filter(|h| {
+            !finished
+                .iter()
+                .any(|(b, at)| *b == h.branch && *at == h.head)
+        })
+        .filter(|h| !bases.contains(&h.head))
+        .filter(|h| {
+            !left
+                .iter()
+                .any(|l| l.branch == h.branch && l.head == h.head && !l.why.trim().is_empty())
+        })
+        .collect();
+    let first = pending.first()?;
+    let kept = in_progress
+        .iter()
+        .any(|(b, at)| *b == first.branch && *at == first.head);
+    let how = if kept {
+        "kept only as work in progress, never submitted as finished work"
+    } else {
+        "never submitted as finished work"
+    };
+    Some(format!(
+        "your sandbox holds {} at {}, {how}: nothing changed. Submit it with repo_submit, then \
+         set the task again; or, if that revision is not to be delivered, set it again naming \
+         it in `unsubmitted` ([{{\"branch\", \"head\", \"why\"}}]) — sandbox-only work may \
+         disappear when the item closes.",
+        first.branch, first.head
+    ))
+}
+
+#[cfg(test)]
+mod outstanding_tests {
+    use super::*;
+
+    fn at(unit: &str) -> String {
+        unit.repeat(5)
+    }
+
+    fn holding(branch: &str, head: &str) -> SandboxReport {
+        SandboxReport::Read(vec![HeldBranch {
+            branch: branch.to_owned(),
+            head: head.to_owned(),
+        }])
+    }
+
+    #[test]
+    fn a_base_checkout_names_its_full_revision_however_long_the_branch() {
+        let head = at("0123abcd");
+        let long = "b".repeat(280);
+        let said = format!("{BASE_CHECKOUT}{head}: {long} (4 KB)");
+        let cut: String = said.chars().take(300).collect();
+        assert_eq!(base_revision(&cut), Some(head.as_str()));
+        assert_eq!(
+            base_revision("checked out main at 0123abcd0123 (4 KB)"),
+            None
+        );
+        assert_eq!(
+            base_revision(&format!("{BASE_CHECKOUT}{}", &head[..12])),
+            None
+        );
+        assert_eq!(base_revision(&format!("{BASE_CHECKOUT}{head}ab: x")), None);
+    }
+
+    #[test]
+    fn only_a_finished_head_a_base_or_a_named_disposition_clears_a_branch() {
+        let (b, new, done) = ("hq/task-1-fix", at("5faf6aed"), at("a1b2c3d4"));
+        let finished = vec![(b.to_owned(), done.clone())];
+        assert!(outstanding(&holding(b, &done), &finished, &[], &[], &[]).is_none());
+        let said = outstanding(&holding(b, &new), &finished, &[], &[], &[]).unwrap();
+        assert!(
+            said.contains(&format!("{b} at {new}, never submitted")),
+            "{said}"
+        );
+        assert!(outstanding(&holding(b, &new), &[], &[], &[new.clone()], &[]).is_none());
+        let left = |head: &str, why: &str| LeftUnsubmitted {
+            branch: b.to_owned(),
+            head: head.to_owned(),
+            why: why.to_owned(),
+        };
+        assert!(outstanding(&holding(b, &new), &[], &[], &[], &[left(&new, "wrong")]).is_none());
+        assert!(outstanding(&holding(b, &new), &[], &[], &[], &[left(&new, " ")]).is_some());
+        assert!(outstanding(&holding(b, &new), &[], &[], &[], &[left(&done, "x")]).is_some());
+        let other = vec![("hq/task-1-other".to_owned(), new.clone())];
+        assert!(outstanding(&holding(b, &new), &other, &[], &[], &[]).is_some());
+        let wip = vec![(b.to_owned(), new.clone())];
+        let said = outstanding(&holding(b, &new), &[], &wip, &[], &[]).unwrap();
+        assert!(said.contains("kept only as work in progress"), "{said}");
+        assert!(outstanding(&SandboxReport::Read(vec![]), &[], &[], &[], &[]).is_none());
+        let said = outstanding(&SandboxReport::Unknown("no git".into()), &[], &[], &[], &[]);
+        assert!(said.unwrap().contains("could not be read"));
+    }
+}

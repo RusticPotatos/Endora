@@ -414,6 +414,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
                         &node,
                         &on_the_node,
                         task,
+                        setup.workbench.as_deref(),
                         &mut answered,
                         &mut did,
                         call,
@@ -2222,11 +2223,13 @@ impl Answered {
 /// something about it. The same call asked again straight after is not sent at all; asked
 /// again after something else, it is sent, and if it says just what it said before the model
 /// is told it already has that.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     hq: &mut Hq<'_>,
     node: &Node<'_>,
     on_the_node: &[String],
     task: Option<i64>,
+    work: Option<&Path>,
     answered: &mut Answered,
     did: &mut Ledger,
     call: &Call,
@@ -2251,6 +2254,17 @@ pub(crate) fn run(
         without_marks(args)
     } else {
         args
+    };
+    // Closing its own task, the worker tells HQ what its sandbox holds of the task's work, read
+    // with git in place of anything the model wrote there (correction-placement review): HQ
+    // will not close an item over a head it never took as finished work.
+    let args = match (work, task) {
+        (Some(dir), Some(t)) if closes_own(task, tool, &args) => {
+            let mut args = args;
+            args["sandbox"] = crate::repo::sandbox_reading(dir, t);
+            args
+        }
+        _ => args,
     };
     let key = format!("{tool} {args}");
     // Asking for a result whole is the worker's to read, never HQ's or the node's: the call is
@@ -2322,6 +2336,11 @@ pub(crate) fn moves_on(task: Option<i64>, tool: &str, args: &Value) -> bool {
             args["status"].as_str(),
             Some("in_review" | "blocked" | "done")
         )
+}
+
+/// Whether a call closes the turn's own task: `in_review`, or `done` for a routine's check.
+fn closes_own(task: Option<i64>, tool: &str, args: &Value) -> bool {
+    moves_on(task, tool, args) && matches!(args["status"].as_str(), Some("in_review" | "done"))
 }
 
 /// Whether a call ends the turn by itself, known before it runs: a question to the owner, or

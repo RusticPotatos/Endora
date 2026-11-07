@@ -809,9 +809,15 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         _ => None,
     };
+    let left = closing_over_sandbox(engine, run, task, to, args)?;
     engine
         .set_status_citing(run.id, task, to, reason, &cited)
         .map_err(|e| said(&e))?;
+    for line in left {
+        engine
+            .post(super::Author::Endora, task, &line)
+            .map_err(|e| said(&e))?;
+    }
     // Moving an item on is often a turn's last word: lines it marks as lessons wait for the
     // item's next verdict (ADR 0142, amended 2026-10-31).
     engine.offer_lessons(task, reason).map_err(|e| said(&e))?;
@@ -1027,4 +1033,151 @@ fn tool_my_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
     }
     Ok(out)
+}
+
+/// The interlock on closing over a sandbox's unsubmitted work (correction-placement review). It
+/// applies to a closing call (`in_review`, or `done` for a routine's check) of the member's own
+/// task that carries the worker's `sandbox` report, on an item the node recorded a successful
+/// checkout for; a call with no report is left as it was (the owner, HQ, older workers). It
+/// refuses when a reported task-branch head is neither a finished submission of this item at
+/// that exact head nor the default branch's revision the node handed over, unless the call names
+/// it in `unsubmitted` with a reason. Returns the thread lines saying what was left unsubmitted,
+/// to post once the status has changed.
+fn closing_over_sandbox<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    run: &Run,
+    task: TaskId,
+    to: TaskStatus,
+    args: &Value,
+) -> Result<Vec<String>, String> {
+    use crate::domain::wing::{self, LeftUnsubmitted, SandboxReport};
+    let Some(reported) = args.get("sandbox") else {
+        return Ok(Vec::new());
+    };
+    if !matches!(to, TaskStatus::InReview | TaskStatus::Done) {
+        return Ok(Vec::new());
+    }
+    let store = engine.store();
+    let owned = store
+        .task(task)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|t| t.owner == Some(run.member));
+    if !owned {
+        return Ok(Vec::new());
+    }
+    let Some(bases) = checkout_bases(engine, task)? else {
+        return Ok(Vec::new());
+    };
+    let report = sandbox_report(reported);
+    let (mut finished, mut in_progress) = (Vec::new(), Vec::new());
+    for b in store.branches().map_err(|e| e.to_string())? {
+        if b.task != task {
+            continue;
+        }
+        let pair = (b.name, b.head);
+        if b.status == wing::IN_PROGRESS {
+            in_progress.push(pair);
+        } else {
+            finished.push(pair);
+        }
+    }
+    let left: Vec<LeftUnsubmitted> = args["unsubmitted"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|l| {
+                    Some(LeftUnsubmitted {
+                        branch: l["branch"].as_str()?.to_owned(),
+                        head: l["head"].as_str()?.to_owned(),
+                        why: l["why"].as_str()?.trim().chars().take(300).collect(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(why) = wing::outstanding(&report, &finished, &in_progress, &bases, &left) {
+        return Err(why);
+    }
+    let SandboxReport::Read(held) = report else {
+        return Ok(Vec::new());
+    };
+    let name = store
+        .members()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|m| m.id == run.member)
+        .map_or_else(|| "The member".to_owned(), |m| m.name);
+    Ok(left
+        .iter()
+        .filter(|l| {
+            !l.why.is_empty()
+                && held
+                    .iter()
+                    .any(|h| h.branch == l.branch && h.head == l.head)
+        })
+        .map(|l| {
+            format!(
+                "{name} closed it and left {} at {} unsubmitted: {}. That revision was not \
+                 delivered; sandbox-only work may disappear when the item closes.",
+                l.branch, l.head, l.why
+            )
+        })
+        .collect())
+}
+
+/// The default-branch revisions the node recorded handing over for `task`'s checkouts, or `None`
+/// when the node recorded no successful checkout for it at all (the interlock does not apply).
+fn checkout_bases<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    task: TaskId,
+) -> Result<Option<Vec<String>>, String> {
+    let store = engine.store();
+    let mut checked_out = false;
+    let mut bases = Vec::new();
+    for other in store.runs().map_err(|e| e.to_string())? {
+        if other.task != Some(task) {
+            continue;
+        }
+        for r in store
+            .call_receipts_of(other.id)
+            .map_err(|e| e.to_string())?
+        {
+            if r.tool != "repo_checkout" || !r.ok || r.sandbox {
+                continue;
+            }
+            checked_out = true;
+            if let Some(base) = crate::domain::wing::base_revision(&r.excerpt) {
+                bases.push(base.to_owned());
+            }
+        }
+    }
+    Ok(checked_out.then_some(bases))
+}
+
+/// The worker's `sandbox` report as HQ reads it: anything it cannot understand is unknown.
+fn sandbox_report(reported: &Value) -> crate::domain::wing::SandboxReport {
+    use crate::domain::wing::{HeldBranch, SandboxReport};
+    let unclear = || SandboxReport::Unknown("its report could not be understood".to_owned());
+    match (reported["state"].as_str(), reported["branches"].as_array()) {
+        (Some("read"), Some(branches)) => branches
+            .iter()
+            .map(|b| {
+                Some(HeldBranch {
+                    branch: b["branch"].as_str()?.to_owned(),
+                    head: b["head"].as_str()?.to_owned(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .map_or_else(unclear, SandboxReport::Read),
+        (Some("unknown"), _) => SandboxReport::Unknown(
+            reported["why"]
+                .as_str()
+                .unwrap_or("the worker gave no reason")
+                .chars()
+                .take(200)
+                .collect(),
+        ),
+        _ => unclear(),
+    }
 }

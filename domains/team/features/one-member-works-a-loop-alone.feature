@@ -206,3 +206,27 @@ Feature: One member works a loop alone
     When Ada submits "Fix the lint" for review
     Then Rae is woken to review "Fix the lint"
     And Sol is not woken to review "Fix the lint"
+
+  # Correction-placement review: the close interlock on a routine's check closed done. Seed: HQ
+  # ignoring the sandbox report closes the check over the unsubmitted commit; the Then fails.
+  Scenario: A routine's check is not closed done over a commit HQ never took
+    Given the loop "solo arm" has the routine "Look after the environment" for Sol, which fires now
+    And a tick passes
+    And Sol's turn starts
+    And Sol took "Look after the environment" and read media's logs: "media: listening on 8096, ready"
+    And the node recorded Sol's checkout of the base at the handover head
+    When Sol sets "Look after the environment" done, the worker reporting "hq/task-1-look-after" at the unsubmitted head
+    Then it is refused, naming "hq/task-1-look-after" at the unsubmitted head
+    When Sol sets "Look after the environment" done, the worker reporting no work of the item
+    Then it is not refused
+    And the task "Look after the environment" is done
+
+  # Control: a disposition is no way past HQ's gate.
+  Scenario: Leaving work unsubmitted does not open the gate
+    Given the loop "solo arm" has the item "Document the media role": "Write roles/media/README.md from the role's defaults."
+    And a tick passes
+    When Sol takes "Document the media role" and reads media's logs: "media: listening on 8096, ready"
+    And the node recorded Sol's checkout of the base at the handover head
+    And Sol submits the branch "hq/document-the-media-role", changing "roles/media/README.md"
+    And Sol sets "Document the media role" ready, leaving "hq/task-1-fix" at the unsubmitted head unsubmitted because "not wanted", the worker reporting "hq/task-1-fix" at the unsubmitted head
+    Then it is refused for "the gate has not passed"

@@ -810,15 +810,31 @@ fn repo_checkout(state: &AppState, turn: &Turn, args: &serde_json::Value) -> Res
         StatusCode::BAD_GATEWAY
     };
     let bundle = mirror.bundle(branch, now).map_err(|why| (status, why))?;
-    let said = format!(
-        "checked out {} at {} ({} KB){}",
-        bundle.branch,
-        &bundle.head[..12.min(bundle.head.len())],
-        bundle.bytes.len() >> 10,
-        upstream_said(&bundle)
-    );
+    let said = checkout_said(&bundle, mirror.base());
     let text = handed(&bundle, mirror.base(), false, mirror.is_outside());
     Ok(Done { text, said })
+}
+
+/// The receipt's words for a checkout the node handed over fresh. A checkout of the default
+/// branch names its full revision first, as HQ reads it (`endora_team::domain::wing::
+/// BASE_CHECKOUT`): the revision a task branch starts from, which HQ's excerpt limit never cuts,
+/// whatever the branch is called. Any other branch keeps its short head.
+fn checkout_said(bundle: &repo::Bundle, base: &str) -> String {
+    let kb = bundle.bytes.len() >> 10;
+    if bundle.branch == base {
+        return format!(
+            "checked out the base at {}: {} ({kb} KB){}",
+            bundle.head,
+            bundle.branch,
+            upstream_said(bundle)
+        );
+    }
+    format!(
+        "checked out {} at {} ({kb} KB){}",
+        bundle.branch,
+        &bundle.head[..12.min(bundle.head.len())],
+        upstream_said(bundle)
+    )
 }
 
 /// What a checkout says of upstream, after the rest: where it is and that it is only read.
@@ -1711,6 +1727,32 @@ pub(super) async fn switch(
 
 #[cfg(test)]
 mod tests {
+    /// Correction-placement review: a default branch's checkout names its full revision before
+    /// the branch, so HQ's 300-character excerpt keeps it whatever the branch is called; another
+    /// branch keeps its short head.
+    #[test]
+    fn a_base_checkout_receipt_names_its_full_revision_first() {
+        let head = "0123abcd".repeat(5);
+        let long = "b".repeat(280);
+        let bundle = |branch: &str| repo::Bundle {
+            branch: branch.to_owned(),
+            head: head.clone(),
+            bytes: vec![0; 4096],
+            upstream: None,
+        };
+        let said = super::checkout_said(&bundle(&long), &long);
+        let kept: String = said.chars().take(300).collect();
+        assert!(
+            kept.starts_with(&format!("checked out the base at {head}: ")),
+            "{said}"
+        );
+        let other = super::checkout_said(&bundle("hq/task-1-fix"), "main");
+        assert_eq!(
+            other,
+            format!("checked out hq/task-1-fix at {} (4 KB)", &head[..12])
+        );
+    }
+
     use super::super::relay::tests::{hq_as, hq_thinking, node};
     use super::*;
     use http_body_util::BodyExt as _;
@@ -3494,11 +3536,15 @@ mod tests {
                 .collect()
         };
         let checked_out = receipts(&seen).pop().unwrap();
+        // The default branch's receipt names its full revision first (correction-placement).
         assert!(
             checked_out["excerpt"]
                 .as_str()
                 .unwrap()
-                .starts_with("checked out main at "),
+                .starts_with(&format!(
+                    "checked out the base at {}: main ",
+                    checkout["head"].as_str().unwrap()
+                )),
             "{checked_out}"
         );
         assert_eq!(checked_out["act"], false);

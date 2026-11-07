@@ -66,7 +66,8 @@ Feature: A closing call carries the worker's own reading of its sandbox
     Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
     And the node hands out the team's kept branch "hq/task-7-fix" of the lab's fork
     When the model replies "repo_checkout hq/task-7-fix refresh", then "set_status 7 in_review"
-    Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+    Then the model was told "Fetched the node's latest into your checkout" after its first reply
+    And HQ was told the sandbox holds "hq/task-7-fix" at the kept head
 
   # The kept commit has no trailer: the worker stamps it before bundling, which moves the head.
   Scenario: After a submission the reading names the stamped head the node was sent

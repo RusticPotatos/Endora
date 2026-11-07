@@ -255,23 +255,59 @@ fn took_and_read_logs(w: &mut Office, name: String, title: String, container: St
     w.reads(&name, "container_logs", &container, &got);
 }
 
-/// The node's receipt of a successful `repo_checkout` on `name`'s running turn, as the node
-/// writes it: "checked out <branch> at <12 of the head> (<n> KB)".
-#[given(regex = r#"^the node recorded (\w+)'s checkout of "(.+)" at the (\w+) head$"#)]
-fn node_recorded_checkout(w: &mut Office, name: String, branch: String, head: String) {
-    let context = w.turn_of(&name);
+fn node_receipt(w: &mut Office, name: &str, branch: &str, excerpt: String) {
+    let context = w.turn_of(name);
     w.hq.record_receipt(
         &context.token,
         &endora_team::application::engine::Called {
             tool: "repo_checkout".to_owned(),
             args: format!("branch: {branch}"),
-            excerpt: format!("checked out {branch} at {} (4 KB)", &oid(&head)[..12]),
+            excerpt,
             ok: true,
             act: false,
             confidential: false,
         },
     )
     .expect("the node's receipt of the checkout");
+}
+
+/// The node's receipt of a checkout of the default branch, as the node writes it now: its full
+/// revision first.
+#[given(regex = r#"^the node recorded (\w+)'s checkout of the base at the (\w+) head$"#)]
+#[when(regex = r#"^the node recorded (\w+)'s checkout of the base at the (\w+) head$"#)]
+fn node_recorded_base(w: &mut Office, name: String, head: String) {
+    let excerpt = format!(
+        "{}{}: develop (4 KB)",
+        endora_team::domain::wing::BASE_CHECKOUT,
+        oid(&head)
+    );
+    node_receipt(w, &name, "develop", excerpt);
+}
+
+#[given(
+    regex = r#"^the node recorded (\w+)'s checkout of the kept branch "(.+)" at the (\w+) head$"#
+)]
+fn node_recorded_kept(w: &mut Office, name: String, branch: String, head: String) {
+    let excerpt = format!(
+        "checked out the team's kept branch {branch} at {} (task #1's, on top of develop; 4 KB)",
+        &oid(&head)[..12]
+    );
+    node_receipt(w, &name, &branch, excerpt);
+}
+
+#[given(
+    regex = r#"^the node recorded (\w+)'s checkout of "(.+)" at the (\w+) head, abbreviated as older nodes wrote it$"#
+)]
+fn node_recorded_abbreviated(w: &mut Office, name: String, branch: String, head: String) {
+    let excerpt = format!("checked out {branch} at {} (4 KB)", &oid(&head)[..12]);
+    node_receipt(w, &name, &branch, excerpt);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker's report naming a branch with no head$"#)]
+fn sets_ready_malformed(w: &mut Office, name: String, title: String) {
+    let report = serde_json::json!({ "sandbox": { "state": "read",
+        "branches": [{ "branch": "hq/task-1-fix" }] } });
+    sets(w, &name, &title, "in_review", report);
 }
 
 #[when(regex = r#"^(\w+) submitted the branch "(.+)" at the (\w+) head$"#)]
@@ -350,7 +386,7 @@ fn refused_naming(w: &mut Office, branch: String, head: String) {
 }
 
 #[then(
-    regex = r#"^the thread of "(.+)" says "(.+)" at the (\w+) head was left unsubmitted: "(.+)"$"#
+    regex = r#"^the thread of "(.+)" records "(.+)" at the (\w+) head left unsubmitted because "(.+)"$"#
 )]
 fn thread_says_left(w: &mut Office, title: String, branch: String, head: String, why: String) {
     let task = w.task(&title);
@@ -358,4 +394,16 @@ fn thread_says_left(w: &mut Office, title: String, branch: String, head: String,
     let thread = w.hq.store().thread(task).expect("the store answers");
     let times = thread.iter().filter(|p| p.text.contains(&wanted)).count();
     assert_eq!(times, 1, "{thread:#?}");
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" done, the worker reporting "(.+)" at the (\w+) head$"#)]
+fn sets_done_reporting(w: &mut Office, name: String, title: String, branch: String, head: String) {
+    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &oid(&head)) });
+    sets(w, &name, &title, "done", report);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" done, the worker reporting no work of the item$"#)]
+fn sets_done_no_work(w: &mut Office, name: String, title: String) {
+    let report = serde_json::json!({ "sandbox": { "state": "read", "branches": [] } });
+    sets(w, &name, &title, "done", report);
 }
