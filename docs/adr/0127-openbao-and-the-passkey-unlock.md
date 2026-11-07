@@ -3,7 +3,9 @@
 ## Status
 
 Proposed, 2026-10-18, for the owner to accept at the merge. Prepared with AI assistance
-(Claude). Builds the "path to OpenBao Transit" [0125](0125-secrets-at-rest-in-the-node.md)
+(Claude). **Amended 2026-11-07** (owner decision MR9): OpenBao moved out of Endora into its own
+ansible-nas role, and Endora's node is a client of it; see "Amendment, 2026-11-07" at the end,
+which supersedes §1's placement and "The ansible-nas wiring". Builds the "path to OpenBao Transit" [0125](0125-secrets-at-rest-in-the-node.md)
 left as a seam. Phase 1 of the house's secrets manager: the vault running, unlockable with a
 passkey, and Endora's own keys able to move into it. Built: everything below except what
 "Deferred" lists.
@@ -247,3 +249,49 @@ in step with the role's.
   root revocation, Transit, sealing on restart, the node waiting and the passkey unlock opening
   it, and the rekey. A real browser ceremony (Face ID, the secure enclave, iCloud Keychain's
   PRF) cannot run in a test and has not been run.
+
+## Amendment, 2026-11-07: the vault is its own service
+
+Owner decision MR9, 7 Nov 2026, from the Mac rebuild plan's credential design (§3·b). Prepared
+with AI assistance (Claude).
+
+**Decision.** OpenBao is declared by ansible-nas's own **`openbao`** role, not by this
+collection, which no longer ships one. The role runs it on **its own** internal, isolated
+network, `openbao`, as the container `openbao` (alias `openbao`), with everything else in §1
+unchanged: the same image digest, raft storage in the same folder (`<docker_home>/openbao`)
+under the same node id (`endora`), the same audit device, the same hardening and caps. Its
+health check is now **healthy only when unsealed** (`bao status` exit 0), so a sealed vault
+shows as unhealthy and raises the lab's existing "container unhealthy" alert, and each run of
+the role says whether it is unsealed, sealed or not initialised. The role removes the old
+`endora-openbao` container before starting its own, never the data.
+
+**Endora's node is a client.** It reaches the vault at `ENDORA_VAULT_URL` (the `endora` role's
+`endora_vault_url`), now checked when the node starts: `http://` or `https://` and a host, and
+never a credential (refused without repeating it). It joins the vault's network when
+`ENDORA_VAULT_NETWORK` names it (`endora_vault_network`), as an existing network; the compose
+file refuses to start the node on one that does not exist, so the vault's role runs first.
+Unset, the node keeps a private network of its own, as before. The console names the address
+it tried when the vault does not answer, and says when a sealed vault was set up outside
+Endora (a passkey cannot unlock it: its shares are not in the node).
+
+**Why.** The vault was not independent in four ways: its role shipped in Endora; it could not
+start without Endora's compose network (the role refused); only Endora's console could
+initialise or unlock it; and it was named for Endora. A house vault only Endora can open fails
+the one-responsibility rule, and a broken or rolled-back Endora would lock every machine
+secret. It was moved while empty (`keys_in_vault` false, KV deferred), when nothing depends on
+its contents.
+
+**Re-initialised by the owner.** The vault had been sealed since 5 Nov and nobody could tell
+whether the owner's saved item held the shares or the (revoked) root token. The owner chose to
+initialise it afresh after the move, at the terminal (3 shares, threshold 2, as §2 reasons),
+saving each share and the root token as separate password-manager items. A vault initialised
+outside the console is not set up by Endora: no shares wrapped under passkeys, no AppRole, no
+Transit key. Endora's **Start over** forgets the old vault's state; passkey unlock and the move
+of Endora's own keys wait for a later change that lets the console adopt an existing vault
+with the owner's shares. Until unsealing is automatic, machine secrets are rendered into
+service files at deploy time, so a sealed vault blocks the next deploy, never a running house.
+
+**Consequences.** Order on a fresh host: the `openbao` role, then the node. The root token from
+a terminal init stays valid until the owner revokes it (§2.5's revocation applied to Endora's
+own init only). Rollback to the collection's role is possible with the data intact while
+ansible-nas pins a collection commit that still has it (`docs/homelab.md`, "The vault").

@@ -52,6 +52,7 @@ pub(super) async fn status(State(state): State<AppState>) -> Result<Json<Value>,
         "passkeys": status.passkeys,
         "can_unlock": status.can_unlock,
         "adopting": status.adopting,
+        "address": status.address,
         "rp_id": state.vault.rp_id(),
     })))
 }

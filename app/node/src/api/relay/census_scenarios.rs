@@ -154,7 +154,7 @@ async fn the_owners_scenarios_for_the_relays_own_count_pass() {
     let writer = RelayWorld::cucumber()
         .with_cli(none)
         .fail_on_skipped()
-        .run("features")
+        .run("features/relay")
         .await;
     assert!(
         !writer.execution_has_failed() && writer.parsing_errors() == 0,

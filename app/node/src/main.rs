@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The house's vault (ADR 0127), when ENDORA_VAULT_URL names one: its passkeys and unlock,
     // and the key file the node's login to it is sealed under. Passkeys bind to a name, not
     // an address: ENDORA_PASSKEY_RP_ID, `endora.home.arpa` unless set.
-    let vault_api = secrets::vault_from_env();
+    let vault_api = secrets::vault_from_env()?;
     let rp_id = std::env::var("ENDORA_PASSKEY_RP_ID")
         .ok()
         .map(|r| r.trim().to_owned())

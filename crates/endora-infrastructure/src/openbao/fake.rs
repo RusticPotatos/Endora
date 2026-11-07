@@ -14,6 +14,7 @@ use super::{Initialised, OpenBaoApi, ROLE, SealStatus, TRANSIT_KEY, VaultError, 
 
 #[derive(Default)]
 struct State {
+    address: String,
     unreachable: bool,
     initialized: bool,
     sealed: bool,
@@ -62,6 +63,11 @@ impl FakeOpenBao {
         let mut s = self.state();
         s.sealed = true;
         s.given.clear();
+    }
+
+    /// The address it is said to be at, as a client was given it.
+    pub fn set_address(&self, address: &str) {
+        self.state().address = address.to_owned();
     }
 
     /// Stops it answering at all, or starts it again.
@@ -136,6 +142,10 @@ fn no(status: u16, message: &str) -> VaultError {
 }
 
 impl OpenBaoApi for FakeOpenBao {
+    fn address(&self) -> Option<String> {
+        Some(self.state().address.clone()).filter(|a| !a.is_empty())
+    }
+
     fn seal_status(&self) -> Result<SealStatus, VaultError> {
         let s = self.state();
         if s.unreachable {

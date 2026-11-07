@@ -131,6 +131,9 @@ pub struct Status {
     pub can_unlock: usize,
     /// Whether another passkey may be given the unseal key now (a ticket is open).
     pub adopting: bool,
+    /// Where the node reaches the vault (`ENDORA_VAULT_URL`), if it is given one: the vault is
+    /// its own service (ADR 0127, amended 2026-11-07), and the console names where it looked.
+    pub address: Option<String>,
 }
 
 /// The vault, its passkeys, and the ceremonies in flight.
@@ -347,6 +350,7 @@ impl Vault {
             passkeys: passkeys.len(),
             can_unlock: passkeys.iter().filter(|p| !p.wrapped.is_empty()).count(),
             adopting: self.ticket_open(now_ms),
+            address: self.api.as_ref().and_then(|api| api.address()),
         })
     }
 
@@ -952,3 +956,7 @@ pub fn open_node_store(
 #[cfg(test)]
 #[path = "vault_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "vault_scenarios.rs"]
+mod scenarios;

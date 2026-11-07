@@ -160,12 +160,19 @@ export ENDORA_MAC_PORT
 export ENDORA_MAC_NODE_CACERT
 export ENDORA_MAC_NODE_INSECURE
 
-# The house's vault (ADR 0127): OpenBao, run by the owner's ansible-nas with the endora.homelab
-# collection's `openbao` role (not by this Makefile or the compose file), on the internal
-# endora_vault network the node's compose file makes. ENDORA_VAULT_URL = http://openbao:8200 in
-# local.mk gives the node its address; keep it in step with the endora role's endora_vault_url.
+# The house's vault (ADR 0127, amended 2026-11-07): OpenBao, its own service, run by the owner's
+# ansible-nas with its `openbao` role on its own network (not by this Makefile or the compose
+# file). In local.mk: ENDORA_VAULT_URL = http://openbao:8200 (its address) and
+# ENDORA_VAULT_NETWORK = openbao (the network the node joins to reach it; run the role first).
+# Keep them in step with the endora role's endora_vault_url and endora_vault_network.
 # Passkeys bind to endora.home.arpa unless ENDORA_PASSKEY_RP_ID names another.
+ENDORA_VAULT_NETWORK ?=
+ifneq ($(ENDORA_VAULT_NETWORK),)
+ENDORA_VAULT_NETWORK_EXTERNAL := true
+endif
 export ENDORA_VAULT_URL
+export ENDORA_VAULT_NETWORK
+export ENDORA_VAULT_NETWORK_EXTERNAL
 export ENDORA_PASSKEY_RP_ID
 
 # The lab's ansible-nas (ADR 0112), which the team's homelab_map and ansible_nas_doc read: in

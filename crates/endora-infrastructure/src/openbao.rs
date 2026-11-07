@@ -174,6 +174,12 @@ pub enum Verb {
 /// What the node asks of OpenBao. One implementation speaks HTTP ([`HttpOpenBao`]); tests
 /// use [`fake::FakeOpenBao`].
 pub trait OpenBaoApi: Send + Sync {
+    /// Where the client reaches it, for the console to name when it does not answer. No
+    /// credential is ever part of it (the node refuses one at start).
+    fn address(&self) -> Option<String> {
+        None
+    }
+
     /// `GET sys/seal-status`.
     ///
     /// # Errors
@@ -326,6 +332,10 @@ fn status_from(body: &Value) -> SealStatus {
 }
 
 impl OpenBaoApi for HttpOpenBao {
+    fn address(&self) -> Option<String> {
+        Some(self.url.clone())
+    }
+
     fn seal_status(&self) -> Result<SealStatus, VaultError> {
         let (status, body) = self.send("", Verb::Get, "sys/seal-status", None)?;
         if status != 200 {

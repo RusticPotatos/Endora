@@ -31,9 +31,11 @@ endora_docker_observer: true     # a read-only view of this host's containers
 - **The time zone** is the NAS's own (`ansible_nas_timezone`) unless `endora_time_zone`
   names another, so patterns are on your clock and the daily brief keeps its hour when the
   clocks change.
-- **The vault** (Endora ADR 0127): `endora_vault_url: http://openbao:8200` gives the node the
-  OpenBao the [`openbao`](../openbao/README.md) role runs, on the internal `endora_vault`
-  network Endora's compose file makes for the two. Run this role first: it makes that network.
+- **The vault** (Endora ADR 0127, amended 2026-11-07): OpenBao is its own service, run by
+  ansible-nas's `openbao` role on its own internal network; the node is a client.
+  `endora_vault_url: http://openbao:8200` is its address and `endora_vault_network: openbao`
+  the network the node joins to reach it. Run the `openbao` role first: the node will not
+  start on a network that does not exist.
   Passkeys are bound to `endora.home.arpa` unless `endora_passkey_rp_id` names another.
 - **The certificate.** The node serves HTTPS with a self-signed certificate issued for the
   NAS's own address (`endora_tls_san`, by default the address Ansible sees). Accept the

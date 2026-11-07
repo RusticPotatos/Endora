@@ -9,6 +9,16 @@ tagged release.
 
 ### Removed
 
+- **The `openbao` role leaves the `endora.homelab` collection** (0.15.0;
+  [ADR 0127](docs/adr/0127-openbao-and-the-passkey-unlock.md), amended 2026-11-07).
+  **Breaking** for anyone running it from the collection. The house's vault is its own service,
+  ansible-nas's `openbao` role, on its own network `openbao`, keeping the same data folder; its
+  health check is healthy only when unsealed. The node is a client: `ENDORA_VAULT_URL` is now
+  checked at start (`http://` or `https://` and a host, never a credential), the node joins the
+  vault's network when `ENDORA_VAULT_NETWORK` (`endora_vault_network`) names it, and the
+  console names the address it tried and says when a sealed vault was set up outside Endora.
+  The move and its rollback: `docs/homelab.md`, "The vault".
+
 - **Endora is HQ; the butler's chat is retired, code and storage**
   ([ADR 0136](docs/adr/0136-endora-is-hq.md)). **Breaking.** Every device opens on HQ; the menu is
   HQ, Home lab, Music, Speakers, Smart home, Media, Activity and Settings, and Settings holds AI,

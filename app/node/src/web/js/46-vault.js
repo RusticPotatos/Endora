@@ -141,9 +141,11 @@ function vaultStateWords() {
   if (!VAULT) return "Not known yet.";
   const words = {
     "not configured": "No vault is configured on this node (ENDORA_VAULT_URL is not set).",
-    unreachable: "The vault is not answering.",
+    unreachable: `The vault${VAULT.address ? " at " + VAULT.address : ""} is not answering. It runs as its own service (the openbao role in ansible-nas); is it started, and is the node on its network (ENDORA_VAULT_NETWORK)?`,
     uninitialised: "The vault is running and has not been set up yet.",
-    locked: "Locked. A passkey tap unlocks it.",
+    locked: VAULT.set_up
+      ? "Locked. A passkey tap unlocks it."
+      : "Locked. It was set up outside Endora, so a passkey cannot unlock it: unseal it on the NAS with your shares.",
     unlocked: "Unlocked.",
   };
   return words[VAULT.vault] || VAULT.vault;

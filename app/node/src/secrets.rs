@@ -40,18 +40,52 @@ pub fn key_file_from_env(database: &str) -> PathBuf {
     )
 }
 
-/// The vault this node is given (`ENDORA_VAULT_URL`, ADR 0127), if any. Set-but-empty is
-/// unset, as compose leaves a blanked variable.
-#[must_use]
-pub fn vault_from_env() -> Option<std::sync::Arc<dyn endora_infrastructure::openbao::OpenBaoApi>> {
-    let url = std::env::var("ENDORA_VAULT_URL").ok()?;
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
+/// The vault's address as the node uses it, from `raw` (`ENDORA_VAULT_URL`, ADR 0127): `None`
+/// when unset or blank (as compose leaves a blanked variable), the address without a trailing
+/// slash when it is `http://` or `https://` and a host, and otherwise why not. The vault is its
+/// own service (ADR 0127, amended 2026-11-07), reached at this address; a credential never
+/// belongs in it, and the refusal never repeats the address, in case it holds one.
+///
+/// # Errors
+/// The reason, when the address is not one the node can use.
+pub fn vault_address(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(url) = raw.map(str::trim).filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(rest) = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    else {
+        return Err(
+            "ENDORA_VAULT_URL must start with http:// or https:// (e.g. http://openbao:8200)"
+                .to_owned(),
+        );
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if host.contains('@') {
+        return Err(
+            "ENDORA_VAULT_URL must hold no credential: give only the vault's address".to_owned(),
+        );
     }
-    Some(std::sync::Arc::new(
-        endora_infrastructure::openbao::HttpOpenBao::new(url),
-    ))
+    if host.is_empty() || host.starts_with(':') {
+        return Err("ENDORA_VAULT_URL names no host (e.g. http://openbao:8200)".to_owned());
+    }
+    Ok(Some(url.trim_end_matches('/').to_owned()))
+}
+
+/// The vault this node is given (`ENDORA_VAULT_URL`), if any.
+///
+/// # Errors
+/// When the address is not one the node can use: it says why, and the node does not start.
+pub fn vault_from_env()
+-> Result<Option<std::sync::Arc<dyn endora_infrastructure::openbao::OpenBaoApi>>, Box<dyn Error>> {
+    let raw = std::env::var("ENDORA_VAULT_URL").ok();
+    let Some(url) = vault_address(raw.as_deref())? else {
+        return Ok(None);
+    };
+    Ok(Some(std::sync::Arc::new(
+        endora_infrastructure::openbao::HttpOpenBao::new(&url),
+    )))
 }
 
 /// Opens the node's store with its secrets sealed under the key file — made on the first
@@ -65,7 +99,7 @@ pub fn open_store(database: &str) -> Result<SqliteStore, Box<dyn Error>> {
     crate::vault::open_node_store(
         database,
         &key_file_from_env(database),
-        vault_from_env().as_ref(),
+        vault_from_env()?.as_ref(),
     )
 }
 
