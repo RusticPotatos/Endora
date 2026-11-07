@@ -40,3 +40,37 @@ Feature: A closing call carries the worker's own reading of its sandbox
     Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
     When the model replies "repo_checkout hq/task-7-fix", then "set_status 7 in_review"
     Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+
+  # Round 2 controls. Seed for each: a reading that hides or moves the kept head fails the Then.
+  Scenario: A non-hq name at the kept head does not hide the task branch
+    Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
+    And the workbench's checkout also names its kept head "scratch"
+    When the model replies "set_status 7 in_review"
+    Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+
+  Scenario: A local base branch moved onto the kept head does not hide the task branch
+    Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
+    And the workbench's base branch was moved onto the kept head
+    When the model replies "set_status 7 in_review"
+    Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+
+  # The worker reports the head as it is; whether it is the handover base is HQ's to judge from
+  # the node's checkout receipt, never from a local base ref.
+  Scenario: A task branch at its base with no commit is reported as it is
+    Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
+    And the workbench's task branch is at its base, with no commit of its own
+    When the model replies "set_status 7 in_review"
+    Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+
+  Scenario: Fetching the node's latest beside the kept work does not change the reading
+    Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
+    And the node hands out the team's kept branch "hq/task-7-fix" of the lab's fork
+    When the model replies "repo_checkout hq/task-7-fix refresh", then "set_status 7 in_review"
+    Then HQ was told the sandbox holds "hq/task-7-fix" at the kept head
+
+  # The kept commit has no trailer: the worker stamps it before bundling, which moves the head.
+  Scenario: After a submission the reading names the stamped head the node was sent
+    Given the workbench kept a checkout on "hq/task-7-fix" with a commit since its base
+    And the node hands out the team's kept branch "hq/task-7-fix" of the lab's fork
+    When the model replies "repo_submit hq/task-7-fix", then "set_status 7 in_review"
+    Then HQ was told the sandbox holds "hq/task-7-fix" at the head the node was sent

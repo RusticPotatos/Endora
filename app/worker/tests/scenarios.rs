@@ -172,7 +172,7 @@ fn node_with_repo() -> String {
 
 /// A node that offers the repository's contracts (only the checkout, to a turn that may only
 /// read), and the home lab's tools with `lab`, and answers every checkout with `handed`, as the node's text with a receipt after it.
-fn node_handing(handed: Value, read_only: bool, lab: bool, extra: Vec<String>) -> String {
+fn node_handing(handed: Value, read_only: bool, lab: bool, extra: Vec<String>) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         if sent.is_null() {
             let mut tools = vec![
@@ -197,7 +197,6 @@ fn node_handing(handed: Value, read_only: bool, lab: bool, extra: Vec<String>) -
         let text = format!("{handed} (receipt r12)");
         (200, json!({ "text": text }).to_string())
     }))
-    .0
 }
 
 /// What the node hands out for a checkout, as it writes it: a bundle of a repository whose
@@ -306,6 +305,11 @@ fn call_of(written: &str, n: usize) -> Value {
                     "evidence": [receipt] }),
         ),
         ["post"] => ("post", json!({ "task": 7, "text": "What I found." })),
+        ["repo_checkout", branch, "refresh"] => (
+            "repo_checkout",
+            json!({ "branch": branch, "refresh": true, "why": "the node's latest" }),
+        ),
+        ["repo_submit", branch] => ("repo_submit", json!({ "branch": branch, "why": "the fix" })),
         ["repo_checkout", branch] => (
             "repo_checkout",
             json!({ "branch": branch, "why": "to go on" }),
@@ -531,12 +535,16 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
     let (model, to_model) = model_replying(rounds);
     let mut node_seen: Option<Seen> = None;
     let contracts = match (&w.handed, w.kept_head.is_some()) {
-        (Some(handed), _) => node_handing(
-            handed.clone(),
-            w.read_only,
-            w.lab_tools,
-            w.extra_tools.clone(),
-        ),
+        (Some(handed), _) => {
+            let (url, seen) = node_handing(
+                handed.clone(),
+                w.read_only,
+                w.lab_tools,
+                w.extra_tools.clone(),
+            );
+            node_seen = Some(seen);
+            url
+        }
         (None, true) => node_with_repo(),
         (None, false) => {
             let (url, seen) = node_seeing(w.no_receipts);
@@ -927,6 +935,50 @@ fn told_unknown(w: &mut Turn) {
     assert_eq!(told["state"], "unknown", "{told}");
     assert!(
         told["why"].as_str().is_some_and(|w| !w.is_empty()),
+        "{told}"
+    );
+}
+
+#[given(expr = "the workbench's checkout also names its kept head {string}")]
+fn alias_at_head(w: &mut Turn, alias: String) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    git_in(&dir.join("repo"), &["branch", &alias, "HEAD"]);
+}
+
+#[given("the workbench's base branch was moved onto the kept head")]
+fn base_moved(w: &mut Turn) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    git_in(&dir.join("repo"), &["branch", "-f", "develop", "HEAD"]);
+}
+
+#[given("the workbench's task branch is at its base, with no commit of its own")]
+fn empty_task_branch(w: &mut Turn) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    let repo = dir.join("repo");
+    git_in(&repo, &["reset", "-q", "--hard", "develop"]);
+    w.kept_head = Some(git_in(&repo, &["rev-parse", "HEAD"]));
+}
+
+/// The head the worker sent the node with its submission: after the trailer was stamped.
+#[then(expr = "HQ was told the sandbox holds {string} at the head the node was sent")]
+fn told_holds_submitted(w: &mut Turn, branch: String) {
+    let sent = w
+        .node_sent
+        .iter()
+        .find(|b| b["head"].is_string() && b["bundle"].is_string())
+        .unwrap_or_else(|| panic!("no submission reached the node: {:#?}", w.node_sent));
+    let head = sent["head"].as_str().unwrap().to_owned();
+    assert_ne!(
+        Some(head.as_str()),
+        w.kept_head.as_deref(),
+        "the trailer was stamped, so the head moved"
+    );
+    let told = sandbox_told(w);
+    let branches = told["branches"].as_array().cloned().unwrap_or_default();
+    assert!(
+        branches
+            .iter()
+            .any(|b| b["branch"] == branch.as_str() && b["head"] == head.as_str()),
         "{told}"
     );
 }

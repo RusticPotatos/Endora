@@ -5,6 +5,7 @@
 use cucumber::{given, then, when};
 use endora_team::application::Author;
 use endora_team::application::TeamStore;
+use endora_team::application::receipt_ports::ReceiptStore;
 use endora_team::application::run_ports::RunStore;
 use endora_team::application::wing_ports::WingStore;
 use endora_team::domain::{Exit, RunStatus};
@@ -176,9 +177,11 @@ fn sandbox_holding(branch: &str, head: &str) -> serde_json::Value {
 
 fn sets(w: &mut Office, name: &str, title: &str, status: &str, extra: serde_json::Value) {
     let task = w.task(title);
-    let reading = w.newest_reading(name);
     let mut args = serde_json::json!({ "task": task.0, "status": status,
-        "reason": "Done, as the reading shows.", "evidence": [reading] });
+        "reason": "Done, as the reading shows." });
+    if let Some(reading) = w.newest_reading_of(name) {
+        args["evidence"] = serde_json::json!([reading]);
+    }
     if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
         for (k, v) in extra {
             args.insert(k.clone(), v.clone());
@@ -187,13 +190,13 @@ fn sets(w: &mut Office, name: &str, title: &str, status: &str, extra: serde_json
     w.use_tool(name, "set_status", &args);
 }
 
-#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker reporting "(.+)" at "(\w+)"$"#)]
+#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker reporting "(.+)" at the (\w+) head$"#)]
 fn sets_ready_reporting(w: &mut Office, name: String, title: String, branch: String, head: String) {
-    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &head) });
+    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &oid(&head)) });
     sets(w, &name, &title, "in_review", report);
 }
 
-#[when(regex = r#"^(\w+) sets "(.+)" blocked, the worker reporting "(.+)" at "(\w+)"$"#)]
+#[when(regex = r#"^(\w+) sets "(.+)" blocked, the worker reporting "(.+)" at the (\w+) head$"#)]
 fn sets_blocked_reporting(
     w: &mut Office,
     name: String,
@@ -201,7 +204,7 @@ fn sets_blocked_reporting(
     branch: String,
     head: String,
 ) {
-    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &head) });
+    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &oid(&head)) });
     sets(w, &name, &title, "blocked", report);
 }
 
@@ -224,7 +227,7 @@ fn sets_ready_unreported(w: &mut Office, name: String, title: String) {
 }
 
 #[when(
-    regex = r#"^(\w+) sets "(.+)" ready, leaving "(.+)" at "(\w+)" unsubmitted because "(.+)", the worker reporting "(.+)" at "(\w+)"$"#
+    regex = r#"^(\w+) sets "(.+)" ready, leaving "(.+)" at the (\w+) head unsubmitted because "(.+)", the worker reporting "(.+)" at the (\w+) head$"#
 )]
 #[allow(clippy::too_many_arguments)]
 fn sets_ready_leaving(
@@ -238,8 +241,8 @@ fn sets_ready_leaving(
     head: String,
 ) {
     let extra = serde_json::json!({
-        "sandbox": sandbox_holding(&branch, &head),
-        "unsubmitted": [{ "branch": left, "head": left_head, "why": why }],
+        "sandbox": sandbox_holding(&branch, &oid(&head)),
+        "unsubmitted": [{ "branch": left, "head": oid(&left_head), "why": why }],
     });
     sets(w, &name, &title, "in_review", extra);
 }
@@ -250,4 +253,109 @@ fn took_and_read_logs(w: &mut Office, name: String, title: String, container: St
     w.use_tool(&name, "claim", &serde_json::json!({ "task": task.0 }))
         .expect("the member takes its item");
     w.reads(&name, "container_logs", &container, &got);
+}
+
+/// The node's receipt of a successful `repo_checkout` on `name`'s running turn, as the node
+/// writes it: "checked out <branch> at <12 of the head> (<n> KB)".
+#[given(regex = r#"^the node recorded (\w+)'s checkout of "(.+)" at the (\w+) head$"#)]
+fn node_recorded_checkout(w: &mut Office, name: String, branch: String, head: String) {
+    let context = w.turn_of(&name);
+    w.hq.record_receipt(
+        &context.token,
+        &endora_team::application::engine::Called {
+            tool: "repo_checkout".to_owned(),
+            args: format!("branch: {branch}"),
+            excerpt: format!("checked out {branch} at {} (4 KB)", &oid(&head)[..12]),
+            ok: true,
+            act: false,
+            confidential: false,
+        },
+    )
+    .expect("the node's receipt of the checkout");
+}
+
+#[when(regex = r#"^(\w+) submitted the branch "(.+)" at the (\w+) head$"#)]
+fn submitted_at(w: &mut Office, name: String, branch: String, head: String) {
+    let (token, s) = told(w, &name, &branch, &oid(&head));
+    w.hq.record_branch(&token, &s)
+        .expect("the node's record is taken");
+}
+
+#[when(regex = r#"^(\w+) kept the branch "(.+)" at the (\w+) head as work in progress$"#)]
+fn kept_at_in_progress(w: &mut Office, name: String, branch: String, head: String) {
+    let (token, s) = told(w, &name, &branch, &oid(&head));
+    w.hq.keep_work_in_progress(&token, &s)
+        .expect("the work in progress is kept");
+}
+
+#[when(
+    regex = r#"^(\w+) sets "(.+)" ready citing nothing, leaving "(.+)" at the (\w+) head unsubmitted because "(.+)", the worker reporting "(.+)" at the (\w+) head$"#
+)]
+#[allow(clippy::too_many_arguments)]
+fn sets_ready_citing_nothing_leaving(
+    w: &mut Office,
+    name: String,
+    title: String,
+    left: String,
+    left_head: String,
+    why: String,
+    branch: String,
+    head: String,
+) {
+    let task = w.task(&title);
+    w.use_tool(
+        &name,
+        "set_status",
+        &serde_json::json!({ "task": task.0, "status": "in_review",
+            "reason": "Done.",
+            "sandbox": sandbox_holding(&branch, &oid(&head)),
+            "unsubmitted": [{ "branch": left, "head": oid(&left_head), "why": why }] }),
+    );
+}
+
+impl Office {
+    /// `name`'s newest receipt this turn, when it took one.
+    fn newest_reading_of(&mut self, name: &str) -> Option<String> {
+        let run = self.turn_of(name).run;
+        self.hq
+            .store()
+            .call_receipts_of(run)
+            .expect("the store answers")
+            .iter()
+            .map(|r| r.id)
+            .max()
+            .map(|id| format!("r{id}"))
+    }
+}
+
+/// A full 40-character object id for a head the scenario names (built here: a tracked file never
+/// spells one out, as the nothing-personal check would take it for a secret).
+fn oid(named: &str) -> String {
+    let unit = match named {
+        "unsubmitted" => "5faf6aed",
+        "finished" => "a1b2c3d4",
+        "later" => "a1b2c3d5",
+        "handover" => "01234567",
+        "other" => "11112222",
+        _ => panic!("a head the scenarios do not name: {named}"),
+    };
+    unit.repeat(5)
+}
+
+#[then(regex = r#"^it is refused, naming "(.+)" at the (\w+) head$"#)]
+fn refused_naming(w: &mut Office, branch: String, head: String) {
+    let said = w.refused.clone().expect("it was refused");
+    let wanted = format!("{branch} at {}", oid(&head));
+    assert!(said.contains(&wanted), "{said}");
+}
+
+#[then(
+    regex = r#"^the thread of "(.+)" says "(.+)" at the (\w+) head was left unsubmitted: "(.+)"$"#
+)]
+fn thread_says_left(w: &mut Office, title: String, branch: String, head: String, why: String) {
+    let task = w.task(&title);
+    let wanted = format!("left {branch} at {} unsubmitted: {why}", oid(&head));
+    let thread = w.hq.store().thread(task).expect("the store answers");
+    let times = thread.iter().filter(|p| p.text.contains(&wanted)).count();
+    assert_eq!(times, 1, "{thread:#?}");
 }
