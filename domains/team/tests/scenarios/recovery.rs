@@ -2,7 +2,7 @@
 //! 2026-11-04, the agentic-harness climb's round 17): the runner's report of an end, and the
 //! owner's reply that wakes someone, ask for a pass at once.
 
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 use endora_team::application::Author;
 use endora_team::application::TeamStore;
 use endora_team::application::run_ports::RunStore;
@@ -164,4 +164,90 @@ fn finished_submissions(w: &mut Office, title: String, n: usize) {
             .filter(|b| b.task == task && b.status != endora_team::domain::wing::IN_PROGRESS)
             .count();
     assert_eq!(finished, n);
+}
+
+// ---- An item is not closed over work HQ never took as finished (correction-placement r1) ----
+
+/// What the worker reports of its sandbox beside a closing `set_status`: the task's branches
+/// with their full heads, read by trusted code from git.
+fn sandbox_holding(branch: &str, head: &str) -> serde_json::Value {
+    serde_json::json!({ "state": "read", "branches": [{ "branch": branch, "head": head }] })
+}
+
+fn sets(w: &mut Office, name: &str, title: &str, status: &str, extra: serde_json::Value) {
+    let task = w.task(title);
+    let reading = w.newest_reading(name);
+    let mut args = serde_json::json!({ "task": task.0, "status": status,
+        "reason": "Done, as the reading shows.", "evidence": [reading] });
+    if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra {
+            args.insert(k.clone(), v.clone());
+        }
+    }
+    w.use_tool(name, "set_status", &args);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker reporting "(.+)" at "(\w+)"$"#)]
+fn sets_ready_reporting(w: &mut Office, name: String, title: String, branch: String, head: String) {
+    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &head) });
+    sets(w, &name, &title, "in_review", report);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" blocked, the worker reporting "(.+)" at "(\w+)"$"#)]
+fn sets_blocked_reporting(
+    w: &mut Office,
+    name: String,
+    title: String,
+    branch: String,
+    head: String,
+) {
+    let report = serde_json::json!({ "sandbox": sandbox_holding(&branch, &head) });
+    sets(w, &name, &title, "blocked", report);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker reporting no work of the item$"#)]
+fn sets_ready_no_work(w: &mut Office, name: String, title: String) {
+    let report = serde_json::json!({ "sandbox": { "state": "read", "branches": [] } });
+    sets(w, &name, &title, "in_review", report);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" ready, the worker reporting it could not read the sandbox$"#)]
+fn sets_ready_unknown(w: &mut Office, name: String, title: String) {
+    let report = serde_json::json!({ "sandbox": { "state": "unknown",
+        "why": "git rev-parse failed: not a git repository" } });
+    sets(w, &name, &title, "in_review", report);
+}
+
+#[when(regex = r#"^(\w+) sets "(.+)" ready with no sandbox report$"#)]
+fn sets_ready_unreported(w: &mut Office, name: String, title: String) {
+    sets(w, &name, &title, "in_review", serde_json::json!({}));
+}
+
+#[when(
+    regex = r#"^(\w+) sets "(.+)" ready, leaving "(.+)" at "(\w+)" unsubmitted because "(.+)", the worker reporting "(.+)" at "(\w+)"$"#
+)]
+#[allow(clippy::too_many_arguments)]
+fn sets_ready_leaving(
+    w: &mut Office,
+    name: String,
+    title: String,
+    left: String,
+    left_head: String,
+    why: String,
+    branch: String,
+    head: String,
+) {
+    let extra = serde_json::json!({
+        "sandbox": sandbox_holding(&branch, &head),
+        "unsubmitted": [{ "branch": left, "head": left_head, "why": why }],
+    });
+    sets(w, &name, &title, "in_review", extra);
+}
+
+#[given(regex = r#"^(\w+) took "(.+)" and read (\w+)'s logs: "(.+)"$"#)]
+fn took_and_read_logs(w: &mut Office, name: String, title: String, container: String, got: String) {
+    let task = w.task(&title);
+    w.use_tool(&name, "claim", &serde_json::json!({ "task": task.0 }))
+        .expect("the member takes its item");
+    w.reads(&name, "container_logs", &container, &got);
 }

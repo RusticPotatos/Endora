@@ -290,6 +290,12 @@ fn call_of(written: &str, n: usize) -> Value {
             "set_status",
             json!({ "task": task.parse::<i64>().unwrap(), "status": status, "reason": "as found" }),
         ),
+        // A model that writes the worker's sandbox report itself (correction-placement r1).
+        ["set_status", task, status, "claiming-an-empty-sandbox"] => (
+            "set_status",
+            json!({ "task": task.parse::<i64>().unwrap(), "status": status, "reason": "as found",
+                    "sandbox": { "state": "read", "branches": [] } }),
+        ),
         ["ask_owner"] => (
             "ask_owner",
             json!({ "text": "Account jdoe is locked: unlock it or leave it locked?" }),
@@ -363,6 +369,8 @@ struct Turn {
     node_sent: Vec<Value>,
     /// Whether the node records no receipt (S1).
     no_receipts: bool,
+    /// The arguments of every set_status HQ was sent (correction-placement r1).
+    set_status_sent: Vec<Value>,
 }
 
 /// The note the worker adds when it leaves part of what a command printed out:
@@ -572,6 +580,13 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
                 _ => None,
             }
         })
+        .collect();
+    w.set_status_sent = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s["method"] == "tools/call" && s["params"]["name"] == "set_status")
+        .map(|s| s["params"]["arguments"].clone())
         .collect();
     w.to_model = to_model.lock().unwrap().clone();
     w.node_sent = node_seen
@@ -868,5 +883,50 @@ fn main() {
             .with_cli(options())
             .fail_on_skipped()
             .run_and_exit("features"),
+    );
+}
+
+// ---- A closing set_status carries the worker's own reading of its sandbox (correction-placement
+// r1, qualification only) ----------------------------------------------------------------------
+
+fn sandbox_told(w: &Turn) -> Value {
+    let sent = w.set_status_sent.last().expect("HQ was sent a set_status");
+    sent["sandbox"].clone()
+}
+
+#[given("the workbench's checkout cannot be read")]
+fn checkout_unreadable(w: &mut Turn) {
+    let dir = w.dir.clone().expect("a turn in the workbench");
+    std::fs::write(dir.join("repo").join(".git").join("HEAD"), "not a ref\n").unwrap();
+}
+
+#[then(expr = "HQ was told the sandbox holds {string} at the kept head")]
+fn told_holds_kept(w: &mut Turn, branch: String) {
+    let head = w.kept_head.clone().expect("a kept checkout");
+    let told = sandbox_told(w);
+    assert_eq!(told["state"], "read", "{told}");
+    let branches = told["branches"].as_array().cloned().unwrap_or_default();
+    assert!(
+        branches
+            .iter()
+            .any(|b| b["branch"] == branch.as_str() && b["head"] == head.as_str()),
+        "{told}"
+    );
+}
+
+#[then("HQ was told the sandbox holds no work of the task")]
+fn told_holds_nothing(w: &mut Turn) {
+    let told = sandbox_told(w);
+    assert_eq!(told["state"], "read", "{told}");
+    assert_eq!(told["branches"], json!([]), "{told}");
+}
+
+#[then("HQ was told the sandbox could not be read")]
+fn told_unknown(w: &mut Turn) {
+    let told = sandbox_told(w);
+    assert_eq!(told["state"], "unknown", "{told}");
+    assert!(
+        told["why"].as_str().is_some_and(|w| !w.is_empty()),
+        "{told}"
     );
 }

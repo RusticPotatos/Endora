@@ -3718,3 +3718,93 @@ fn a_node_that_cannot_list_its_tools_is_said_to_the_model() {
     );
     assert!(!briefing.contains(TOKEN), "{briefing}");
 }
+
+/// Correction-placement review, round 1 (qualification only: red until a ruling accepts an
+/// implementation). A Claude Code turn closes through the bridge: its closing set_status carries
+/// the worker's own git reading of the sandbox's task branches, in place of anything Claude
+/// Code wrote there, as the worker's own turn does.
+#[test]
+fn a_closing_call_through_the_bridge_carries_the_workers_reading_of_its_sandbox() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("bridge-sandbox");
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["init", "-q", "-b", "develop"]);
+    git(&["config", "user.name", "Endora HQ"]);
+    git(&["config", "user.email", "hq@endora.invalid"]);
+    std::fs::write(repo.join("nas.yml"), "---\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "the lab"]);
+    git(&["checkout", "-q", "-b", "hq/task-7-fix"]);
+    std::fs::write(repo.join("fix.yml"), "fixed: true\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "the fix"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        dir.join("checkout.json"),
+        json!({ "branch": "develop", "base": "develop",
+                "trailer": "Made-by: Endora HQ (Jane) for task #7" })
+        .to_string(),
+    )
+    .unwrap();
+    let env = vec![
+        ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
+        (
+            "ENDORA_CONTRACTS",
+            format!("{node_url}/team-relay/contracts"),
+        ),
+        ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
+        ("ENDORA_MEMBER", "Jane".to_owned()),
+        ("ENDORA_TASK", "7".to_owned()),
+        ("ENDORA_LEDGER", dir.join("did.json").display().to_string()),
+        ("PATH", std::env::var("PATH").unwrap_or_default()),
+    ];
+    let rpc = |id: u64, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let (_, out) = bridge(
+        &env,
+        &[
+            rpc(
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "claude-code" } }),
+            ),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            rpc(
+                2,
+                "tools/call",
+                json!({ "name": "set_status", "arguments": { "task": 7, "status": "in_review",
+                        "reason": "as found",
+                        "sandbox": { "state": "read", "branches": [] } } }),
+            ),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let sent: Vec<Value> = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.method() == "tools/call set_status")
+        .map(|s| s.body["params"]["arguments"].clone())
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let told = &sent[0]["sandbox"];
+    assert_eq!(told["state"], "read", "{told}");
+    assert_eq!(
+        told["branches"],
+        json!([{ "branch": "hq/task-7-fix", "head": head }]),
+        "the worker's own reading, never Claude Code's"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
