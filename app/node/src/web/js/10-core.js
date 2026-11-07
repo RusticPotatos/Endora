@@ -284,13 +284,14 @@ async function loadView(v, id) {
   if (v === "hq") await loadHQ();
   if (v === "models") { await hqLoadMac(); await hqLoadCredits(); }
   if (v === "replay") await loadReplay(id);
+  if (v === "live") await loadWorkMap(id);
   if (v === "speakers") await loadSound();
   if (v === "vault") { await loadVault(); await loadVaultPasskeys(); }
 }
 
 // The screens `loadView` fetches for.
 const FETCHES_ITS_OWN = ["models", "connections", "spotify",
-  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "speakers", "vault"];
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music", "hq", "replay", "live", "speakers", "vault"];
 
 function go(v, id) {
   // One container's logs must never show under another's name while the new ones load.

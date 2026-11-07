@@ -190,6 +190,17 @@ tagged release.
 
 ### Added
 
+- **The Live Work map** (the owner's decision M3, 7 Nov 2026; proposal v3 §14). One read-only
+  view of one work item, opened by "Live work map" beside "Replay this task" under Work's Looking
+  at: its state now, what waits on you first, then one strip of its steps in time order (top to
+  bottom on a phone), with your decisions above it, a stall drawn as a hatched gap, and each step
+  opening its records and turns. It is HQ's projection of records it already keeps
+  (`GET /v1/tasks/{id}/live`, through the node as `/v1/hq/tasks/{id}/live`): "completed" only with
+  a verification, a stall only when wakes were refused in it, the owner's word that it is deployed
+  never drawn as a check. Drawn with the console's own HTML, CSS and script, no new dependency; the
+  office and every other view are unchanged. Chosen by a design competition (three designs, a
+  two-model council).
+
 - **The team reads upstream ansible-nas** ([ADR 0106](docs/adr/0106-team-contracts.md), amended
   2026-10-31; D13 of the baseline experiment). The node's mirror of the fork also fetches
   upstream's default branch, on the same schedule, and every `repo_checkout` carries it as

@@ -63,6 +63,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/runs/{id}/replay", get(run_replay))
         .route("/v1/tasks/{id}", get(task_shown))
         .route("/v1/tasks/{id}/replay", get(task_replay))
+        // The Live Work map: one item's path, state and what waits on the owner (M3).
+        .route("/v1/tasks/{id}/live", get(task_live))
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
@@ -858,6 +860,14 @@ async fn task_shown(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     Ok(Json(blocking(move || hq.task_shown(TaskId(id))).await?))
+}
+
+async fn task_live(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.task_live(TaskId(id))).await?))
 }
 
 async fn scenario_shown(
