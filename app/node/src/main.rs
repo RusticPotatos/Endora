@@ -15,6 +15,7 @@ mod homelab_setup;
 mod mcp_catalog;
 mod retired;
 mod secrets;
+mod setup;
 mod signin;
 mod terminal_setup;
 mod tls;
@@ -48,6 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // `endora-node secrets rekey | forget`: looking after the secrets key (ADR 0125), then exit.
     if let Some(done) = secrets::dispatch(&args, &db_path) {
+        return done;
+    }
+    // `endora-core setup` (`endora-node setup`): make the owner on first run, then exit.
+    if let Some(done) = setup::dispatch(&args, &db_path) {
         return done;
     }
     let addr = std::env::var("ENDORA_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());

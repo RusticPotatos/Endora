@@ -353,8 +353,11 @@ impl SqliteStore {
         let sealed = self.db.seal(token)?;
         self.db
             .lock()?
+            // Upsert the token alone: `INSERT OR REPLACE` rewrote the whole row, wiping an owner
+            // `endora-core setup` had made before the node's first start.
             .execute(
-                "INSERT OR REPLACE INTO node_auth (id, token) VALUES (0, ?1)",
+                "INSERT INTO node_auth (id, token) VALUES (0, ?1) \
+                 ON CONFLICT(id) DO UPDATE SET token = ?1",
                 params![sealed],
             )
             .map_err(backend)?;
@@ -1266,6 +1269,20 @@ mod tests {
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
+    }
+
+    /// The owner made before the node's first start (`endora-core setup` on a fresh install)
+    /// survives that start: making the node's token keeps the password and the authenticator.
+    #[test]
+    fn making_the_token_keeps_an_owner_made_before_it() {
+        let store = store();
+        store.set_sign_in_setup("a-hash", "a1b2c3").unwrap();
+        store.set_node_token("a-token").unwrap();
+        assert_eq!(
+            store.sign_in_setup().unwrap(),
+            ("a-hash".to_owned(), "a1b2c3".to_owned())
+        );
+        assert_eq!(store.node_token().unwrap().as_deref(), Some("a-token"));
     }
 
     /// The direction repositories over the store's shared connection (ADR 0050).

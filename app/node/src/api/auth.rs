@@ -52,7 +52,7 @@ pub(super) fn say_the_token_if_it_is_still_needed(store: &SqliteStore, token: &s
 ///
 /// # Errors
 /// [`RepositoryError`] if the backend fails.
-pub(super) fn ensure_enrolment_secret(
+pub(crate) fn ensure_enrolment_secret(
     store: &SqliteStore,
     ids: &RandomIdSource,
 ) -> Result<(), endora_application::RepositoryError> {
@@ -72,7 +72,7 @@ pub(super) fn ensure_enrolment_secret(
 }
 
 /// Hashes a password with Argon2id, salt and parameters carried in the string.
-pub(super) fn hash_password(password: &str) -> Result<String, String> {
+pub(crate) fn hash_password(password: &str) -> Result<String, String> {
     use argon2::password_hash::{PasswordHasher, SaltString};
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
     argon2::Argon2::default()

@@ -377,6 +377,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node
+# `endora-core setup` makes the owner on first run (docs/install.md): the node's own binary, by
+# the product's name.
+RUN ln -s endora-node /usr/local/bin/endora-core
 # Endora HQ, the team service (ADR 0102): the same image, run as its own container.
 COPY --from=builder /endora-hq /usr/local/bin/endora-hq
 # The team's worker, which takes one turn in a fresh container, and the runner, which starts

@@ -595,6 +595,8 @@ fn relay_routes() -> Router<AppState> {
         )
 }
 mod auth;
+// The owner's sign-in, shared with `endora-core setup` (crate::setup), the command-line claim.
+pub(crate) use auth::{ensure_enrolment_secret, hash_password};
 mod homelab;
 mod mac;
 mod terminal;
