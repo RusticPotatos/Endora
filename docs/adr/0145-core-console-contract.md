@@ -29,9 +29,9 @@ node route and none to HQ directly. Three things were missing for a separate cli
 
 ## Decision
 
-1. **One documented, additive `/v1`.** Console may call the 98 routes in `console-v1.json`,
-   grouped as session, work, decisions, runs and evidence, events, money and models, control and
-   settings, and nothing else. They are the node's existing routes plus the few below. Routes and
+1. **One documented, additive `/v1`.** Console may call the 103 routes in `console-v1.json`,
+   grouped as session, work, decisions, runs and evidence, events, money and models, control,
+   home and settings, and nothing else. They are the node's existing routes plus the few below. Routes and
    fields are only ever added within v1. Core says the contract's version at `/health` as `api`.
    No OpenAPI document, no second version served and no contract test in two repositories
    (principle 4); add them when a second consumer needs them.
@@ -58,10 +58,33 @@ node route and none to HQ directly. Three things were missing for a separate cli
    origin of every write, forwards only the request headers it needs, and keeps no credential
    and no session store. It never calls HQ. Audio appears in it as status and a link, from
    Audio's own health check.
-6. **Core does not change shape for it.** The rig's HQ routes (port 8790, `/v1/runner/*`,
+6. **No owner function is lost without a destination** (the owner's M6 rule). Each screen of
+   the built-in console goes somewhere, listed below; one has no destination yet and waits for
+   the owner.
+7. **Core does not change shape for it.** The rig's HQ routes (port 8790, `/v1/runner/*`,
    `/v1/team/*`, round, projects, tasks, goals, members, pool) keep path, shape and port. The
    built-in screens stay until the owner's cutover; until then HQ screen changes land only in
    Endora, and Console copies them.
+
+## Where each owner function goes
+
+Every screen and action of the built-in console (at 38ad111b), and where it is in Console v1:
+
+| Screen | Owner actions | Destination |
+|---|---|---|
+| HQ: the agents map, your decisions, open work, projects and team, health, activity, Chess league, Office, Looking at, replay, Live Work, the world record | every control listed in the M6 inventory | **Console** (work, decisions, runs, control, money areas) |
+| Settings: AI and model lists, connections, tools, sign-in, data (export, purge) | as today | **Console** (settings, money, session areas) |
+| Home lab | the lab's figures and alerts, refresh, a service's logs | **Console** (home area) |
+| Containers | list; start, stop, restart (Endora's own never offered) | **Console** (home area, `POST /v1/terminal/action`) |
+| Logs | read one container's | **Console** (home area) |
+| Jobs | list the allowlisted Ansible jobs; run one; open its last run | **Console** (home area) |
+| Media | search; request what is not requested yet; recent requests | **Console** (home area) |
+| Smart home | favorites on, off, scene; add or remove a favorite; search the catalogue | **Console** (home area) |
+| Speakers | sources, speakers, wires and levels, setups, listening here, live sound | **Endora Audio's own page** (decided; Console shows Audio's status and a link) |
+| Music | now playing; play, pause, next, previous; like; volume; choose a device; play on the Endora receiver; search; play a find or a playlist; discover | **Needs owner decision.** The Spotify player token moves to Audio (decided), but Audio's page has no Spotify player today. Console's Music shows Audio's status and link and says so. The options: (a) Audio's page gains the player, with its own token; (b) the Spotify app itself, which already sees Endora's receiver as a Spotify Connect device; (c) keep the token route in Core's contract for Console v1 until (a) |
+
+The `/v1/terminal/*` paths keep their name in the contract: renaming them would add a second
+set of routes for the same thing, against additive v1.
 
 ## Proof
 

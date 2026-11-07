@@ -35,6 +35,7 @@ proxy passes exactly this list and its checks hold the screens to it
 | Events | `GET /v1/events`, `GET /v1/events/stream` |
 | Money and models | credits and caps, the pool's top-up, the Mac's settings, AI, model lists |
 | Control | the kill switch and resume, giving work, goals, members, projects, routines, delivery, contracts |
+| Home | the web console's home lab, media and smart home: the lab's figures, containers and their logs, the allowlisted jobs, media requests, the house's favorites and catalogue (`GET /v1/terminal/*`), and their one action route `POST /v1/terminal/action`, which Core checks against its own allowlist and runs once per request id. The paths keep their old name; the handheld that first used them is retired |
 | Settings | capabilities, tool servers, connections (the Spotify account until Audio's cutover), configuration undo, export and purge |
 
 ## Sessions
@@ -111,8 +112,7 @@ One stream for Console. The snapshot's `last_event` (`GET /v1/hq`) is the cursor
 
 ## What is not in the contract
 
-Sound (`/v1/sound/*`, Audio's own API after its cutover), the handheld terminal's routes
-(`/v1/terminal/*`, retired), the Spotify player token, the old desk route `/v1/hq/desk/{id}`
+Sound (`/v1/sound/*`, Audio's own API after its cutover), the Spotify player token (Audio's), the old desk route `/v1/hq/desk/{id}`
 (Console answers through `/v1/decisions/{id}`), the query-signed `/v1/activity/stream`, the
 workers' relay and gateway, and every HQ route. The built-in console keeps using its routes until
 the cutover.
