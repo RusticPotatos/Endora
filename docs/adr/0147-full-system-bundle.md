@@ -37,7 +37,8 @@ first owner was made only through a fifteen-minute claim window in the browser.
    pinned in `SOURCES.json` (repository, commit, SHA-256, image version) and proved by
    `check-sources.sh`. Copies, not remote includes: Compose's git and OCI includes are not
    available everywhere. Console is pinned to its `sha-` build (it has no tagged release yet);
-   Audio to v1.0.0 (v1.0.1's hub image was not published on 7 Nov).
+   Audio to its latest release, v1.0.1. Each product's version is set once, in
+   `bundle.env.example`, and `check-sources.sh` holds it equal to the pin.
 4. **One origin, Console in front.** In the bundle Console takes the public port (8787) and Core
    is bound to the host's loopback, plain HTTP on the bundle's network; Console serves HTTPS with
    the owner's certificate or sits behind their proxy. Console still holds no authority: Core

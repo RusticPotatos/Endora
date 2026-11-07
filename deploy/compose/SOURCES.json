@@ -22,13 +22,13 @@
   "audio": {
     "path": "audio/compose.yaml",
     "repo": "RusticPotatos/endora-audio",
-    "ref": "v1.0.0",
-    "commit": "9a3521c1b591bb95d5768230271331029203f700",
+    "ref": "v1.0.1",
+    "commit": "5a9773659bd325d95220435ae1d1fadb8d8ac858",
     "source": "compose.yaml",
-    "sha256": "9883018ccfc93c072b7f38a8e9e388d0bee7e78b58061a02d38b3d0b9d9eaa4a",
+    "sha256": "190965eb4d526b97c2bd819d31e2c8e7c8825d063812cf16230a3a1e61f87621",
     "image": "ghcr.io/rusticpotatos/endora-audio, -senders, -airplay",
-    "version": "1.0.0",
-    "why": "v1.0.0 is Audio's published release; v1.0.1 is tagged but its hub image was not on the registry on 7 Nov 2026.",
+    "version": "1.0.1",
+    "why": "v1.0.1 is Audio's latest published release (7 Nov 2026); its hub image is multi-arch, its senders and airplay images amd64.",
     "variable": "ENDORA_AUDIO_VERSION"
   }
 }

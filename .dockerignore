@@ -10,6 +10,9 @@ target/
 **/*.db-shm
 .env
 .env.*
+# The bundle's own settings (deploy/compose/.env) and any other nested env file: they hold tokens.
+**/.env
+**/.env.*
 local.mk
 **/local.mk
 docker-compose.override.yml

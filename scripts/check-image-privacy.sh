@@ -44,12 +44,15 @@ image() {
     echo "ok   $img carries no local config, key, env file or database"
   fi
   # The owner's own values, from local.mk on their machine; absent in CI, which is the point.
+  # Text files only (-I): the binaries are built from the tracked tree, which
+  # check-nothing-personal.mjs already scans, and a short value matches inside a third-party
+  # library's credits (one did, 7 Nov 2026: a first name in a crypto library's author line).
   if [ -n "${ENDORA_PERSONAL_VALUES:-}" ]; then
     old_ifs=$IFS; IFS=,
     for value in $ENDORA_PERSONAL_VALUES; do
       value=$(printf '%s' "$value" | sed 's/^ *//; s/ *$//')
       [ "${#value}" -gt 2 ] || continue
-      if docker run --rm --entrypoint grep "$img" -rqsF -- "$value" /usr/local /etc /root 2>/dev/null; then
+      if docker run --rm --entrypoint grep "$img" -rqsIF -- "$value" /usr/local /etc /root 2>/dev/null; then
         echo "FAIL $img holds one of your own values"; bad=1
       fi
     done
@@ -69,14 +72,14 @@ self_test() {
   echo 'SOUND_TOKEN=placeholder' > "$work/ctx/deploy/compose/.env"
   echo 'placeholder' > "$work/ctx/app/server.key"
   echo 'kept' > "$work/ctx/app/main.rs"
-  context "$work/ctx" >/dev/null || { echo "FAIL self-test: .dockerignore let a planted file through"; return 1; }
+  context "$work/ctx" || { echo "FAIL self-test: .dockerignore let a planted file through"; return 1; }
   : > "$work/ctx/.dockerignore"
   if context "$work/ctx" >/dev/null; then echo "FAIL self-test: a context with local.mk passed"; return 1; fi
   printf 'FROM busybox:1.37.0\nRUN echo x > /root/local.mk\n' | docker build -q -t endora-privacy-selftest:planted - >/dev/null
   if image endora-privacy-selftest:planted >/dev/null; then echo "FAIL self-test: an image with local.mk passed"; return 1; fi
-  printf 'FROM busybox:1.37.0\nRUN echo x > /usr/local/notes\n' | docker build -q -t endora-privacy-selftest:clean - >/dev/null
+  printf 'FROM busybox:1.37.0\nRUN mkdir -p /usr/local && echo x > /usr/local/notes\n' | docker build -q -t endora-privacy-selftest:clean - >/dev/null
   image endora-privacy-selftest:clean >/dev/null || { echo "FAIL self-test: a clean image failed"; return 1; }
-  printf 'FROM busybox:1.37.0\nRUN echo "Jane Doe lives here" > /usr/local/notes\n' | docker build -q -t endora-privacy-selftest:value - >/dev/null
+  printf 'FROM busybox:1.37.0\nRUN mkdir -p /usr/local && echo "Jane Doe lives here" > /usr/local/notes\n' | docker build -q -t endora-privacy-selftest:value - >/dev/null
   if ENDORA_PERSONAL_VALUES="Jane Doe" image endora-privacy-selftest:value >/dev/null; then echo "FAIL self-test: an image holding a personal value passed"; return 1; fi
   docker rmi -f endora-privacy-selftest:planted endora-privacy-selftest:clean endora-privacy-selftest:value >/dev/null
   echo "ok   self-test: .dockerignore keeps planted files out; a planted file or value fails"

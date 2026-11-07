@@ -29,7 +29,7 @@ services:
   # state is one JSON file, /data/sound.json, in the data volume.
   audio-hub:
     <<: *fenced
-    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio:${ENDORA_AUDIO_VERSION:-1.0.0}
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio:${ENDORA_AUDIO_VERSION:-1.0.1}
     container_name: endora-audio
     environment:
       # Your token (32+ characters), or empty: then the hub makes one on first start in its
@@ -97,7 +97,7 @@ services:
   # trusting only localhost and the hub's password), on the host's network.
   audio-senders:
     <<: *fenced
-    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-senders:${ENDORA_AUDIO_VERSION:-1.0.0}
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-senders:${ENDORA_AUDIO_VERSION:-1.0.1}
     container_name: endora-audio-senders
     network_mode: host
     environment:
@@ -130,7 +130,7 @@ services:
   audio-airplay:
     <<: *fenced
     profiles: [airplay]
-    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-airplay:${ENDORA_AUDIO_VERSION:-1.0.0}
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-airplay:${ENDORA_AUDIO_VERSION:-1.0.1}
     container_name: endora-audio-airplay
     # The name it announces on the LAN (mDNS), and what avahi calls the host.
     hostname: ${SOUND_AIRPLAY2_HOSTNAME:-endora-mixer}
