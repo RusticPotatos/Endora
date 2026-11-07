@@ -65,6 +65,7 @@ mod runaway;
 mod running;
 mod runtime;
 mod scenario;
+mod team_map;
 mod waking;
 mod wing;
 mod world;

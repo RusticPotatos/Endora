@@ -65,6 +65,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/tasks/{id}/replay", get(task_replay))
         // The Live Work map: one item's path, state and what waits on the owner (M3).
         .route("/v1/tasks/{id}/live", get(task_live))
+        // The HQ agents map: members, the items they hold, what runs and what waits (M5).
+        .route("/v1/team-map", get(team_map))
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
@@ -868,6 +870,11 @@ async fn task_live(
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
     Ok(Json(blocking(move || hq.task_live(TaskId(id))).await?))
+}
+
+async fn team_map(Extract(state): Extract<State>) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.team_map()).await?))
 }
 
 async fn scenario_shown(

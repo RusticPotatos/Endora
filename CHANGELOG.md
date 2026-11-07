@@ -190,6 +190,18 @@ tagged release.
 
 ### Added
 
+- **The agents map and the research team's checkpoint map** (the owner's decision M5, 7 Nov
+  2026; design E of the overview competition). In HQ, "Agents map" in the bar opens a read-only
+  view of the Core team: what runs now and what waits on you first, your desk by project, and
+  each member with the open items it holds grouped by project; an item opens its Live Work map.
+  It is HQ's projection of its own records (`GET /v1/team-map`, through the node as
+  `/v1/hq/team-map`), read with HQ's 3-second poll: a line moves only while a turn runs and was
+  heard from in the last 20 minutes, a silent one says since when, and downtime turns are not
+  work. The research team's map stays off Core: `scripts/research-map/render.mjs` draws a still
+  page from `org.json` (the roles and their relationships, as the owner drew them) and a
+  snapshot the steward writes, stamped "as of" its snapshot's time; a handoff written later
+  than the snapshot is said apart, never drawn. No new dependency.
+
 - **The Live Work map** (the owner's decision M3, 7 Nov 2026; proposal v3 §14). One read-only
   view of one work item, opened by "Live work map" beside "Replay this task" under Work's Looking
   at: its state now, what waits on you first, then one strip of its steps in time order (top to

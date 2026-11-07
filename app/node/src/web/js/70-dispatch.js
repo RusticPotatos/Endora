@@ -24,6 +24,7 @@ function render() {
     : v === "hq" ? viewHQ()
     : v === "replay" ? viewReplay()
     : v === "live" ? viewWorkMap()
+    : v === "agents" ? viewAgents()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()
@@ -76,6 +77,7 @@ async function dispatch(act) {
     if (await hqDispatch(verb, noun, id, arg)) return;
     if (await replayDispatch(verb, noun, id)) return;
     if (await workMapDispatch(verb, noun, id)) return;
+    if (await agentsDispatch(verb, noun, id)) return;
     if (await soundDispatch(verb, noun, id, arg)) return;
     // The vault and its passkeys (ADR 0127).
     if (await vaultDispatch(verb, noun, id)) return;

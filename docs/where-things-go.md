@@ -121,6 +121,13 @@ Settings.
   task"): read-only, one item only, from HQ's `/v1/tasks/{id}/live` read
   (`domains/team/src/domain/live_work.rs` decides what each record means; `47g-hq-live.js` draws
   it). No tab, no other items, no controls; a wider map of the system is not part of it.
+  The **agents map** (the owner's decision M5, 7 Nov 2026) is the overview above it, also a screen
+  of its own, opened by "Agents map" in HQ's bar: you and your desk by project on top, and below
+  each member with the open items it holds, grouped by project; an item opens its Live Work map.
+  Read-only, from HQ's `/v1/team-map` (`domains/team/src/domain/team_map.rs` decides each state;
+  `47h-hq-agents.js` draws it), read with HQ's own poll. A line moves only while a turn runs. The
+  research team's map is not in Core: its records are the Mac's, so it is a checkpoint page drawn
+  by `scripts/research-map/` and published as an artifact, stamped with its snapshot's time.
 
 ## The repository
 
@@ -135,7 +142,7 @@ Settings.
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
-| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi, which stops at any failing stage; `test-release.sh` holds it to that against fakes); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo); `harness-probes/` (the agentic-harness climb's rig: seeded probe families, their graders, both arms' runners and accounting; see its `PROTOCOL.md`; its runs' data stays outside the repo) |
+| `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi, which stops at any failing stage; `test-release.sh` holds it to that against fakes); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo); `harness-probes/` (the agentic-harness climb's rig: seeded probe families, their graders, both arms' runners and accounting; see its `PROTOCOL.md`; its runs' data stays outside the repo); `research-map/` (the research team's checkpoint map: `org.json` declares the roles and who sends what to whom, `render.mjs` draws a still page from a snapshot the steward writes; tests run with `node --test scripts/research-map`; the snapshots stay outside the repo) |
 | `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |

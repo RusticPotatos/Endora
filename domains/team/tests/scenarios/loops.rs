@@ -28,7 +28,7 @@ impl Office {
     }
 
     /// Ends every turn still running, well, as their workers would.
-    fn finish_running(&self) {
+    pub(super) fn finish_running(&self) {
         for context in self.hq.runner().started() {
             let running = self
                 .hq

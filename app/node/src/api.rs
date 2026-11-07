@@ -319,6 +319,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/tasks/{id}/replay", get(hq_task_replay))
         // The Live Work map of one item, read-only (the owner's decision M3).
         .route("/v1/hq/tasks/{id}/live", get(hq_task_live))
+        // The HQ agents map, read-only (the owner's decision M5).
+        .route("/v1/hq/team-map", get(hq_team_map))
         .route(
             "/v1/hq/tasks/{id}/consultations",
             get(hq_task_consultations),

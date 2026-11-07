@@ -100,6 +100,10 @@ mod loops;
 #[path = "scenarios/live_work.rs"]
 mod live_work;
 
+/// The HQ agents map (the owner's decision M5a), in its own file.
+#[path = "scenarios/team_map.rs"]
+mod team_map;
+
 /// A long item makes progress across turns (ADR 0142, amended 2026-10-31, D12), in its own
 /// file.
 #[path = "scenarios/long_items.rs"]
