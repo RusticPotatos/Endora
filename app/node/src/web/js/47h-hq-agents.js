@@ -30,6 +30,9 @@ function agWhen(at) {
 const AG_STATE = { working: "working", unknown: "running, silent", queued: "waiting to start", idle: "idle",
   out_for_today: "out for today", paused: "paused", furloughed: "furloughed" };
 
+// How many of a member's items show before "All N items".
+const AG_ITEMS_SHOWN = 6;
+
 function agItem(i) {
   const cls = `ag-item ag-${i.status === "blocked" ? "bad" : i.status === "in_review" ? "review" : "calm"}${i.asks_owner ? " ag-asks" : ""}`;
   return `<button class="${cls}" data-act="live:task:${Number(i.task)}" title="${esc(i.title)}"><b>#${Number(i.task)}</b>${i.asks_owner ? " ?" : ""} ${esc(i.title)}</button>`;
@@ -47,7 +50,15 @@ function agMember(m) {
     ${l.moving ? "" : `<small>no signal since ${esc(agWhen(l.heard))}</small>`}</div>`).join("");
   const seen = m.last_seen ? `last seen ${esc(agWhen(m.last_seen))}` : "not seen yet";
   const work = m.last_work ? ` · last work ${esc(agWhen(m.last_work.at))}${m.last_work.task ? ` on #${Number(m.last_work.task)}` : ""}` : "";
-  const groups = (m.groups || []).map((g) => `<p class="ag-proj">${esc(g.project)}</p>${g.items.map(agItem).join("")}`).join("");
+  // A member holding many items shows its first few and the rest on a tap, so one long list does
+  // not push the rest of the team off the screen; the count is never hidden.
+  const key = "ag-" + String(m.name).replace(/[^A-Za-z0-9]/g, "_"), open = !!HQ.more[key];
+  let left = open ? Infinity : AG_ITEMS_SHOWN, held = 0;
+  const groups = (m.groups || []).map((g) => {
+    held += g.items.length;
+    const shown = g.items.slice(0, Math.max(0, left)); left -= shown.length;
+    return shown.length ? `<p class="ag-proj">${esc(g.project)}</p>${shown.map(agItem).join("")}` : "";
+  }).join("") + (held > AG_ITEMS_SHOWN ? `<button class="hq-link ag-more" aria-expanded="${open}" data-act="hq:more:${esc(key)}:toggle">${open ? "Show fewer" : `All ${held} items`}</button>` : "");
   return `<article class="ag-card ag-${esc(m.state)}"><span class="ag-stem"></span>
     <h3><span class="ag-dot"></span>${agName(m.name)}</h3><p class="ag-sub">${esc(m.brain)} · ${esc(AG_STATE[m.state] || m.state)}</p>
     <p class="ag-sub">${seen}${work}</p>${live}${groups ? `<div class="ag-items">${groups}</div>` : ""}</article>`;

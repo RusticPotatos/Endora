@@ -245,6 +245,8 @@
     margin: -4px -4px 0; padding: 14px 12px 24px; border-radius: 8px;
   }
   .hq h1 { font: 400 22px var(--hq-pixel); margin: 0; letter-spacing: .02em; }
+  /* The title takes focus after a change of place, as a new page's would; it is not a control. */
+  .hq h1:focus { outline: none; }
   .hq-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
   .hq-demo { font: 10px var(--hq-pixel); color: #fff; background: var(--hq-neon); padding: 3px 7px; border-radius: 3px; }
   .hq-grow { flex: 1 1 auto; }
@@ -496,7 +498,7 @@
   .ag-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--hq-muted); flex: none; }
   .ag-owner .ag-dot { background: var(--hq-amber); }
   .ag-sub { margin: 0; font-size: 12px; color: var(--hq-muted); }
-  .ag-team { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 22px 12px; margin-top: 26px; position: relative; padding-top: 14px; border-top: 2px solid var(--hq-line); }
+  .ag-team { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); align-items: start; gap: 22px 12px; margin-top: 26px; position: relative; padding-top: 14px; border-top: 2px solid var(--hq-line); }
   .ag-card { position: relative; border: 1px solid var(--hq-line); border-radius: 8px; padding: 9px 10px; display: grid; gap: 4px; align-content: start; min-width: 0; background: var(--hq-panel); }
   .ag-stem { position: absolute; left: 50%; top: -16px; width: 2px; height: 14px; background: var(--hq-line); }
   .ag-working .ag-dot { background: var(--hq-green); }
@@ -675,6 +677,11 @@
     .hq h1 { font-size: 17px; }
     .hq-bar { flex-wrap: nowrap; gap: 8px; }
     .hq-bar .hq-row { flex-wrap: nowrap; gap: 6px; }
+    /* A secondary place: the way back and its title on one line, the bar's buttons under them. */
+    .hq:not([data-place="map"]) .hq-bar { flex-wrap: wrap; }
+    .hq:not([data-place="map"]) .hq-bar h1 { flex: 1 1 0; }
+    .hq:not([data-place="map"]) .hq-bar .hq-grow { display: none; }
+    .hq:not([data-place="map"]) .hq-bar > .hq-row { flex: 1 0 100%; justify-content: flex-end; }
     .hq .hq-btn.tall { padding: 8px 8px; font-size: 10px; min-width: 0; }
     .hq-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
     .hq-chips::-webkit-scrollbar { display: none; }

@@ -2212,6 +2212,13 @@ if (failures.length) {
   runInContext(`AGENTS.map.members[1].live[0].moving = false; AGENTS.map.members[1].state = "unknown";`, context);
   const still = runInContext("hqMap()", context);
   if (still.includes("ag-moving") || !still.includes("no signal since")) fail("agents: a silent running turn still moves, or does not say since when");
+  // A member holding many items shows six and the rest on a tap, with the whole count.
+  runInContext(`AGENTS.map.members[0].groups = [{ project: "example project", items: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ task: 100 + n, title: "example task " + n, status: "todo", asks_owner: false })) }];`, context);
+  const many = runInContext("hqMap()", context);
+  if ((many.match(/data-act="live:task:10\d"/g) || []).length !== 6 || !many.includes('data-act="hq:more:ag-Sol:toggle">All 8 items</button>')) fail("agents: a member with many items does not show six and the rest on a tap");
+  runInContext("HQ.more['ag-Sol'] = true;", context);
+  if ((runInContext("hqMap()", context).match(/data-act="live:task:10\d"/g) || []).length !== 8) fail("agents: opening a member's items does not show all of them");
+  runInContext("HQ.more['ag-Sol'] = false;", context);
   console.log("agents: the team's map, from HQ's read: who holds what by project, only running turns move, the desk by project, text as text");
 }
 
