@@ -19,7 +19,8 @@ const HQ = {
   deskNote: {},
   more: {},            // list key → the owner asked to see all of it        // desk item id → why the owner's last decision on it was refused
   feed: null,          // the paged activity, full screen: { at, starts, lines, next, busy, error }
-  tab: null,           // the screen's tab: work, manage, health or activity (read from storage)
+  place: null,         // where HQ is: the map (where it opens), a secondary place, or "detail"
+  from: "map",         // the place Looking at was opened from, for its way back
   working: false,      // the "Give work" form is open
   workDraft: {},       // what is typed in it, kept across live updates
   logOpen: {},         // event id → a long line opened to its whole
@@ -75,6 +76,8 @@ async function loadHQ() {
       HQ.last = snap.last_event || 0;
     }
     hqLandings();
+    // The map is HQ's first screen (M6): read with the snapshot, never after it.
+    await loadAgents();
   } catch (e) {
     HQ.snap = null;
     const said = String((e && e.message) || e);
@@ -88,12 +91,12 @@ function hqStartPolling() {
   if (HQ.polling) return;
   HQ.polling = setInterval(async () => {
     // The agents map reads with HQ's poll too (M5); any other screen stops it.
-    if (NAV.v !== "hq" && NAV.v !== "agents") { clearInterval(HQ.polling); HQ.polling = null; return; }
+    if (NAV.v !== "hq") { clearInterval(HQ.polling); HQ.polling = null; return; }
     // The Mac's state changes with the owner's keyboard, not with HQ's events: read it every
     // twelve seconds, and redraw only when it moved.
     HQ.macTick += 1;
     // A running turn that falls silent stops moving without any new event: read the map again.
-    if (NAV.v === "agents" && HQ.macTick % 10 === 0) { await loadAgents(); if (NAV.v === "agents") render(); }
+    if (hqPlace() === "map" && HQ.macTick % 10 === 0) { await loadAgents(); if (NAV.v === "hq" && hqPlace() === "map" && !hqTyping()) render(); }
     if (HQ.macTick % 4 === 0) {
       const before = JSON.stringify([HQ.mac, HQ.credits]);
       await hqLoadMac();
@@ -112,7 +115,7 @@ function hqStartPolling() {
       for (const e of events) { hqTell(e, true); HQ.last = Math.max(HQ.last, e.id); }
       HQ.snap = await api("GET", "/v1/hq");
       hqLandings();
-      if (NAV.v === "agents") { await loadAgents(); render(); return; }
+      if (hqPlace() === "map") await loadAgents();
       if (NAV.v === "hq" && !hqTyping()) render();
     } catch (_) { /* the next poll tries again */ }
   }, 3000);
@@ -611,7 +614,7 @@ function hqLoop() {
   HQ.looping = true;
   let last = Date.now();
   const step = () => {
-    if (NAV.v !== "hq") { HQ.looping = false; return; }
+    if (NAV.v !== "hq" || hqPlace() !== "office") { HQ.looping = false; return; }
     const now = Date.now(), dt = Math.min(0.1, (now - last) / 1000); last = now; HQ.t += dt;
     for (const id of Object.keys(HQ.fresh)) if ((HQ.fresh[id] -= dt) <= 0) delete HQ.fresh[id];
     for (const id of Object.keys(HQ.recovered)) if ((HQ.recovered[id].t -= dt) <= 0) delete HQ.recovered[id];
@@ -622,8 +625,9 @@ function hqLoop() {
   requestAnimationFrame(step);
 }
 
-// Something chosen in the studio is looked at on the Work tab.
-function hqSelect(sel) { HQ.selected = sel; hqSetTab("work"); render(); }
+// Something chosen in the studio, or a line on the map, opens on its own Looking at page.
+function hqLook(sel) { HQ.back = null; HQ.selected = sel; if (hqPlace() !== "detail") HQ.from = hqPlace(); HQ.place = "detail"; }
+function hqSelect(sel) { hqLook(sel); render(); }
 
 // HQ's fonts, the same as its design, and the board's words: loaded once, only when HQ opens.
 function hqFonts() {
@@ -636,44 +640,40 @@ function hqFonts() {
 
 // ---- the screen ------------------------------------------------------------------------
 
-// The screen is in tabs (the owner, on a phone: "it's all been expanded over time, hard to
-// find stuff"). Every tab is drawn and the others are hidden, so a live update never loses what
-// is typed on a tab that is not showing.
-// Three places, by what the owner is doing (the density audit of 2026-10-25: the old Work tab
-// was 6.8 phone screens with 216 buttons): Work, where they give work, answer the desk and
-// follow what is in flight, and where every screen opens; Manage, what they own and set (the
-// projects and their loops, the team, the money, the knowledge, the office); and Health, how the
-// team and the lab are doing (the turns, what failed). Each shows one line per thing, and rare
-// actions and big cards wait behind a fold. Activity, the record of what happened, is a tab of
-// its own (the owner, 31 Oct): the latest twenty, and the rest a page at a time. Chess is the
-// model league's own (the owner's notes of 31 Oct; 47e-hq-chess.js).
-const HQ_TABS = [["work", "Work"], ["manage", "Manage"], ["health", "Health"], ["activity", "Activity"], ["chess", "Chess"]];
-// Where each older tab now lives, for links and choices kept from before.
-const HQ_TAB_MOVED = { now: "work", desk: "work", team: "manage", office: "manage", knowledge: "manage" };
+// The screen opens on the agents map (the owner's decision M6, 7 Nov 2026: "Agents map should be
+// the primary view"): the team and what each holds, with your decisions beside it. Everything else
+// is a place of its own, reached from one quiet row and back to the map, never a tab strip: open
+// work, projects and the team, health, the history, the model league and the office's studio.
+// Every place is drawn and the others hidden, so a live update never loses what is typed in one
+// that is not showing. Looking at ("detail") is the page a member, an item or a studio tap opens.
+const HQ_PLACES = [["map", "Agents map"], ["work", "Open work"], ["manage", "Projects & team"], ["health", "Health"],
+  ["activity", "Activity"], ["chess", "Chess league"], ["office", "Office"]];
+// Where each tab of the five-tab screen (362e467f) and the ones before it now lives, for links
+// kept from before: the old Work tab's desk is the map's decisions.
+const HQ_TAB_MOVED = { work: "map", now: "map", desk: "map", team: "manage", knowledge: "manage" };
 
-// A per-viewer convenience kept in this browser: storage may be absent or refuse, and the
-// screen works the same without it.
-function hqStored(key, value) {
-  try {
-    if (value === undefined) return localStorage.getItem("endora.hq." + key);
-    localStorage.setItem("endora.hq." + key, value);
-  } catch (_) { /* private window or blocked storage: nothing is remembered */ }
-  return null;
+// Where HQ is. A fresh entry and a reload open the map; the tab the old screen remembered in
+// this browser is read once and removed, and storage that refuses changes nothing.
+function hqPlace() {
+  if (HQ.place) return HQ.place;
+  for (const key of ["endora.hq.tab.v4", "endora.hq.tab.v3"]) {
+    try { localStorage.removeItem(key); } catch (_) { /* private window or blocked storage */ }
+  }
+  HQ.place = "map";
+  return HQ.place;
 }
 
-function hqTab() {
-  if (HQ.tab) return HQ.tab;
-  // A tab kept from the four tabs (tab.v3) lands where it now lives.
-  const v3 = hqStored("tab.v3");
-  const kept = hqStored("tab.v4") || (v3 && (HQ_TAB_MOVED[v3] || v3));
-  HQ.tab = HQ_TABS.some(([id]) => id === kept) ? kept : "work";
-  return HQ.tab;
+// Go to a place; leaving Looking at puts down what it held.
+function hqGo(id) {
+  if (!HQ_PLACES.some(([p]) => p === id)) return;
+  HQ.place = id;
+  HQ.selected = null;
 }
 
-function hqSetTab(id) {
-  id = HQ_TAB_MOVED[id] || id;
-  if (!HQ_TABS.some(([t]) => t === id)) return;
-  HQ.tab = id; hqStored("tab.v4", id);
+// After a change of place, the keyboard starts at its title, as a new page would.
+function hqFocusTitle() {
+  const el = typeof document !== "undefined" && document.getElementById("hq-title");
+  if (el && el.focus) el.focus();
 }
 
 // What each kind of desk item's choices do, in one plain line under it (the owner: "didn't know
@@ -765,7 +765,7 @@ function hqWorkForm(s) {
 function hqChips(s) {
   const pool = s.pool || {}, waiting = (s.desk || []).length;
   // What waits on the owner first: a phone's chips scroll, and this one must always show.
-  const chips = [`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:tab:work:go">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`];
+  const chips = [`<button class="hq-chip hq-chip-go${waiting ? " has" : ""}" data-act="hq:place:map:decisions">${waiting ? `${waiting} waiting on you` : "Nothing waiting on you"}</button>`];
   if (pool.per_day != null) {
     const left = Math.max(0, pool.per_day - (pool.committed || 0));
     chips.push(`<span class="hq-chip" title="Today's money for the whole team"><span class="hq-wide">Pool </span><span class="hq-spent">${hqDollars(pool.spent)} spent · </span>${hqDollars(left)} left</span>`);
@@ -781,12 +781,12 @@ function hqChips(s) {
   return `<div class="hq-chips">${chips.join("")}</div>`;
 }
 
-// The tab strip, and the badge on the tabs that count something.
-function hqTabs(s) {
-  const badge = { work: (s.desk || []).length };
-  const here = hqTab();
-  return `<div class="hq-tabs" role="tablist" aria-label="HQ sections">${HQ_TABS.map(([id, label]) =>
-    `<button role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}" aria-selected="${id === here ? "true" : "false"}" tabindex="${id === here ? 0 : -1}" data-act="hq:tab:${id}:go">${label}${badge[id] ? ` <span class="hq-badge" aria-label="${badge[id]} waiting">${badge[id]}</span>` : ""}</button>`).join("")}</div>`;
+// The quiet row to the other places: a link each, the place showing marked, and nothing that
+// competes with the map (no tab strip, no badges: what waits on you is a chip and the map's own).
+function hqPlaces() {
+  const here = hqPlace();
+  return `<nav class="hq-places" aria-label="More of HQ"><span>More of HQ:</span>${HQ_PLACES.filter(([id]) => id !== "map").map(([id, label]) =>
+    `<button class="hq-link" data-act="hq:place:${id}:go"${id === here ? ' aria-current="page"' : ""}>${label}</button>`).join("")}</nav>`;
 }
 
 // Health on a wide screen: the outcomes, What failed beside them, then the team's turns, so the two
@@ -798,21 +798,18 @@ function hqHealthCards(s) {
   return `<div class="hq-health">${card.slice(0, cut).replace('<section class="hq-card"', '<section class="hq-card hq-h-out"')}</section>${hqFailures().replace('<section class="hq-card"', '<section class="hq-card hq-h-fail"')}<section class="hq-card hq-h-turns"><h2>The team's turns</h2>${card.slice(cut + "<h3>The team's turns</h3>".length)}</div>`;
 }
 function hqPanel(id, html) {
-  return `<div class="hq-side" role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"${hqTab() === id ? "" : " hidden"}>${html}</div>`;
+  const label = id === "detail" ? "Looking at" : (HQ_PLACES.find(([p]) => p === id) || [id, id])[1];
+  return `<div class="hq-place" id="hq-panel-${id}" role="region" aria-label="${esc(label)}"${hqPlace() === id ? "" : " hidden"}>${html}</div>`;
 }
 
-// Arrow keys move between tabs (and Home and End jump), as a tab strip does.
-function hqTabKey(ev) {
-  const t = ev.target && ev.target.closest ? ev.target.closest("[role=tab].hq-tab") : null;
-  if (!t || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) return;
-  const ids = HQ_TABS.map(([id]) => id), at = ids.indexOf(hqTab());
-  const next = ev.key === "Home" ? 0 : ev.key === "End" ? ids.length - 1
-    : (at + (ev.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length;
+// Escape leaves a secondary place for the map, and Looking at for where it was opened, unless
+// something is being typed or the paged history (its own Escape) is open.
+function hqPlaceKey(ev) {
+  if (ev.key !== "Escape" || HQ.feed || NAV.v !== "hq" || hqPlace() === "map" || hqTyping()) return;
   ev.preventDefault();
-  hqSetTab(ids[next]); render();
-  const el = document.getElementById("hq-tab-" + ids[next]); if (el && el.focus) el.focus();
+  hqGo(hqPlace() === "detail" ? HQ.from || "map" : "map"); render();
 }
-document.body.addEventListener("keydown", hqTabKey);
+document.body.addEventListener("keydown", hqPlaceKey);
 
 // What is typed in the give-work form is kept, so a live update never empties it.
 document.body.addEventListener("input", (ev) => {
@@ -949,7 +946,7 @@ function hqFeedView() {
 async function hqFeedAct(what) {
   const focus = (id) => { const el = document.getElementById(id); if (el && el.focus) el.focus(); };
   if (what === "close") {
-    HQ.feed = null; hqSetTab("activity"); render(); window.scrollTo(0, 0); focus("hq-feed-more");
+    HQ.feed = null; hqGo("activity"); render(); window.scrollTo(0, 0); focus("hq-feed-more");
     return true;
   }
   if (what === "open") HQ.feed = { at: 0, starts: [HQ.last + 1], lines: null, next: 0, busy: false, error: "" };
@@ -983,8 +980,12 @@ function viewHQ() {
   const s = HQ.snap;
   if (!s) return `<div class="hq"><h1>Endora HQ</h1><p class="hq-empty">Loading…</p></div>`;
   if (HQ.feed) return hqFeedView();
+  const place = hqPlace();
+  // The studio draws and moves only while the Office shows it.
   setTimeout(() => {
-    hqFonts(); hqStudioWatch(); hqLoop();
+    hqFonts();
+    if (place !== "office") return;
+    hqStudioWatch(); hqLoop();
     const cv = document.getElementById("hq-office");
     if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
   }, 0);
@@ -994,32 +995,31 @@ function viewHQ() {
     ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = hqDesk(s);
-  const team = hqRoster(s);
-  return `<div class="hq" data-tab="${esc(hqTab())}">
+  const title = place === "map" ? "Endora HQ" : place === "detail" ? "Looking at" : HQ_PLACES.find(([p]) => p === place)[1];
+  const back = place === "map" ? "" : `<button class="hq-btn tall" data-act="hq:place:map:go">◀ Agents map</button>`;
+  const lookBack = HQ.back ? hqBackLink()
+    : `<div class="hq-row"><button class="hq-btn" data-act="hq:place:${esc(HQ.from || "map")}:go">◀ Back</button></div>`;
+  return `<div class="hq" data-place="${esc(place)}">
     <div class="hq-bar">
-      <h1>Endora HQ</h1>
+      ${back}<h1 id="hq-title" tabindex="-1">${esc(title)}</h1>
       ${s.stopped && s.stopped_by === "tripwire" ? `<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>` : ""}
       <span class="hq-grow"></span>
       <div class="hq-row">
-        <button class="hq-btn tall" data-act="agents:open:map">Agents map</button>
         <button class="hq-btn tall" data-act="hq:work" aria-expanded="${HQ.working ? "true" : "false"}">Give work</button>
         <button class="hq-btn tall stop" aria-pressed="${s.stopped ? "true" : "false"}" data-act="${s.stopped ? "hq:resume" : "hq:stop"}">${s.stopped ? "Resume" : "Kill switch"}</button>
       </div>
     </div>
     ${hqWorkForm(s)}
     ${hqChips(s)}
+    ${hqPlaces()}
     <div class="hq-main">
-      ${hqTabs(s)}
-      <div class="hq-stage">
-        <div class="hq-canvas-wrap">${hqStudioCanvasTag()}</div>
-        <div class="hq-stats">${stats}</div>
-        <div class="hq-legend"><span style="--c:#ffd27a">A lit lamp: a turn running at that desk</span><span style="--c:#ffb347">Hourglass: a turn waiting to retry</span><span style="--c:#ef5a5f">Red sign: stuck, or a failed check</span><span style="--c:#45c486">Green tick: recovered</span></div>
-      </div>
+      ${hqPanel("map", `<div class="hq-mapgrid">${hqMap()}
+        <div class="hq-decide" id="hq-decisions" tabindex="-1">
+          <section class="hq-card"><h2>Your decisions <span class="hq-count">${(s.desk || []).length}</span></h2>
+            <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waits on you.</p>`}</div></section>
+          ${hqDigest(s)}</div></div>`)}
+      ${HQ.selected ? hqPanel("detail", `<section class="hq-card" id="hq-looking" aria-live="polite"><h2>Looking at</h2>${lookBack}${hqSelected()}</section>`) : ""}
       ${hqPanel("work", `
-        <section class="hq-card"><h2>Your desk <span class="hq-count">${(s.desk || []).length}</span></h2>
-          <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
-        ${HQ.selected ? `<section class="hq-card" id="hq-looking" aria-live="polite"><h2>Looking at</h2>${hqBackLink()}${hqSelected()}</section>` : ""}
-        ${hqDigest(s)}
         ${hqInFlight(s)}
         ${hqHolodeck(s) ? hqFold("holodeck", "Holodeck", "chess matches and the model league", hqHolodeck(s)) : ""}`)}
       ${hqPanel("manage", `
@@ -1029,14 +1029,20 @@ function viewHQ() {
         <div class="hq-foldstack">
         ${hqAccepted(s)}
         ${hqWorldCard(s) || hqHouse(s) ? hqFold("knows", "What the team knows", "the world's pages and the house", `${hqWorldCard(s)}${hqHouse(s)}`) : ""}
-        ${hqOffice(s) ? hqFold("office", "Office", "its games", hqOffice(s)) : ""}
-        <section class="hq-card"><h2>Team</h2>${team}${hqFormFold("hire", "Hire a member", hqHireForm())}</section></div>
+        <section class="hq-card"><h2>Team</h2>${hqRoster(s)}${hqFormFold("hire", "Hire a member", hqHireForm())}</section></div>
         ${hqContracts(s.contracts)}`)}
-      ${hqPanel("health", hqHealthCards(s))}
+      ${hqPanel("health", `<div class="hq-stats hq-wide-card">${stats}</div>${hqHealthCards(s)}`)}
       ${hqPanel("activity", hqActivity())}
       ${hqPanel("chess", hqChessTab(s))}
+      ${hqPanel("office", `
+        <div class="hq-stage hq-wide-card">
+          <div class="hq-canvas-wrap">${hqStudioCanvasTag()}</div>
+          <div class="hq-legend"><span style="--c:#ffd27a">A lit lamp: a turn running at that desk</span><span style="--c:#ffb347">Hourglass: a turn waiting to retry</span><span style="--c:#ef5a5f">Red sign: stuck, or a failed check</span><span style="--c:#45c486">Green tick: recovered</span></div>
+          <p class="hq-note">Studio art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. Tap a desk, the board, the shelves or the chess table to look closer.</p>
+        </div>
+        ${hqOffice(s)}`)}
     </div>
-    <p class="hq-note">Studio art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. Decisions land on your desk, and the kill switch is yours.</p>
+    <p class="hq-note">Decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
 }
 
@@ -1688,8 +1694,8 @@ function hqFrom(kind, n) {
   HQ.back = { y: window.scrollY || 0, feed: HQ.feed };
   if (kind === "run" || kind === "watch") { REPLAY.given = kind === "run"; go("replay", `run-${n}`); return true; }
   HQ.feed = null;
-  if (kind === "task") { HQ.selected = { type: "task", id: n }; hqSetTab("work"); }
-  else { HQ.roster[n] = true; hqSetTab("manage"); }
+  if (kind === "task") { HQ.selected = { type: "task", id: n }; HQ.from = "activity"; HQ.place = "detail"; }
+  else { HQ.roster[n] = true; hqGo("manage"); }
   render();
   const el = document.getElementById(kind === "task" ? "hq-looking" : `hq-member-${n}`);
   if (el && el.scrollIntoView) el.scrollIntoView({ block: "start" });
@@ -1699,7 +1705,7 @@ function hqFrom(kind, n) {
 // Back to Activity, where it was: the tab or the paged view, scrolled as it was.
 function hqBackToActivity() {
   const back = HQ.back || { y: 0, feed: null };
-  HQ.back = null; HQ.feed = back.feed; hqSetTab("activity");
+  HQ.back = null; HQ.feed = back.feed; hqGo("activity");
   if (NAV.v === "hq") render(); else go("hq");
   // A screen newly opened scrolls to its top first; this comes after.
   requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, back.y)));
@@ -1714,7 +1720,7 @@ function hqBackLink() {
 // The verbs this screen uses. Returns true when it handled one.
 async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
-  if (noun === "pick") { HQ.back = null; HQ.selected = { type: id, id: Number(arg) }; hqSetTab("work"); render(); return true; }
+  if (noun === "pick") { hqLook({ type: id, id: Number(arg) }); render(); hqFocusTitle(); return true; }
   // A line of Activity opens what it names, and back returns to where Activity was.
   if (noun === "from") return hqFrom(id, Number(arg));
   if (noun === "back") return hqBackToActivity();
@@ -1723,7 +1729,7 @@ async function hqDispatch(verb, noun, id, arg) {
     const asked = (document.getElementById("hq-find") || {}).value || "";
     const found = hqFindTask(asked);
     if (!found) { flash(asked.trim() ? `No task matches "${asked.trim()}".` : "Type a task's number or a few words of its title.", "warn"); return true; }
-    HQ.selected = { type: "task", id: found }; hqSetTab("work"); render(); return true;
+    hqLook({ type: "task", id: found }); render(); hqFocusTitle(); return true;
   }
   // The owner's Mac as a brain (ADR 0130): the busy switch, its settings, the helper's token.
   if (noun === "mac") return hqMacAct(id, arg);
@@ -1934,8 +1940,16 @@ async function hqDispatch(verb, noun, id, arg) {
     }
     await loadHQ(); render(); return true;
   }
-  // Tabs: per-viewer, kept in this browser.
-  if (noun === "tab") { HQ.back = null; hqSetTab(id); render(); return true; }
+  // A place (M6), and a link kept from the old tabs, mapped to where that tab's things now live.
+  // "decisions" goes to the map and brings your decisions into view.
+  if (noun === "place" || noun === "tab") {
+    const to = noun === "tab" ? HQ_TAB_MOVED[id] || id : id;
+    if (!HQ_PLACES.some(([p]) => p === to)) return true;
+    HQ.back = null; hqGo(to); render();
+    if (arg === "decisions") { const el = document.getElementById("hq-decisions"); if (el && el.scrollIntoView) { el.scrollIntoView({ block: "start" }); if (el.focus) el.focus(); } }
+    else hqFocusTitle();
+    return true;
+  }
   // Hand the team a piece of work, under the first goal it is working towards, to the lead the
   // owner picks: a form on the screen, not pop-ups.
   if (noun === "work") {

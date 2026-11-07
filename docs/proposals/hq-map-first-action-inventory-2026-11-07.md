@@ -28,11 +28,10 @@ and any old route or kept choice. The map is the screen's spine:
 - **Your decisions**, beside the map on a wide screen and under it on a phone: the desk (its
   first five whole, the rest one line each) and *While you were away*. Every card keeps its own
   choices.
-- **Running now**: the turns in progress, each with Watch.
 - **More of HQ**: one quiet row of links at the foot of the map to the secondary places below.
   It is not a tab strip. Each place opens as its own page with "◀ Agents map" to return.
 
-Secondary places: **Open work**, **Projects & team**, **Health**, **History**, **Chess league**
+Secondary places: **Open work**, **Projects & team**, **Health**, **Activity**, **Chess league**
 and **Office**. **Looking at** is the detail page that a member, an item or a studio tap opens.
 
 ## Inventory
@@ -93,10 +92,10 @@ first"), tripwire (always whole), push (or "Download the bundle"), privacy, need
 
 | Action (route) | Where at 362e467f | Destination |
 |---|---|---|
-| Running now, Watch a turn | Activity tab | **Map** (Running now) and **H** History |
-| Latest twenty, open a long line whole | Activity tab | **H**: History |
+| Running now, Watch a turn | Activity tab | **H** Activity; on the map, each member's live line opens its turn's replay |
+| Latest twenty, open a long line whole | Activity tab | **H**: Activity |
 | Show more: paged past, Newer and Older, Escape | Activity tab | **H** (full screen as before) |
-| A line's link opens the item, member or turn, with a way back | Activity tab | **H**; the way back returns to History |
+| A line's link opens the item, member or turn, with a way back | Activity tab | **H**; the way back returns to Activity |
 | The record of what Endora did | menu, Activity | Unchanged (the console's own Activity screen) |
 
 ### Secondary administration, health and settings (S)

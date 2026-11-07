@@ -29,7 +29,7 @@ function hqHolodeck(s) {
   const scenarios = (h && h.scenarios) || [];
   // One thing, one home: the league is on the Chess tab, and this card says so in a line.
   const league = h && h.league && (h.league.table || []).length
-    ? `<p class="hq-note">The model league, its live boards, this round's bracket and every game are on the Chess tab.</p><div class="hq-row"><button class="hq-btn" data-act="hq:tab:chess:go">Open the Chess tab</button></div>`
+    ? `<p class="hq-note">The model league, its live boards, this round's bracket and every game are in the Chess league.</p><div class="hq-row"><button class="hq-btn" data-act="hq:place:chess:go">Open the Chess league</button></div>`
     : "";
   if (!scenarios.length && !league) return "";
   const scen = scenarios.map((x) => hqLine(`hq:holo:open:${Number(x.task)}`, `Chess: ${esc(x.title)}`,

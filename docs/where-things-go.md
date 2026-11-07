@@ -18,7 +18,7 @@ Settings.
 
 | Destination | What belongs there | What does not |
 |---|---|---|
-| **HQ** (where every device opens) | The team at work: your desk, giving work, the team, its work, its knowledge, the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
+| **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history, the chess league and the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
 | **Home lab** | The lab's containers, logs, jobs, now | Credentials (Vault), models (AI) |
 | **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
@@ -64,70 +64,49 @@ Settings.
   `/v1/hq/projects/{id}/repo`; the rule of which addresses may be named is the kernel's
   (`shared/kernel/src/lab.rs`, `outside_repo`), and the node's mirrors of such repositories sit
   in its data folder under `outside-repos/`, beside the fork's. No screen yet.
-- Inside HQ, use its four tabs (2026-10-30, after the density audit of 2026-10-25; Activity
-  added 2026-10-31), split by what the owner is doing, and add no fifth without a reason none of
-  them can hold: **Work**
-  (where every device opens: giving work, your desk, the digest of what happened while you were
-  away, the work in flight with its threads under Looking at, finding a task, and the Holodeck),
-  **Manage** (what you own and set, in this order (the owner's notes of 31 Oct): the money and
-  credits first (with what each model cost by week, a fold on the Money card), then goals and
-  their notes, then projects and their loops, with the routines among them as a kind of project
-  (still their own record, ADR 0107; the ones switched off fold away, and adding one is at the
-  foot of the Projects card); after those, the team board (a line a member: name, model, what it
-  is doing, today's money; the rest on a tap) and hiring, accepted work waiting to merge with its
-  two switches (ADR 0115, amended 2026-10-31), what the team may do on the home lab, what the
-  team knows — the world's pages and the house — and the office's games), **Health** (how
-  the team and the lab are doing: the scorecard and outcomes, the
-  turns that failed with a link to the Home lab), and **Activity** (the record of what happened:
-  a "Running now" strip of the turns in progress, each with a Watch link to its live replay; the
-  latest twenty lines, and "Show more" for a full-screen view a page at a time, Newer and
-  Older; never an endless scroll. What a line names opens where it already lives, with a way
-  back to the same place: an item under Work's Looking at, a turn in Replay, a member on the team
-  board; no new screen). The studio plays above every tab (the owner, 4 Nov; it replaced the office
-  floor; `47f-hq-studio.js`): a small research studio whose areas are told apart by their floors, glass
-  stubs and steps, not walls. Desks stand on oak planks under the board, and a desk's lamp and screen
-  are lit only while a turn runs there; a turn waiting to retry keeps its desk, dark, with an
-  hourglass. The owner's corner is one step up on blue tile: the decisions waiting on your desk as
-  papers, the kill-switch lever, the rack with today's spend, and the review table with a folder for
-  each item in review, where a stuck worker sits. The library alcove holds the week's done work as
-  spines by subject, pale when not verified; the lounge, one step down, has the sofas against a low
-  bookcase (a spine for each of the team's notes and map lines), the chess table where the live game's
-  players sit, and a kitchenette with stools for whoever else is free. Words appear only on the
-  board (the goal, open and stuck, who is on which subject), in a brief one-line bubble when a real
-  post arrives, and in what a tap opens under Looking at; a sign beside a head says stuck, a failed
-  check, waiting to retry, or recovered. Nothing is shown as progress or activity unless the record
-  says it happened, and a phone gets its own plan, the same areas stacked. Each tab shows one line per thing at rest and the rest on a tap: the
-  desk's first five whole and the others as lines, the digest as lines, and rare forms (a new
-  project, a routine, a hire) and big cards (what the team knows, the office, the Holodeck)
-  behind a fold. The console check measures each tab at rest and holds it to a budget; fold
-  something before raising one. The Holodeck's chess matches are work, so they are a card in
-  Work, each opened move by move there (ADR 0135; its other worlds and trials were retired on
-  2026-10-30). The model league has a fourth tab of its own, **Chess** (the owner's notes of
-  31 Oct: none of the three could hold a live board, a bracket and every game without breaking
-  its budget): the league's games in play with their boards, this round's bracket and
-  standings, and every finished game a page at a time with its PGN. The Work card says so in a
-  line with a way there and shows none of the league itself. The office's chess board stays: its
-  table stands in the studio's lounge, its games on Manage's Office card; it is a different game (ADR 0121). Information conversations also
-  live in Work: one Conversations card, with nothing to set up (ADR 0139). Explicit assistance
-  requests, their results and project charges, source grants/revocation, and cancellation stay
-  inside that conversation's Work view; they add no top-level screen. Something that needs your
-  word goes on the desk; something you may want to look at, but nothing waits on, goes in the
-  digest. Fun and decoration go in the office, on Manage, never in Work above the desk. A switch
-  for a guard that is tried in shadow sits on that guard's line, in Health, and not in Settings;
-  a turn that waits for tomorrow shows in the top bar and in the outcomes, and is never a card.
-  When HQ stops the team itself, that is a card on the desk, because it needs your word.
-  One item's **Live Work map** (the owner's decision M3, 7 Nov 2026) is a screen of its own, like
-  Replay, opened from that item under Work's Looking at ("Live work map", beside "Replay this
-  task"): read-only, one item only, from HQ's `/v1/tasks/{id}/live` read
+- HQ opens on the **agents map** ([ADR 0143](adr/0143-hq-opens-on-the-agents-map.md), the
+  owner's decision M6, 7 Nov 2026) on every device, after a reload, from the menu and from any
+  old route; nothing remembers another landing. The map is the shell: the bar (Give work, the kill
+  switch) and the chips on every place; then the map (what runs, what waits to start, what is
+  blocked; you with your desk by project; each member with the open items it holds, grouped by
+  project; the items nobody holds; who is away), read-only from HQ's `/v1/hq/team-map`
+  (`domains/team/src/domain/team_map.rs` decides each state; `47h-hq-agents.js` draws it) with
+  HQ's own snapshot and poll. A line moves only while a turn runs and was heard from. An item
+  opens its Live Work map, a member its Looking at page. **Your decisions** stand beside it (under
+  it on a phone): the desk, its first five whole and the rest one line each, then *While you were
+  away*. Something that needs your word goes on the desk; something you may want to look at, but
+  nothing waits on, goes in the digest. When HQ stops the team itself, that is a card on the desk.
+- Everything else in HQ is a **secondary place**, reached from one quiet row ("More of HQ") and
+  left by "◀ Agents map" or Escape; never a tab strip, and add no new place without a reason none
+  of them can hold. **Open work**: the open tasks, finding a task, and the Holodeck's chess
+  matches, folded (ADR 0135). **Projects & team** (in this order, the owner's notes of 31 Oct): the
+  money and credits (with what each model cost by week, a fold on the Money card), goals and their
+  notes, projects and their loops with the routines among them (ADR 0107; adding one at the foot of
+  the Projects card); then accepted work with its two switches (ADR 0115, amended 2026-10-31), what
+  the team knows (the world's pages and the house), the team board (a line a member, the rest on a
+  tap) with hiring, and what the team may do on the home lab. **Health**: HQ's counters, the
+  scorecard and outcomes, the turns that failed with a link to the Home lab. A switch for a guard
+  tried in shadow sits on that guard's line here, not in Settings. **Activity**: a "Running now"
+  strip with a Watch link each, the latest twenty lines and "Show more" for a full-screen view a
+  page at a time; what a line names opens where it already lives, with a way back. **Chess
+  league**: the model league's games in play, bracket and standings, every finished game with
+  its PGN. **Office**: the studio (`47f-hq-studio.js`), drawn and animated only while the Office
+  shows, with the office's games beside it (the office chess board, ADR 0121). The studio's
+  furniture, desks lit only while a turn runs there, the owner's corner, the alcove and the lounge
+  are as before, and a tap opens Looking at. **Looking at** is the page a member, an item or a
+  studio tap opens, with its way back. Each place shows one line per thing at rest and the rest on
+  a tap; the console check holds each to a budget, so fold something before raising one. Fun and
+  decoration go in the Office, never on the map. A turn that waits for tomorrow shows in the top
+  bar and in the outcomes, and is never a card. Explicit assistance requests and conversations add
+  no place of their own (ADR 0139). Every owner action and its place is listed in
+  [the inventory](proposals/hq-map-first-action-inventory-2026-11-07.md).
+- One item's **Live Work map** (the owner's decision M3, 7 Nov 2026) is a screen of its own, like
+  Replay, opened from that item on the map or under Looking at ("Live work map", beside "Replay
+  this task"): read-only, one item only, from HQ's `/v1/tasks/{id}/live` read
   (`domains/team/src/domain/live_work.rs` decides what each record means; `47g-hq-live.js` draws
-  it). No tab, no other items, no controls; a wider map of the system is not part of it.
-  The **agents map** (the owner's decision M5, 7 Nov 2026) is the overview above it, also a screen
-  of its own, opened by "Agents map" in HQ's bar: you and your desk by project on top, and below
-  each member with the open items it holds, grouped by project; an item opens its Live Work map.
-  Read-only, from HQ's `/v1/team-map` (`domains/team/src/domain/team_map.rs` decides each state;
-  `47h-hq-agents.js` draws it), read with HQ's own poll. A line moves only while a turn runs. The
-  research team's map is not in Core: its records are the Mac's, so it is a checkpoint page drawn
-  by `scripts/research-map/` and published as an artifact, stamped with its snapshot's time.
+  it). No other items, no controls. The research team's map is not in Core: its records are the
+  Mac's, so it is a checkpoint page drawn by `scripts/research-map/` and published as an artifact,
+  stamped with its snapshot's time; never a live feed.
 
 ## The repository
 
@@ -138,7 +117,7 @@ Settings.
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
-| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's tabs in `47-hq.js` (`HQ_TABS`), its studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess tab in `47e-hq-chess.js` |
+| `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's places in `47-hq.js` (`HQ_PLACES`), the agents map in `47h-hq-agents.js`, the studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess league in `47e-hq-chess.js`; the console's own scenarios in `app/node/src/web/features/`, run by `scripts/check-console.mjs` |
 | `domains/team/src/{domain,application,infrastructure/sqlite}/` | Conversation records and policy belong to the team context alongside history; owner HTTP wiring stays in `app/hq/src/api/conversations.rs` and its fixed node proxy |
 | `deploy/ansible/collection/` | The `endora.homelab` collection: how Endora's part of the lab is declared. A new variable in `docker-compose.yml` needs a variable in its `endora` role in the same change. Services Endora is only a client of live in ansible-nas, not here: the house's vault is its `openbao` role (ADR 0127, amended 2026-11-07) |
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |

@@ -717,7 +717,7 @@ if (failures.length) {
   // ones that are off fold away behind "Show the N that are off". Routines stay their own
   // record (ADR 0107; ADR 0142 does not fold them into loops), so only the showing changed.
   {
-    const manage = () => runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('role="tabpanel"')[0];
+    const manage = () => runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('class="hq-place"')[0];
     const projectsCard = (html) => html.split("<h2>Projects</h2>")[1].split("</section>")[0];
     const shut = manage();
     if (shut.includes("<h2>Routines</h2>")) fail("hq: routines still have a card of their own");
@@ -879,15 +879,15 @@ if (failures.length) {
   // of the Work tab, under the desk, newest first, with a count and the choices each always had; the desk's own
   // count is what needs the owner's word, and an empty digest shows no card.
   {
-    const deskTab = office.split('id="hq-panel-work"')[1].split('role="tabpanel"')[0];
-    const yours = deskTab.split("<h2>Your desk")[1].split("<h2>Looking at")[0];
+    const deskTab = office.split('id="hq-panel-map"')[1].split('class="hq-place"')[0];
+    const yours = deskTab.split("<h2>Your decisions")[1].split("<h2>While you were away")[0];
     const digest = deskTab.split("<h2>While you were away")[1];
     for (const said of ['<h2>While you were away <span class="hq-count">2</span></h2>', "Nothing here needs you before the team can go on",
       "hq:decide:16:seen", "hq:decide:12:retry", "hq:decide:12:drop"]) {
       if (!deskTab.includes(said)) fail(`hq: the digest does not say ${said}`);
     }
     // What needs the owner comes first; what can wait follows (the owner, 2026-10-25).
-    if (deskTab.indexOf("<h2>Your desk") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
+    if (deskTab.indexOf("<h2>Your decisions") > deskTab.indexOf("While you were away")) fail("hq: the desk is not above the digest");
     const order = ["hq:decide:16:seen", "hq:decide:12:retry"].map((act) => digest.indexOf(act));
     if (order.some((at) => at < 0) || order[0] > order[1]) fail(`hq: the digest is not newest first: ${order}`);
     if (!yours.startsWith(` <span class="hq-count">12</span>`)) fail(`hq: the desk does not count only what needs the owner: ${yours.slice(0, 60)}`);
@@ -916,14 +916,14 @@ if (failures.length) {
       const html = viewHQ(); [s.stopped, s.stopped_by, s.desk] = kept; return html; })()`, context);
     // Sixteenth on the desk, it is whole all the same: past the first five, only it is.
     const wired = stoppedBy("tripwire", true);
-    const yours = wired.split('id="hq-panel-work"')[1].split('role="tabpanel"')[0].split("<h2>Your desk")[1].split("<h2>Looking at")[0];
+    const yours = wired.split('id="hq-panel-map"')[1].split('class="hq-place"')[0].split("<h2>Your decisions")[1].split("<h2>While you were away")[0];
     for (const said of ['<div class="hq-need tripwire">', 'data-act="hq:decide:29:resume">Resume the team</button>', 'data-act="hq:decide:29:seen">Seen</button>',
       '<p class="hq-help">The team started far more turns in ten minutes than real work does', "Turns started, by member: &lt;b&gt;Ada&lt;/b&gt; 22, Bo 18."]) {
       if (!yours.includes(said)) fail(`hq: the tripwire's card on the desk does not say ${said}`);
     }
     if (yours.includes("<b>Ada</b> 22")) fail("hq: a tripwire card's words became markup");
     if (!wired.includes('<span class="hq-tag" role="status">Stopped by the runaway tripwire</span>') || !wired.includes('data-act="hq:resume">Resume</button>')) fail("hq: the header does not say the tripwire stopped the team, with a way to resume");
-    if (wired.split("<h2>While you were away")[1].split('role="tabpanel"')[0].includes("hq-need tripwire")) fail("hq: the tripwire's card is in the digest, which does not interrupt");
+    if (wired.split("<h2>While you were away")[1].split('class="hq-place"')[0].includes("hq-need tripwire")) fail("hq: the tripwire's card is in the digest, which does not interrupt");
     const owners = stoppedBy("owner", false);
     if (owners.includes("Stopped by the runaway tripwire") || !owners.includes('data-act="hq:resume">Resume</button>')) fail("hq: the owner's own kill switch is called the tripwire");
     if (office.includes("Stopped by the runaway tripwire")) fail("hq: a running team is said to be stopped by the tripwire");
@@ -971,7 +971,7 @@ if (failures.length) {
       HQ.snap.tasks[0].thread.push({ author: "Bo", text: "start " + "word ".repeat(80) + "THE-END", at: 9 });`, context);
     runInContext(`hqTell({ id: 70, at: 0, kind: "thread.posted", data: { task: 7, author: "Bo", preview: "start word word…", cut: true, post: HQ.snap.tasks[0].thread.length - 1 } }, false);`, context);
     // Only the Activity tab: the selected task's card shows its own thread too.
-    const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
+    const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('class="hq-place"')[0];
     // Read as words: a name in a line is a link (the owner, 1 Nov), checked on its own later.
     const logOf = () => activityOf(runInContext("viewHQ()", context)).split('class="hq-log')[1].split("</ul>")[0]
       .replace(/<button class="hq-link" data-act="hq:from:[a-z]+:\d+">([^<]*)<\/button>/g, "$1");
@@ -1001,7 +1001,7 @@ if (failures.length) {
 
     // The tab: the latest twenty, newest first, whole (no box of its own to scroll), and "Show
     // more"; nothing loads older lines as the page scrolls.
-    runInContext(`HQ.log = []; HQ.logOpen = {}; HQ.tab = "activity";
+    runInContext(`HQ.log = []; HQ.logOpen = {}; HQ.place = "activity";
       for (let i = 61; i <= 100; i++) hqTell({ id: i, at: 0, kind: "routine.changed", data: { title: "R" + i, enabled: true } }, false);`, context);
     const tab = activityOf(runInContext("viewHQ()", context));
     const tabLines = (tab.match(/<li><time>/g) || []).length;
@@ -1070,7 +1070,7 @@ if (failures.length) {
       if (!feed().includes("hq:feed:close:go")) fail("hq: a page that failed has no way back");
       // Back, by the button or by Escape, lands on the Activity tab.
       await runInContext('dispatch("hq:feed:close:go")', context);
-      if (runInContext("HQ.feed", context) !== null || !/id="hq-tab-activity"[^>]*aria-selected="true"/.test(feed())) fail("hq: back does not return to the Activity tab");
+      if (runInContext("HQ.feed", context) !== null || runInContext("HQ.place", context) !== "activity") fail("hq: back does not return to the Activity tab");
       context.fetch = realFetch;
       runInContext("HQ.feed = { at: 0, starts: [1], lines: [], next: 0, busy: false, error: '' };", context);
       runInContext("hqFeedKey({ key: 'Enter', preventDefault() {} })", context);
@@ -1080,7 +1080,7 @@ if (failures.length) {
       if (runInContext("HQ.feed", context) !== null) fail("hq: Escape does not close the paged activity");
     } finally {
       context.fetch = realFetch;
-      runInContext("HQ.feed = null; HQ.log = []; HQ.last = 0; HQ.tab = null;", context);
+      runInContext("HQ.feed = null; HQ.log = []; HQ.last = 0; HQ.place = null;", context);
     }
   }
   // The bridge's approval (ADR 0108): the tool, its arguments in plain words, the why, and
@@ -1336,7 +1336,7 @@ if (failures.length) {
     for (const gone of ["<h2>The Mac", "hq:mac:", 'id="hq-mac-', "Set up the Mac", "Set up in AI"]) {
       if (hq.includes(gone)) fail(`mac: the HQ screen still has the Mac's card (${gone})`);
     }
-    if (runInContext("HQ_TABS.some(([id, label]) => /mac/i.test(id + label))", context)) fail("mac: HQ has a Mac tab");
+    if (runInContext("HQ_PLACES.some(([id, label]) => /mac/i.test(id + label))", context)) fail("mac: HQ has a Mac place");
     if (runInContext("typeof hqMacCard", context) !== "undefined") fail("mac: HQ still draws a Mac card");
     const reasons = {
       ready: "Free: the team may use it", "on battery": "On battery: the model is unloaded", busy: "Mac busy is on: the model is unloaded",
@@ -1680,97 +1680,177 @@ if (failures.length) {
     }
     console.log("hq: a worker's sign says blocked, a failed check, or a recovery the record shows, and nothing else");
   }
-  // The screen's tabs (the owner: "it's all been expanded over time, hard to find stuff").
+  // The map-first shell (the owner's decision M6, 7 Nov 2026: "Agents map should be the primary
+  // view"): HQ opens on the agents map with your decisions beside it; the other places are pages
+  // of their own reached from one quiet row, never a tab strip; the studio is the Office's.
   {
-    runInContext("HQ.selected = null; HQ.tab = null; HQ.working = false; HQ.workDraft = {}; HQ.more = {};", context);
+    runInContext(`HQ.selected = null; HQ.place = null; HQ.working = false; HQ.workDraft = {}; HQ.more = {};
+      AGENTS.error = ""; AGENTS.map = { running: 1, queued: 0, blocked: 1, said: "1 running. 12 cards wait on you.", desk_total: 12, desk_oldest: 0,
+        desk: [{ project: "example project", count: 12, kinds: [{ kind: "question", count: 12 }] }],
+        members: [{ name: "John Doe", brain: "Local", state: "working", last_seen: 0, last_work: null, live: [{ run: 41, task: 7, heard: 0, moving: true }],
+          groups: [{ project: "example project", items: [{ task: 7, title: "example task", status: "blocked", asks_owner: true }] }] }], unheld: [] };`, context);
     const shown = () => runInContext("viewHQ()", context);
-    const tabs = shown();
-    // Three places, by what the owner is doing (the density audit of 2026-10-25, done 2026-10-30):
-    // Work, Manage and Health, Work first and where every screen opens; Activity on a tab of its
-    // own (the owner, 31 Oct); and Chess, the model league's own (the owner's notes of 31 Oct).
-    for (const id of ["work", "manage", "health", "activity", "chess"]) {
-      if (!tabs.includes(`role="tab" class="hq-tab" id="hq-tab-${id}" aria-controls="hq-panel-${id}"`)) fail(`hq: no ${id} tab`);
-      if (!tabs.includes(`role="tabpanel" id="hq-panel-${id}" aria-labelledby="hq-tab-${id}"`)) fail(`hq: no ${id} panel`);
+    const home = shown();
+    const PLACES = ["map", "work", "manage", "health", "activity", "chess", "office"];
+    for (const id of PLACES) if (!home.includes(`class="hq-place" id="hq-panel-${id}"`)) fail(`hq: no ${id} place`);
+    const placeOrder = [...home.matchAll(/class="hq-place" id="hq-panel-(\w+)"/g)].map((m) => m[1]).join();
+    if (placeOrder !== PLACES.join()) fail(`hq: the places are ${placeOrder}, not ${PLACES}`);
+    // The old primary navigation is gone: no tab strip, no Agents map button beside the map itself.
+    if (/role="tab|class="hq-tabs"|hq-tab-/.test(home)) fail("hq: a tab strip is still drawn");
+    if (home.includes("agents:open:map")) fail("hq: the bar still has an Agents map button");
+    if (runInContext("typeof hqTabKey", context) !== "undefined" || runInContext("typeof viewAgents", context) !== "undefined") fail("hq: the tab keys or the separate agents screen are still defined");
+    const showing = (html) => [...html.matchAll(/class="hq-place" id="hq-panel-(\w+)"(?![^>]* hidden)[^>]*>/g)].map((m) => m[1]).join();
+    if (showing(home) !== "map") fail(`hq: HQ opens on ${showing(home)}, not the map`);
+    const placeOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('class="hq-place"')[0];
+    // The map: the hero, you and your desk by project, the members with what they hold; your
+    // decisions beside it; what runs now. The studio is not on it.
+    const map = placeOf(home, "map");
+    for (const said of ['hq-agents ag"', 'class="ag-hero', '<h3><span class="ag-dot"></span>You</h3>', 'id="hq-decisions"', "<h2>Your decisions",
+      "hq:decide:11:approve", "<h2>While you were away"]) {
+      if (!map.includes(said)) fail(`hq: the map does not show ${said}`);
     }
-    const tabOrder = [...tabs.matchAll(/role="tab" class="hq-tab" id="hq-tab-(\w+)"/g)].map((m) => m[1]).join();
-    if (tabOrder !== "work,manage,health,activity,chess") fail(`hq: the tabs are ${tabOrder}, not Work, Manage, Health, Activity, Chess`);
-    if (!tabs.includes('role="tablist"')) fail("hq: the tabs are not a tablist");
-    const selected = (html) => [...html.matchAll(/id="hq-tab-(\w+)"[^>]*aria-selected="true"/g)].map((m) => m[1]);
-    const hiddenPanels = (html) => [...html.matchAll(/id="hq-panel-(\w+)"[^>]*? hidden>/g)].map((m) => m[1]).sort().join(",");
-    if (selected(tabs).join() !== "work") fail(`hq: the default tab is ${selected(tabs)}, not work`);
-    if (!/role="tablist"[^>]*><button role="tab" class="hq-tab" id="hq-tab-work"/.test(tabs)) fail("hq: Work is not the first tab");
-    if (hiddenPanels(tabs) !== "activity,chess,health,manage") fail(`hq: with Work showing, these panels are hidden: ${hiddenPanels(tabs)}`);
-    // What is on which tab: Work the desk, what can wait, the work in flight and finding a task;
-    // Manage the projects, routines, goals, the team, the money and the switches, with what the
-    // team knows and the office folded; Health the Mac, the scorecard, what failed and the live
-    // activity.
-    const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('role="tabpanel"')[0];
-    // How dense each tab is at rest (the audit of 2026-10-25: the old Work tab was 6.8 phone
-    // screens with 216 buttons): what shows before anything is opened, so a closed <details>
-    // costs nothing. Printed, and held to a ratchet: lower it when a tab improves.
+    if (map.indexOf('class="ag-hero') > map.indexOf('id="hq-decisions"')) fail("hq: the decisions come before the map's first line");
+    if (home.split('id="hq-panel-office"')[0].includes('<canvas id="hq-office"')) fail("hq: the studio is drawn outside the Office");
+    if (!placeOf(home, "office").includes('<canvas id="hq-office"')) fail("hq: the Office has no studio");
+    if (!placeOf(home, "office").includes("<h2>Office")) fail("hq: the office's games are not with the studio");
+    if (!placeOf(home, "health").includes('class="hq-stats')) fail("hq: HQ's counters are not on Health");
+    // One quiet row to the secondary places, a button each; the bar keeps Give work and the kill switch.
+    const more = (home.match(/<nav class="hq-places" aria-label="More of HQ">([\s\S]*?)<\/nav>/) || [])[1] || "";
+    const goes = [...more.matchAll(/data-act="hq:place:(\w+):go"/g)].map((m) => m[1]).join();
+    if (goes !== "work,manage,health,activity,chess,office") fail(`hq: the row to the other places is ${goes}`);
+    for (const act of ['data-act="hq:work"', 'data-act="hq:stop"']) if (!home.split('class="hq-place"')[0].includes(act)) fail(`hq: the bar lacks ${act}`);
+    // What waits on the owner jumps to the decisions on the map.
+    const deskCount = runInContext("HQ.snap.desk.length", context);
+    if (!home.includes(`data-act="hq:place:map:decisions">${deskCount} waiting on you</button>`)) fail("hq: the waiting chip does not go to your decisions");
+    if (!/<div class="hq-chips"><button class="hq-chip hq-chip-go/.test(home)) fail("hq: what waits on you is not the first chip");
+    // A secondary place: its own page, a way back to the map, the bar's controls still there.
+    await runInContext('dispatch("hq:place:manage:go")', context);
+    const manage = shown();
+    if (showing(manage) !== "manage") fail(`hq: choosing Projects & team shows ${showing(manage)}`);
+    if (!manage.includes('data-act="hq:place:map:go">◀ Agents map</button>')) fail("hq: a secondary place has no way back to the map");
+    for (const act of ['data-act="hq:work"', 'data-act="hq:stop"']) if (!manage.includes(act)) fail(`hq: the bar loses ${act} on a secondary place`);
+    runInContext("hqPlaceKey({ key: 'Escape', preventDefault() {} })", context);
+    if (runInContext("HQ.place", context) !== "map") fail("hq: Escape does not return from a secondary place to the map");
+    await runInContext('dispatch("hq:place:bogus:go")', context);
+    if (runInContext("HQ.place", context) !== "map") fail("hq: a place that does not exist was chosen");
+    // Old links land where each now lives.
+    for (const [old, now] of [["work", "map"], ["now", "map"], ["desk", "map"], ["team", "manage"], ["knowledge", "manage"], ["office", "office"],
+      ["manage", "manage"], ["health", "health"], ["activity", "activity"], ["chess", "chess"]]) {
+      runInContext("HQ.place = 'map';", context);
+      await runInContext(`dispatch("hq:tab:${old}:go")`, context);
+      if (runInContext("HQ.place", context) !== now) fail(`hq: the old ${old} link does not land on ${now}`);
+    }
+    // A fresh entry or a reload opens the map; a place kept by the old tabs is read once and removed.
+    const kept = {}, removed = [];
+    const realStore = context.localStorage;
+    context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem: (k) => { removed.push(k); delete kept[k]; } };
+    for (const [key, value] of [["endora.hq.tab.v4", "manage"], ["endora.hq.tab.v4", "chess"], ["endora.hq.tab.v3", "team"], ["endora.hq.tab.v4", "nonsense"]]) {
+      kept[key] = value; runInContext("HQ.place = null;", context);
+      if (showing(shown()) !== "map") fail(`hq: a kept ${key}=${value} does not open the map`);
+      if (key in kept) fail(`hq: the old ${key} is kept after the map opened`);
+    }
+    await runInContext('dispatch("hq:place:health:go")', context);
+    if (Object.keys(kept).some((k) => k.startsWith("endora.hq."))) fail("hq: choosing a place is remembered as a landing");
+    context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() { throw new Error("blocked"); } };
+    runInContext("HQ.place = null;", context);
+    if (showing(shown()) !== "map") fail("hq: blocked storage keeps the map from opening");
+    context.localStorage = realStore;
+    // The old agents screen and any unknown screen open HQ's map.
+    // go() fetches what a screen needs; here only where it lands is asked, so nothing is fetched.
+    runInContext("__keepLoad = loadView; loadView = async () => {};", context);
+    runInContext("HQ.place = 'chess'; go('agents');", context);
+    if (runInContext("NAV.v + ' ' + HQ.place", context) !== "hq map") fail(`hq: the old agents screen opens ${runInContext("NAV.v + ' ' + HQ.place", context)}`);
+    runInContext("HQ.place = 'chess';", context);
+    await runInContext('dispatch("agents:open:map")', context);
+    if (runInContext("NAV.v + ' ' + HQ.place", context) !== "hq map") fail("hq: the old agents action does not open the map");
+    runInContext("loadView = __keepLoad;", context);
+    runInContext("NAV = { v: 'nowhere' }; HQ.place = null; render();", context);
+    if (showing(runInContext("app.innerHTML", context)) !== "map") fail("hq: an unknown screen does not open the map");
+    runInContext("NAV = { v: 'hq' };", context);
+    // Looking at: its own page, with the way back to where it was opened.
+    runInContext("HQ.place = 'work';", context);
+    await runInContext('dispatch("hq:pick:task:7")', context);
+    const looking = shown();
+    if (showing(looking) !== "detail" || !/<h2>Looking at<\/h2>(<div class="hq-row">.*?<\/div>)?<div class="hq-sel">EL-7 · /.test(placeOf(looking, "detail"))) fail("hq: a task does not open on its Looking at page");
+    if (!placeOf(looking, "detail").includes('data-act="hq:place:work:go">◀ Back</button>')) fail("hq: Looking at has no way back to where it was opened");
+    await runInContext('dispatch("hq:place:work:go")', context);
+    if (runInContext("HQ.place", context) !== "work" || shown().includes("<h2>Looking at")) fail("hq: back from Looking at does not return, or leaves it drawn");
+    runInContext("HQ.place = 'map';", context);
+    await runInContext('dispatch("hq:pick:member:2")', context);
+    if (showing(shown()) !== "detail") fail("hq: a member does not open on its Looking at page");
+    runInContext("HQ.selected = null; HQ.place = null;", context);
+    // A map HQ has not drawn yet, or did not answer, still shows your decisions: never a blank screen.
+    const keepMap = runInContext("JSON.stringify([AGENTS.map, AGENTS.error])", context);
+    runInContext('AGENTS.map = null; AGENTS.error = "";', context);
+    if (!placeOf(shown(), "map").includes("Reading the record") || !placeOf(shown(), "map").includes("hq:decide:11:approve")) fail("hq: a map not read yet hides the decisions");
+    runInContext('AGENTS.error = "HQ did not answer: away";', context);
+    if (!placeOf(shown(), "map").includes("HQ did not answer: away") || !placeOf(shown(), "map").includes("hq:decide:11:approve")) fail("hq: a map HQ did not answer hides the decisions");
+    runInContext(`[AGENTS.map, AGENTS.error] = ${keepMap};`, context);
+    // What each place shows at rest, held to a budget: fold what is rare before raising one.
     const density = (html) => {
       const seen = html.replace(/<details(?![^>]*\sopen)[^>]*>([\s\S]*?)<\/details>/g, (_, inner) => (inner.match(/<summary[\s\S]*?<\/summary>/) || [""])[0]);
       const count = (re) => (seen.match(re) || []).length;
       return { buttons: count(/<button/g), folds: count(/<details|aria-expanded=/g),
         rows: count(/<li[\s>]|<p[\s>]|<h2|<h3|<tr[\s>]|<div class="hq-row"|<textarea|<dt>|<summary/g), sections: count(/<h3/g) };
     };
-    const above = density(tabs.split('role="tablist"')[0] + tabs.split('class="hq-stage"')[1].split('role="tabpanel"')[0]);
-    console.log(`hq density at rest: above every tab ${JSON.stringify(above)}; ` + ["work", "manage", "health", "activity", "chess"].map((id) => `${id} ${JSON.stringify(density(panelOf(tabs, id)))}`).join("; "));
-    // Before the regrouping (2026-10-29, this snapshot): Now 51 buttons and 97 rows, Team 15 and
-    // 29, Work 15 and 22, Manage 13 and 25. Manage went from 36 rows to 32 (and its three team
-    // headings to none) with the one-line team board and routines in Projects (31 Oct).
-    // Manage 26 -> 27 buttons (2026-10-31): the owner took the "Ready to merge" and "Push" cards
-    // off the desk (ADR 0115, amended), and accepted work became one folded line on Manage.
-    // Activity at most its twenty lines, its heading and Show more (the owner, 31 Oct), with
-    // Health lighter for its leaving. Work 30 -> 27 buttons and 45 -> 42 rows (2026-10-31): the
-    // Deployed cards retired with ADR 0142. Activity 3 -> 11 buttons (the owner, 1 Nov): every
-    // item, turn and member a line names is a link that opens it, words rather than controls.
-    const MOST_ON_A_TAB = { work: { buttons: 27, rows: 42 }, manage: { buttons: 27, rows: 32 }, health: { buttons: 14, rows: 22 }, activity: { buttons: 11, rows: 23 }, chess: { buttons: 12, rows: 30 } };
-    for (const [id, most] of Object.entries(MOST_ON_A_TAB)) {
-      const d = density(panelOf(tabs, id));
-      for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: the ${id} tab shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
-      if (d.sections > MOST_SECTIONS_ON_ONE_SCREEN) fail(`hq: the ${id} tab stacks ${d.sections} sections (budget ${MOST_SECTIONS_ON_ONE_SCREEN})`);
+    console.log("hq density at rest: " + PLACES.map((id) => `${id} ${JSON.stringify(density(placeOf(home, id)))}`).join("; "));
+    // The map's own count of its members and items is the record's, not a budget; its decisions
+    // are the old Work tab's desk and digest (27 buttons, 42 rows), and the rest lost Work's share.
+    const MOST_IN_A_PLACE = { map: { buttons: 28, rows: 45 }, work: { buttons: 4, rows: 6 }, manage: { buttons: 27, rows: 32 }, health: { buttons: 14, rows: 22 },
+      activity: { buttons: 11, rows: 23 }, chess: { buttons: 12, rows: 30 }, office: { buttons: 2, rows: 6 } };
+    for (const [id, most] of Object.entries(MOST_IN_A_PLACE)) {
+      const d = density(placeOf(home, id));
+      for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: ${id} shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
     }
-    const where = { work: ["Your desk", "hq:decide:11:approve", "<h2>While you were away", "<h2>Open tasks", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
+    const where = { map: ["Your decisions", "hq:decide:11:approve", "<h2>While you were away"],
+      work: ["<h2>Open tasks", 'data-act="hq:pick:task:7"', "hq:find:task:go"],
       manage: ["<h2>What the team may do on the home lab</h2>", "<h2>Projects</h2>", "<h2>Goals</h2>", 'id="hq-goal"', "Notes for the team",
         "<h2>Team</h2>", "<h2>Money</h2>", "hq:pool:topup:go",
-        // Which figure today's pool is and why (ADR 0113, amended 2026-10-31).
-        "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle", "hq:more:office:toggle"],
+        "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle"],
       health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"'],
       activity: ["<h2>Activity</h2>", 'data-act="hq:feed:open:go"'],
-      // Before the owner starts the league, the Chess tab says so rather than standing empty.
-      chess: ["<h2>Chess</h2>", "No model league yet"] };
+      chess: ["<h2>Chess</h2>", "No model league yet"],
+      office: ['<canvas id="hq-office"', "<h2>Office"] };
     for (const [id, said] of Object.entries(where)) {
-      for (const text of said) if (!panelOf(tabs, id).includes(text)) fail(`hq: "${text}" is not on the ${id} tab`);
+      for (const text of said) if (!placeOf(home, id).includes(text)) fail(`hq: "${text}" is not in ${id}`);
     }
-    // Manage's order (the owner's notes of 31 Oct): the money first, then the goals, then the
-    // projects (with their routines); everything else after them.
     {
-      const manage = panelOf(tabs, "manage");
-      const cards = [...manage.matchAll(/<h2>([^<]*)/g)].map((m) => m[1].trim());
-      if (cards.slice(0, 3).join(" | ") !== "Money | Goals | Projects") fail(`hq: Manage does not open on Money, Goals, Projects: ${cards.join(" | ")}`);
-      const projectsEnd = manage.indexOf("</section>", manage.indexOf("<h2>Projects</h2>"));
-      for (const after of ["<h2>Team</h2>", "<h2>What the team may do on the home lab</h2>", "hq:more:knows:toggle", "hq:more:office:toggle"]) {
-        if (manage.indexOf(after) < projectsEnd) fail(`hq: "${after}" comes before Manage's money, goals and projects`);
-      }
+      const cards = [...placeOf(home, "manage").matchAll(/<h2>([^<]*)/g)].map((m) => m[1].trim());
+      if (cards.slice(0, 3).join(" | ") !== "Money | Goals | Projects") fail(`hq: Projects & team does not open on Money, Goals, Projects: ${cards.join(" | ")}`);
     }
-    const work = panelOf(tabs, "work");
-    // What waits on the owner is the first chip, so a phone's scrolling row always shows it.
-    if (!/<div class="hq-chips"><button class="hq-chip hq-chip-go/.test(tabs)) fail("hq: what waits on you is not the first chip");
-    if (/Pool /.test(tabs) && !/<span class="hq-spent">/.test(tabs)) fail("hq: the pool chip cannot drop its spent part on a phone");
-    if (!work.includes('class="hq-lines hq-open"')) fail("hq: open tasks are not laid out as title and status lines");
-    if (work.indexOf("Your desk") > work.indexOf("<h2>Open tasks")) fail("hq: Work does not put the desk before the open tasks");
-    // Open tasks lead with what needs eyes: blocked, then doing, then in review, then untouched todos
-    // (council round 2: "In flight 18" read as active work while its rows said "todo").
-    const order = runInContext(`(() => { const html = hqInFlight(HQ.snap), at = (s) => { const i = html.indexOf(">" + s.replace(/_/g, " ")); return i < 0 ? Infinity : i; };
-      return ["blocked", "doing", "in_review", "todo"].map(at); })()`, context).filter((i) => i !== Infinity);
-    if (order.some((v, i) => i && v < order[i - 1])) fail(`hq: open tasks are not blocked, doing, in review, then todo: ${order}`);
-    if (work.includes("<h2>Looking at</h2>")) fail("hq: Looking at shows with nothing looked at");
-    // Rare actions and big cards wait behind a fold until asked for.
     for (const [id, folded] of [["manage", "<details"], ["manage", "hq:hire:new:add"], ["manage", "hq:project:new:add"], ["manage", "hq:routine:new:add"],
-      ["manage", "<h2>World</h2>"], ["manage", "<h2>Office"], ["work", "<h2>Projects</h2>"], ["work", "<h2>Activity</h2>"], ["health", "<h2>Activity</h2>"], ["health", "What the team may do"]]) {
-      if (panelOf(tabs, id).includes(folded)) fail(`hq: "${folded}" is on the ${id} tab at rest`);
+      ["manage", "<h2>World</h2>"], ["manage", "<h2>Office"], ["map", "<h2>Projects</h2>"], ["health", "What the team may do"]]) {
+      if (placeOf(home, id).includes(folded)) fail(`hq: "${folded}" is in ${id} at rest`);
     }
+    if (placeOf(home, "map").includes("<h2>Looking at</h2>")) fail("hq: Looking at shows with nothing looked at");
+    // Nothing was lost: every act the five tabs offered (362e467f, the same snapshot) is in one of
+    // the places, at rest or once its fold is opened.
+    {
+      const before = ["go:models", "hq:bundle:9:task-9-other", "hq:contracts:all:off", "hq:contracts:restart_container:on", "hq:decide:11:approve", "hq:decide:11:decline",
+        "hq:decide:12:drop", "hq:decide:12:retry", "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:not_now", "hq:decide:14:read", "hq:decide:15:dismiss",
+        "hq:decide:15:seen", "hq:decide:16:dismiss", "hq:decide:16:seen", "hq:decide:17:approve", "hq:decide:17:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
+        "hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline", "hq:decide:24:dismiss", "hq:decide:24:seen", "hq:decide:27:approve",
+        "hq:decide:27:decline", "hq:find:task:go", "hq:goal",
+        "hq:hire:new:add", "hq:feed:open:go", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
+        "hq:more:outcome0:toggle", "hq:more:outcome4:toggle", "hq:more:proj1:toggle", "hq:more:proj2:toggle", "hq:more:proj3:toggle", "hq:more:routine3:toggle",
+        "hq:more:routine4:toggle", "hq:pick:task:7", "hq:pick:task:9", "hq:pool:topup:go", "hq:project:new:add", "hq:roster:1:toggle", "hq:roster:8:toggle",
+        "hq:routine:new:add", "hq:stop", "hq:work", "hq:world:edit:open-0", "hq:world:edit:open-1", "hq:world:export:md", "hq:world:page:all", "hq:world:paste:show",
+        "hq:world:writing:toggle", "hq:delivery:cards:on", "hq:delivery:merge_develop:on"];
+      const keep = runInContext("JSON.stringify(HQ.more)", context);
+      runInContext(`Object.assign(HQ.more, { newproject: true, newroutine: true, routinesoff: true, hire: true, knows: true, accepted: true, holodeck: true });
+        for (const d of HQ.snap.desk.concat(HQ.snap.digest || [])) { HQ.more["desk" + d.id] = true; HQ.more["digest" + d.id] = true; }`, context);
+      const opened = shown();
+      runInContext(`HQ.more = ${keep};`, context);
+      const acts = new Set([...opened.matchAll(/data-act="([^"]+)"/g)].map((m) => m[1]));
+      const lost = before.filter((act) => !acts.has(act));
+      if (lost.length) fail(`hq: the map-first shell lost ${lost.join(", ")}`);
+    }
+    console.log("hq: the map opens first on every entry, old tabs and links land where they live, nothing the tabs offered is lost, and the studio is the Office's");
+  }
+  {
+    const shown = () => runInContext("viewHQ()", context);
+    const tabs = shown();
+    const panelOf = (html, id) => html.split(`id="hq-panel-${id}"`)[1].split('class="hq-place"')[0];
     // Accepted work (ADR 0115, amended 2026-10-31): one folded line on Manage at rest; open, each
     // branch with its task, its place and why, the bundle when the node cannot push, and the
     // owner's two switches. Nothing a person typed is markup.
@@ -1778,7 +1858,7 @@ if (failures.length) {
       const manage = panelOf(tabs, "manage");
       if (!manage.includes('data-act="hq:more:accepted:toggle"')) fail("hq: accepted work is not a line on Manage");
       if (manage.includes("<h2>Accepted, waiting to merge")) fail("hq: accepted work is open on Manage at rest");
-      if (panelOf(tabs, "work").includes("Accepted, waiting to merge")) fail("hq: accepted work is on Work");
+      if (panelOf(tabs, "map").includes("Accepted, waiting to merge")) fail("hq: accepted work is on the map");
       runInContext("HQ.more.accepted = true;", context);
       const open = panelOf(shown(), "manage");
       runInContext("HQ.more.accepted = false;", context);
@@ -1793,38 +1873,6 @@ if (failures.length) {
       }
       if (runInContext(`hqDeskChoices({ kind: "privacy" }).map((c) => c[0]).join()`, context) !== "send_back,push_anyway") fail("hq: a privacy card does not offer Send it back and Push it anyway");
     }
-    // No action was lost to the regrouping: every act the four tabs offered (2026-10-29, the
-    // same snapshot) is on one of the tabs, at rest or once its fold is opened. "Show older" became
-    // Activity's "Show more" (the owner, 31 Oct). The CEO's decision card (18), the Deployed cards
-    // (40, 41) and the house log's save retired with ADR 0142.
-    {
-      const before = ["go:models", "hq:bundle:9:task-9-other", "hq:contracts:all:off", "hq:contracts:restart_container:on", "hq:decide:11:approve", "hq:decide:11:decline",
-        "hq:decide:12:drop", "hq:decide:12:retry", "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:not_now", "hq:decide:14:read", "hq:decide:15:dismiss",
-        "hq:decide:15:seen", "hq:decide:16:dismiss", "hq:decide:16:seen", "hq:decide:17:approve", "hq:decide:17:decline", "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:decide:21:accept", "hq:decide:21:send_back",
-        "hq:decide:22:approve", "hq:decide:22:decline", "hq:decide:23:approve", "hq:decide:23:decline", "hq:decide:24:dismiss", "hq:decide:24:seen", "hq:decide:27:approve",
-        "hq:decide:27:decline", "hq:find:task:go", "hq:goal",
-        "hq:hire:new:add", "hq:feed:open:go", "hq:more:goal1:toggle", "hq:more:goal3:toggle", "hq:more:measure0:toggle", "hq:more:measure6:toggle",
-        "hq:more:outcome0:toggle", "hq:more:outcome4:toggle", "hq:more:proj1:toggle", "hq:more:proj2:toggle", "hq:more:proj3:toggle", "hq:more:routine3:toggle",
-        "hq:more:routine4:toggle", "hq:pick:task:7", "hq:pick:task:9", "hq:pool:topup:go", "hq:project:new:add", "hq:roster:1:toggle", "hq:roster:8:toggle",
-        "hq:routine:new:add", "hq:stop", "hq:work", "hq:world:edit:open-0", "hq:world:edit:open-1", "hq:world:export:md", "hq:world:page:all", "hq:world:paste:show",
-        "hq:world:writing:toggle"];
-      const keep = runInContext("JSON.stringify(HQ.more)", context);
-      runInContext(`Object.assign(HQ.more, { newproject: true, newroutine: true, routinesoff: true, hire: true, knows: true, office: true, holodeck: true });
-        for (const d of HQ.snap.desk.concat(HQ.snap.digest || [])) { HQ.more["desk" + d.id] = true; HQ.more["digest" + d.id] = true; }`, context);
-      const opened = shown();
-      runInContext(`HQ.more = ${keep};`, context);
-      const acts = new Set([...opened.matchAll(/data-act="([^"]+)"/g)].map((m) => m[1]));
-      const lost = before.filter((act) => !acts.has(act));
-      if (lost.length) fail(`hq: the regrouped tabs lost ${lost.join(", ")}`);
-    }
-    // Badges: the desk's items on Work.
-    const badge = (html, id) => (html.match(new RegExp(`id="hq-tab-${id}"[^>]*>[^<]*<span class="hq-badge"[^>]*>(\\d+)</span>`)) || [])[1];
-    const deskCount = runInContext("HQ.snap.desk.length", context);
-    if (Number(badge(tabs, "work")) !== deskCount) fail(`hq: the Work badge is ${badge(tabs, "work")}, not ${deskCount}`);
-    if (["manage", "health", "activity", "chess"].some((id) => badge(tabs, id) !== undefined)) fail("hq: a tab with nothing to count has a badge");
-    // The waiting chip goes to Work; the pool chip reads the snapshot; no Mac chip: the Mac's
-    // state is a word where a member's brain is named, and its card is in Settings → AI.
-    if (!tabs.includes(`data-act="hq:tab:work:go">${deskCount} waiting on you</button>`)) fail("hq: no \"waiting on you\" chip to Work");
     if (!tabs.includes('<span class="hq-wide">Pool </span><span class="hq-spent">$0.00 spent · </span>$1.93 left')) fail("hq: no chip for today's pool");
     for (const mac of [{ why: "on battery" }, { why: "owner active" }, { why: "not heard from" }, { why: "on battery", busy: true }]) {
       runInContext(`HQ.mac = Object.assign({ ready: false, busy: false }, ${JSON.stringify(mac)});`, context);
@@ -1866,57 +1914,6 @@ if (failures.length) {
       if (runInContext(`hqOrdinal(${n})`, context) !== want) fail(`credits: the ${want} reads wrong`);
     }
     runInContext("HQ.credits = null;", context);
-    // Switching, remembered per viewer in localStorage, with a failing store harmless.
-    const kept = {};
-    const realStore = context.localStorage;
-    context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem() {} };
-    await runInContext('dispatch("hq:tab:manage:go")', context);
-    if (selected(shown()).join() !== "manage" || kept["endora.hq.tab.v4"] !== "manage") fail("hq: choosing a tab does not show and remember it");
-    if (hiddenPanels(shown()) !== "activity,chess,health,work") fail("hq: the other panels stay showing");
-    await runInContext('dispatch("hq:tab:chess:go")', context);
-    if (selected(shown()).join() !== "chess" || kept["endora.hq.tab.v4"] !== "chess" || hiddenPanels(shown()) !== "activity,health,manage,work") fail("hq: the Chess tab is not chosen and remembered");
-    await runInContext('dispatch("hq:tab:manage:go")', context);
-    await runInContext('dispatch("hq:tab:bogus:go")', context);
-    if (selected(shown()).join() !== "manage") fail("hq: a tab that does not exist was chosen");
-    // The older tabs still land where each now lives; Activity is its own again (31 Oct).
-    for (const [old, home] of [["now", "work"], ["desk", "work"], ["activity", "activity"], ["team", "manage"], ["office", "manage"], ["knowledge", "manage"], ["health", "health"]]) {
-      await runInContext(`dispatch("hq:tab:${old}:go")`, context);
-      if (selected(shown()).join() !== home) fail(`hq: the old ${old} tab does not land on ${home}`);
-    }
-    await runInContext('dispatch("hq:tab:manage:go")', context);
-    runInContext("HQ.tab = null;", context);
-    if (selected(shown()).join() !== "manage") fail("hq: the remembered tab is not restored");
-    kept["endora.hq.tab.v4"] = "nonsense"; runInContext("HQ.tab = null;", context);
-    if (selected(shown()).join() !== "work") fail("hq: a bad remembered tab does not fall back to Work");
-    // A tab kept from the four tabs (tab.v3) lands where it now lives; older ones are not restored.
-    for (const [v3, home] of [["team", "manage"], ["now", "work"], ["manage", "manage"], ["work", "work"], ["activity", "activity"]]) {
-      delete kept["endora.hq.tab.v4"]; kept["endora.hq.tab.v3"] = v3; runInContext("HQ.tab = null;", context);
-      if (selected(shown()).join() !== home) fail(`hq: a tab kept as ${v3} before the three tabs does not open ${home}`);
-    }
-    delete kept["endora.hq.tab.v3"]; kept["endora.hq.tab.v2"] = "health"; runInContext("HQ.tab = null;", context);
-    if (selected(shown()).join() !== "work") fail("hq: a tab kept before the four tabs still opens instead");
-    context.localStorage = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); }, removeItem() {} };
-    runInContext("HQ.tab = null;", context);
-    await runInContext('dispatch("hq:tab:health:go")', context);
-    if (selected(shown()).join() !== "health") fail("hq: blocked storage breaks switching tabs");
-    context.localStorage = realStore;
-    // Looking at something from another tab brings Work forward, with Looking at on it.
-    await runInContext('dispatch("hq:pick:member:2")', context);
-    if (selected(shown()).join() !== "work" || !panelOf(shown(), "work").includes("<h2>Looking at</h2>")) fail("hq: looking at a member does not show it on Work");
-    // A task in flight opens under Looking at, with its thread.
-    runInContext("HQ.selected = null;", context);
-    await runInContext('dispatch("hq:pick:task:7")', context);
-    if (!/<h2>Looking at<\/h2><div class="hq-sel">EL-7 · /.test(panelOf(shown(), "work"))) fail("hq: a task in flight does not open under Looking at");
-    runInContext("HQ.selected = null;", context);
-    // Arrow keys move between tabs (Home and End to the ends), wrapping round.
-    runInContext("HQ.tab = 'work';", context);
-    for (const [key, then] of [["ArrowRight", "manage"], ["ArrowLeft", "work"], ["ArrowLeft", "chess"], ["ArrowLeft", "activity"], ["Home", "work"], ["End", "chess"]]) {
-      runInContext(`hqTabKey({ key: ${JSON.stringify(key)}, target: { closest: () => ({}) }, preventDefault() {} })`, context);
-      if (runInContext("HQ.tab", context) !== then) fail(`hq: ${key} goes to ${runInContext("HQ.tab", context)}, not ${then}`);
-    }
-    runInContext("hqTabKey({ key: 'ArrowRight', target: { closest: () => null }, preventDefault() {} })", context);
-    if (runInContext("HQ.tab", context) !== "chess") fail("hq: arrow keys outside the tabs move them");
-    runInContext("HQ.tab = null;", context);
   }
   // Every kind of desk item says in a line what its choices do.
   {
@@ -1927,7 +1924,7 @@ if (failures.length) {
     // The first five are whole; the rest one line each, opened here to read every card.
     const desk = runInContext(`(() => { const folds = HQ.more; HQ.more = {}; for (const d of HQ.snap.desk) HQ.more["desk" + d.id] = true;
       const html = viewHQ(); HQ.more = folds; return html; })()`, context);
-    const atRest = runInContext("viewHQ()", context).split('id="hq-panel-work"')[1].split("<h2>Looking at")[0].split("While you were away")[0];
+    const atRest = runInContext("viewHQ()", context).split('id="hq-panel-map"')[1].split("<h2>Looking at")[0].split("While you were away")[0];
     if ((atRest.match(/<div class="hq-need /g) || []).length !== 5 || !atRest.includes('data-act="hq:more:desk27:toggle"')) fail("hq: the desk does not show its first five whole and the rest as lines to open");
     const cardsShown = [...desk.matchAll(/<div class="hq-need (\w+)">/g)].map((m) => m[1]);
     if (cardsShown.length < 12) fail(`hq: only ${cardsShown.length} desk items rendered`);
@@ -1941,7 +1938,7 @@ if (failures.length) {
   // "Give work" is a form with the lead chosen by name and area; it posts to that lead, with the
   // "done" lines split on newlines and semicolons.
   {
-    runInContext("HQ.tab = null; HQ.working = false; HQ.workDraft = {};", context);
+    runInContext("HQ.place = null; HQ.working = false; HQ.workDraft = {};", context);
     if (runInContext("viewHQ()", context).includes('id="hq-work-title"')) fail("hq: the give-work form is open before it is asked for");
     await runInContext('dispatch("hq:work")', context);
     const form = runInContext("viewHQ()", context);
@@ -2031,7 +2028,7 @@ if (failures.length) {
   {
     // What the team knows is folded on Manage (2026-10-30): opened, the World card.
     runInContext("HQ.more.knows = true;", context);
-    const world = runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('role="tabpanel"')[0];
+    const world = runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('class="hq-place"')[0];
     const top = world.split("<h3>Pages</h3>")[0];
     if (!top.includes('data-act="hq:world:paste:show">Paste Markdown</button>')) fail("hq: Paste Markdown is not a button at the top of the World card");
     for (const said of ["house page", "Edit rewrites"]) {
@@ -2045,7 +2042,7 @@ if (failures.length) {
     // Knowledge is a list of pages, each opened on its own, with nothing folded (the owner,
     // 2026-10-25): the page list, a page with its sections and a way back, and the owner's form.
     // Knowledge is on the Manage tab since 2026-10-30, behind its fold: from the World card on.
-    const knowledge = () => runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('role="tabpanel"')[0].split("<h2>World</h2>")[1];
+    const knowledge = () => runInContext("viewHQ()", context).split('id="hq-panel-manage"')[1].split('class="hq-place"')[0].split("<h2>World</h2>")[1];
     runInContext("HQ_WORLD_VIEW.page = null; HQ_WORLD_VIEW.writing = false;", context);
     const list = knowledge();
     if (list.includes("<details")) fail("hq: the Knowledge tab still folds things away");
@@ -2128,7 +2125,7 @@ if (failures.length) {
   {
     const twice = runInContext(`hqLogLines([{ key: "b1", at: "06:53", kind: "run", text: "Sol submitted a branch on EL-7", refs: {} }, { key: "b2", at: "06:53", kind: "run", text: "Sol submitted a branch on EL-7", refs: {} }])`, context);
     if ((twice.match(/<li>/g) || []).length !== 1 || !twice.includes("×2")) fail(`hq: identical lines in one minute are told twice: ${twice}`);
-    const manage = runInContext(`(() => { hqSetTab("manage"); const h = viewHQ(); HQ.tab = null; return h; })()`, context);
+    const manage = runInContext(`(() => { hqGo("manage"); const h = viewHQ(); HQ.place = null; return h; })()`, context);
     if (!/<div class="hq-foldstack">[\s\S]*hq:more:accepted:toggle/.test(manage)) fail("hq: Manage's folds are not stacked as one grid item");
   }
   // Tabs climb round 6: a failed turn's row leads with its task's title, the member, outcome and
@@ -2142,26 +2139,21 @@ if (failures.length) {
     const kept = runInContext(`hqLogLines([{ key: "c1", at: "06:54", kind: "you", text: "You pushed hq/task-9-x to the fork", refs: {} }, { key: "c2", at: "06:54", kind: "run", text: "endora: Submitted branch hq/task-9-x for judging", refs: {} }])`, context);
     if (!kept.includes("Submitted branch")) fail("hq: an engine post recording a different action was hidden");
   }
-  // The office plays on every tab (the owner, 2026-10-25), with nothing to open or close; on a
-  // phone its counters and legend are the Health tab's (2026-10-30).
+  // The studio is the Office's (M6): not hidden or cut to a strip on a phone when it is open, never
+  // drawn on the map, and the page never grows wider than a phone (every phone shot clipped).
   {
     const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
     const phone = css.split("@media (max-width: 767px)").map((part) => part.split("\n  }\n")[0]).slice(1).join("\n");
-    if (!/\.hq-tabs \{ order: -2;/.test(phone)) fail("hq: the tabs do not sit first on a phone");
     if (/\.hq-stage \{[^}]*display: none/.test(phone) || /canvas-wrap \{ height: 120px/.test(phone)) fail("hq: the office is hidden or cut to a strip on a phone");
-    // On every size the counters and legend are the Health tab's (council round 0: a developer
-    // strip under the office), and the page never grows wider than a phone (every phone shot clipped).
-    // Top-level rules sit two spaces in; a media query's sit four.
-    if (!/\n  \.hq:not\(\[data-tab="health"\]\) \.hq-stats/.test(css)) fail("hq: the office's counters are not the Health tab's on every size");
     if (!/\n  \.hq \{[^}]*grid-template-columns: minmax\(0, 1fr\)/.test(css)) fail("hq: the HQ column can grow past a phone's width");
-    for (const tab of ["work", "manage", "health", "activity"]) {
-      runInContext(`hqSetTab(${JSON.stringify(tab)})`, context);
-      const html = runInContext("viewHQ()", context);
-      if (!html.includes('<canvas id="hq-office"') || html.includes("hq:stage:toggle")) fail(`hq: the office does not play on ${tab}, or can be hidden`);
+    if (/\.hq-tabs|\.hq-tab\b/.test(css)) fail("styles: the retired tab strip still has rules");
+    for (const place of ["map", "work", "manage", "health", "activity", "chess"]) {
+      runInContext(`HQ.place = ${JSON.stringify(place)}`, context);
+      if (runInContext("viewHQ()", context).split('id="hq-panel-office"')[0].includes('<canvas id="hq-office"')) fail(`hq: the studio is drawn with ${place}`);
     }
-    runInContext("HQ.tab = null;", context);
+    runInContext("HQ.place = null;", context);
   }
-  console.log("hq: tabs switch and are remembered, the desk explains every choice, work goes to the lead picked, and the office plays on every tab");
+  console.log("hq: the desk explains every choice, work goes to the lead picked, and the studio plays only in the Office");
   runInContext("HQ.snap.stopped = true;", context);
   if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
   runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);
@@ -2172,23 +2164,31 @@ if (failures.length) {
 }
 
 // The HQ agents map (the owner's decision M5): the Core team, the items each holds by project,
-// what runs and what waits on the owner, from HQ's read only. Opened from HQ's bar; an item opens
+// what runs and what waits on the owner, from HQ's read only. HQ's first screen (M6); an item opens
 // its Live Work map; a line moves only for a running turn; every word stays text.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`HQ.error = ""; HQ.selected = null;
     HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
       members: [], tasks: [], runs: [], recent_runs: [] }; NAV = { v: "hq" };`, context);
-  if (!runInContext("viewHQ()", context).includes('data-act="agents:open:map"')) fail("agents: HQ's bar does not open the agents map");
   const asked = [];
   const realFetch = context.fetch;
-  context.fetch = (path) => { asked.push(String(path)); return Promise.reject(new Error("no network in the console check")); };
-  await runInContext('dispatch("agents:open:map")', context);
-  await new Promise((done) => setTimeout(done, 0));
+  const snapshot = { stopped: false, last_event: 0, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [], members: [], tasks: [], runs: [], recent_runs: [] };
+  context.fetch = (path) => {
+    asked.push(String(path));
+    if (String(path) === "/v1/hq") return Promise.resolve({ ok: true, status: 200, json: async () => snapshot });
+    return Promise.reject(new Error("no network in the console check"));
+  };
+  // The studio's art loads with HQ; here it is never drawn.
+  const hadImage = "Image" in context;
+  if (!hadImage) context.Image = class { addEventListener() {} };
+  await runInContext("loadHQ()", context);
+  if (!hadImage) delete context.Image;
+  runInContext("clearInterval(HQ.polling); HQ.polling = null;", context);
   context.fetch = realFetch;
-  if (runInContext("NAV.v", context) !== "agents") fail("agents: the bar's button does not open the map");
-  if (!asked.some((p) => p.endsWith("/v1/hq/team-map"))) fail(`agents: opening the map asks the node nothing: ${asked}`);
-  if (!runInContext("viewAgents()", context).includes("HQ did not answer")) fail("agents: a map HQ did not answer does not say so");
+  if (!asked.some((p) => p.endsWith("/v1/hq/team-map"))) fail(`agents: opening HQ does not read the map: ${asked}`);
+  runInContext('HQ.error = ""; HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [], members: [], tasks: [], runs: [], recent_runs: [] };', context);
+  if (!runInContext("hqMap()", context).includes("HQ did not answer")) fail("agents: a map HQ did not answer does not say so");
   const H = 3600000;
   runInContext(`AGENTS.error = ""; AGENTS.map = {
     running: 0, queued: 0, blocked: 2, said: "Nothing is running. 3 cards wait on you.", desk_total: 3, desk_oldest: 0,
@@ -2200,8 +2200,8 @@ if (failures.length) {
       { name: "Bo", brain: "Local", state: "working", last_seen: ${H}, last_work: null,
         live: [{ run: 41, task: 9, heard: ${2 * H}, moving: true }], groups: [] },
       { name: "Cy", brain: "Mac", state: "furloughed", last_seen: null, last_work: null, live: [], groups: [] }],
-    unheld: [{ task: 8, title: "Find what stops gluetun", status: "blocked", asks_owner: false }] }; NAV = { v: "agents", id: "" };`, context);
-  const map = runInContext("viewAgents()", context);
+    unheld: [{ task: 8, title: "Find what stops gluetun", status: "blocked", asks_owner: false }] }; NAV = { v: "hq" };`, context);
+  const map = runInContext("hqMap()", context);
   for (const said of ["Nothing is running. 3 cards wait on you.", "Harness &lt;b&gt;climb&lt;/b&gt;", "Probe &lt;i&gt;seed&lt;/i&gt;",
     'data-act="live:task:7"', "ag-asks", "ag-moving", "R41", "Held by nobody", "Find what stops gluetun", "Furloughed", "Cy",
     "1 question", "1 project budget", "Claude Haiku", "last seen"]) {
@@ -2210,7 +2210,7 @@ if (failures.length) {
   // Only the running turn's line moves; the idle member's card has none.
   if ((map.match(/ag-moving/g) || []).length !== 1) fail("agents: a line moves that no running turn backs");
   runInContext(`AGENTS.map.members[1].live[0].moving = false; AGENTS.map.members[1].state = "unknown";`, context);
-  const still = runInContext("viewAgents()", context);
+  const still = runInContext("hqMap()", context);
   if (still.includes("ag-moving") || !still.includes("no signal since")) fail("agents: a silent running turn still moves, or does not say since when");
   console.log("agents: the team's map, from HQ's read: who holds what by project, only running turns move, the desk by project, text as text");
 }
@@ -2458,8 +2458,8 @@ if (failures.length) {
 // and back to the same place in Activity. The turns running now are at its top, each to watch.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('role="tabpanel"')[0];
-  runInContext(`HQ.error = ""; HQ.feed = null; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.tab = "activity"; HQ.log = []; HQ.logOpen = {}; HQ.whole = {};
+  const activityOf = (html) => html.split('id="hq-panel-activity"')[1].split('class="hq-place"')[0];
+  runInContext(`HQ.error = ""; HQ.feed = null; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.place = "activity"; HQ.log = []; HQ.logOpen = {}; HQ.whole = {};
     HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
       members: [{ id: 2, name: "Bo", look: 4, running: [{ run: 4952, task: 955 }], brains: [] },
                 { id: 3, name: "Al", look: 1, running: [], brains: [] }],
@@ -2485,16 +2485,17 @@ if (failures.length) {
   runInContext(`__keepScroll = scrollTo; __scrolled = []; scrollTo = (x, y) => __scrolled.push(y); window.scrollY = 640;
     __keepGo = go; go = (v, id) => { NAV = { v, id }; }; NAV = { v: "hq" }; __keepRender = render; render = () => {};`, context);
   await runInContext('dispatch("hq:from:task:955")', context);
-  if (runInContext("HQ.tab + ' ' + JSON.stringify(HQ.selected)", context) !== 'work {"type":"task","id":955}') fail("activity: an item does not open under Looking at");
+  if (runInContext("HQ.place + ' ' + JSON.stringify(HQ.selected)", context) !== 'detail {"type":"task","id":955}') fail("activity: an item does not open under Looking at");
   const looking = runInContext("viewHQ()", context);
   if (!looking.includes('id="hq-looking"') || !looking.includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: an item opened from Activity has no way back");
   await runInContext('dispatch("hq:back")', context);
-  await new Promise((r) => setTimeout(r, 5));
-  if (runInContext("HQ.tab + ' ' + HQ.back + ' ' + __scrolled.pop()", context) !== "activity null 640") fail("activity: back does not return to the same place in Activity");
+  // Two animation frames (each a timer here) before the scroll is restored.
+  await new Promise((r) => setTimeout(r, 20));
+  { const got = runInContext("HQ.place + ' ' + HQ.back + ' ' + __scrolled.pop()", context); if (got !== "activity null 640") fail(`activity: back does not return to the same place in Activity: ${got}`); }
   // A member opens their line on the team board.
   await runInContext('dispatch("hq:from:member:3")', context);
   const board = runInContext("viewHQ()", context);
-  if (runInContext("HQ.tab + ' ' + HQ.roster[3]", context) !== "manage true" || !board.includes('id="hq-member-3"') || !board.includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: a member does not open their line on the team board, with a way back");
+  if (runInContext("HQ.place + ' ' + HQ.roster[3]", context) !== "manage true" || !board.includes('id="hq-member-3"') || !board.includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: a member does not open their line on the team board, with a way back");
   await runInContext('dispatch("hq:back")', context);
   // A turn opens its replay with what it was given; Watch opens it as it is; both come back.
   await runInContext('dispatch("hq:from:run:4952")', context);
@@ -2502,7 +2503,7 @@ if (failures.length) {
   runInContext(`REPLAY.kind = "run"; REPLAY.id = 4952; REPLAY.error = ""; REPLAY.runs = [];`, context);
   if (!runInContext("viewReplay()", context).includes('data-act="hq:back">◀ Back to Activity</button>')) fail("activity: a replay opened from Activity has no way back");
   await runInContext('dispatch("hq:back")', context);
-  if (runInContext("NAV.v + ' ' + HQ.tab", context) !== "hq activity") fail("activity: back from a replay does not land on Activity");
+  if (runInContext("NAV.v + ' ' + HQ.place", context) !== "hq activity") fail("activity: back from a replay does not land on Activity");
   await runInContext('dispatch("hq:from:watch:4952")', context);
   if (runInContext("NAV.v + ' ' + NAV.id + ' ' + REPLAY.given", context) !== "replay run-4952 false") fail("activity: Watch does not open the turn's replay");
   if (runInContext("viewReplay()", context).includes("Back to Activity") === false) fail("activity: a watched replay has no way back");
@@ -2514,7 +2515,7 @@ if (failures.length) {
   if (runInContext("__askedFor.join()", context) !== "/v1/hq/tasks/955") fail("activity: a cut post is not asked of HQ whole");
   if (!activityOf(runInContext("viewHQ()", context)).includes("WHOLE-END")) fail("activity: a cut post opened does not show it whole");
   runInContext(`api = __keepApi; scrollTo = __keepScroll; go = __keepGo; render = __keepRender; window.scrollY = 0;
-    HQ.snap = null; HQ.log = []; HQ.logOpen = {}; HQ.whole = {}; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.tab = null; NAV = { v: "home" };`, context);
+    HQ.snap = null; HQ.log = []; HQ.logOpen = {}; HQ.whole = {}; HQ.back = null; HQ.selected = null; HQ.roster = {}; HQ.place = null; NAV = { v: "home" };`, context);
   console.log("activity: each line opens the item, turn, member or post it names and steps back to its place; Running now offers each turn to watch");
 }
 
@@ -3527,7 +3528,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
       table: [{ brain: "local", label: "Local", rating: 1216, points: 1, won: 1, drawn: 0, lost: 0 }, { brain: "claude-haiku-5-5", label: "<b>Haiku</b>", rating: 1184, points: 0, won: 0, drawn: 0, lost: 1 }],
       games: [{ task: 812, white: "claude-haiku-5-5", black: "local", end: "black_won", half_moves: 4, live: false }], pairs_left: 2, round: { number: 1, since: null } } }) });`, context);
   const pointer = html("hqHolodeck(HQ.snap)");
-  if (!pointer.includes('data-act="hq:tab:chess:go"') || pointer.includes("Model league") || pointer.includes("hq-spark")) fail("holodeck: the Work card does not point to the Chess tab, or still shows the league: " + pointer);
+  if (!pointer.includes('data-act="hq:place:chess:go"') || pointer.includes("Model league") || pointer.includes("hq-spark")) fail("holodeck: the Open work card does not point to the Chess league, or still shows the league: " + pointer);
   // The league's standings on the Chess tab: one line a brain, its points, rating and record,
   // its rating game by game as a small line, and its games, each opening its board.
   const league = html("hqChessTab(HQ.snap)");
@@ -3616,7 +3617,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (!runInContext("__same.open", context) || runInContext("__other.open", context)) fail("render: a fold-out the owner opened closes on a live update, or another one opens");
   // The league alone, before any match is listed, still shows the card, with its way to Chess.
   runInContext(`HQ.snap = Object.assign({}, HQ.snap, { holodeck: { scenarios: [], league: HQ.snap.holodeck.league } });`, context);
-  if (!html("hqHolodeck(HQ.snap)").includes('data-act="hq:tab:chess:go"')) fail("holodeck: the league alone does not show the card");
+  if (!html("hqHolodeck(HQ.snap)").includes('data-act="hq:place:chess:go"')) fail("holodeck: the league alone does not show the card");
   // Tapping a match fetches it and shows it; an old trial or re-run tap fetches nothing.
   runInContext(`__asked = []; api = async (method, path) => { __asked.push(method + " " + path); return { task: 708, kind: "chess", log: [] }; };`, context);
   await runInContext(`hqDispatch("hq", "holo", "open", "708")`, context);
@@ -3638,7 +3639,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   const fail = (what) => { console.error(what); process.exit(1); };
   const html = (code) => String(runInContext(code, context));
   const words = (h) => h.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-  runInContext(`__keepChess = [HQ.snap, HQ.holo, HQ.chessGames, HQ.tab, api, render, flash]; render = () => {}; flash = () => {}; HQ.tab = "chess";`, context);
+  runInContext(`__keepChess = [HQ.snap, HQ.holo, HQ.chessGames, HQ.place, api, render, flash]; render = () => {}; flash = () => {}; HQ.place = "chess";`, context);
   const start = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"];
   const afterE4 = ["rnbqkbnr", "pppppppp", "........", "........", "....P...", "........", "PPPP.PPP", "RNBQKBNR"];
   const league = {
@@ -3732,7 +3733,7 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   if (!/overflow-x: auto/.test(box) || !/max-width: 100%/.test(box)) fail("styles: the bracket's box does not scroll inside itself: " + box);
   const crossCss = (css.match(/\n\s*\.hq-cross \{[^}]*\}/) || [""])[0];
   if (!crossCss || /width: 100%/.test(crossCss) && !/min-width: max-content/.test(crossCss)) fail("styles: the bracket table is not sized to its cells inside its box: " + crossCss);
-  runInContext(`[HQ.snap, HQ.holo, HQ.chessGames, HQ.tab, api, render, flash] = __keepChess;`, context);
+  runInContext(`[HQ.snap, HQ.holo, HQ.chessGames, HQ.place, api, render, flash] = __keepChess;`, context);
   console.log("chess tab: live boards, the round's bracket and standings, and every game a page at a time with its PGN; the bracket scrolls in its box on a phone");
 }
 
@@ -3830,6 +3831,118 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
   await runInContext('soundKeepUp()',context);
   if (runInContext('clockTicket!==1 || clockReconnect!==1',context)) throw new Error("sound keep-up: fresh and stale live streams did not use the browser clock");
   runInContext('fetch=clockKeep.fetch;soundTicket=clockKeep.soundTicket;soundReconnect=clockKeep.soundReconnect;SOUND.listening=clockKeep.listening;SOUND.mode=clockKeep.mode;LIVE.session=clockKeep.session;',context);
+}
+
+// The console's scenarios (`app/node/src/web/features/*.feature`), in the owner's words: HQ opens
+// on the agents map and keeps every control (M6). Cucumber runs the Rust crates' scenarios; these
+// are read here by a few lines of Given/When/Then, against the console already running in this
+// context, so the console takes no test dependency. Every step must match one definition below;
+// an unknown step fails, as it would in Cucumber.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const featureDir = resolve(here, "../app/node/src/web/features");
+  const H = 3600000;
+  const store = {};
+  let html = "";
+  const fixture = () => ({
+    snap: { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], digest: [], goals: [], projects: [{ id: 1, goal: 1, title: "example project", status: "active" }],
+      routines: [], members: [{ id: 1, name: "John Doe", brain: "local", brains: [], running: [], slots: 1 }, { id: 2, name: "Jane Doe", brain: "local", brains: [], running: [], slots: 1 }],
+      tasks: [{ id: 7, title: "example task", status: "doing", owner: 1, project: 1, thread: [] }], runs: [], recent_runs: [],
+      office: {}, games: { recent: [], chess: { games: [{ white: "John Doe", black: "Jane Doe", status: "in_progress", to_move: "white", moves: [] }] } } },
+    map: { running: 0, queued: 0, blocked: 0, said: "Nothing is running.", desk_total: 0, desk_oldest: 0, desk: [], unheld: [],
+      members: [{ name: "John Doe", brain: "Local", state: "idle", last_seen: H, last_work: null, live: [],
+        groups: [{ project: "example project", items: [{ task: 7, title: "example task", status: "doing", asks_owner: false }] }] }] },
+  });
+  const place = (h) => [...h.matchAll(/class="hq-place" id="hq-panel-(\w+)"(?![^>]* hidden)[^>]*>/g)].map((m) => m[1]).join();
+  const placeOf = (h, id) => (h.split(`id="hq-panel-${id}"`)[1] || "").split('class="hq-place"')[0];
+  const label = (name) => { const found = runInContext(`(HQ_PLACES.find(([, l]) => l === ${JSON.stringify(name)}) || [""])[0]`, context); if (!found) fail(`scenario: no place called ${name}`); return found; };
+  const draw = () => { runInContext("render();", context); html = runInContext("app.innerHTML", context); };
+  const steps = [
+    [/^HQ has John Doe working on "([^"]+)" in "([^"]+)"$/, () => {}],
+    [/^the desk has a question "([^"]+)"$/, (text) => runInContext(`HQ.snap.desk = [{ id: 31, kind: "question", task: 7, text: ${JSON.stringify(text)} }];
+      AGENTS.map.desk_total = 1; AGENTS.map.desk = [{ project: "example project", count: 1, kinds: [{ kind: "question", count: 1 }] }];`, context)],
+    [/^this browser remembers the old "(\w+)" tab$/, (tab) => { store["endora.hq.tab.v4"] = tab; }],
+    [/^the owner is on "([^"]+)"$/, (name) => runInContext(`HQ.place = ${JSON.stringify(label(name))};`, context)],
+    [/^HQ's map does not answer$/, () => runInContext('AGENTS.map = null; AGENTS.error = "HQ did not answer: away";', context)],
+    [/^John Doe holds "([^"]+)", blocked and asking the owner$/, (title) => runInContext(`Object.assign(AGENTS.map.members[0].groups[0].items[0], { title: ${JSON.stringify(title)}, status: "blocked", asks_owner: true }); AGENTS.map.blocked = 1;`, context)],
+    [/^John Doe's turn is running and was heard from just now$/, () => runInContext(`Object.assign(AGENTS.map.members[0], { state: "working", live: [{ run: 41, task: 7, heard: Date.now(), moving: true }] }); AGENTS.map.running = 1;`, context)],
+    [/^John Doe's turn is running but has gone silent$/, () => runInContext(`Object.assign(AGENTS.map.members[0], { state: "unknown", live: [{ run: 41, task: 7, heard: ${2 * H}, moving: false }] }); AGENTS.map.running = 1;`, context)],
+    [/^Jane Doe is idle$/, () => runInContext(`AGENTS.map.members.push({ name: "Jane Doe", brain: "Local", state: "idle", last_seen: ${H}, last_work: null, live: [], groups: [] });`, context)],
+    [/^the owner opens the console$/, () => { runInContext("HQ.place = null; NAV = { v: 'hq' };", context); draw(); }],
+    [/^the owner follows the old agents map link$/, async () => { await runInContext('dispatch("agents:open:map")', context); draw(); }],
+    [/^the owner follows an old link to the "(\w+)" tab$/, async (tab) => { await runInContext(`dispatch("hq:tab:${tab}:go")`, context); draw(); }],
+    [/^the owner opens "([^"]+)"$/, async (name) => { await runInContext(`dispatch("hq:place:${label(name)}:go")`, context); draw(); }],
+    [/^the owner presses Escape$/, () => { runInContext("hqPlaceKey({ key: 'Escape', preventDefault() {} });", context); draw(); }],
+    [/^the owner visits every place$/, () => {}],
+    [/^HQ shows the agents map$/, () => { if (place(html) !== "map" || !placeOf(html, "map").includes("hq-agents ag")) fail(`scenario: HQ shows ${place(html)}, not the agents map`); }],
+    [/^HQ shows "([^"]+)" with a way back to the map$/, (name) => {
+      if (place(html) !== label(name)) fail(`scenario: HQ shows ${place(html)}, not ${name}`);
+      if (!html.includes('data-act="hq:place:map:go">◀ Agents map</button>')) fail(`scenario: ${name} has no way back to the map`);
+    }],
+    [/^the owner's decisions are beside the map$/, () => { if (!placeOf(html, "map").includes('id="hq-decisions"') || !placeOf(html, "map").includes("hq:decide:31:seen")) fail("scenario: the decisions are not beside the map"); }],
+    [/^the studio is not drawn on the map$/, () => { if (placeOf(html, "map").includes("<canvas")) fail("scenario: the studio is on the map"); }],
+    [/^this browser no longer remembers an old tab$/, () => { if (Object.keys(store).some((k) => k.startsWith("endora.hq.tab"))) fail("scenario: the old tab is still remembered"); }],
+    [/^the map says HQ did not answer$/, () => { if (!placeOf(html, "map").includes("HQ did not answer: away")) fail("scenario: the map does not say HQ did not answer"); }],
+    [/^each place has the kill switch and Give work in its bar$/, () => {
+      for (const [id] of runInContext("HQ_PLACES", context)) {
+        runInContext(`HQ.place = ${JSON.stringify(id)};`, context); draw();
+        const bar = html.split('class="hq-place"')[0];
+        if (!bar.includes('data-act="hq:stop"') || !bar.includes('data-act="hq:work"')) fail(`scenario: ${id} has no kill switch or Give work in its bar`);
+      }
+    }],
+    [/^the question "([^"]+)" can be answered from the map$/, (text) => {
+      const map = placeOf(html, "map");
+      if (!map.includes(text) || !map.includes('id="hq-answer-31"') || !map.includes('data-act="hq:decide:31:seen">Answer &amp; wake</button>') && !map.includes('data-act="hq:decide:31:seen">Answer & wake</button>')) fail("scenario: the question cannot be answered from the map");
+    }],
+    [/^the map marks "([^"]+)" as blocked and asking the owner$/, (title) => { if (!new RegExp(`class="ag-item ag-bad ag-asks" data-act="live:task:7"[^>]*>[^<]*<b>#7</b> \\? ${title}`).test(placeOf(html, "map"))) fail("scenario: the blocked item that asks the owner is not marked"); }],
+    [/^tapping "([^"]+)" opens its Live Work map$/, async () => {
+      runInContext("__keepGoS = go; go = (v, id) => { NAV = { v, id }; };", context);
+      await runInContext('dispatch("live:task:7")', context);
+      const at = runInContext("NAV.v + ' ' + NAV.id", context);
+      runInContext("go = __keepGoS; NAV = { v: 'hq' };", context);
+      if (at !== "live task-7") fail(`scenario: tapping the item opens ${at}`);
+    }],
+    [/^exactly one line moves on the map$/, () => { if ((placeOf(html, "map").match(/ag-live ag-moving/g) || []).length !== 1) fail("scenario: not exactly one line moves"); }],
+    [/^no line moves on the map$/, () => { if (placeOf(html, "map").includes("ag-moving")) fail("scenario: a line moves with no turn heard from"); }],
+    [/^the map says when John Doe's turn was last heard from$/, () => { if (!placeOf(html, "map").includes("no signal since")) fail("scenario: the silent turn does not say since when"); }],
+    [/^the Office shows the studio and the office's games$/, () => {
+      const office = placeOf(html, "office");
+      if (place(html) !== "office" || !office.includes('<canvas id="hq-office"') || !office.includes("<h2>Office</h2>") || !office.includes('data-act="hq:pick:chess:0">Look at the board</button>')) fail("scenario: the Office lacks the studio or the office's chess board");
+    }],
+  ];
+  const realStore = context.localStorage;
+  // A scenario asks where the console lands, not what it fetches there: nothing is fetched.
+  runInContext("__keepScen = [HQ.snap, HQ.error, HQ.feed, HQ.place, HQ.selected, AGENTS.map, AGENTS.error, NAV, render, loadView]; loadView = async () => {};", context);
+  let scenarios = 0, stepsRun = 0;
+  for (const file of readdirSync(featureDir).filter((f) => f.endsWith(".feature")).sort()) {
+    const lines = readFileSync(resolve(featureDir, file), "utf8").split("\n").map((l) => l.trim());
+    const background = [], cases = [];
+    let into = null;
+    for (const line of lines) {
+      if (line.startsWith("Background:")) { into = background; continue; }
+      if (line.startsWith("Scenario:")) { into = []; cases.push({ name: line.slice(9).trim(), steps: into }); continue; }
+      const m = line.match(/^(Given|When|Then|And|But) (.+)$/);
+      if (m && into) into.push(m[2]);
+    }
+    for (const c of cases) {
+      for (const k of Object.keys(store)) delete store[k];
+      context.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } };
+      const f = fixture();
+      context.__scenFixture = f;
+      runInContext("HQ.snap = __scenFixture.snap; HQ.error = ''; HQ.feed = null; HQ.back = null; HQ.place = null; HQ.selected = null; HQ.more = {}; AGENTS.map = __scenFixture.map; AGENTS.error = ''; NAV = { v: 'hq' }; render = __keepScen[8];", context);
+      for (const step of background.concat(c.steps)) {
+        const def = steps.find(([re]) => re.test(step));
+        if (!def) fail(`scenario "${c.name}" (${file}): no step matches "${step}"`);
+        await def[1](...step.match(def[0]).slice(1));
+        stepsRun += 1;
+      }
+      scenarios += 1;
+    }
+  }
+  context.localStorage = realStore;
+  // The Office's studio loops while it shows: leave the map showing, so the loop ends on its next frame.
+  runInContext("[HQ.snap, HQ.error, HQ.feed, HQ.place, HQ.selected, AGENTS.map, AGENTS.error, NAV, render, loadView] = __keepScen; HQ.place = 'map';", context);
+  console.log(`console scenarios: ${scenarios} scenarios (${stepsRun} steps) passed`);
 }
 
 console.log(`console check: ${named.length} screens render`);

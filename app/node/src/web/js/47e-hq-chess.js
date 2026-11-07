@@ -121,7 +121,7 @@ function hqChessAll() {
 // While the tab is showing, the list is asked for once, and again (from its newest page) when the
 // snapshot counts another finished game: the console's own refresh drives it, no timer of its own.
 function hqChessKeepUp(l) {
-  if (hqTab() !== "chess") return;
+  if (hqPlace() !== "chess") return;
   const finished = (l.games || []).filter((g) => !g.live).length;
   const c = HQ.chessGames;
   if (c && (c.busy || c.seen === finished)) return;

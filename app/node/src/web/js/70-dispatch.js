@@ -24,7 +24,6 @@ function render() {
     : v === "hq" ? viewHQ()
     : v === "replay" ? viewReplay()
     : v === "live" ? viewWorkMap()
-    : v === "agents" ? viewAgents()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()

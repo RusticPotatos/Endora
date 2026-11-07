@@ -292,17 +292,14 @@
      many columns as fit (one on a phone, two or three on a big screen). */
   .hq-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
   .hq-stage, .hq-card { background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; min-width: 0; }
-  .hq-stage { padding: 8px; order: -1; }
+  .hq-stage { padding: 8px; }
   .hq-canvas-wrap { overflow: hidden; border-radius: 3px; }
   /* The tabs: Desk first, then the rest, one panel at a time. */
-  .hq-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--hq-line); }
-  .hq-tabs::-webkit-scrollbar { display: none; }
-  .hq .hq-tab { flex: 0 0 auto; min-height: 44px; padding: 8px 14px; font: 400 12px var(--hq-pixel); letter-spacing: .04em; background: none; color: var(--hq-muted);
-    border: 0; border-bottom: 3px solid transparent; border-radius: 0; box-shadow: none; cursor: pointer; }
-  .hq .hq-tab[aria-selected="true"] { color: var(--hq-fg); border-bottom-color: var(--hq-neon); }
-  .hq .hq-tab:focus-visible { outline: 2px solid var(--hq-neon); outline-offset: -2px; }
-  .hq-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--hq-neon); color: #fff; font: 11px var(--hq-mono); text-align: center; }
-  .hq-side[hidden] { display: none; }
+  /* The quiet row to HQ's other places (M6): words, not a tab strip; the place showing is marked. */
+  .hq-places { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12.5px; color: var(--hq-muted); }
+  .hq-places .hq-link { min-height: 32px; font-weight: 500; }
+  .hq-places .hq-link[aria-current="page"] { color: var(--hq-neon); text-decoration: underline solid; }
+  .hq-place[hidden] { display: none; }
   /* The status chips under the title, and the give-work form. */
   .hq-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   /* line-height after the font shorthand, which would reset it: every chip's text on one centre line. */
@@ -321,10 +318,18 @@
   .hq-narrow { display: none; }
   .hq > *, .hq-bar > *, .hq-chips > * { min-width: 0; max-width: 100%; }
   /* The counters and the legend are the Health tab's on every size (council round 0). */
-  .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend { display: none; }
   .hq-stat { border: 1px solid var(--hq-line); border-radius: 4px; padding: 4px 9px; font-size: 12px; color: var(--hq-muted); font-variant-numeric: tabular-nums; }
   .hq-stat b { color: var(--hq-fg); font-weight: 600; }
-  .hq-side { display: grid; gap: 12px; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }
+  .hq-place { display: grid; gap: 12px; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }
+  /* The map place: the team on the left, your decisions beside it on a wide screen, under it on a
+     phone; the page widens only while the map shows. */
+  main:has(.hq[data-place="map"]) { max-width: 1440px; }
+  .hq-place#hq-panel-map { grid-template-columns: minmax(0, 1fr); }
+  .hq-mapgrid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); align-items: start; min-width: 0; }
+  @media (min-width: 1100px) { .hq-mapgrid { grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); } }
+  .hq-decide { display: grid; gap: 12px; min-width: 0; scroll-margin-top: 12px; }
+  .hq-decide:focus { outline: none; }
+  .hq-decide:focus-visible { outline: 2px solid var(--hq-neon); outline-offset: 2px; }
   .hq-card h2, .hq-card summary {
     font: 400 12px var(--hq-pixel); letter-spacing: .04em; margin: 0 0 8px; color: var(--hq-muted);
     display: flex; justify-content: space-between; gap: 8px;
@@ -481,7 +486,6 @@
 
   /* ---- HQ: the agents map (M5): you on top with your desk by project, the members below with the
      items they hold. A line moves only while a turn runs; red is blocked; "?" asks you. */
-  main:has(.hq-agents) { max-width: 1440px; }
   .ag-hero { display: grid; gap: 4px; padding: 12px 14px; border-radius: 8px; border-left: 4px solid var(--hq-green); background: var(--hq-panel-2); margin-bottom: 12px; }
   .ag-hero b { font-size: 18px; }
   .ag-hero small { color: var(--hq-muted); }
@@ -638,7 +642,8 @@
   /* Health on a wide screen: outcomes then turns on the left, What failed spanning both on the right. */
   .hq-health { display: contents; }
   @media (min-width: 768px) {
-    .hq-side:has(> .hq-health) { grid-template-areas: "out fail" "turns fail"; }
+    .hq-place:has(> .hq-health) { grid-template-areas: "stats stats" "out fail" "turns fail"; }
+    .hq-place:has(> .hq-health) > .hq-stats { grid-area: stats; }
     .hq-h-out { grid-area: out; } .hq-h-turns { grid-area: turns; } .hq-h-fail { grid-area: fail; align-self: start; }
   }
   .hq details > summary { color: var(--hq-muted); font-weight: 400; }
@@ -657,19 +662,14 @@
   .hq-cost tbody th { font-weight: 600; }
   .hq-cost small { display: block; color: var(--hq-muted); font-size: 12px; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
-  /* A phone: the office is a thin strip until the owner opens it, so the desk is first on
-     screen; the tabs sit straight under the top bar. */
+  /* A phone: the map, then your decisions, one column; the row to the other places scrolls. */
   @media (max-width: 767px) {
     .hq-main { gap: 10px; }
-    .hq-tabs { order: -2; gap: 0; justify-content: space-between; }
-    .hq .hq-tab { flex: 1 1 0; padding: 8px 6px; font-size: 12px; letter-spacing: 0; }
-    .hq-badge { padding: 0 4px; margin-left: 2px; }
-    /* The office plays on every tab (the owner, 2026-10-25); its counters and legend are the
-       Health tab's (2026-10-30), so the other tabs keep only the animation above their content. */
-    .hq-stage { order: -1; padding: 4px; }
-    .hq:not([data-tab="health"]) .hq-stats, .hq:not([data-tab="health"]) .hq-legend,
-    .hq:not([data-tab="health"]) .hq-stage .hq-note { display: none; }
-    .hq-side { grid-template-columns: minmax(0, 1fr); }
+    .hq-stage { padding: 4px; }
+    .hq-place { grid-template-columns: minmax(0, 1fr); }
+    .hq-places { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .hq-places::-webkit-scrollbar { display: none; }
+    .hq-places > * { flex: 0 0 auto; white-space: nowrap; }
     /* A shorter top on a phone (council round 2): the title and both buttons on one line, the chips
        on one row that scrolls, so the whole studio is above the fold. */
     .hq h1 { font-size: 17px; }

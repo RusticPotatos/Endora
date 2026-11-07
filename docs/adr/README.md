@@ -324,6 +324,7 @@ of an existing record and take the next number.
 | [0140](0140-confidential-asks-stay-on-the-house.md) | Confidential asks stay on the house's models | - |
 | [0141](0141-confidential-open-to-claude.md) | Confidential data is open to Claude; Restricted stays home | - |
 | [0142](0142-one-team-of-loops.md) | One team of loops: members are ranked models, loops replace the company | Supersedes 0110, 0111, 0120, 0137, 0138 |
+| [0143](0143-hq-opens-on-the-agents-map.md) | HQ opens on the agents map; the other places are secondary | Amends 0136, 0119, 0121 |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

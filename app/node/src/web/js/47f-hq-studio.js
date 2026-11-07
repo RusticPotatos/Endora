@@ -540,7 +540,7 @@ function hqKnowingPanel() {
   const s = HQ.snap || {}, w = s.world || {};
   return `<div class="hq-sel">What we know</div>
     <p class="hq-who">${(w.sections || []).length} notes in the team's world and ${(s.map_lines || []).length} lines on its map; a spine each on the lounge's bookcase.</p>
-    <div class="hq-row"><button class="hq-btn" data-act="hq:tab:manage">Open what the team knows</button></div>`;
+    <div class="hq-row"><button class="hq-btn" data-act="hq:place:manage:go">Open what the team knows</button></div>`;
 }
 // The board, tapped: the goal, and every turn running now with its whole title.
 function hqGoalPanel() {
