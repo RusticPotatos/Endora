@@ -2278,6 +2278,12 @@ pub(crate) fn run(
     if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
         return Ok(reply(ALREADY.to_owned(), false));
     }
+    // A blank question is refused here, in HQ's own words, before anything is added to it: the
+    // line below would otherwise make it non-blank and put a question with no question on the
+    // owner's desk (constraint-challenge, round 2). HQ keeps its own check.
+    if tool == "ask_owner" && args["text"].as_str().is_some_and(|t| t.trim().is_empty()) {
+        return Ok(reply("Refused: `text` is needed".to_owned(), true));
+    }
     // A question to the owner carries what the turn actually did, so the reviewer and the
     // owner read the truth beside the claim.
     let sent = if tool == "ask_owner" {

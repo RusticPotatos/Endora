@@ -3808,3 +3808,28 @@ fn a_closing_call_through_the_bridge_carries_the_workers_reading_of_its_sandbox(
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// Constraint-challenge (round-2 handoff): a blank question was enriched with "What I actually did…" before HQ's blank
+// check, so it reached the owner's desk as a question with no question. The worker refuses it first, in HQ's words.
+#[test]
+fn a_blank_question_never_reaches_hq() {
+    for blank in [r#"{"text": ""}"#, r#"{"text": "   "}"#] {
+        let (hq_url, to_hq) = hq(None);
+        let (model_url, to_model) = model(vec![
+            (200, calls(&[("call_1", "ask_owner", blank)])),
+            (200, says("Nothing to ask.")),
+        ]);
+        let out = worker(&usual(&hq_url, &model_url));
+        assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+        assert!(
+            !to_hq
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s.method() == "tools/call ask_owner"),
+            "a blank question reached HQ"
+        );
+        let second = to_model.lock().unwrap()[1].body.to_string();
+        assert!(second.contains("Refused: `text` is needed"), "{second}");
+    }
+}
