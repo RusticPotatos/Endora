@@ -1,0 +1,53 @@
+name: Full system
+
+# The full-system bundle (deploy/compose, ADR 0147) on a plain ubuntu runner: Core built from
+# this commit, Console and Audio at their pinned releases, a stub model. Brings it all up, checks
+# every product and a sign-in through `endora-core setup`, then takes it down.
+on:
+  push:
+    paths:
+      - "deploy/compose/**"
+      - "Dockerfile"
+      - "app/node/**"
+      - "app/hq/**"
+      - "app/runner/**"
+      - "crates/**"
+      - "shared/**"
+      - "docs/api/console-v1.json"
+      - ".github/workflows/full-system.yml"
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: full-system-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: full-system bundle · ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Docker and Compose versions
+        run: docker version && docker compose version
+
+      - name: The vendored compose files match their sources
+        run: sh deploy/compose/check-sources.sh --remote && sh deploy/compose/check-sources.sh --self-test
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Core's image from this commit
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/rusticpotatos/endora-node:ci
+          build-args: ENDORA_BUILD=${{ github.sha }}
+          cache-from: type=gha,scope=core-image
+          cache-to: type=gha,scope=core-image,mode=max
+
+      - name: Bring the bundle up, check every product, take it down
+        run: sh deploy/compose/test-bundle.sh

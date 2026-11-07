@@ -1,0 +1,29 @@
+# The full Endora system on one Linux host: Core, Console in front of it, and Audio. Docker
+# Compose v2.20 or later. Every product is included UNCHANGED from its own compose file, pinned
+# to a released version (SOURCES.json); this file adds no service and no orchestration of its
+# own (ADR 0147).
+#
+#   cp bundle.env.example .env        # set the passwords and addresses it asks for
+#   docker compose up -d
+#   docker compose exec node endora-core setup       # make Core's owner (once)
+#
+# Then open http://<host>:8787 (Console). docs/install.md has first start, bootstrap, ports,
+# volumes, backup and restore, upgrade and rollback.
+#
+# Each product stays optional and independent: to leave one out, delete its line below; each
+# also runs alone from its own file. OpenBao is not part of Endora, and Endora Home's watch is a
+# systemd job on another machine, not a container (docs/install.md, "Not in the bundle").
+
+name: endora
+
+include:
+  # Endora Core: node, HQ and (profile `workers`) the runner. Core's own file, in this repo.
+  - path: core/compose.yaml
+    env_file: .env
+  # Endora Console: the screens, in front of Core at the one browser origin. It holds no
+  # credential and no authority: Core authorizes every request (ADR 0145, ADR 0146).
+  - path: console/compose.yaml
+    env_file: .env
+  # Endora Audio: playback, AirPlay and routing. Needs no Core.
+  - path: audio/compose.yaml
+    env_file: .env

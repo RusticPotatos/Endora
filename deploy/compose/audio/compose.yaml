@@ -1,0 +1,191 @@
+# Endora Audio: the whole product, with no other Endora part needed. Docker Compose v2.
+#
+#   cp .env.example .env              # set your values (see README, "Deploy")
+#   docker compose up -d              # hub + page, Spotify, AirPlay senders
+#   docker compose --profile airplay up -d   # also the AirPlay 2 door (needs SOUND_AIRPLAY2=1)
+#
+# Then open http://<host>:8791 and give the page the hub's token (README, "The token").
+#
+# Made to be included unchanged by a larger bundle (`include: [path/to/compose.yaml]`): every
+# service, volume and network name is prefixed, nothing is built, nothing is bind-mounted from
+# a relative path, and every setting is a variable with a safe default.
+#
+# The four services share the pipes volume. The senders and Spotify use the host's network,
+# because speakers and phones find them over mDNS (avahi); that needs a Linux host (Docker
+# Desktop's host networking is not the LAN). The door uses a macvlan LAN address of its own.
+# Do not run the senders beside a stock OwnTone on the same host: both take the AirPlay clock's
+# ports (UDP 319/320) and the speakers.
+
+name: endora-audio
+
+x-fenced: &fenced
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  pull_policy: missing
+
+services:
+  # The hub: sources, speakers, wires, the mix, the streams, the API and its own page. Its
+  # state is one JSON file, /data/sound.json, in the data volume.
+  audio-hub:
+    <<: *fenced
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio:${ENDORA_AUDIO_VERSION:-1.0.0}
+    container_name: endora-audio
+    environment:
+      # Your token (32+ characters), or empty: then the hub makes one on first start in its
+      # token volume, and you read it once (README, "The token").
+      SOUND_TOKEN: ${SOUND_TOKEN:-}
+      # The AirPlay senders, on the host's network, reached through the host. Empty: no AirPlay
+      # speakers, streams only.
+      SOUND_SENDERS: ${SOUND_SENDERS-http://host.docker.internal:3701,http://host.docker.internal:3702,http://host.docker.internal:3703,http://host.docker.internal:3704}
+      SOUND_SENDER_PASSWORD_FILE: /sender-secret/password
+      # on: Spotify is a source, played from the audio-spotify receiver's pipe.
+      SOUND_SPOTIFY: ${SOUND_SPOTIFY:-on}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${ENDORA_AUDIO_PORT:-8791}:8791"
+    volumes:
+      - endora-audio-data:/data
+      - endora-audio-token:/token
+      - endora-audio-pipes:/pipes
+      - endora-audio-secret:/sender-secret:ro
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    mem_limit: ${ENDORA_AUDIO_MEMORY:-256m}
+    healthcheck:
+      # No curl in the image: bash's own /dev/tcp asks /health.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8791 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"ok\":true' <&3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Spotify into the hub: a Spotify Connect receiver (stock librespot, pinned by digest),
+  # writing into the hub's Spotify pipe. Pick it in the Spotify app's devices once; it keeps
+  # its own login in its volume after that. Needs Spotify Premium.
+  audio-spotify:
+    image: giof71/librespot@sha256:0c7cd19a49547cd0e34ac7c6d9aadd4b2703c5cb13acd1dbfd4982c311d478fb
+    container_name: endora-audio-spotify
+    restart: unless-stopped
+    pull_policy: missing
+    network_mode: host
+    depends_on: [audio-hub]
+    environment:
+      DEVICE_NAME: ${ENDORA_AUDIO_SPOTIFY_NAME:-Endora}
+      BACKEND: pipe
+      DEVICE: /pipes/spotify.pcm
+      FORMAT: S16
+      BITRATE: "320"
+      INITIAL_VOLUME: "100"
+      ENABLE_SYSTEM_CACHE: "Y"
+      DISABLE_AUDIO_CACHE: "Y"
+    volumes:
+      - endora-audio-pipes:/pipes
+      - endora-audio-spotify-login:/data/system-cache
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "sh", "-c", "cat /proc/[0-9]*/comm 2>/dev/null | grep -qx librespot"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # The AirPlay senders: one airptpd clock and four stock OwnTone instances (APIs on 3701-3704,
+  # trusting only localhost and the hub's password), on the host's network.
+  audio-senders:
+    <<: *fenced
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-senders:${ENDORA_AUDIO_VERSION:-1.0.0}
+    container_name: endora-audio-senders
+    network_mode: host
+    environment:
+      # 1: the door is the audio-airplay container's and none runs here. Anything else: the
+      # classic door, "Endora Mixer", runs here on the host's address.
+      SOUND_AIRPLAY2: ${SOUND_AIRPLAY2:-0}
+    volumes:
+      - endora-audio-pipes:/pipes
+      - endora-audio-senders-data:/data
+      - endora-audio-secret:/secret
+    tmpfs:
+      - /run
+      - /tmp
+    # Only what it needs: the clock's ports below 1024, OwnTone and avahi dropping to their own
+    # users, and its folders made theirs.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, KILL]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "sh", "-c", "pidof airptpd >/dev/null && wget -q -O /dev/null http://127.0.0.1:3701/api/config"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # The AirPlay 2 door, "Endora Mixer": shairport-sync and nqptp, so an Apple TV holds its
+  # picture back to match the door's sound. On a LAN address of its own: nqptp needs UDP
+  # 319/320, which the senders' airptpd holds on the host. Only the pipes connect it to the
+  # hub; the host itself cannot reach a macvlan address, by design. Set SOUND_AIRPLAY2=1 too.
+  audio-airplay:
+    <<: *fenced
+    profiles: [airplay]
+    image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-airplay:${ENDORA_AUDIO_VERSION:-1.0.0}
+    container_name: endora-audio-airplay
+    # The name it announces on the LAN (mDNS), and what avahi calls the host.
+    hostname: ${SOUND_AIRPLAY2_HOSTNAME:-endora-mixer}
+    environment:
+      SOUND_AIRPLAY2_HOSTNAME: ${SOUND_AIRPLAY2_HOSTNAME:-endora-mixer}
+      # Seconds (0 to 2) the door hands its sound over early, so picture and sound line up.
+      SOUND_AIRPLAY2_LATENCY: ${SOUND_AIRPLAY2_LATENCY:-0.5}
+      SOUND_AIRPLAY2_INTERFACE: eth0
+    networks:
+      endora-audio-airplay-lan:
+        ipv4_address: ${SOUND_AIRPLAY2_IP:-192.0.2.10}
+        # Fixed, so the router sees one device and keeps its reservation.
+        mac_address: ${SOUND_AIRPLAY2_MAC:-02:00:00:00:a2:01}
+    volumes:
+      - endora-audio-pipes:/pipes
+    tmpfs:
+      - /run
+      - /tmp
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, KILL]
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "sh", "-c", "pidof nqptp >/dev/null && pidof shairport-sync >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  # The door's LAN. Made here by default, from your values; the placeholders (the
+  # documentation range, a parent that names no interface) fail loudly. Docker allows one
+  # macvlan network per subnet, so if one exists already (Pi-hole's, say), set
+  # SOUND_AIRPLAY2_NETWORK to its name and SOUND_AIRPLAY2_SHARED=true to join it instead.
+  endora-audio-airplay-lan:
+    name: ${SOUND_AIRPLAY2_NETWORK:-endora-audio-airplay-lan}
+    external: ${SOUND_AIRPLAY2_SHARED:-false}
+    driver: macvlan
+    driver_opts:
+      parent: ${SOUND_AIRPLAY2_PARENT:-set-your-lan-interface}
+    ipam:
+      config:
+        - subnet: ${SOUND_AIRPLAY2_SUBNET:-192.0.2.0/24}
+          gateway: ${SOUND_AIRPLAY2_GATEWAY:-192.0.2.1}
+          ip_range: ${SOUND_AIRPLAY2_IP:-192.0.2.10}/32
+
+volumes:
+  endora-audio-data:
+    name: ${ENDORA_AUDIO_DATA_VOLUME:-endora-audio-data}
+  endora-audio-token:
+    name: ${ENDORA_AUDIO_TOKEN_VOLUME:-endora-audio-token}
+  endora-audio-pipes:
+    name: ${ENDORA_AUDIO_PIPES_VOLUME:-endora-audio-pipes}
+  endora-audio-secret:
+    name: ${ENDORA_AUDIO_SECRET_VOLUME:-endora-audio-secret}
+  endora-audio-senders-data:
+    name: ${ENDORA_AUDIO_SENDERS_DATA_VOLUME:-endora-audio-senders-data}
+  endora-audio-spotify-login:
+    name: ${ENDORA_AUDIO_SPOTIFY_LOGIN_VOLUME:-endora-audio-spotify-login}

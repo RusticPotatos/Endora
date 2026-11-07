@@ -1,0 +1,30 @@
+# Endora Console on its own. It needs an Endora Core to talk to (CORE_URL); it holds no
+# credential and no data, so it has no volume. See README.md.
+name: endora-console
+
+services:
+  console:
+    image: ghcr.io/rusticpotatos/endora-console:${CONSOLE_TAG:-latest}
+    container_name: endora-console
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    environment:
+      # Core's origin. With Core's own self-signed certificate, mount it and name it below.
+      CORE_URL: ${CORE_URL:?set CORE_URL to Endora Core, such as https://endora-node:8443}
+      CORE_CA_FILE: ${CORE_CA_FILE:-}
+      CORE_TLS_SERVERNAME: ${CORE_TLS_SERVERNAME:-}
+      # The address people open, if Console is behind a proxy that changes it (comma-separated).
+      CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-}
+      # Serve HTTPS directly (recommended without a proxy in front).
+      CONSOLE_TLS_CERT: ${CONSOLE_TLS_CERT:-}
+      CONSOLE_TLS_KEY: ${CONSOLE_TLS_KEY:-}
+      # Endora Audio, shown as its status and a link (optional).
+      AUDIO_URL: ${AUDIO_URL:-}
+      AUDIO_PUBLIC_URL: ${AUDIO_PUBLIC_URL:-}
+    ports:
+      - "${CONSOLE_PORT:-8080}:8080"
+    volumes:
+      - ${CONSOLE_CERTS_DIR:-./certs}:/certs:ro

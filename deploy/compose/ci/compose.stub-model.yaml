@@ -1,0 +1,16 @@
+# The bundle's test only: a stub model host Core is pointed at (ENDORA_MODEL_URL in ci/ci.env).
+# Added with a second -f; it changes no product's service.
+services:
+  stub-model:
+    image: python:3.12.8-alpine3.21
+    command: [python3, -u, /stub-model.py]
+    volumes:
+      - ./stub-model.py:/stub-model.py:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u;u.urlopen('http://127.0.0.1:11434/v1/models',timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 10

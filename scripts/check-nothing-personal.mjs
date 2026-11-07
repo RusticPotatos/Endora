@@ -90,7 +90,9 @@ function isNotAHost(address) {
 }
 
 /** Checksums, not credentials. */
-const HEX_IS_EXPECTED = new Set(["Cargo.lock"]);
+// Where hex is the point: the lock file's checksums, and the bundle's record of the public
+// commits and SHA-256s its vendored compose files are pinned to (ADR 0147).
+const HEX_IS_EXPECTED = new Set(["Cargo.lock", "deploy/compose/SOURCES.json"]);
 
 // The prompt is the one file where even a FICTIONAL city is a leak in reverse: an example
 // city in a prompt is a magnet for a small model, which copies it as the person's own.
@@ -131,8 +133,9 @@ const rules = [
   },
   {
     what: "a live-looking secret",
-    // Not a digest written as one (`image@sha256:…`): that pins a public build, and is public.
-    find: /(?<!sha256:)\b[0-9a-f]{32,}\b/g,
+    // Not a digest written as one (`image@sha256:…`), nor an image tag named by its commit
+    // (`:sha-<commit>`): each pins a public build, and is public.
+    find: /(?<!sha256:|sha-)\b[0-9a-f]{32,}\b/g,
     wrong: (_hit, file) => !HEX_IS_EXPECTED.has(file),
     say: "secrets belong in local.mk",
   },
