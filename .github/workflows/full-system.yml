@@ -7,6 +7,8 @@ on:
   push:
     paths:
       - "deploy/compose/**"
+      - "scripts/check-image-privacy.sh"
+      - ".dockerignore"
       - "Dockerfile"
       - "app/node/**"
       - "app/hq/**"
@@ -37,6 +39,9 @@ jobs:
       - name: The vendored compose files match their sources
         run: sh deploy/compose/check-sources.sh --remote && sh deploy/compose/check-sources.sh --self-test
 
+      - name: Nothing local reaches Core's image (the check's own test, then the build context)
+        run: sh scripts/check-image-privacy.sh --self-test && sh scripts/check-image-privacy.sh context .
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Build Core's image from this commit
@@ -48,6 +53,9 @@ jobs:
           build-args: ENDORA_BUILD=${{ github.sha }}
           cache-from: type=gha,scope=core-image
           cache-to: type=gha,scope=core-image,mode=max
+
+      - name: Nothing local in the built image
+        run: sh scripts/check-image-privacy.sh image ghcr.io/rusticpotatos/endora-node:ci
 
       - name: Bring the bundle up, check every product, take it down
         run: sh deploy/compose/test-bundle.sh

@@ -96,6 +96,9 @@ These are your steps, once:
 
 ## The runner's trust boundary and limits
 
+**The runner mounts Docker's socket, which is root on this host; it is off unless you name its
+`workers` profile.**
+
 The runner takes the team's turns and starts each as a fresh worker container. It is **off**
 unless its `workers` profile is named, because it mounts Docker's socket, which is as good as
 root on the host. It trusts HQ with nothing but a run and its token: the image, mounts, network
@@ -193,9 +196,11 @@ within v1, so its rollback keeps settings.
 
 **The bundle's pins.** The bundle's `console/` and `audio/` folders are those products' own
 compose files, copied verbatim at the commits in `SOURCES.json`; `check-sources.sh` proves they
-are unchanged (`--remote` also compares them with their sources). Moving the bundle to a newer
-product release means replacing its file with the release's, updating `SOURCES.json` and the
-version in `bundle.env.example`, and letting the bundle's CI run.
+are unchanged (`--remote` also compares them with their sources). Each product's version is
+set in one line of `bundle.env.example` (`CONSOLE_TAG`, `ENDORA_AUDIO_VERSION`), which the check
+holds equal to its pin. Moving the bundle to a newer product release is that line, the
+release's compose file in place of the old one, and its `SOURCES.json` entry, checked together
+by `check-sources.sh` and the bundle's CI run.
 
 ## How it is tested
 

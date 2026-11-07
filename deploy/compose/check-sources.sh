@@ -22,6 +22,15 @@ check() {
       echo "FAIL $product: $file is not the pinned file (sha256 $got, pinned $want)"; bad=1; continue
     fi
     echo "ok   $product: $file matches its pin"
+    # The one place a user sets the product's version must name the pinned release.
+    variable=$(field "$dir/SOURCES.json" "$product" variable)
+    version=$(field "$dir/SOURCES.json" "$product" version)
+    set_to=$(sed -n "s/^$variable=//p" "$dir/bundle.env.example")
+    if [ "$set_to" != "$version" ]; then
+      echo "FAIL $product: bundle.env.example sets $variable=$set_to, but the pin is $version"; bad=1
+    else
+      echo "ok   $product: bundle.env.example sets $variable=$version"
+    fi
     if [ "$remote" = --remote ]; then
       repo=$(field "$dir/SOURCES.json" "$product" repo)
       commit=$(field "$dir/SOURCES.json" "$product" commit)
@@ -46,7 +55,10 @@ if [ "${1:-}" = --self-test ]; then
   check "$copy" >/dev/null || { echo "FAIL self-test: the untouched copy did not pass"; exit 1; }
   printf '\n# changed\n' >> "$copy/audio/compose.yaml"
   if check "$copy" >/dev/null; then echo "FAIL self-test: a changed file passed"; exit 1; fi
-  echo "ok   self-test: a changed vendored file fails the check"
+  cp "$here/audio/compose.yaml" "$copy/audio/compose.yaml"
+  sed 's/^ENDORA_AUDIO_VERSION=.*/ENDORA_AUDIO_VERSION=9.9.9/' "$here/bundle.env.example" > "$copy/bundle.env.example"
+  if check "$copy" >/dev/null; then echo "FAIL self-test: a version unlike its pin passed"; exit 1; fi
+  echo "ok   self-test: a changed vendored file, or a version unlike its pin, fails the check"
   exit 0
 fi
 check "$here" "${1:-}"

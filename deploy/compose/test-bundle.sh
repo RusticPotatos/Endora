@@ -6,7 +6,7 @@
 #
 # Needs Docker with Compose v2.20+, curl and python3, and a Core image tagged as ci/ci.env says
 # (`docker build -t ghcr.io/rusticpotatos/endora-node:ci .` from the repository's root). It runs
-# in a copy of this folder with ci/ci.env as its .env, so your own .env is never read or
+# in a copy of this folder with bundle.env.example plus ci/ci.env's overrides as its .env, so your own .env is never read or
 # touched, and its volumes are named endora-ci-*, so `down -v` removes only the test's. Run it
 # on a host with no Endora running (CI's plain ubuntu runner): it uses ports 8786, 8787, 8791
 # and Audio's host-network ports. TEST_BUNDLE_KEEP=1 leaves the stack up for a look.
@@ -15,7 +15,11 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 cp -R "$here/." "$work/"
-cp "$work/ci/ci.env" "$work/.env"
+# A user's .env (bundle.env.example) with the test's overrides from ci/ci.env: a key set in
+# ci.env replaces the example's line, so every pin is read from the example itself.
+awk -F= '/^[A-Za-z_][A-Za-z_0-9]*=/ { if (FILENAME ~ /ci\.env$/) over[$1] = $0; else { order[++n] = $1; line[$1] = $0 } }
+  END { for (i = 1; i <= n; i++) { k = order[i]; print (k in over) ? over[k] : line[k]; delete over[k] }
+        for (k in over) print over[k] }' "$work/bundle.env.example" "$work/ci/ci.env" > "$work/.env"
 cd "$work"
 
 compose() { docker compose -f compose.yaml -f ci/compose.stub-model.yaml "$@"; }
