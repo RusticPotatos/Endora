@@ -24,6 +24,7 @@ pub mod house;
 pub mod lab_tools;
 pub mod league;
 pub mod lessons;
+pub mod live_work;
 pub mod mac;
 pub mod map;
 pub mod mechanical;

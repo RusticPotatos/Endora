@@ -96,6 +96,10 @@ mod setup;
 #[path = "scenarios/loops.rs"]
 mod loops;
 
+/// The Live Work map (the owner's decision M3), in its own file.
+#[path = "scenarios/live_work.rs"]
+mod live_work;
+
 /// A long item makes progress across turns (ADR 0142, amended 2026-10-31, D12), in its own
 /// file.
 #[path = "scenarios/long_items.rs"]

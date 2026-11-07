@@ -2171,6 +2171,62 @@ if (failures.length) {
   console.log("hq: the studio is drawn from the snapshot, the furloughed out of it");
 }
 
+// The Live Work map (the owner's decision M3): one item's path, state, handoffs, evidence and
+// what waits on the owner, from HQ's read only. Opened from the item under Looking at; every word
+// stays text; the stall, the failed check and the owner's decisions are drawn as such.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`HQ.error = ""; HQ.selected = { type: "task", id: 7 };
+    HQ.snap = { stopped: false, last_event: 1, counts: {}, pool: {}, desk: [], goals: [], projects: [], routines: [],
+      members: [{ id: 2, name: "Bo", look: 4, running: [], brains: [] }],
+      tasks: [{ id: 7, goal: 1, title: "Look at sonarr", status: "doing", owner: 2, why: [], thread: [] }],
+      runs: [], recent_runs: [] };`, context);
+  const looking = runInContext("viewHQ()", context);
+  if (!looking.includes('data-act="live:task:7"') || !looking.includes("Live work map")) fail("live: an item under Looking at does not open its Live Work map");
+  const asked = [];
+  const realFetch = context.fetch;
+  context.fetch = (path) => { asked.push(String(path)); return Promise.reject(new Error("no network in the console check")); };
+  await runInContext('dispatch("live:task:7")', context);
+  await new Promise((done) => setTimeout(done, 0));
+  context.fetch = realFetch;
+  if (runInContext("NAV.v + ' ' + NAV.id", context) !== "live task-7") fail("live: the link does not open the item's map");
+  if (!asked.some((p) => p.endsWith("/v1/hq/tasks/7/live"))) fail(`live: opening the map asks the node nothing: ${asked}`);
+  if (!runInContext("viewWorkMap()", context).includes("HQ did not answer")) fail("live: a map HQ did not answer does not say so");
+  const D = 86400000;
+  runInContext(`WORKMAP.error = ""; WORKMAP.sel = -1; WORKMAP.map = {
+    task: { id: 7, title: "Look at <b>sonarr</b>", status: "done", assignee: "Zed" },
+    state: "completed", said: "Done, verified against its criteria", silent_since: null, attention: [],
+    open: ["Post-deploy check inconclusive"],
+    people: [{ name: "Zed", turns: 4, failed: 0 }, { name: "Dee", turns: 7, failed: 1 }],
+    steps: [
+      { kind: "assigned", at: 0, tone: "ok", label: "Assigned to Zed", sub: "", ids: [], owner: null, runs: [], gap: null },
+      { kind: "check", at: 60000, tone: "bad", label: "Check c2 failed", sub: "tools <i>not found</i>", ids: ["c2", "run 1628"], owner: null, runs: [1628], gap: "+1 min" },
+      { kind: "desk", at: 120000, tone: "owner", label: "Decision", sub: "Install the tools?", ids: ["#257"], owner: "Approved", runs: [], gap: "+1 min" },
+      { kind: "stall", at: 180000, until: 180000 + 7 * ${D}, tone: "warn", label: "7 days stalled: out of budget", sub: "7 wakes refused: 6 out of budget, 1 in review", ids: [], owner: null, runs: [], gap: "+1 min" },
+      { kind: "closed", at: 8 * ${D}, tone: "ok", label: "Done: it met its criteria", sub: "", ids: [], owner: null, runs: [2365], gap: "+1 d" },
+      { kind: "desk", at: 9 * ${D}, tone: "owner", label: "Deployed (the owner's word)", sub: "", ids: ["#339"], owner: "Said Deployed", runs: [], gap: "+22 h" },
+      { kind: "desk", at: 9 * ${D} + 300000, tone: "open", label: "Post-deploy check inconclusive", sub: "", ids: ["#4808"], owner: null, runs: [], gap: "+5 min" }
+    ] }; NAV = { v: "live", id: "task-7" };`, context);
+  const map = runInContext("viewWorkMap()", context);
+  for (const said of ["Done, verified against its criteria", "Nothing waits on you", "Look at &lt;b&gt;sonarr&lt;/b&gt;",
+    "tools &lt;i&gt;not found&lt;/i&gt;", "lw-bad", "7 days stalled: out of budget", "→", "+22 h", "Approved", "c2", "#257",
+    "6 out of budget", "lw-after", "Open:", "Post-deploy check inconclusive", "Zed", "4 turns", "1 failed",
+    'data-act="live:step:1"', "Owner"]) {
+    if (!map.includes(said)) fail(`live: the map does not show ${said}`);
+  }
+  // The stall opens by default, with what it rests on; a tapped step opens instead, its turns linked to Replay.
+  if (!map.includes('class="lw-detail')) fail("live: no step's detail is open at rest");
+  await runInContext('dispatch("live:step:4")', context);
+  const tapped = runInContext("viewWorkMap()", context);
+  if (runInContext("WORKMAP.sel", context) !== 4 || !tapped.includes('data-act="replay:run:2365"')) fail("live: a tapped step does not open with its turns linked to Replay");
+  // Something waiting on the owner comes first, and the map never says nothing waits.
+  runInContext(`WORKMAP.map.attention = [{ id: 300, kind: "question", text: "May sonarr have <b>2 GB</b>?", at: 0 }]; WORKMAP.map.state = "waiting"; WORKMAP.map.said = "Waiting on you: May sonarr have 2 GB?";`, context);
+  const waits = runInContext("viewWorkMap()", context);
+  if (!waits.includes("Waiting on you") || waits.includes("Nothing waits on you") || !waits.includes("&lt;b&gt;2 GB&lt;/b&gt;")) fail("live: a card waiting on the owner is not shown first, escaped");
+  if (waits.indexOf("May sonarr have &lt;b&gt;2 GB") > waits.indexOf('class="lw-strip')) fail("live: what waits on the owner does not come before the path");
+  console.log("live: one item's map, from HQ's read: the path, the stall, the owner's decisions, what waits on the owner, text as text");
+}
+
 // Replay: a turn read back in full, and a task's turns stepped through in order. Opened from a
 // run line and from a task card; what the member was told is folded; a long excerpt is folded;
 // every word a model or a tool wrote stays text, Confidential excerpts included (the owner's).

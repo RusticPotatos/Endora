@@ -154,6 +154,11 @@ pub(super) async fn hq_task_replay(State(state): State<AppState>, Path(id): Path
     Ok(answer)
 }
 
+/// One item's Live Work map (the owner's decision M3): HQ's read, passed on as it is.
+pub(super) async fn hq_task_live(State(state): State<AppState>, Path(id): Path<i64>) -> Answer {
+    ask(&state, format!("/v1/tasks/{id}/live"), None).await
+}
+
 #[derive(Deserialize)]
 pub(super) struct HqGoal {
     title: String,

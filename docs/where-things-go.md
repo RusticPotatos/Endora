@@ -116,6 +116,11 @@ Settings.
   for a guard that is tried in shadow sits on that guard's line, in Health, and not in Settings;
   a turn that waits for tomorrow shows in the top bar and in the outcomes, and is never a card.
   When HQ stops the team itself, that is a card on the desk, because it needs your word.
+  One item's **Live Work map** (the owner's decision M3, 7 Nov 2026) is a screen of its own, like
+  Replay, opened from that item under Work's Looking at ("Live work map", beside "Replay this
+  task"): read-only, one item only, from HQ's `/v1/tasks/{id}/live` read
+  (`domains/team/src/domain/live_work.rs` decides what each record means; `47g-hq-live.js` draws
+  it). No tab, no other items, no controls; a wider map of the system is not part of it.
 
 ## The repository
 
