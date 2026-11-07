@@ -41,6 +41,12 @@ The butler's chat, its brief, its memory of you and its mail reader were retired
 
 ## Quick start
 
+**Installing on a Linux host?** Use Docker Compose alone, no `make` and no checkout-specific
+config: Core on its own from [`deploy/compose/core/`](deploy/compose/core/), or the full system
+(Core, Console in front, and Audio) from [`deploy/compose/`](deploy/compose/). First start,
+`endora-core setup`, ports, backups and upgrades: [docs/install.md](docs/install.md). What
+follows is the developer's path from a checkout.
+
 **Nothing installed yet?** `make bundled` starts Endora with a model runtime beside it —
 it looks at the hardware it can see and serves something that suits it, so there is
 nothing to set up first. The first start downloads a model (1–5 GB) once. It is a

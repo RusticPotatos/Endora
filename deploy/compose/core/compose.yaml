@@ -5,7 +5,7 @@
 #   docker compose up -d              # node + HQ
 #   docker compose exec node endora-core setup     # make the owner (once)
 #
-# Then open https://<host>:8787 (or put Endora Console in front: ../README.md). Nothing here
+# Then open https://<host>:8787 (or put Endora Console in front: docs/install.md). Nothing here
 # needs make, local.mk, release.sh, a NAS or a Pi: every setting is a variable with a safe
 # default, documented in core.env.example. Model and provider keys, tokens and connections are
 # yours to add after setup; nothing is provisioned unattended (docs/install.md).

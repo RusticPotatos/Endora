@@ -38,7 +38,7 @@ impl std::fmt::Display for Refused {
         match self {
             Self::AlreadyOwned => f.write_str(
                 "this node already has an owner; nothing was changed (change the password in \
-                 Console, or sign in with the token in the node's log to recover)",
+                 Console's Settings while signed in)",
             ),
             Self::TooShort => f.write_str(
                 "a password shorter than twelve characters is not worth hashing; nothing was made",

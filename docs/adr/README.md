@@ -328,6 +328,7 @@ of an existing record and take the next number.
 | [0144](0144-endora-keeps-its-own-secrets.md) | Endora keeps its own secrets; OpenBao is not part of Endora | Supersedes 0127 |
 | [0145](0145-core-console-contract.md) | The Core ↔ Console contract, and Console as its own deployable | — |
 | [0146](0146-console-forwards-cores-session.md) | Console forwards Core's session; no shared sign-in crate (AU1) | — |
+| [0147](0147-full-system-bundle.md) | Core's standalone configuration and the full-system bundle | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
