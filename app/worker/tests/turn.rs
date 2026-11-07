@@ -3833,3 +3833,59 @@ fn a_blank_question_never_reaches_hq() {
         assert!(second.contains("Refused: `text` is needed"), "{second}");
     }
 }
+
+// The blank question on the bridge (Claude Code's runtime): the same refusal as the house loop,
+// before the worker adds what it did, so a blank question never reaches HQ by either runtime.
+#[test]
+fn a_blank_question_on_the_bridge_never_reaches_hq() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let dir = folder("bridge-blank");
+    let env = vec![
+        ("ENDORA_TURN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq_url}/v2/team/mcp")),
+        (
+            "ENDORA_CONTRACTS",
+            format!("{node_url}/team-relay/contracts"),
+        ),
+        ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
+        ("ENDORA_MEMBER", "Jane".to_owned()),
+        ("ENDORA_TASK", "7".to_owned()),
+        ("ENDORA_LEDGER", dir.join("did.json").display().to_string()),
+    ];
+    let rpc = |id: u64, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let (answers, out) = bridge(
+        &env,
+        &[
+            rpc(
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "claude-code" } }),
+            ),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            rpc(
+                2,
+                "tools/call",
+                json!({ "name": "ask_owner", "arguments": { "text": "   " } }),
+            ),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(answers[1]["result"]["isError"], true, "{answers:?}");
+    assert!(
+        answers[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("`text` is needed"),
+        "{answers:?}"
+    );
+    assert!(
+        !to_hq
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s.method() == "tools/call ask_owner"),
+        "the blank question never reached HQ"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
