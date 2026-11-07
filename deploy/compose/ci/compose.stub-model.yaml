@@ -5,7 +5,9 @@ services:
     image: python:3.12.8-alpine3.21
     command: [python3, -u, /stub-model.py]
     volumes:
-      - ./stub-model.py:/stub-model.py:ro
+      # Relative to the project's folder (compose.yaml's), not this file's: Compose resolves a
+      # second -f file's paths against the first.
+      - ./ci/stub-model.py:/stub-model.py:ro
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
