@@ -11,9 +11,9 @@ const snap = () => ({
   owner_asks: ["MR7: which apps to keep on the rebuilt Mac", "Seven product-split decisions (deferred)"],
   threads: [
     { title: "Steward: climb 3", role: "steward", status: "completed", last_seen: "2026-11-07T17:04:00Z" },
-    { title: "Worker: OpenBao move", role: "workers", status: "running", last_seen: "2026-11-07T17:04:00Z" },
+    { title: "Worker: example task", role: "workers", status: "running", last_seen: "2026-11-07T17:04:00Z" },
     { title: "Worker: Constraint <challenge>", role: "workers", status: "completed", last_seen: "2026-11-07T16:53:00Z", blocked: "its paid run was stopped ~16:42" },
-    { title: "Mac rebuild plan", role: "product", status: "running", last_seen: "2026-11-07T17:04:00Z" },
+    { title: "Side project", role: "product", status: "running", last_seen: "2026-11-07T17:04:00Z" },
     { title: "A thread with no role", role: "nobody", status: "idle", last_seen: "2026-11-07T15:00:00Z" },
   ],
   handoffs: [
