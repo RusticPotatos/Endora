@@ -330,6 +330,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         reason: &str,
         cited: &[Vec<Ref>],
     ) -> Done<()> {
+        self.set_status_citing_noting(run, task, to, reason, cited, &[])
+    }
+
+    /// As [`Self::set_status_citing`], with `notes` written to the thread once every check of the
+    /// change has passed and before the status changes (correction-placement review: a revision
+    /// left unsubmitted is recorded first); a note that cannot be written changes nothing.
+    ///
+    /// # Errors
+    /// As [`Self::set_status_citing`], and a note the store could not keep.
+    pub fn set_status_citing_noting(
+        &self,
+        run: RunId,
+        task: TaskId,
+        to: TaskStatus,
+        reason: &str,
+        cited: &[Vec<Ref>],
+        notes: &[String],
+    ) -> Done<()> {
         let _held = self.held();
         let turn = self.running(run)?;
         self.reach(&turn, task, false)?;
@@ -350,7 +368,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if check && holds {
             self.waited_for(&current)?;
         }
-        self.set_status_held_lock(turn.member, task, to, reason)?;
+        self.set_status_held_lock_noting(turn.member, task, to, reason, notes)?;
         if judged {
             let stage = if check { CLOSED } else { SUBMITTED };
             self.keep_cited(task, &turn, stage, cited)?;

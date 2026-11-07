@@ -299,8 +299,16 @@ pub fn already_there(work: &Path, asked: Option<&str>) -> Option<AlreadyThere> {
 #[must_use]
 pub fn sandbox_reading(work: &Path, task: i64) -> serde_json::Value {
     let repo = work.join(REPO_DIR);
-    if !repo.exists() {
-        return serde_json::json!({ "state": "read", "branches": [] });
+    // Only a checkout known to be absent is no work; one that cannot be looked at is unknown.
+    match std::fs::symlink_metadata(&repo) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return serde_json::json!({ "state": "read", "branches": [] });
+        }
+        Err(e) => {
+            let why = format!("the checkout could not be looked at: {e}");
+            return serde_json::json!({ "state": "unknown", "why": why });
+        }
     }
     // git matches a pattern whole or up to a slash, so the team's branches are listed and the
     // task's picked from them.
@@ -642,6 +650,40 @@ pub fn work_in_progress(work: &Path, task: i64) -> Result<Option<String>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Correction-placement review: only a checkout known to be absent reads as no work; one
+    /// that cannot be looked at (here `work` is a file, so the path fails with "not a
+    /// directory", which `Path::exists` would have taken for absence) is unknown.
+    #[test]
+    fn a_sandbox_that_cannot_be_looked_at_is_unknown_and_an_absent_one_holds_nothing() {
+        let root = std::env::temp_dir().join(format!(
+            "endora-worker-reading-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let empty = sandbox_reading(&root, 7);
+        assert_eq!(
+            empty,
+            serde_json::json!({ "state": "read", "branches": [] })
+        );
+        let file = root.join("work");
+        std::fs::write(&file, "not a folder").unwrap();
+        assert!(
+            !file.join(REPO_DIR).exists(),
+            "exists() cannot tell the two apart"
+        );
+        let unknown = sandbox_reading(&file, 7);
+        assert_eq!(unknown["state"], "unknown", "{unknown}");
+        assert!(
+            unknown["why"].as_str().is_some_and(|w| !w.is_empty()),
+            "{unknown}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn run(dir: &Path, args: &[&str]) -> String {
         git(dir, args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))

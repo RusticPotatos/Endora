@@ -817,3 +817,105 @@ fn ask_owner_carries_the_shared_category_clause_with_taste_and_data_loss() {
     assert!(said.contains("taste the owner kept"), "{said}");
     assert!(said.contains("data-losing"), "{said}");
 }
+
+/// Correction-placement review: a revision left unsubmitted is recorded before the status
+/// changes, and a record that cannot be written changes nothing. The store is made to refuse
+/// that line (a trigger on the posts table), as a full disk or a failing database would.
+#[test]
+fn a_disposition_that_cannot_be_recorded_leaves_the_item_where_it_was() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let path = std::env::temp_dir().join(format!(
+        "endora-disposition-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let hq = Engine::new(
+        SqliteTeamStore::open(path.to_str().unwrap()).unwrap(),
+        SimulatedRunner::new(4),
+        &clock,
+        Settings::default(),
+    );
+    let dev = hq.hire("Linus", 40, 2, 4).unwrap();
+    let goal = hq
+        .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
+        .unwrap();
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                project: None,
+                parent: None,
+                title: "Add a list of watches".to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let context = hq.runner().started()[0].clone();
+    let (run, member) = turn(&hq, &context.token);
+    call(&hq, &run, &member, "claim", &json!({ "task": task.0 })).unwrap();
+    let head = "5faf6aed".repeat(5);
+    let receipt = hq
+        .record_receipt(
+            &context.token,
+            &super::engine::Called {
+                tool: "repo_checkout".to_owned(),
+                args: "branch: develop".to_owned(),
+                excerpt: format!(
+                    "checked out the base at {}: develop (4 KB)",
+                    "01234567".repeat(5)
+                ),
+                ok: true,
+                act: false,
+                confidential: false,
+            },
+        )
+        .unwrap();
+    let closing = json!({ "task": task.0, "status": "in_review", "reason": "Done.",
+        "evidence": [format!("r{receipt}")],
+        "sandbox": { "state": "read", "branches": [{ "branch": "hq/task-1-fix", "head": head }] },
+        "unsubmitted": [{ "branch": "hq/task-1-fix", "head": head, "why": "not wanted" }] });
+    {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER fault BEFORE INSERT ON posts WHEN NEW.text LIKE '%unsubmitted%' \
+             BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+        )
+        .unwrap();
+    }
+    let refused = call(&hq, &run, &member, "set_status", &closing);
+    assert!(refused.is_err(), "{refused:?}");
+    let status = hq.store().task(task).unwrap().unwrap().status;
+    assert_eq!(
+        status.name(),
+        "doing",
+        "a disposition not recorded closes nothing"
+    );
+    {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("DROP TRIGGER fault;").unwrap();
+    }
+    call(&hq, &run, &member, "set_status", &closing).unwrap();
+    let thread = hq.store().thread(task).unwrap();
+    let noted = thread
+        .iter()
+        .position(|p| {
+            p.text
+                .contains(&format!("leaves hq/task-1-fix at {head} unsubmitted"))
+        })
+        .expect("the disposition is in the thread");
+    let moved = thread
+        .iter()
+        .position(|p| p.text.contains("→ in_review"))
+        .expect("the change is in the thread");
+    assert!(noted < moved, "recorded before the status changed");
+    let _ = std::fs::remove_file(&path);
+}

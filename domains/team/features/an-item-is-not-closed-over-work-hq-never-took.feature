@@ -149,3 +149,11 @@ Feature: An item is not closed over work HQ never took as finished
   Scenario: Without a checkout the node recorded, a reported head changes nothing
     When Sol sets "Fix the failing test" ready, the worker reporting "hq/task-1-fix" at the unsubmitted head
     Then it is not refused
+
+  # Control: the interlock is for the turn's own task, the one the worker read the sandbox for.
+  Scenario: Another task the member holds is moved as it was, whatever report it carries
+    Given the node recorded Sol's checkout of the base at the handover head
+    And Sol has the task "Write the release notes"
+    And Sol took "Write the release notes" and read media's logs: "media: listening on 8096, ready"
+    When Sol sets "Write the release notes" ready, the worker reporting "hq/task-2-notes" at the unsubmitted head
+    Then it is not refused for the sandbox

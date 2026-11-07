@@ -390,7 +390,7 @@ fn refused_naming(w: &mut Office, branch: String, head: String) {
 )]
 fn thread_says_left(w: &mut Office, title: String, branch: String, head: String, why: String) {
     let task = w.task(&title);
-    let wanted = format!("left {branch} at {} unsubmitted: {why}", oid(&head));
+    let wanted = format!("leaves {branch} at {} unsubmitted: {why}", oid(&head));
     let thread = w.hq.store().thread(task).expect("the store answers");
     let times = thread.iter().filter(|p| p.text.contains(&wanted)).count();
     assert_eq!(times, 1, "{thread:#?}");
@@ -406,4 +406,10 @@ fn sets_done_reporting(w: &mut Office, name: String, title: String, branch: Stri
 fn sets_done_no_work(w: &mut Office, name: String, title: String) {
     let report = serde_json::json!({ "sandbox": { "state": "read", "branches": [] } });
     sets(w, &name, &title, "done", report);
+}
+
+#[then("it is not refused for the sandbox")]
+fn not_refused_for_sandbox(w: &mut Office) {
+    let said = w.refused.clone().unwrap_or_default();
+    assert!(!said.contains("your sandbox"), "{said}");
 }

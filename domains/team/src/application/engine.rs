@@ -1396,6 +1396,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         to: TaskStatus,
         reason: &str,
     ) -> Done<()> {
+        self.set_status_held_lock_noting(member, task, to, reason, &[])
+    }
+
+    /// As [`Self::set_status_held_lock`], writing `notes` to the thread after every check and
+    /// before the status changes.
+    pub(crate) fn set_status_held_lock_noting(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        to: TaskStatus,
+        reason: &str,
+        notes: &[String],
+    ) -> Done<()> {
         let current = self.task(task)?;
         // Its holder moves it.
         if current.owner != Some(member) {
@@ -1412,6 +1425,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // first (ADR 0142, amended 2026-11-01).
         if to == TaskStatus::InReview && self.solo_of(&current)?.is_some() {
             self.ready_alone(&current)?;
+        }
+        for note in notes {
+            self.post_system_held_lock(task, note)?;
         }
         self.store.set_task_status(task, to)?;
         if to == TaskStatus::Blocked {

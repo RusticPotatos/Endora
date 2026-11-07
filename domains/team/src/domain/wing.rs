@@ -216,11 +216,12 @@ pub fn outstanding(
         "never submitted as finished work"
     };
     Some(format!(
-        "your sandbox holds {} at {}, {how}: nothing changed. Submit it with repo_submit, then \
-         set the task again; or, if that revision is not to be delivered, set it again naming \
-         it in `unsubmitted` ([{{\"branch\", \"head\", \"why\"}}]) — sandbox-only work may \
-         disappear when the item closes.",
-        first.branch, first.head
+        "your sandbox holds {b} at {h}, {how}: nothing changed. Submit it with repo_submit, \
+         then set the task again; or, if that revision is not to be delivered, set it again with \
+         \"unsubmitted\": [{{\"branch\": \"{b}\", \"head\": \"{h}\", \"why\": \"<why it is \
+         not delivered>\"}}]. Sandbox-only work may disappear when the item closes.",
+        b = first.branch,
+        h = first.head
     ))
 }
 

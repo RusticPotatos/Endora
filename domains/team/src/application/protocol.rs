@@ -811,13 +811,8 @@ fn tool_set_status<S: TeamStore, W: WorkerAdapter, C: Clock>(
     };
     let left = closing_over_sandbox(engine, run, task, to, args)?;
     engine
-        .set_status_citing(run.id, task, to, reason, &cited)
+        .set_status_citing_noting(run.id, task, to, reason, &cited, &left)
         .map_err(|e| said(&e))?;
-    for line in left {
-        engine
-            .post(super::Author::Endora, task, &line)
-            .map_err(|e| said(&e))?;
-    }
     // Moving an item on is often a turn's last word: lines it marks as lessons wait for the
     // item's next verdict (ADR 0142, amended 2026-10-31).
     engine.offer_lessons(task, reason).map_err(|e| said(&e))?;
@@ -1041,8 +1036,8 @@ fn tool_my_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
 /// checkout for; a call with no report is left as it was (the owner, HQ, older workers). It
 /// refuses when a reported task-branch head is neither a finished submission of this item at
 /// that exact head nor the default branch's revision the node handed over, unless the call names
-/// it in `unsubmitted` with a reason. Returns the thread lines saying what was left unsubmitted,
-/// to post once the status has changed.
+/// it in `unsubmitted` with a reason. Returns the thread lines saying what is left unsubmitted,
+/// written before the status changes (and the change refused if they cannot be).
 fn closing_over_sandbox<S: TeamStore, W: WorkerAdapter, C: Clock>(
     engine: &Engine<S, W, C>,
     run: &Run,
@@ -1054,7 +1049,8 @@ fn closing_over_sandbox<S: TeamStore, W: WorkerAdapter, C: Clock>(
     let Some(reported) = args.get("sandbox") else {
         return Ok(Vec::new());
     };
-    if !matches!(to, TaskStatus::InReview | TaskStatus::Done) {
+    // Only the turn's own task: the worker reads the sandbox for that one alone.
+    if run.task != Some(task) || !matches!(to, TaskStatus::InReview | TaskStatus::Done) {
         return Ok(Vec::new());
     }
     let store = engine.store();
@@ -1118,7 +1114,7 @@ fn closing_over_sandbox<S: TeamStore, W: WorkerAdapter, C: Clock>(
         })
         .map(|l| {
             format!(
-                "{name} closed it and left {} at {} unsubmitted: {}. That revision was not \
+                "{name} is closing it and leaves {} at {} unsubmitted: {}. That revision is not \
                  delivered; sandbox-only work may disappear when the item closes.",
                 l.branch, l.head, l.why
             )
