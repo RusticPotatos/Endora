@@ -104,6 +104,7 @@ pub(super) struct ChangePassword {
 /// sitting at their unlocked laptop.
 pub(super) async fn change_password(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChangePassword>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if req.new.chars().count() < 12 {
@@ -117,21 +118,28 @@ pub(super) async fn change_password(
         ))
     })?;
     let store = state.store.clone();
+    let keep = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map_or_else(String::new, |t| t.trim().to_owned());
     let changed = blocking(move || {
         let (current_hash, secret) = store.sign_in_setup()?;
         if !password_matches(&req.current, &current_hash) {
-            return Ok::<_, endora_application::AppError>(false);
+            return Ok::<_, endora_application::AppError>(None);
         }
         store.set_sign_in_setup(&hash, &secret)?;
-        Ok(true)
+        // A new password ends every other console session (ADR 0145): whoever held one with
+        // the old password is out at once. The session that changed it stays.
+        Ok(Some(store.end_sessions_of("full", &keep)?))
     })
     .await?;
-    if !changed {
+    let Some(ended) = changed else {
         return Err(ApiError(endora_application::AppError::BadRequest {
             message: "that is not your current password".to_owned(),
         }));
-    }
-    Ok(Json(json!({ "ok": true })))
+    };
+    Ok(Json(json!({ "ok": true, "ended": ended })))
 }
 
 #[derive(Deserialize)]

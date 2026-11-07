@@ -70,7 +70,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/tasks/{id}/consultations", get(task_consultations))
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
-        .route("/v1/desk/{id}", post(decide))
+        .route("/v1/desk/{id}", get(desk_item).post(decide))
         // The owner's reply on a task, and a goal's notes for the team.
         .route("/v1/tasks/{id}/post", post(reply))
         .route("/v1/tasks/{id}/project", post(task_project))
@@ -458,6 +458,16 @@ async fn decide(
         });
     }
     Ok(Json(answer))
+}
+
+/// One desk item by its id, decided or not, with its status (ADR 0145): how the node reads
+/// back what an answer did.
+async fn desk_item(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    Ok(Json(blocking(move || hq.desk_item(DeskId(id))).await?))
 }
 
 #[derive(Deserialize)]
@@ -1692,6 +1702,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.status(), StatusCode::CONFLICT, "decided once");
+        // One item read back by its id, decided or not (ADR 0145): how the node checks what an
+        // answer did. An item that is not there is not found.
+        let item = json_of(
+            app.clone()
+                .oneshot(call(
+                    "GET",
+                    &format!("/v1/desk/{proposal}"),
+                    Some(TOKEN),
+                    "",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (item["id"].as_i64(), item["status"].as_str()),
+            (Some(proposal), Some("approve"))
+        );
+        assert!(item["kind"].is_string() && item["text"].is_string());
+        let missing = app
+            .clone()
+            .oneshot(call("GET", "/v1/desk/987654", Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         let stop = app
             .clone()
             .oneshot(call(

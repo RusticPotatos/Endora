@@ -88,6 +88,8 @@ pub(super) async fn health() -> Json<serde_json::Value> {
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),
         "build": endora_application::build_id(),
+        // The Console contract's version (ADR 0145).
+        "api": super::console::CONTRACT_VERSION,
     }))
 }
 

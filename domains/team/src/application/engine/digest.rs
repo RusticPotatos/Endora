@@ -34,6 +34,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(item)
     }
 
+    /// One desk item by its id, as the desk shows it, with its status (`waiting`, or how it
+    /// was decided), decided or not (ADR 0145).
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for an item that does not exist.
+    pub fn desk_item(&self, id: crate::domain::DeskId) -> Done<Value> {
+        let _held = self.held();
+        let found = self
+            .store
+            .desk()?
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or(super::EngineError::Unknown("desk item"))?;
+        let mut item = self.desk_item_shown(&found)?;
+        item["status"] = Value::from(found.status);
+        Ok(item)
+    }
+
     /// What waits on the owner and needs their word: a decision, an approval, an answer, a push,
     /// money (ADR 0132), oldest first.
     pub(super) fn desk_shown(&self) -> Done<Value> {

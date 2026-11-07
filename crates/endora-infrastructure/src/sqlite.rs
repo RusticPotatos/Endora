@@ -172,6 +172,26 @@ CREATE TABLE IF NOT EXISTS provider_spend (
     provider TEXT PRIMARY KEY,
     micros   INTEGER NOT NULL
 ) STRICT;
+-- The owner's answers to desk items through the Console contract (ADR 0145): one per item,
+-- reserved before HQ is asked, so a second press or a retry never applies an answer twice.
+CREATE TABLE IF NOT EXISTS decision_answers (
+    desk          INTEGER PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT '',
+    choice        TEXT NOT NULL,
+    words         TEXT NOT NULL DEFAULT '',
+    person        TEXT NOT NULL,
+    session       TEXT NOT NULL DEFAULT '',
+    channel       TEXT NOT NULL DEFAULT '',
+    request       TEXT NOT NULL DEFAULT '',
+    requested_ms  INTEGER NOT NULL,
+    accepted_ms   INTEGER,
+    executed_ms   INTEGER,
+    executed_ok   INTEGER,
+    executed_said TEXT NOT NULL DEFAULT '',
+    verified_ms   INTEGER,
+    verified_ok   INTEGER,
+    verified_how  TEXT NOT NULL DEFAULT ''
+) STRICT;
 ";
 
 /// Every column in the node's database that holds a credential, sealed at rest (ADR 0125).
@@ -1611,6 +1631,9 @@ mod tests {
 
 #[cfg(test)]
 mod secrets_at_rest;
+
+// Sessions ending and the owner's recorded decisions (ADR 0145).
+pub mod console;
 
 #[cfg(test)]
 mod the_schema_production_actually_runs {

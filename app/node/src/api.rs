@@ -432,6 +432,20 @@ pub fn app(state: AppState) -> Router {
             post(confirm_new_authenticator),
         )
         .route("/v1/session/bootstrap", get(reveal_the_bootstrap_token))
+        // The Core <-> Console contract's own routes (ADR 0145, docs/api/console-v1.md).
+        .route("/v1/session/current", get(console::session_current))
+        .route("/v1/session/sign-out", post(console::sign_out))
+        .route(
+            "/v1/session/sign-out-everywhere",
+            post(console::sign_out_everywhere),
+        )
+        .route("/v1/decisions", get(console::decisions))
+        .route(
+            "/v1/decisions/{id}",
+            get(console::decision).post(console::decide),
+        )
+        .route("/v1/events", get(console::events))
+        .route("/v1/events/stream", get(console::events_stream))
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
@@ -692,6 +706,11 @@ pub use workers::*;
 
 mod misc;
 use misc::*;
+
+// The Core <-> Console contract's own routes (ADR 0145).
+mod console;
+#[cfg(test)]
+mod console_tests;
 
 #[cfg(test)]
 mod tests;

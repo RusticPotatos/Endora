@@ -9,7 +9,7 @@ use endora_infrastructure::HqError;
 mod world;
 pub(super) use world::*;
 
-fn client(
+pub(super) fn client(
     state: &AppState,
 ) -> Result<Arc<endora_infrastructure::HqClient>, (StatusCode, Json<serde_json::Value>)> {
     state.hq.clone().ok_or((
@@ -18,7 +18,7 @@ fn client(
     ))
 }
 
-fn failed(error: HqError) -> (StatusCode, Json<serde_json::Value>) {
+pub(super) fn failed(error: HqError) -> (StatusCode, Json<serde_json::Value>) {
     let status = match &error {
         HqError::Unreachable(_) => StatusCode::BAD_GATEWAY,
         HqError::Answered { status, .. } => {
@@ -209,6 +209,22 @@ pub(super) async fn hq_decide(
     Path(id): Path<i64>,
     Json(req): Json<HqDecision>,
 ) -> Answer {
+    decide_on_desk(&state, id, &req.decision, &req.answer).await
+}
+
+/// Decides desk item `id`, as [`hq_decide`] does: shared with the Console contract's answer
+/// (ADR 0145), which binds and records it first.
+pub(super) async fn decide_on_desk(
+    state: &AppState,
+    id: i64,
+    decision: &str,
+    answer: &str,
+) -> Answer {
+    let state = state.clone();
+    let req = HqDecision {
+        decision: decision.to_owned(),
+        answer: answer.to_owned(),
+    };
     client(&state)?;
     let looked = state.clone();
     let approval = tokio::task::spawn_blocking(move || super::bridge::approval_at(&looked, id))

@@ -16,6 +16,11 @@ Endora is HQ ([ADR 0136](adr/0136-endora-is-hq.md)): every device opens on HQ, a
 chat is retired. The menu holds the everyday destinations; everything that configures lives in
 Settings.
 
+**Endora Console** (`RusticPotatos/endora-console`, ADR 0145) carries a copy of these screens as
+its own deployable, calling only the routes in `docs/api/console-v1.json`. Until the owner's
+cutover, HQ screen changes land **here**, in Endora, and Console copies them; the built-in screens
+are removed only after the cutover.
+
 | Destination | What belongs there | What does not |
 |---|---|---|
 | **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history, the chess league and the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
@@ -125,6 +130,8 @@ Settings.
 | `scripts/check-collection-parity.sh` | Fails when `docker-compose.yml` reads a variable or profile the `endora` role neither declares nor lists as Mac-only; run by CI |
 | `scripts/` | Checks and helpers run by people, CI or the Mac (`scripts/mac-brain/`); `code-size.sh` and `prune-builds.sh` for keeping the code base and the disk in hand; `gate.sh` (the full handoff gate) and `release.sh` (the release to the NAS and the Pi, which stops at any failing stage; `test-release.sh` holds it to that against fakes); `replay-bench/` (replaying stored turns on another model; its data stays outside the repo); `harness-probes/` (the agentic-harness climb's rig: seeded probe families, their graders, both arms' runners and accounting; see its `PROTOCOL.md`; its runs' data stays outside the repo); `research-map/` (the research team's checkpoint map: `org.json` declares the roles and who sends what to whom, `render.mjs` draws a still page from a snapshot the steward writes; tests run with `node --test scripts/research-map`; the snapshots stay outside the repo) |
 | `.claude/` | How an assistant runs the baseline experiment the same way each round: the skill `skills/hq-round/` (the playbook), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |
+| `docs/api/` | Core's published contracts: `console-v1.md` (what Endora Console may call, and how Core answers) and its route list `console-v1.json`, which Core's tests and Console's proxy both read (ADR 0145). A route Console needs is added here, additively, in the same change as the route |
+| `app/node/src/api/console.rs` | The routes the Console contract adds: session end, `/v1/decisions`, `/v1/events` and its stream; held by `console_tests.rs` |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |

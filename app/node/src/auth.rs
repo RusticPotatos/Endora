@@ -179,7 +179,7 @@ fn matches_any(accepted: &[(String, Scope)], offered: &str) -> Option<Scope> {
 /// time many attempts, which is not this threat model — but the correct comparison costs four
 /// lines and no dependency, and choosing the wrong one on purpose is how a system ends up
 /// explaining itself later.
-fn same_secret(offered: &str, expected: &str) -> bool {
+pub(crate) fn same_secret(offered: &str, expected: &str) -> bool {
     if offered.len() != expected.len() {
         return false;
     }
