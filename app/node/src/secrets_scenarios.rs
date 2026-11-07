@@ -143,6 +143,26 @@ fn sealed(w: &mut SecretsWorld, secret: String) {
     assert!(!clear, "the secret is in the database in the clear");
 }
 
+#[then(expr = "every data key is wrapped by the node's own key file")]
+fn only_the_key_file(w: &mut SecretsWorld) {
+    let sql = w.sql();
+    let sources: Vec<String> = sql
+        .prepare("SELECT wrapped FROM secret_keys")
+        .expect("the keys")
+        .query_map([], |r| r.get::<_, String>(0))
+        .expect("read")
+        .map(|w| {
+            w.expect("a key")
+                .split(':')
+                .next()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert!(!sources.is_empty(), "no data key");
+    assert!(sources.iter().all(|s| s == "file"), "{sources:?}");
+}
+
 #[then(expr = "the vault tables are still there, with one passkey")]
 fn tables_kept(w: &mut SecretsWorld) {
     assert!(w.store.is_some(), "the node did not start: {:?}", w.refusal);

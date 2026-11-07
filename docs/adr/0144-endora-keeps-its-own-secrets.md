@@ -26,6 +26,37 @@ since the amendment the house's vault was initialised at the terminal, so Endora
 no AppRole and no Transit key in it; and the console's passkey unlock had never run in a real
 browser (0127, "Consequences").
 
+### Pre-removal check: no node secret is stored in or read from the vault
+
+Recorded 2026-11-07 against the code before this change (develop `e595ed5e`), so the removal
+takes nothing the node uses.
+
+- **The code path.** The node's store opened through `vault::open_node_store`, which used the
+  vault only when a data key on disk was wrapped by the `openbao` source
+  (`Db::key_sources_on_disk`); otherwise it opened `SqliteStore::open_sealed` under the key file
+  (0125). A key gets that wrapping only from the owner's one-way switch (`keys_into_vault`,
+  which sets `vault_state.keys_in_vault`). **KV was never read or written by the node**: `secret/`
+  appears only in the AppRole policy text and the `sys/mounts/secret` mount at initialisation;
+  no request for `secret/data/…` exists. The node's other requests were `sys/*` (status, init,
+  unseal, rekey) and setup, none of which returns a node secret; Transit was the only path to
+  one, and only behind the switch.
+- **A test of that path**, run on `e595ed5e` and passing
+  (`pre_removal_no_node_secret_is_stored_in_or_read_from_the_vault`, kept out of the tree because
+  the code it tests is removed): with a vault configured, initialised and answering, and
+  `keys_in_vault` false, two starts each open with the key file (not waiting), store and read a
+  token, and leave every data key wrapped by `file`; the pretend vault, which records every
+  Transit, KV, AppRole and token request, saw none (only the test's own `sys/init`).
+- **The live state** the steward reported: `keys_in_vault` false and KV deferred, which is the
+  case the test covers. If a node's keys had in fact been moved, this change refuses to start on
+  it and changes nothing (Decision 5), so a mistaken deploy cannot lose them. A read-only check
+  of a node's database before deploying, which prints source names and counts and never a key:
+
+  ```sh
+  sqlite3 -readonly endora.db "SELECT substr(wrapped, 1, instr(wrapped, ':') - 1) AS source, COUNT(*) FROM secret_keys GROUP BY source; SELECT keys_in_vault FROM vault_state;"
+  ```
+
+  Expected: `file|<n>` only, and `0`.
+
 ## Decision
 
 1. **Endora keeps and owns its secrets in its built-in encrypted store** (0125): every
