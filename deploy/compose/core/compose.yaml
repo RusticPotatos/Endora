@@ -10,11 +10,9 @@
 # default, documented in core.env.example. Model and provider keys, tokens and connections are
 # yours to add after setup; nothing is provisioned unattended (docs/install.md).
 #
-# Made to be included unchanged by the full-system bundle (../compose.yaml). Containers and
-# networks are named by the project (`endora-core`, or the bundle's name), so two installs on one
-# host do not collide. Volume names are fixed, so the same data is used alone or in the bundle
-# (set the *_VOLUME variables below for a second install). Nothing is built, and nothing is
-# bind-mounted from a relative path. ADR 0147.
+# Made to be included unchanged by the full-system bundle (../compose.yaml): volume and network
+# names are fixed, so the same data is used alone or in the bundle, nothing is built, and
+# nothing is bind-mounted from a relative path. ADR 0147.
 
 name: endora-core
 
@@ -139,10 +137,9 @@ services:
     environment:
       HQ_URL: http://hq:8790
       HQ_RUNNER_TOKEN_FILE: /runner-token/token
-      # Workers run from this same image, on the fenced team network Compose names for this
-      # project (`<project>_team`: endora-core_team alone, endora_team in the bundle).
+      # Workers run from this same image, on the fenced network by its fixed name.
       WORKER_IMAGE: ${ENDORA_CORE_IMAGE:-ghcr.io/rusticpotatos/endora-node}:${ENDORA_CORE_VERSION:?set ENDORA_CORE_VERSION}
-      TEAM_NETWORK: ${COMPOSE_PROJECT_NAME}_team
+      TEAM_NETWORK: endora-core-team
       # Turns at once (each within the limits above).
       RUNNER_CAPACITY: ${ENDORA_RUNNER_CAPACITY:-2}
     volumes:
@@ -156,10 +153,10 @@ services:
         condition: service_healthy
 
 networks:
-  # The fence around the workers. Internal: no route out. Not named outright: Compose names it
-  # `<project>_team`, so a second install gets its own fence, and the runner is told that name
-  # (TEAM_NETWORK above).
+  # The fence around the workers. Internal: no route out. Named outright, because the runner
+  # starts workers on it by that name.
   team:
+    name: endora-core-team
     internal: true
     driver_opts:
       # No address for the bridge on the host, so a worker cannot reach what the host serves

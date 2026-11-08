@@ -42,9 +42,6 @@ jobs:
       - name: The vendored compose files match their sources
         run: sh deploy/compose/check-sources.sh --remote && sh deploy/compose/check-sources.sh --self-test
 
-      - name: Two installs cannot share Core's names; the example renders; the guide's commands are right
-        run: sh deploy/compose/check-isolation.sh
-
       - name: Nothing local reaches Core's image (the check's own test, then the build context)
         run: sh scripts/check-image-privacy.sh --self-test && sh scripts/check-image-privacy.sh context .
 

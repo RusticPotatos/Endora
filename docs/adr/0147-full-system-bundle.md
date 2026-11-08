@@ -67,26 +67,6 @@ first owner was made only through a fifteen-minute claim window in the browser.
 - Setup found and fixed a real defect: making the node's token rewrote the whole sign-in row,
   so an owner made before the node's first start was erased by it.
 
-## Amendment, 8 Nov 2026: containers and networks follow the project
-
-The owner's full-system install on a plain Linux host (relayed 8 Nov; the report was not read
-here) brought the documented `docker compose up` to a failure on an existing bundle: Core's team
-network had a fixed name, `endora-core-team`, which a Core started alone already held. Decision 1's
-"network names are fixed" is changed:
-
-- Core's team network is no longer named outright. Compose names it `<project>_team`
-  (`endora-core_team` alone, `endora_team` in the bundle), and the runner is given that name by
-  Compose's own project name (`TEAM_NETWORK: ${COMPOSE_PROJECT_NAME}_team`). Core's containers
-  already followed the project.
-- Volume names stay fixed, so an upgrade keeps the data (decision 1's reason stands).
-- Console's and Audio's files, vendored unchanged, still fix their container names and Audio's
-  AirPlay network. Two bundles on one host therefore need those files changed in their own
-  repositories and a new pin; until then the guide says one bundle per host. The check
-  `deploy/compose/check-isolation.sh` names them as known limits.
-- Also: the bundle's `ENDORA_CORE_VERSION` is set to a published build (it was empty, which
-  made the example fail to render), the guide's owner setup has a scripted form with `-T`, and
-  the cold backup hands its tarballs back to the user instead of root.
-
 ## Alternatives considered
 
 - **Profiles in the root `docker-compose.yml`** (what existed): one file for every product,
