@@ -8,7 +8,10 @@ trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 # Make this folder visible as the installed collection `endora.homelab`, as a pinned install is.
 mkdir -p "$scratch/ansible_collections/endora"
 ln -s "$here" "$scratch/ansible_collections/endora/homelab"
-export ANSIBLE_COLLECTIONS_PATH="$scratch${ANSIBLE_COLLECTIONS_PATH:+:$ANSIBLE_COLLECTIONS_PATH}"
+# After it, the path as it was, or Ansible's default when unset: setting the variable replaces the
+# default, which hid every collection ansible-galaxy had installed in ~/.ansible (community.docker
+# among them): CI failed on that from 7 Nov 2026, when nothing else on the runner provided it.
+export ANSIBLE_COLLECTIONS_PATH="$scratch:${ANSIBLE_COLLECTIONS_PATH:-$HOME/.ansible/collections:/usr/share/ansible/collections}"
 export ANSIBLE_ROLES_PATH="$here/roles"
 cd "$here"
 python3 -I roles/mail_mirror/tests/test_mail_mirror.py
