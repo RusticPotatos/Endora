@@ -42,22 +42,7 @@ trap finish EXIT
 
 passed="$work/.passed"
 : > "$passed"
-pass() { printf 'ok   %s\n' "$1"; printf '%s\n' "$1" >> "$passed"; }
-fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
-# check NAME COMMAND...: one named check, its command's success is the verdict.
-check() { name=$1; shift; if "$@"; then pass "$name"; else fail "$name"; fi; }
-# eventually NAME COMMAND...: as check, but retried for up to 30 seconds, for a state another
-# product caches (Console re-checks Core at most every 10 seconds, so its first answer can
-# predate Core being up).
-eventually() {
-  name=$1; shift; tries=0
-  until "$@"; do
-    tries=$((tries + 1))
-    [ "$tries" -lt 15 ] || { fail "$name"; return 0; }
-    sleep 2
-  done
-  pass "$name"
-}
+. ./ci/checks.sh
 
 # json URL EXPR [CURL ARGS...]: fetches URL and prints the Python expression EXPR of its JSON `j`.
 json() {
@@ -84,15 +69,14 @@ check "Core is not published beyond the host's loopback" \
 
 echo "== Console in front of Core"
 check "Console serves its page" sh -c "curl -fsS --max-time 10 $console/ | grep -qi '<html'"
-eventually "Console reaches a compatible Core" \
+# Asked again on each try: Console's first answer can be its cached check from before Core was up.
+console_sees_core() {
   test "$(json $console/console/health "j['status'], j['core']['reachable'], j['core']['compatible'], j['core']['api']")" = "ok True True 1.0"
+}
+eventually "Console reaches a compatible Core" console_sees_core
 if ! grep -qxF "Console reaches a compatible Core" "$passed"; then
-  # Evidence for a failure, not a check: what Console says, and Core asked from inside Console's
-  # container the way Console asks it.
+  # Evidence for a failure, not a check: what Console says about Core now.
   echo "-- Console's view of Core:"; curl -s --max-time 10 "$console/console/health"; echo
-  echo "-- Core's /health from inside Console's container:"
-  compose exec -T console node -e "require('http').get('http://node:8787/health',r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>console.log(r.statusCode,b))}).on('error',e=>console.log('error',e.code||e.message))" || true
-  echo "-- how Console resolves node:"; compose exec -T console node -e "require('dns').lookup('node',{all:true},(e,a)=>console.log(e?e.code:JSON.stringify(a)))" || true
 fi
 check "Console proxies the contract's /health to Core" \
   test "$(json $console/health "j['service'] != '', j['api']")" = "True 1.0"

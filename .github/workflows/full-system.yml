@@ -36,6 +36,9 @@ jobs:
       - name: Docker and Compose versions
         run: docker version && docker compose version
 
+      - name: The bundle test's own helpers
+        run: sh deploy/compose/ci/test-checks.sh
+
       - name: The vendored compose files match their sources
         run: sh deploy/compose/check-sources.sh --remote && sh deploy/compose/check-sources.sh --self-test
 
