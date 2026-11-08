@@ -147,6 +147,25 @@ negative control, so the override test cannot pass by accident.
    needs the XPS run from scratch with no overrides. Not verified here: whether a stock Ubuntu host's
    own avahi daemon (UDP 5353) conflicts with the senders' avahi, which uses host networking.
 
+## Amendment 4, 8 Nov 2026: the isolation check is a required part of the handoff gate
+
+Amendments 1 to 3 landed on `develop` and were reverted whole (Director ruling, 8 Nov 2026), together
+with a candidate that pinned Console and Audio to unreleased scratch-branch commits so their container
+names could be variables. This change lands the Core side again and leaves the pins alone:
+`SOURCES.json` still names Console's `fd9cf17` and Audio's `v1.0.1`, both published, and each pin
+still matches its source (`check-sources.sh --remote`). Container names in those two files stay
+fixed, so two full bundles on one host stay unsupported, as amendment 3 says; stage 1 waits for
+released Console and Audio files.
+
+What was missing was a gate that fails when the isolation check is not run. A green run of the other
+checks said nothing about it. `scripts/check-required.sh` runs the checks in `scripts/required-checks.txt`
+and exits nonzero for a check that is missing from the list, whose script is not there, that fails,
+or that exits 0 without printing its success marker (a stub). `scripts/gate.sh` calls it with the
+names it will not run without, so removing a line from the list fails the gate instead of shrinking it.
+`scripts/test-check-required.sh` holds it to that with a negative control for each way a check can be
+absent. Not verified here: a runtime install. The check renders models with `docker compose config`
+and starts nothing; the clean-host run of milestone c is still open.
+
 ## Alternatives considered
 
 - **Profiles in the root `docker-compose.yml`** (what existed): one file for every product,
