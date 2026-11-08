@@ -86,6 +86,14 @@ echo "== Console in front of Core"
 check "Console serves its page" sh -c "curl -fsS --max-time 10 $console/ | grep -qi '<html'"
 eventually "Console reaches a compatible Core" \
   test "$(json $console/console/health "j['status'], j['core']['reachable'], j['core']['compatible'], j['core']['api']")" = "ok True True 1.0"
+if ! grep -qxF "Console reaches a compatible Core" "$passed"; then
+  # Evidence for a failure, not a check: what Console says, and Core asked from inside Console's
+  # container the way Console asks it.
+  echo "-- Console's view of Core:"; curl -s --max-time 10 "$console/console/health"; echo
+  echo "-- Core's /health from inside Console's container:"
+  compose exec -T console node -e "require('http').get('http://node:8787/health',r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>console.log(r.statusCode,b))}).on('error',e=>console.log('error',e.code||e.message))" || true
+  echo "-- how Console resolves node:"; compose exec -T console node -e "require('dns').lookup('node',{all:true},(e,a)=>console.log(e?e.code:JSON.stringify(a)))" || true
+fi
 check "Console proxies the contract's /health to Core" \
   test "$(json $console/health "j['service'] != '', j['api']")" = "True 1.0"
 check "Console refuses a route outside the contract" test "$(status $console/v1/runner/next)" = 404
