@@ -152,8 +152,7 @@ negative control, so the override test cannot pass by accident.
 ## Amendment 4, 8 Nov 2026: container names are settings (stage 1, a local candidate)
 
 Stage 1 of amendment 3, as a candidate. The two source commits are published on scratch branches
-(8 Nov 2026). The bundle candidate was pushed to `fix/bundle-concurrent-names` at a636d699
-(8 Nov 2026) and is integrated into `develop` by the commit that makes this correction.
+(8 Nov 2026); the bundle candidate itself is not pushed.
 
 - **Console** `c5c0b2d` (`feat/container-name-variable`, the local branch tip; on origin as
   `scratch/bundle-pin-c5c0b2d`) makes
@@ -175,8 +174,7 @@ Stage 1 of amendment 3, as a candidate. The two source commits are published on 
   so two full bundles remain unsupported. A second bundle that omits `CONSOLE_CONTAINER_NAME` is
   caught by a negative control.
 - **Checked remotely:** `check-sources.sh --remote` passes against both scratch-branch SHAs (exit 0,
-  8 Nov 2026). `full-system.yml` passed on the candidate head a636d699 (GitHub run 42480378417, 8 Nov 2026), and that
-run includes the same remote check. No runtime test: a second running
+  8 Nov 2026). `full-system.yml` against those SHAs is not run. No runtime test: a second running
   bundle is still open, as amendment 2 says.
 - **Correction:** stage 1 said "Audio's five". Audio has four containers (hub, spotify, senders,
   airplay); the five are Console's one and Audio's four.

@@ -155,8 +155,8 @@ name is a setting (`CONSOLE_CONTAINER_NAME`, `ENDORA_AUDIO_CONTAINER_NAME`,
 `ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME`, in `bundle.env.example`), and a default install keeps today's
 names. Setting them lets a second bundle's containers take their own names, but it does not make
 the second bundle run: Audio's senders and Spotify use the host's network, with ports (3701-3704,
-UDP 319/320) that one host has only once. The Console and Audio commits that add the settings are
-pinned from scratch branches (ADR 0147 amendment 4) until those products are released.
+UDP 319/320) that one host has only once. Until the Console and Audio commits that add the settings
+are published and pinned, the bundle's pinned files fix the names.
 
 | Volume | Holds | Back it up |
 |---|---|---|
