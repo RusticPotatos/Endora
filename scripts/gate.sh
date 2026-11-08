@@ -19,7 +19,7 @@ node scripts/check-nothing-personal.mjs >$L/personal.log 2>&1 && echo personal-o
 sh scripts/check-collection-parity.sh >$L/parity.log 2>&1 && echo parity-ok || { echo parity-FAIL; exit 1; }
 # The bundle's isolation check and its pins, run by name: a check missing from the manifest, a
 # script that is not there, or a stub that prints nothing fails here, never shrinks the gate.
-sh scripts/check-required.sh --require isolation --require sources --require sources-self-test --require required-self-test scripts/required-checks.txt >$L/required.log 2>&1; r=$?
+sh scripts/check-required.sh --require isolation --require isolation-self-test --require sources --require sources-self-test --require required-self-test scripts/required-checks.txt >$L/required.log 2>&1; r=$?
 sed 's/^/required: /' $L/required.log; [ $r = 0 ] && echo required-ok || { echo required-FAIL; exit 1; }
 git diff --check && echo diff-ok
 [ -f scripts/code-size.sh ] && sh scripts/code-size.sh | sed 's/^/size: /'

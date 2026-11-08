@@ -96,8 +96,16 @@ grep -q 'deploy/compose/check-isolation.sh' "$HERE/required-checks.txt"
 expect "  and its command is deploy/compose/check-isolation.sh" $?
 [ -f "$HERE/../deploy/compose/check-isolation.sh" ]
 expect "that script exists in the tree" $?
-grep -q -- '--require isolation' "$HERE/gate.sh"
+grep -q -- '--require isolation ' "$HERE/gate.sh"
 expect "scripts/gate.sh requires the isolation check by name" $?
+grep -q '^isolation-self-test|.*check-isolation.sh --self-test' "$HERE/required-checks.txt"
+expect "the manifest names the isolation check's own test (BusyBox-style grep control)" $?
+grep -q -- '--require isolation-self-test' "$HERE/gate.sh"
+expect "scripts/gate.sh requires the isolation self-test by name" $?
+sh "$HERE/../deploy/compose/check-isolation.sh" --self-test > "$WORK/out" 2>&1
+expect "the isolation self-test passes on this host's grep (exit 0)" $?
+grep -q 'negative control: with a grep that rejects --exclude' "$WORK/out"
+expect "  and it ran the BusyBox-style negative control" $?
 
 echo
 if [ "$FAILED" -ne 0 ]; then

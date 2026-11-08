@@ -3,6 +3,7 @@
 # gives (ADR 0147). Needs Docker Compose v2.20+ and python3; nothing is started or pulled.
 #
 #   sh deploy/compose/check-isolation.sh
+#   sh deploy/compose/check-isolation.sh --self-test   (offline; needs only sh and grep)
 #
 # Renders the bundle, Core alone, and a second Core from core/second.env.example, each under its
 # own project name, from copies of this folder. For every model it compares the names a running
@@ -20,6 +21,64 @@ trap 'rm -rf "$work"' EXIT
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
+
+# old_name_refs OWN PATH...: prints "file:line:text" for every mention of the old fixed team network
+# name under PATH..., except lines of the file OWN (this script names it to look for it) and the
+# guide's one allowed mention. Returns 2 when grep itself fails: an empty result then means "could
+# not look", never "none found". Only `grep -rn` is used, which GNU and BusyBox grep both take;
+# BusyBox rejects --exclude, and that error, read as "no matches", once made this check pass empty.
+old_name_refs() {
+  own=$1; shift
+  rc=0
+  grep -rn 'endora-core-team' "$@" > "$work/refs.out" 2> "$work/refs.err" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "grep failed (exit $rc): $(head -1 "$work/refs.err")" >&2
+    return 2
+  fi
+  [ "$rc" -eq 1 ] && return 0
+  while IFS= read -r line; do
+    case $line in
+      "$own":*) continue ;;
+      *'was `endora-core-team`'*) continue ;;
+    esac
+    printf '%s\n' "$line"
+  done < "$work/refs.out"
+  return 0
+}
+
+if [ "${1:-}" = --self-test ]; then
+  t="$work/self"; mkdir -p "$t/tree" "$t/clean" "$t/shim"
+  printf 'network: endora-core-team\n' > "$t/tree/leak.txt"
+  printf 'network: endora-core-team\n' > "$t/tree/own.sh"
+  printf 'moving a Core that was `endora-core-team`\n' > "$t/tree/guide.md"
+  printf 'nothing here\n' > "$t/clean/note.txt"
+  real=$(command -v grep)
+  # BusyBox grep rejects --exclude (exit 2): a grep that does the same.
+  printf '#!/bin/sh\nfor a in "$@"; do case $a in --exclude*|--include*) echo "grep: unrecognized option: ${a#--}" >&2; exit 2;; esac; done\nexec %s "$@"\n' "$real" > "$t/shim/grep"
+  mkdir -p "$t/broken"
+  printf '#!/bin/sh\necho "grep: cannot run" >&2\nexit 2\n' > "$t/broken/grep"
+  chmod +x "$t/shim/grep" "$t/broken/grep"
+  set +e   # each assertion reports its own status
+  st_fail=0
+  st() { if [ "$2" -eq 0 ]; then echo "ok   self-test: $1"; else echo "FAIL self-test: $1"; st_fail=1; fi; }
+
+  rc=0; out=$(old_name_refs "$t/tree/own.sh" "$t/tree" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && case $out in "$t/tree/leak.txt:"*) true ;; *) false ;; esac
+  st "a planted reference is reported; the script's own file and the guide's allowed mention are not" $?
+
+  rc=0; out=$(PATH="$t/shim:$PATH" old_name_refs "$t/tree/own.sh" "$t/tree" 2>/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || case $out in "$t/tree/leak.txt:"*) true ;; *) false ;; esac
+  st "negative control: with a grep that rejects --exclude (BusyBox), a planted reference is still caught or the search fails" $?
+
+  rc=0; out=$(PATH="$t/broken:$PATH" old_name_refs "$t/tree/own.sh" "$t/clean" 2>/dev/null) || rc=$?
+  [ "$rc" -ne 0 ]
+  st "negative control: a grep that errors makes the search fail, never read as 'no references'" $?
+
+  rc=0; out=$(old_name_refs "$t/tree/own.sh" "$t/clean" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] && [ -z "$out" ]
+  st "a clean tree passes with no references" $?
+  exit "$st_fail"
+fi
 
 if [ ! -f "$here/core/second.env.example" ]; then
   bad "core/second.env.example is missing: the documented second Core (ADR 0147) has no settings"
@@ -264,7 +323,11 @@ else
 fi
 # The team network is named by the project, never by the old fixed name. The one allowed mention
 # is the guide's note on moving a Core started before this change ("was `endora-core-team`").
-if grep -rn --exclude=check-isolation.sh 'endora-core-team' "$here" "$docs" | grep -v 'was `endora-core-team`' > "$work/fixed" 2>/dev/null; then
+refs_rc=0
+old_name_refs "$here/check-isolation.sh" "$here" "$docs" > "$work/fixed" 2> "$work/fixed.err" || refs_rc=$?
+if [ "$refs_rc" -ne 0 ]; then
+  bad "could not search for the old fixed network name: $(head -1 "$work/fixed.err")"
+elif [ -s "$work/fixed" ]; then
   while IFS= read -r line; do bad "fixed network name still referenced: $line"; done < "$work/fixed"
 else
   ok "no reference to the old fixed network name remains"

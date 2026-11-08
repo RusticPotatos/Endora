@@ -1,6 +1,7 @@
 # Checks the handoff gate must run (scripts/check-required.sh; scripts/gate.sh requires the
 # names it lists). One a line: name|text the check prints when it passes|command (from the root).
 isolation|isolation check passed|sh deploy/compose/check-isolation.sh
+isolation-self-test|self-test: a clean tree passes|sh deploy/compose/check-isolation.sh --self-test
 sources|matches its pin|sh deploy/compose/check-sources.sh
 sources-self-test|self-test: a changed vendored file|sh deploy/compose/check-sources.sh --self-test
 required-self-test|check-required tests passed|sh scripts/test-check-required.sh

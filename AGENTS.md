@@ -165,7 +165,7 @@ cargo test --workspace --all-features
 node scripts/check-console.mjs
 node scripts/check-nothing-personal.mjs
 sh scripts/check-collection-parity.sh
-sh scripts/check-required.sh --require isolation --require sources --require sources-self-test --require required-self-test scripts/required-checks.txt
+sh scripts/check-required.sh --require isolation --require isolation-self-test --require sources --require sources-self-test --require required-self-test scripts/required-checks.txt
 git diff --check
 ```
 

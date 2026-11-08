@@ -166,6 +166,16 @@ names it will not run without, so removing a line from the list fails the gate i
 absent. Not verified here: a runtime install. The check renders models with `docker compose config`
 and starts nothing; the clean-host run of milestone c is still open.
 
+## Amendment 5, 8 Nov 2026: the old-network-name check can no longer pass without looking
+
+The clean-host run of amendment 4's candidate found a vacuous pass: `check-isolation.sh` searched for
+the old fixed network name with `grep --exclude=...`, which BusyBox grep rejects, and read the
+empty result as "no reference remains". The check now uses only `grep -rn`, drops its own file and
+the guide's one allowed mention itself, and fails when grep exits above 1. `check-isolation.sh
+--self-test` (a required check, `isolation-self-test`) plants a reference and holds the check to
+catching it under a grep that rejects `--exclude` and to failing under a grep that errors; it needs
+only `sh` and `grep`, so it also runs under Alpine's BusyBox.
+
 ## Alternatives considered
 
 - **Profiles in the root `docker-compose.yml`** (what existed): one file for every product,
