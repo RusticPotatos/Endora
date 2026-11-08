@@ -37,10 +37,19 @@ product's own compose file unchanged, pinned to a released version.
 
 ```sh
 git clone https://github.com/RusticPotatos/Endora && cd Endora/deploy/compose
-cp bundle.env.example .env        # set ENDORA_CORE_VERSION; read every other line
+cp bundle.env.example .env        # ENDORA_CORE_VERSION is set to a published build; read every other line
 docker compose up -d --wait
-docker compose exec node endora-core setup        # make Core's owner (once)
+docker compose exec node endora-core setup        # make Core's owner (once), at a terminal
 ```
+
+To script the owner's setup instead (no terminal), give the password on stdin and turn off the
+terminal with `-T`:
+
+```sh
+printf '%s\n' "$ENDORA_OWNER_PASSWORD" | docker compose exec -T node endora-core setup
+```
+
+It prints the authenticator key once; keep it. A second run refuses, because there is an owner.
 
 Then open `http://<host>:8787`: that is Console, and Console is where people sign in. To serve
 it over HTTPS (recommended, since a password and codes cross the network), put `cert.pem` and
@@ -55,9 +64,9 @@ needs another (it is Core's screens).
 
 ```sh
 cd Endora/deploy/compose/core
-cp core.env.example .env          # set ENDORA_CORE_VERSION
+cp core.env.example .env          # ENDORA_CORE_VERSION is set to a published build
 docker compose up -d --wait
-docker compose exec node endora-core setup
+docker compose exec node endora-core setup        # or the scripted form with -T, above
 ```
 
 Core then answers on `https://<host>:8787` with its own self-signed certificate (accept it once;
@@ -70,7 +79,7 @@ its built-in screens. Put Console in front later by running Console's compose wi
 `docker compose up` makes no secret for you beyond the tokens each product makes for itself.
 These are your steps, once:
 
-1. **Core's owner.** `docker compose exec node endora-core setup` asks for a password (12
+1. **Core's owner.** `docker compose exec node endora-core setup` (or the scripted form above) asks for a password (12
    characters or more, not echoed) and prints a QR code, an `otpauth://` URI and a key: add it to
    an authenticator app. That is the whole of Core's sign-in today, a password and a code
    ([ADR 0146](adr/0146-console-forwards-cores-session.md)). It refuses to run again once there
@@ -104,7 +113,8 @@ unless its `workers` profile is named, because it mounts Docker's socket, which 
 root on the host. It trusts HQ with nothing but a run and its token: the image, mounts, network
 and limits of every worker are fixed in the runner's own code, not taken from HQ. Every worker:
 
-- runs on the `endora-core-team` network, which is internal: it reaches the node and HQ and
+- runs on the team network, `<project>_team` (`endora-core_team` alone, `endora_team` in the
+  bundle), which is internal: it reaches the node and HQ and
   nothing else, no internet, no LAN, and (Docker 28+) not the host itself;
 - has a read-only root, every capability dropped and `no-new-privileges`;
 - gets at most **256 MB, one CPU and 128 processes**, `/tmp` of 64 MB in memory (a workbench
@@ -127,7 +137,17 @@ at 64 MB. With the demo on (`ENDORA_HQ_DEMO=1`) HQ hands it nothing.
 
 ## Volumes and data
 
-Every volume has a fixed name, so Core alone and Core in the bundle use the same data.
+Every volume has a fixed name, so Core alone and Core in the bundle use the same data. That is
+deliberate: an upgrade keeps the data. A second install on the same host needs its own volume
+names (the `*_VOLUME` variables in `core/compose.yaml`, and Audio's and Console's own variables)
+and its own host ports.
+
+**Two installs on one host.** Core's containers and networks follow the project name, so two
+installs of Core do not collide. Console's and Audio's own files, copied unchanged from their
+repositories, still name their containers (`endora-console`, `endora-audio`, `endora-audio-spotify`,
+`endora-audio-senders`, `endora-audio-airplay`) and Audio's AirPlay network. Until those files
+change in their repositories and the bundle is pinned to the new versions, run one full bundle
+per host.
 
 | Volume | Holds | Back it up |
 |---|---|---|
@@ -155,7 +175,9 @@ docker compose cp node:/data/secrets.key ./secrets.key     # store it apart from
 ```sh
 docker compose stop
 for v in endora-core-data endora-core-hq-data endora-audio-data; do
-  docker run --rm -v "$v":/v:ro -v "$PWD":/b alpine:3.21 tar czf "/b/$v.tgz" -C /v .
+  # The container runs as root; the tarball is handed back to you, not left root-owned.
+  docker run --rm -e OWNER="$(id -u):$(id -g)" -v "$v":/v:ro -v "$PWD":/b alpine:3.21 \
+    sh -c 'tar czf "/b/$1.tgz" -C /v . && chown "$OWNER" "/b/$1.tgz"' sh "$v"
 done
 docker compose start
 ```
@@ -187,6 +209,10 @@ Each product moves on its own, by its version in `.env`:
 # back up first (above), then:
 docker compose pull && docker compose up -d --wait
 ```
+
+**Core started before the project-named network.** Its team network was `endora-core-team` and is
+now `<project>_team`. Once, run `docker compose down` (without `-v`: the volumes, and so the data,
+stay) and then `docker compose up -d --wait`.
 
 **Rollback** is the same with the previous version. Core's database migrations run forward on
 start, so an older Core may not open a database a newer one has migrated: roll Core back
