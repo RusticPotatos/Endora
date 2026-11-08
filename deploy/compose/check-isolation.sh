@@ -9,9 +9,11 @@
 # install would own: container names, network names, volume names and published host ports.
 #
 # The supported concurrent install is a second Core beside the bundle or beside Core alone: it
-# must share none of those names. Two full bundles on one host are not supported: Console's and
-# Audio's vendored files fix container names and Audio runs host-network services. Those shared
-# names are printed as KNOWN LIMIT, not hidden, and the guide must say one bundle per host.
+# must share none of those names. Two full bundles on one host are not supported: Audio's senders
+# and Spotify run on the host's network, so their ports belong to the host. Their names are
+# variables (ADR 0147, amendment 4), and a second bundle that sets them shares no container name;
+# the host-network services are printed as KNOWN LIMIT, not hidden, and the guide says one bundle
+# per host.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -157,9 +159,11 @@ while IFS= read -r line; do
   esac
 done < "$work/bundles"
 
-echo "== The check sees every fixed container name the vendored files set"
+echo "== The check sees every container name the vendored files set (each one's default)"
+# A name is either literal or ${VAR:-default}; the default is the name a default install gets.
 grep -h 'container_name:' "$here/core/compose.yaml" "$here/console/compose.yaml" "$here/audio/compose.yaml" \
-  | sed 's/^[[:space:]]*container_name:[[:space:]]*//; s/[[:space:]]*$//' | sort -u > "$work/fixed-names"
+  | sed 's/^[[:space:]]*container_name:[[:space:]]*//; s/[[:space:]]*$//; s/^\${[A-Z_]*:-\(.*\)}$/\1/' \
+  | sort -u > "$work/fixed-names"
 python3 - "$work/a.json" "$work/fixed-names" > "$work/unseen" <<'PY'
 import json, sys
 j = json.load(open(sys.argv[1]))
@@ -171,8 +175,23 @@ PY
 if [ -s "$work/unseen" ]; then
   while IFS= read -r n; do bad "container name $n is fixed in a vendored file, but the check does not render it"; done < "$work/unseen"
 else
-  ok "every fixed container name in the vendored files is rendered and checked"
+  ok "every container name in the vendored files is rendered and checked"
 fi
+
+echo "== A default install keeps today's container names (a standalone install's containers are found by them)"
+todays='endora-console endora-audio endora-audio-spotify endora-audio-senders endora-audio-airplay'
+got=$(python3 - "$work/a.json" "$todays" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+seen = {s["container_name"] for s in j.get("services", {}).values() if "container_name" in s}
+missing = [n for n in sys.argv[2].split() if n not in seen]
+print("ok" if not missing else "missing " + " ".join(missing))
+PY
+)
+case $got in
+  ok) ok "the default bundle names its five containers as before" ;;
+  *) bad "the default bundle: $got" ;;
+esac
 
 echo "== Two full bundles name every host-network service (compose shows none of its ports)"
 python3 - "$work/a.json" > "$work/hostnet-expected" <<'PY'
@@ -207,7 +226,12 @@ ENDORA_AUDIO_PIPES_VOLUME=b2-audio-pipes
 ENDORA_AUDIO_SECRET_VOLUME=b2-audio-secret
 ENDORA_AUDIO_SENDERS_DATA_VOLUME=b2-audio-senders-data
 ENDORA_AUDIO_SPOTIFY_LOGIN_VOLUME=b2-audio-spotify-login
-SOUND_AIRPLAY2_NETWORK=b2-audio-airplay-lan'
+SOUND_AIRPLAY2_NETWORK=b2-audio-airplay-lan
+CONSOLE_CONTAINER_NAME=b2-endora-console
+ENDORA_AUDIO_CONTAINER_NAME=b2-endora-audio
+ENDORA_AUDIO_SPOTIFY_CONTAINER_NAME=b2-endora-audio-spotify
+ENDORA_AUDIO_SENDERS_CONTAINER_NAME=b2-endora-audio-senders
+ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME=b2-endora-audio-airplay'
 for var in $(printf '%s\n' "$overrides" | cut -d= -f1); do
   grep -q "\${$var:-" "$here/core/compose.yaml" "$here/console/compose.yaml" "$here/audio/compose.yaml" \
     || bad "override $var is not read by any vendored compose file"
@@ -224,7 +248,7 @@ second_check() {
     return 0
   fi
   names "$1.json" > "$1.names"
-  shared "$work/a.names" "$1.names" | grep -v -E '^(cons|hostnet) ' || true
+  shared "$work/a.names" "$1.names" | grep -v -E '^hostnet ' || true
 }
 residual=$(second_check "$work/b2" "" endora-b2)
 if [ -n "$residual" ]; then
@@ -232,10 +256,10 @@ if [ -n "$residual" ]; then
 $residual
 EOF
 else
-  ok "a second full bundle with every override shares only fixed container names and host networks"
+  ok "a second full bundle with every override shares only the host-network services (KNOWN LIMIT below)"
 fi
 # Negative controls: one missed override must be caught, or the test proves nothing.
-for omit in ENDORA_CORE_HQ_TOKEN_VOLUME ENDORA_AUDIO_PORT; do
+for omit in ENDORA_CORE_HQ_TOKEN_VOLUME ENDORA_AUDIO_PORT CONSOLE_CONTAINER_NAME; do
   if [ -n "$(second_check "$work/neg-$omit" "$omit" endora-neg)" ]; then
     ok "negative control: a second bundle without $omit is caught"
   else

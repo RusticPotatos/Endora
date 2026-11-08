@@ -5,7 +5,8 @@ name: endora-console
 services:
   console:
     image: ghcr.io/rusticpotatos/endora-console:${CONSOLE_TAG:-latest}
-    container_name: endora-console
+    # Its name. The default is the standalone name; a second Console on one host sets its own.
+    container_name: ${CONSOLE_CONTAINER_NAME:-endora-console}
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
