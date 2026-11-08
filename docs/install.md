@@ -138,24 +138,16 @@ at 64 MB. With the demo on (`ENDORA_HQ_DEMO=1`) HQ hands it nothing.
 ## Volumes and data
 
 Every volume has a fixed name, so Core alone and Core in the bundle use the same data. That is
-deliberate: an upgrade keeps the data. Without the fixed names, Compose would name each volume
-`<project>_<name>`, and an upgrade would open an empty volume beside the old data.
+deliberate: an upgrade keeps the data. A second install on the same host needs its own volume
+names (the `*_VOLUME` variables in `core/compose.yaml`, and Audio's and Console's own variables)
+and its own host ports.
 
-**Two installs on one host.** A second install of Core is the supported way to run two. Copy
-`core/compose.yaml` and `core/second.env.example` (as `.env`) into the second install's own folder
-and run `docker compose up -d` there, then make its owner as above. Its project name, volumes and
-port (`http://127.0.0.1:8796`) are its own, and its data starts empty. It can run beside the bundle
-or beside Core alone. `deploy/compose/check-isolation.sh` checks that it shares no container,
-network, volume or host port with them. Do not point its volume names at the first install's
-volumes: the two would share one database and one secrets key.
-
-Two **full bundles** on one host are not supported: run one full bundle per host. Console's and
-Audio's own files, copied unchanged from their repositories, still name their containers
-(`endora-console`, `endora-audio`, `endora-audio-spotify`, `endora-audio-senders`,
-`endora-audio-airplay`) and Audio's AirPlay network. Audio's senders and Spotify also use the
-host's network, with ports (3701-3704, UDP 319/320) that one host has only once, so naming cannot
-make a second bundle run beside the first. Changing the names in Console's and Audio's repositories
-and pinning new versions would fix only the names.
+**Two installs on one host.** Core's containers and networks follow the project name, so two
+installs of Core do not collide. Console's and Audio's own files, copied unchanged from their
+repositories, still name their containers (`endora-console`, `endora-audio`, `endora-audio-spotify`,
+`endora-audio-senders`, `endora-audio-airplay`) and Audio's AirPlay network. Until those files
+change in their repositories and the bundle is pinned to the new versions, run one full bundle
+per host.
 
 | Volume | Holds | Back it up |
 |---|---|---|

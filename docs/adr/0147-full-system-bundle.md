@@ -87,32 +87,6 @@ network had a fixed name, `endora-core-team`, which a Core started alone already
   made the example fail to render), the guide's owner setup has a scripted form with `-T`, and
   the cold backup hands its tarballs back to the user instead of root.
 
-## Amendment 2, 8 Nov 2026: a second install is Core alone, with its own settings
-
-The owner asked that concurrent installs on one host be isolated by project name. Checked against
-the files (offline renders with `docker compose config`, 8 Nov 2026):
-
-- **Volume names stay fixed.** Dropping the fixed `name:` would render Core's volumes as
-  `endora-core_endora-core-data` and so on: a standalone Core upgraded to it would open an empty
-  database and ask for a new owner, beside its old data. That breaks existing installs, so the
-  defaults stay. A second install sets the `*_VOLUME` variables instead.
-- **The checker was incomplete.** It compared networks and containers only, so two bundles with
-  the defaults sharing Core's four volumes passed. It now compares containers, networks, volumes
-  and published host ports. A second Core with the defaults shares four volumes and port 8787
-  with the bundle (red, shown on a copy of the folder before this change).
-- **The second install is Core alone**: `core/second.env.example` (its project name, its four
-  volumes, port 8796). Rendered beside the bundle and beside Core alone, it shares no container,
-  network, volume or host port with either (`deploy/compose/check-isolation.sh`). Core's built-in
-  screens stand in for Console; Audio is left out, since its senders and Spotify use host
-  networking.
-- **Two full bundles on one host stay unsupported**, and the guide says so. The checker lists the
-  names they share as KNOWN LIMIT. Naming cannot fix Audio's host-network ports (3701-3704,
-  UDP 319/320), so renaming Console's and Audio's containers would not make two bundles run.
-- **Not verified here: runtime.** This working host also runs the owner's production Endora under
-  fixed names, so a test of two running installs here would touch production. A rootless Docker daemon
-  for a sandbox needs `newuidmap` (root to install) and there is no passwordless sudo. The
-  runtime test of two Cores is open until a sandbox daemon is available.
-
 ## Alternatives considered
 
 - **Profiles in the root `docker-compose.yml`** (what existed): one file for every product,

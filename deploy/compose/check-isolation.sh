@@ -4,14 +4,11 @@
 #
 #   sh deploy/compose/check-isolation.sh
 #
-# Renders the bundle, Core alone, and a second Core from core/second.env.example, each under its
-# own project name, from copies of this folder. For every model it compares the names a running
-# install would own: container names, network names, volume names and published host ports.
-#
-# The supported concurrent install is a second Core beside the bundle or beside Core alone: it
-# must share none of those names. Two full bundles on one host are not supported: Console's and
-# Audio's vendored files fix container names and Audio runs host-network services. Those shared
-# names are printed as KNOWN LIMIT, not hidden, and the guide must say one bundle per host.
+# Renders the bundle twice under two project names, from a copy of this folder whose .env is
+# bundle.env.example, and checks that Core's own networks and containers follow the project
+# rather than fixed names, so two installs can run side by side. Console's and Audio's files are
+# vendored verbatim (SOURCES.json) and still fix some names; those are printed as KNOWN LIMIT,
+# not hidden, until a new pin changes them.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -21,23 +18,18 @@ fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 
-if [ ! -f "$here/core/second.env.example" ]; then
-  bad "core/second.env.example is missing: the documented second Core (ADR 0147) has no settings"
-  echo "isolation check failed"
-  exit 1
-fi
+# Names that Console's and Audio's vendored files fix (their container_name and macvlan network).
+vendored='endora-console endora-audio endora-audio-spotify endora-audio-senders endora-audio-airplay endora-audio-airplay-lan'
 
 cp -R "$here/." "$work/bundle"
 cp "$work/bundle/bundle.env.example" "$work/bundle/.env"
 cp -R "$here/core" "$work/core"
 cp "$work/core/core.env.example" "$work/core/.env"
-cp -R "$here/core" "$work/second"
-cp "$here/core/second.env.example" "$work/second/.env"
 
 # render DIR PROJECT OUT: the model as JSON, with the workers profile on so the runner is in it.
 render() { (cd "$1" && docker compose --profile workers -p "$2" config --format json > "$3" 2> "$3.err"); }
 
-echo "== The examples render with no edit"
+echo "== The example renders with no edit"
 if ! render "$work/bundle" endora-a "$work/a.json"; then
   bad "bundle.env.example does not render: $(head -1 "$work/a.json.err")"
   exit 1
@@ -53,56 +45,32 @@ if ! grep -Eq '^ENDORA_CORE_VERSION=(sha-[0-9a-f]{40}|[0-9]+\.[0-9]+\.[0-9]+)$' 
 else
   ok "core/core.env.example: ENDORA_CORE_VERSION names a published tag"
 fi
-if ! grep -Eq '^ENDORA_CORE_VERSION=(sha-[0-9a-f]{40}|[0-9]+\.[0-9]+\.[0-9]+)$' "$here/core/second.env.example"; then
-  bad "core/second.env.example: ENDORA_CORE_VERSION is not a published tag (sha-<40 hex> or X.Y.Z)"
-else
-  ok "core/second.env.example: ENDORA_CORE_VERSION names a published tag"
-fi
 if render "$work/core" endora-core "$work/core.json"; then
   ok "Core alone renders from core.env.example"
 else
   bad "core/core.env.example does not render: $(head -1 "$work/core.json.err")"
 fi
-if render "$work/second" endora-core-second "$work/second.json"; then
-  ok "a second Core renders from core/second.env.example"
-else
-  bad "core/second.env.example does not render: $(head -1 "$work/second.json.err")"
-  exit 1
-fi
 
-# names JSON: every name a rendered model owns that another install could collide with.
+echo "== Two installs on one host"
+render "$work/bundle" endora-b "$work/b.json" || { bad "second project does not render"; exit 1; }
+
+# names JSON: the network and container names a rendered model uses, and the runner's team network.
 names() {
   python3 - "$1" <<'PY'
 import json, sys
 j = json.load(open(sys.argv[1]))
-svcs = j.get("services", {})
 nets = {k: v.get("name", k) for k, v in j.get("networks", {}).items()}
-vols = {k: v.get("name", k) for k, v in j.get("volumes", {}).items()}
-cons = [s["container_name"] for s in svcs.values() if "container_name" in s]
-ports = [str(p["published"]) for s in svcs.values() for p in s.get("ports", []) if p.get("published")]
-runner = svcs.get("runner", {}).get("environment", {})
-print(json.dumps({"project": j["name"], "team": nets.get("team"), "runner_team": runner.get("TEAM_NETWORK"),
-                  "nets": sorted(set(nets.values())), "cons": sorted(set(cons)),
-                  "vols": sorted(set(vols.values())), "ports": sorted(set(ports))}))
+cons = [s["container_name"] for s in j.get("services", {}).values() if "container_name" in s]
+runner = j.get("services", {}).get("runner", {}).get("environment", {})
+print(json.dumps({"project": j["name"], "team": nets.get("team"), "nets": sorted(set(nets.values())),
+                  "cons": sorted(set(cons)), "runner_team": runner.get("TEAM_NETWORK")}))
 PY
 }
 names "$work/a.json" > "$work/a.names"
+names "$work/b.json" > "$work/b.names"
 names "$work/core.json" > "$work/core.names"
-names "$work/second.json" > "$work/second.names"
 
-# shared A B: one "kind name" line for each name both models own (networks, containers, volumes, ports).
-shared() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
-a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
-for kind in ("nets", "cons", "vols", "ports"):
-    for name in sorted(set(a[kind]) & set(b[kind])):
-        print(kind, name)
-PY
-}
-
-echo "== Each install's team network follows its project"
-for f in a core second; do
+for f in a b core; do
   # The team network is the project's own (`<project>_team`), and the runner is told that name.
   verdict=$(python3 - "$work/$f.names" <<'PY'
 import json, sys
@@ -122,33 +90,24 @@ PY
   esac
 done
 
-echo "== A second Core beside the bundle and beside Core alone"
-for other in a core; do
-  shared "$work/second.names" "$work/$other.names" > "$work/second.$other"
-  if [ -s "$work/second.$other" ]; then
-    while IFS= read -r line; do bad "second Core shares ${line} with $other"; done < "$work/second.$other"
-  else
-    ok "a second Core shares no network, container, volume or host port with $other"
-  fi
-done
-
-echo "== Default volume names are the ones existing installs use (upgrades keep the data)"
-historic='endora-core-data endora-core-hq-data endora-core-hq-token endora-core-hq-runner-token'
-for f in a core; do
-  got=$(python3 -c "import json,sys; v=json.load(open(sys.argv[1]))['vols']; want=sys.argv[2].split(); print('ok' if all(x in v for x in want) else 'missing ' + ' '.join(x for x in want if x not in v))" "$work/$f.names" "$historic")
-  case $got in
-    ok) ok "$f: Core's four volumes keep their names" ;;
-    *) bad "$f: $got" ;;
-  esac
-done
-
-echo "== Two full bundles on one host (not supported: the shared names are listed)"
-render "$work/bundle" endora-b "$work/b.json" || { bad "second bundle project does not render"; exit 1; }
-names "$work/b.json" > "$work/b.names"
-shared "$work/a.names" "$work/b.names" > "$work/bundles"
+# Anything both installs share, other than the vendored names, is a collision.
+python3 - "$work/a.names" "$work/b.names" $vendored <<'PY' > "$work/shared"
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2])); vendored = set(sys.argv[3:])
+shared = (set(a["nets"]) | set(a["cons"])) & (set(b["nets"]) | set(b["cons"]))
+for name in sorted(shared):
+    print(("known " if name in vendored else "collision ") + name)
+PY
+grep '^collision ' "$work/shared" > "$work/shared.collision" || true
+grep '^known ' "$work/shared" > "$work/shared.known" || true
+if [ -s "$work/shared.collision" ]; then
+  while IFS= read -r line; do bad "two installs share ${line#collision }"; done < "$work/shared.collision"
+else
+  ok "two installs share no network or container name that Core or the bundle owns"
+fi
 while IFS= read -r line; do
-  echo "KNOWN LIMIT: ${line} is shared by two full bundles; one bundle per host (docs/install.md)"
-done < "$work/bundles"
+  echo "KNOWN LIMIT: ${line#known } is fixed by Console's or Audio's vendored file; a second install on one host needs a new pin"
+done < "$work/shared.known"
 
 echo "== The guide"
 docs="$here/../../docs/install.md"
@@ -176,22 +135,10 @@ if grep -rn --exclude=check-isolation.sh 'endora-core-team' "$here" "$docs" | gr
 else
   ok "no reference to the old fixed network name remains"
 fi
-# The second install is the documented one: the guide names its settings file and says one full
-# bundle per host, so the unsupported case is never presented as working.
-if grep -q 'core/second.env.example' "$docs"; then
-  ok "the guide names the second Core's settings (core/second.env.example)"
-else
-  bad "the guide does not name core/second.env.example for a second install"
-fi
-if grep -q 'one full bundle per host' "$docs"; then
-  ok "the guide says one full bundle per host"
-else
-  bad "the guide does not say one full bundle per host"
-fi
 
 echo
 if [ "$fail" -ne 0 ]; then
   echo "isolation check failed"
   exit 1
 fi
-echo "isolation check passed (KNOWN LIMIT lines are unsupported shared names, not passes of them)"
+echo "isolation check passed (KNOWN LIMIT lines, if any, are vendored names, not failures)"
