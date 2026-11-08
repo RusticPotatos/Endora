@@ -1,0 +1,6 @@
+{{ {
+  'alert_url': endora_watch_alert_url,
+  'heartbeat_url': endora_watch_heartbeat_url,
+  'grace_minutes': endora_watch_grace_minutes | int,
+  'checks': endora_watch_checks,
+} | to_nice_json }}

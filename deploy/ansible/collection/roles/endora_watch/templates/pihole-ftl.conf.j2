@@ -1,0 +1,11 @@
+# Managed by Ansible (endora_watch role); edits here are overwritten. Pi-hole's settings,
+# declared: what is set here is read-only in its web interface.
+[Service]
+Environment="FTLCONF_dns_upstreams={{ endora_watch_pihole_upstreams | join(';') }}"
+{% if endora_watch_pihole_dns_hosts %}
+Environment="FTLCONF_dns_hosts={{ endora_watch_pihole_dns_hosts | join(';') }}"
+{% endif %}
+{% if endora_watch_pihole_rev_servers %}
+Environment="FTLCONF_dns_revServers={{ endora_watch_pihole_rev_servers | join(';') }}"
+{% endif %}
+Environment="FTLCONF_webserver_port={{ endora_watch_pihole_web_port }}"

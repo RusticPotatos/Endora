@@ -1,0 +1,149 @@
+---
+# What the house watch is set up with, and what it refuses, on the controller alone:
+#   ANSIBLE_ROLES_PATH=roles ansible-playbook roles/endora_watch/tests/render.yml
+- name: The house watch renders its settings and checks them
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    out: /tmp/endora-watch-render-test
+    good: &good
+      endora_watch_lan_cidr: 192.0.2.0/24
+      endora_watch_alert_url: https://ntfy.example.com/a-long-random-topic
+      endora_watch_checks:
+        - {name: NAS, tcp: "192.0.2.10:22"}
+        - {name: Pi-hole, dns: {server: 192.0.2.2, name: nas.home.arpa, expect: 192.0.2.10}}
+      endora_watch_pihole_dns_hosts: [192.0.2.10 nas.home.arpa, 192.0.2.10 endora.home.arpa]
+      endora_watch_pihole_rev_servers: ["true,192.0.2.0/24,192.0.2.1,home"]
+  # vars_files, not include_vars: included vars would outrank the per-task values below.
+  vars_files:
+    - ../defaults/main.yml
+  tasks:
+    - name: Output folder
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: directory
+        mode: "0700"
+
+    - name: The watch's settings, checked by the watch itself
+      ansible.builtin.template:
+        src: ../templates/watch.json.j2
+        dest: "{{ out }}/watch.json"
+        mode: "0600"
+        validate: python3 -I {{ playbook_dir }}/../files/watch.py --check %s
+      vars: *good
+
+    - name: Pi-hole's declared settings
+      ansible.builtin.template:
+        src: ../templates/pihole-ftl.conf.j2
+        dest: "{{ out }}/pihole-ftl.conf"
+        mode: "0600"
+      vars: *good
+
+    - name: The service and the updates
+      ansible.builtin.template:
+        src: ../templates/{{ item }}.j2
+        dest: "{{ out }}/{{ item }}"
+        mode: "0600"
+      loop: [endora-watch.service, unattended-upgrades.conf]
+
+    - name: Read them back
+      ansible.builtin.set_fact:
+        watch: "{{ lookup('file', out ~ '/watch.json') | from_json }}"
+        ftl: "{{ lookup('file', out ~ '/pihole-ftl.conf').splitlines() }}"
+        unit: "{{ lookup('file', out ~ '/endora-watch.service').splitlines() }}"
+        upgrades: "{{ lookup('file', out ~ '/unattended-upgrades.conf') }}"
+
+    - name: Check them
+      ansible.builtin.assert:
+        that:
+          - watch.alert_url == 'https://ntfy.example.com/a-long-random-topic'
+          - watch.grace_minutes == 10
+          - watch.checks | map(attribute='name') | list == ['NAS', 'Pi-hole']
+          - "'Environment=\"FTLCONF_dns_upstreams=1.1.1.1;1.0.0.1\"' in ftl"
+          - "'Environment=\"FTLCONF_dns_hosts=192.0.2.10 nas.home.arpa;192.0.2.10 endora.home.arpa\"' in ftl"
+          - "'Environment=\"FTLCONF_dns_revServers=true,192.0.2.0/24,192.0.2.1,home\"' in ftl"
+          # The web interface on this machine alone.
+          - "'Environment=\"FTLCONF_webserver_port=127.0.0.1:8080\"' in ftl"
+          # The watch runs as nobody in particular, with its settings as a credential.
+          - "'DynamicUser=yes' in unit"
+          - "'LoadCredential=watch.json:/etc/endora/watch.json' in unit"
+          - "'CapabilityBoundingSet=' in unit"
+          - "'Automatic-Reboot-Time \"05:00\"' in upgrades"
+          - "'origin=Raspbian' in upgrades"
+
+    - name: Good settings pass
+      ansible.builtin.include_tasks: ../tasks/validate.yml
+      vars: *good
+
+    - name: Settings the role refuses
+      ansible.builtin.include_tasks: refused.yml
+      loop:
+        - why: no LAN for SSH
+          with: {endora_watch_lan_cidr: ""}
+        - why: a LAN that is not a CIDR
+          with: {endora_watch_lan_cidr: 192.0.2.10}
+        - why: no alert topic
+          with: {endora_watch_alert_url: ""}
+        - why: an alert topic in the clear
+          with: {endora_watch_alert_url: "http://ntfy.example.com/topic"}
+        - why: an alert server with no topic
+          with: {endora_watch_alert_url: "https://ntfy.example.com/"}
+        - why: nothing to watch
+          with: {endora_watch_checks: []}
+        - why: two checks of one name
+          with:
+            endora_watch_checks: [{name: NAS, tcp: "192.0.2.10:22"}, {name: NAS, tcp: "192.0.2.10:80"}]
+        - why: a DNS record that is not an address and a name
+          with: {endora_watch_pihole_dns_hosts: [nas.home.arpa]}
+        - why: no upstream for Pi-hole
+          with: {endora_watch_pihole_upstreams: []}
+      loop_control:
+        loop_var: case
+        label: "{{ case.why }}"
+
+    - name: A check the watch itself refuses is never written
+      block:
+        - name: Write settings with a check of no kind
+          ansible.builtin.template:
+            src: ../templates/watch.json.j2
+            dest: "{{ out }}/bad.json"
+            mode: "0600"
+            validate: python3 -I {{ playbook_dir }}/../files/watch.py --check %s
+          vars:
+            <<: *good
+            endora_watch_checks: [{name: NAS}]
+
+        - name: It was written, and must not have been
+          ansible.builtin.set_fact:
+            endora_watch_let_through: a check of no kind
+
+        - name: Stop
+          ansible.builtin.fail:
+            msg: watch.py --check let through a check of no kind
+      rescue:
+        - name: It was refused
+          ansible.builtin.assert:
+            that:
+              - endora_watch_let_through is not defined
+
+    # The order is the safety: a step moved above another is a lock-out or a silent watch.
+    - name: Every step comes in its safe order
+      ansible.builtin.assert:
+        that:
+          - main.index('Check the settings') < main.index('The host firewall') < main.index('Pi-hole')
+            < main.index('The watch')
+          - firewall.index('Let DNS in from the LAN, before anything is denied')
+            < firewall.index('SSH from the LAN, then deny the rest')
+          - pihole.index('A seed config, so the installer asks nothing') < pihole.index('Install Pi-hole')
+          - pihole.index('Pi-hole\'s declared settings') < pihole.index('Install Pi-hole')
+          - pihole.index('The installer, as pinned') < pihole.index('Install Pi-hole')
+      vars:
+        main: "{{ (lookup('file', '../tasks/main.yml') | from_yaml)[0].block | map(attribute='name') | list }}"
+        firewall: "{{ lookup('file', '../tasks/firewall.yml') | from_yaml | map(attribute='name') | list }}"
+        pihole: "{{ lookup('file', '../tasks/pihole.yml') | from_yaml | map(attribute='name') | list }}"
+
+    - name: Clean up
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: absent

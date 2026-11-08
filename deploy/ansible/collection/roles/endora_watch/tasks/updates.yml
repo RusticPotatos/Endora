@@ -1,0 +1,30 @@
+---
+# Unattended upgrades. Raspberry Pi OS (32-bit) takes its packages from Raspbian and the Raspberry
+# Pi archive, which Debian's default origins do not name, so they are named here; a reboot, when
+# an update needs one, happens at endora_watch_reboot_time.
+- name: unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Check for updates daily and install them
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      // Managed by Ansible (endora_watch role).
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+
+- name: Which updates, and when to reboot for them
+  ansible.builtin.template:
+    src: unattended-upgrades.conf.j2
+    dest: /etc/apt/apt.conf.d/52endora-watch
+    owner: root
+    group: root
+    mode: "0644"

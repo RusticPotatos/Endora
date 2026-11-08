@@ -1,0 +1,8 @@
+---
+# Syntax check: ansible-playbook --syntax-check roles/endora_watch/tests/syntax.yml (check.sh
+# makes the collection visible, which the role's use of endora_dev_node's tasks needs).
+- name: The house watch syntax
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: endora_watch

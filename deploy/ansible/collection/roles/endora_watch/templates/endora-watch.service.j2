@@ -1,0 +1,34 @@
+# Managed by Ansible (endora_watch role); edits here are overwritten.
+[Unit]
+Description=The house watch: checks the NAS and its services from outside it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I {{ endora_watch_script }}
+TimeoutStartSec=50
+# A throwaway user, the settings as a credential, the state in memory between runs.
+DynamicUser=yes
+LoadCredential=watch.json:{{ endora_watch_config }}
+RuntimeDirectory=endora-watch
+RuntimeDirectoryPreserve=yes
+# Nothing but the network.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

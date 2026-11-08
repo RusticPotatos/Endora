@@ -1,0 +1,31 @@
+# The house watch, for watch.yml. Copy this to inventory.watch.local.yml beside it (git-ignored,
+# as is every *.local.yml file) and put your real values there, never here:
+#
+#   cp inventory.watch.example.yml inventory.watch.local.yml
+#
+# YAML rather than INI: an INI inventory's [group:vars] are always strings, and the checks are a
+# list. The alert topic is a secret (anyone who knows it can read it): keep it out of the file
+# too, e.g. in the macOS Keychain, read at run time as below.
+endora_watch:
+  hosts:
+    endora-watch:
+      ansible_host: 192.0.2.20
+      ansible_user: endora
+  vars:
+    endora_watch_enabled: true
+    endora_watch_lan_cidr: 192.0.2.0/24
+    endora_watch_alert_url: >-
+      https://ntfy.sh/{{ lookup('ansible.builtin.pipe',
+      'security find-generic-password -s endora-watch-ntfy -w') }}
+    endora_watch_ca_cert: /path/to/your/ca.pem
+    endora_watch_checks:
+      - {name: NAS, tcp: "192.0.2.10:22"}
+      - name: Endora
+        https: {address: 192.0.2.10, port: 8787, host: endora.home.arpa, path: /health,
+                ca: /etc/endora/watch-ca.pem}
+      - {name: Pi-hole (NAS), dns: {server: 192.0.2.2, name: nas.home.arpa, expect: 192.0.2.10}}
+      - {name: Pi-hole (watch), dns: {server: 127.0.0.1, name: nas.home.arpa, expect: 192.0.2.10}}
+      - {name: Home Assistant, tcp: "192.0.2.10:8123"}
+      - {name: Internet, tcp: "1.1.1.1:443"}
+    endora_watch_pihole_dns_hosts: [192.0.2.10 endora.home.arpa, 192.0.2.10 nas.home.arpa]
+    endora_watch_pihole_rev_servers: ["true,192.0.2.0/24,192.0.2.1,home"]

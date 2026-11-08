@@ -352,6 +352,38 @@ of 90 seconds would cut a five-minute wait. Setting the variable back to false d
 and takes its file away without stopping it (stopping it would drain HQ). Check it on the NAS
 with `systemctl status endora-drain` and, after a reboot, `journalctl -b -1 -u endora-drain`.
 
+## The house watch (ADR 0148)
+
+A small machine outside the NAS (a Raspberry Pi 2 is enough) checks the NAS and its services once
+a minute and tells your phone when one has been down for 10 minutes, and when it is back. It is
+also the house's second Pi-hole. The role is `endora_watch`; its README has the details.
+
+### Setting it up, once
+
+1. **The SD card.** Raspberry Pi Imager: Raspberry Pi OS Lite, hostname `endora-watch`, user
+   `endora`, SSH with your Mac's public key only. Plug it into the LAN by ethernet.
+2. **A fixed address.** In the router, give it a fixed IP (DHCP reservation).
+3. **The alert topic.** Make a long random name and keep it in the Keychain, never in a file:
+
+   ```sh
+   security add-generic-password -s endora-watch-ntfy -a endora -w "$(openssl rand -hex 16)"
+   ```
+
+   Install the ntfy app on your phone and subscribe to that topic on ntfy.sh
+   (`security find-generic-password -s endora-watch-ntfy -w` shows it).
+4. **The inventory.** In `deploy/ansible`, copy `inventory.watch.example.yml` to
+   `inventory.watch.local.yml` (git-ignored) and fill in the addresses and checks.
+5. **Run it**, dry first:
+
+   ```sh
+   ansible-playbook -i inventory.watch.local.yml watch.yml --check --diff --ask-become-pass
+   ansible-playbook -i inventory.watch.local.yml watch.yml --diff --ask-become-pass
+   ```
+
+   "House watch started" arrives on your phone within a minute.
+6. **The second DNS server.** In the router's DHCP settings, add the Pi's address as DNS server
+   2, after the NAS's Pi-hole.
+
 ## Docker boundary
 
 For the supplied Compose deployment, enable the optional `homelab` profile after

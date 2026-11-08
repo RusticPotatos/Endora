@@ -1,0 +1,16 @@
+---
+# The house watch (ADR 0148): a small machine outside the NAS that watches it and serves a second
+# Pi-hole. Sets the host up completely; there is nothing to deploy afterwards.
+#
+# From deploy/ansible, with your own inventory (copy inventory.watch.example.yml to the git-ignored
+# inventory.watch.local.yml and fill it in):
+#
+#   ansible-playbook -i inventory.watch.local.yml watch.yml --check --diff --ask-become-pass
+#   ansible-playbook -i inventory.watch.local.yml watch.yml --diff --ask-become-pass
+#
+# The collection is found beside this playbook (collections/ links to ./collection).
+- name: The house watch
+  hosts: endora_watch
+  become: true
+  roles:
+    - role: endora.homelab.endora_watch

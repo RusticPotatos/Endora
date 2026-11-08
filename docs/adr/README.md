@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eighty-seven records stand, all accepted but three still proposed (marked in the *Consolidates*
+Eighty-eight records stand, all accepted but three still proposed (marked in the *Consolidates*
 column below), and forty-nine earlier ones are archived into them (the same column). A handful of
 ideas sit underneath all of them. Read this before reading any individual record; each line is a
 rule the code actually follows, with the decision that established it.
@@ -159,6 +159,10 @@ rule the code actually follows, with the decision that established it.
   A scenario is a task in a project that gives its work the scenario tool alone; the world is a
   pure function of its seed and an append-only log of every action, refused ones too; only its
   rules, in code, say it is solved or failed, and a member's word never closes it.
+- **What watches the NAS does not run on it** ([0148](0148-the-house-watch.md)). A small
+  machine outside it checks the NAS and its services once a minute and tells the owner's phone,
+  after a grace longer than the nightly reboot, once when one goes down and once when it is
+  back; it is also the house's second Pi-hole.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -329,6 +333,7 @@ of an existing record and take the next number.
 | [0145](0145-core-console-contract.md) | The Core ↔ Console contract, and Console as its own deployable | — |
 | [0146](0146-console-forwards-cores-session.md) | Console forwards Core's session; no shared sign-in crate (AU1) | — |
 | [0147](0147-full-system-bundle.md) | Core's standalone configuration and the full-system bundle | — |
+| [0148](0148-the-house-watch.md) | The house watch: a machine outside the NAS that watches it, and a second Pi-hole | - |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

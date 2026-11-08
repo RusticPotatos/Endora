@@ -1,0 +1,28 @@
+---
+# The dev node's firewall (ufw, the SSH lock-out guard, the rollback copy) with this machine's
+# settings, and DNS let in from the LAN first, so Pi-hole is never shut out once it serves.
+- name: ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Let DNS in from the LAN, before anything is denied
+  ansible.builtin.command:
+    argv: [ufw, allow, from, "{{ endora_watch_lan_cidr }}", to, any, port, "53", proto, "{{ item }}",
+           comment, "endora: dns from the LAN"]
+  loop: [udp, tcp]
+  register: endora_watch_ufw_dns
+  changed_when: "'Skipping' not in endora_watch_ufw_dns.stdout"
+  when: endora_watch_pihole | bool
+
+- name: SSH from the LAN, then deny the rest
+  ansible.builtin.include_role:
+    name: endora.homelab.endora_dev_node
+    tasks_from: firewall.yml
+  vars:
+    endora_dev_node_lan_cidr: "{{ endora_watch_lan_cidr }}"
+    endora_dev_node_ssh_extra_cidrs: "{{ endora_watch_ssh_extra_cidrs }}"
+    endora_dev_node_ssh_port: "{{ endora_watch_ssh_port }}"
+    endora_dev_node_firewall_before: /etc/endora/firewall.before

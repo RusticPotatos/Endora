@@ -1,0 +1,9 @@
+// Managed by Ansible (endora_watch role); edits here are overwritten. Raspberry Pi OS's own
+// archives, which Debian's default origins do not name, and a reboot when an update needs one.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Raspbian,codename=${distro_codename},label=Raspbian";
+        "origin=Raspberry Pi Foundation,codename=${distro_codename},label=Raspberry Pi Foundation";
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ endora_watch_reboot_time }}";

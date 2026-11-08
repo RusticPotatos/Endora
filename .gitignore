@@ -21,6 +21,7 @@ target/
 .env.*
 !.env.example
 *.local
+*.local.yml
 secrets/
 # The owner's scenarios for Endora keeping its own secrets are tests, not secrets (ADR 0144).
 !app/node/features/secrets/

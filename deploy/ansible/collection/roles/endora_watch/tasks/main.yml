@@ -1,0 +1,40 @@
+---
+# The order is the safe one: nothing changes until every setting checks out, the firewall lets
+# SSH (and DNS) in before it denies anything, and Pi-hole is set up before the watch starts
+# checking anything.
+- name: The house watch
+  when: endora_watch_enabled | bool
+  block:
+    - name: Check the settings
+      ansible.builtin.import_tasks: validate.yml
+
+    - name: Endora's folder
+      ansible.builtin.file:
+        path: /etc/endora
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: The host firewall
+      ansible.builtin.import_tasks: firewall.yml
+
+    - name: Fewer writes to the SD card
+      ansible.builtin.include_role:
+        name: endora.homelab.endora_dev_node
+        tasks_from: sdcard.yml
+      vars:
+        endora_dev_node_journald_storage: volatile
+        endora_dev_node_journald_max_use: "{{ endora_watch_journald_max_use }}"
+        endora_dev_node_tmp_tmpfs: true
+        endora_dev_node_tmp_size: "{{ endora_watch_tmp_size }}"
+
+    - name: Updates by themselves
+      ansible.builtin.import_tasks: updates.yml
+
+    - name: Pi-hole
+      ansible.builtin.import_tasks: pihole.yml
+      when: endora_watch_pihole | bool
+
+    - name: The watch
+      ansible.builtin.import_tasks: watch.yml

@@ -1,0 +1,64 @@
+---
+# The house watch (Endora ADR 0148): a small always-on machine outside the NAS (a Raspberry Pi 2
+# is enough) that checks the NAS and its services once a minute and says on your phone when one
+# is down, and a second Pi-hole, so names keep resolving while the NAS is away. Raspberry Pi OS
+# Lite; no Docker. See README.md.
+endora_watch_enabled: false
+
+# Your LAN, as an IPv4 CIDR (e.g. 192.168.1.0/24): the only place SSH and DNS are let in from.
+# No default, and the role stops when it is missing.
+endora_watch_lan_cidr: ""
+# More places SSH may come from (as endora_dev_node_ssh_extra_cidrs), e.g. ["fe80::/10"].
+endora_watch_ssh_extra_cidrs: []
+endora_watch_ssh_port: 22
+
+# --- The watch -------------------------------------------------------------------------------
+# Where alerts go: an ntfy topic over https, e.g. https://ntfy.sh/<a long random name>. The
+# topic's name is all it takes to read it, so it is a secret: from your inventory, never here.
+endora_watch_alert_url: ""
+# Optional: a URL fetched after every run (e.g. a healthchecks.io check), so something
+# outside the house notices if this machine stops.
+endora_watch_heartbeat_url: ""
+# How long a check may fail before it is said (the NAS's nightly reboot takes a few minutes).
+endora_watch_grace_minutes: 10
+# What is checked, each with a name of its own and exactly one of:
+#   {name: NAS, tcp: "192.0.2.10:22"}
+#   {name: Endora, https: {address: 192.0.2.10, port: 8787, host: endora.home.arpa,
+#                          path: /health, ca: /etc/endora/watch-ca.pem}}
+#   {name: Pi-hole, dns: {server: 192.0.2.2, name: nas.home.arpa, expect: 192.0.2.10}}
+# An https check verifies the certificate against `host` without needing DNS; `ca` is the
+# house's own CA (see endora_watch_ca_cert), or the system's trust when left out.
+endora_watch_checks: []
+# A CA certificate on the controller (public, PEM), copied to /etc/endora/watch-ca.pem for
+# https checks of services the house's own CA signed. Empty: none copied.
+endora_watch_ca_cert: ""
+
+endora_watch_script: /usr/local/lib/endora-watch/watch.py
+endora_watch_config: /etc/endora/watch.json
+
+# --- Pi-hole ---------------------------------------------------------------------------------
+endora_watch_pihole: true
+# The installer, pinned to a release and its checksum (it then fetches that release's
+# components). Raise both together.
+endora_watch_pihole_installer_version: v6.5
+endora_watch_pihole_installer_sha256: 0c67c8f8358fede4b4dd8d51b429114461c9bb90ad56ff00ef05637f664bf3ac
+endora_watch_pihole_installer_url: >-
+  https://raw.githubusercontent.com/pi-hole/pi-hole/{{ endora_watch_pihole_installer_version
+  }}/automated%20install/basic-install.sh
+# Declared, as the NAS's Pi-hole role does, through FTLCONF_ settings (read-only in the UI).
+endora_watch_pihole_upstreams: [1.1.1.1, 1.0.0.1]
+# Local DNS records, "<address> <name>" each, e.g. "192.0.2.10 nas.home.arpa". Keep them the
+# same as the NAS's Pi-hole, so either answers alike.
+endora_watch_pihole_dns_hosts: []
+# Names asked of the router: "true,<LAN CIDR>,<router>,<the router's domain>" each.
+endora_watch_pihole_rev_servers: []
+# The web interface on this machine only (reach it over SSH: ssh -L 8080:localhost:8080 ...).
+endora_watch_pihole_web_port: 127.0.0.1:8080
+
+# --- The host --------------------------------------------------------------------------------
+# Security updates by themselves, and a reboot after them when one is needed, at this time
+# (after the NAS's 04:00 reboot, so both are never away at once).
+endora_watch_reboot_time: "05:00"
+# The SD card wears with every write: the journal in memory, capped; /tmp in memory.
+endora_watch_journald_max_use: 32M
+endora_watch_tmp_size: 64M

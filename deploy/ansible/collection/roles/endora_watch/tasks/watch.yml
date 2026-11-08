@@ -1,0 +1,65 @@
+---
+# The watch: watch.py, its settings (checked by watch.py itself before they are written), and a
+# timer that runs it once a minute as a throwaway user with nothing but the network.
+- name: The watch's folder
+  ansible.builtin.file:
+    path: "{{ endora_watch_script | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: The watch
+  ansible.builtin.copy:
+    src: watch.py
+    dest: "{{ endora_watch_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: The house's CA, for https checks
+  ansible.builtin.copy:
+    src: "{{ endora_watch_ca_cert }}"
+    dest: /etc/endora/watch-ca.pem
+    owner: root
+    group: root
+    mode: "0644"
+  when: endora_watch_ca_cert | length > 0
+
+# Root's alone: it holds the alert topic. systemd hands it to each run as a credential.
+- name: The watch's settings
+  ansible.builtin.template:
+    src: watch.json.j2
+    dest: "{{ endora_watch_config }}"
+    owner: root
+    group: root
+    mode: "0600"
+    validate: python3 -I {{ endora_watch_script }} --check %s
+
+- name: The watch's service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - endora-watch.service
+    - endora-watch.timer
+  register: endora_watch_units
+
+- name: Once a minute
+  ansible.builtin.systemd:
+    name: endora-watch.timer
+    state: started
+    enabled: true
+    daemon_reload: "{{ endora_watch_units is changed }}"
+  # A dry run before the first has no unit to start.
+  when: not (ansible_check_mode and endora_watch_units is changed)
+
+- name: A run now
+  ansible.builtin.systemd:
+    name: endora-watch.service
+    state: started
+  changed_when: false
+  when: not ansible_check_mode

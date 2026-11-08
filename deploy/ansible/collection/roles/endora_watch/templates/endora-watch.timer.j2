@@ -1,0 +1,11 @@
+# Managed by Ansible (endora_watch role); edits here are overwritten.
+[Unit]
+Description=The house watch, once a minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
