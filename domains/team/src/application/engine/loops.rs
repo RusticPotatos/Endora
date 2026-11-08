@@ -1098,7 +1098,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .filter(|t| in_hand(t))
                 .filter_map(|t| t.holder())
                 .collect();
-            let mut held = plan.iter().filter(|t| in_hand(t)).count();
+            let held = plan.iter().filter(|t| in_hand(t)).count();
             let mut waiting: Vec<&&Task> = plan
                 .iter()
                 .filter(|t| {
@@ -1116,10 +1116,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             };
             near.sort_by_key(|m| (std::cmp::Reverse(m.brain.rank()), m.id.0));
             near.truncate(at_once);
-            for top in waiting {
-                if held >= at_once {
-                    break;
-                }
+            // As many as the loop has room for: each pass hands out exactly one item, or stops.
+            for top in waiting.into_iter().take(at_once.saturating_sub(held)) {
                 let Some(member) = near.iter().find(|m| !holding.contains(&m.id)) else {
                     break;
                 };
@@ -1134,7 +1132,6 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 )?;
                 self.wake_held_lock(member.id, Some(top.id), WakeReason::Assigned)?;
                 holding.push(member.id);
-                held += 1;
             }
         }
         Ok(())

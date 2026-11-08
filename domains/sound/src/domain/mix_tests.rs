@@ -13,7 +13,7 @@ fn steady(value: i16, frames: usize) -> Vec<i16> {
 fn loudest(frames: usize) -> Vec<i16> {
     (0..frames * CHANNELS)
         .map(|i| {
-            if (i / CHANNELS / 50) % 2 == 0 {
+            if (i / CHANNELS / 50).is_multiple_of(2) {
                 i16::MAX
             } else {
                 i16::MIN

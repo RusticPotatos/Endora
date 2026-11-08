@@ -1,6 +1,8 @@
 [toolchain]
-# Track the current stable Rust release. Endora targets the latest stable
-# toolchain and the 2024 edition; see rust-version fields in Cargo.toml for the
-# minimum supported version enforced by the workspace.
-channel = "stable"
+# Pinned to the release Endora's images are built with (Dockerfile: RUSTUP_TOOLCHAIN) and its
+# minimum (Cargo.toml: rust-version), so CI checks exactly what ships. It tracked floating
+# "stable" until 8 Nov 2026, when Rust 1.99's new Clippy lints turned CI red with no change in
+# Endora. Moving to a newer Rust is a deliberate commit: this file, the Dockerfile's toolchain
+# and rust-version together, with the gate green on the new release.
+channel = "1.87.0"
 components = ["rustfmt", "clippy"]
