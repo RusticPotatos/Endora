@@ -81,11 +81,6 @@ const stubs = {
   TextEncoder,
   btoa: (binary) => Buffer.from(binary, "binary").toString("base64"),
   requestAnimationFrame: (fn) => setTimeout(fn, 0),
-  // The console's keep-up poll registers a real 30-second interval when it loads. This check runs
-  // longer than that, so the poll fired inside the sound section's hand-over test and cleared the
-  // ticket it needed (the MP3 hand-over check failed on develop). The check calls soundKeepUp()
-  // itself where it is tested, so the timer is not wanted here.
-  __soundKeepUp: true,
   // Nothing may reach the network from a build check.
   fetch: () => Promise.reject(new Error("no network in the console check")),
   EventSource: class {
