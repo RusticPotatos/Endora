@@ -249,9 +249,28 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
+            // Read the whole request, body included, before answering: a client that sends its
+            // headers and body in separate writes must not find the socket closed under it.
+            let mut received = Vec::new();
             let mut buf = [0u8; 4096];
-            let n = socket.read(&mut buf).unwrap();
-            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            loop {
+                let n = socket.read(&mut buf).unwrap();
+                received.extend_from_slice(&buf[..n]);
+                let Some(end) = received.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    assert!(n > 0, "the client closed before it finished its headers");
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&received[..end]).to_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map_or(0, |v| v.trim().parse::<usize>().unwrap());
+                if received.len() >= end + 4 + length {
+                    break;
+                }
+                assert!(n > 0, "the client closed before it finished its body");
+            }
+            let request = String::from_utf8_lossy(&received).into_owned();
             let reply = format!(
                 "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -297,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_refusal_carries_what_hq_said_and_its_status() {
-        let (url, _seen) = one_answer("409 Conflict", r#"{"error":"this task is over"}"#);
+        let (url, seen) = one_answer("409 Conflict", r#"{"error":"this task is over"}"#);
         let hq = HqClient::new(&url, "t");
         assert_eq!(
             hq.post("/v1/desk/1", &serde_json::json!({ "decision": "approve" })),
@@ -305,6 +324,15 @@ mod tests {
                 status: 409,
                 message: "this task is over".to_owned()
             })
+        );
+        // The stand-in HQ answers only once it has the whole request, body included. The client
+        // sends the headers and the body in two writes; a stand-in that answers and closes
+        // after the first leaves the second to race a closed socket (an `Unreachable` io error
+        // on macOS CI, `Invalid argument (os error 22)`).
+        let request = seen.join().unwrap();
+        assert!(
+            request.contains(r#""decision": "approve""#),
+            "the stand-in answered before it had the body: {request:?}"
         );
     }
 
