@@ -34,8 +34,9 @@ cp "$work/core/core.env.example" "$work/core/.env"
 cp -R "$here/core" "$work/second"
 cp "$here/core/second.env.example" "$work/second/.env"
 
-# render DIR PROJECT OUT: the model as JSON, with the workers profile on so the runner is in it.
-render() { (cd "$1" && docker compose --profile workers -p "$2" config --format json > "$3" 2> "$3.err"); }
+# render DIR PROJECT OUT: the model as JSON, with the workers and airplay profiles on, so the runner
+# and the AirPlay door (and their names) are in it.
+render() { (cd "$1" && docker compose --profile workers --profile airplay -p "$2" config --format json > "$3" 2> "$3.err"); }
 
 echo "== The examples render with no edit"
 if ! render "$work/bundle" endora-a "$work/a.json"; then
@@ -81,9 +82,12 @@ vols = {k: v.get("name", k) for k, v in j.get("volumes", {}).items()}
 cons = [s["container_name"] for s in svcs.values() if "container_name" in s]
 ports = [str(p["published"]) for s in svcs.values() for p in s.get("ports", []) if p.get("published")]
 runner = svcs.get("runner", {}).get("environment", {})
+# hostnet: services on the host's network. Compose publishes none of their ports, so their own
+# ports (Audio's senders: 3701-3704/tcp, 319-320/udp) are named by the guide, not read here.
+hostnet = sorted(n for n, s in svcs.items() if s.get("network_mode") == "host")
 print(json.dumps({"project": j["name"], "team": nets.get("team"), "runner_team": runner.get("TEAM_NETWORK"),
                   "nets": sorted(set(nets.values())), "cons": sorted(set(cons)),
-                  "vols": sorted(set(vols.values())), "ports": sorted(set(ports))}))
+                  "vols": sorted(set(vols.values())), "ports": sorted(set(ports)), "hostnet": hostnet}))
 PY
 }
 names "$work/a.json" > "$work/a.names"
@@ -95,7 +99,7 @@ shared() {
   python3 - "$1" "$2" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
-for kind in ("nets", "cons", "vols", "ports"):
+for kind in ("nets", "cons", "vols", "ports", "hostnet"):
     for name in sorted(set(a[kind]) & set(b[kind])):
         print(kind, name)
 PY
@@ -147,8 +151,97 @@ render "$work/bundle" endora-b "$work/b.json" || { bad "second bundle project do
 names "$work/b.json" > "$work/b.names"
 shared "$work/a.names" "$work/b.names" > "$work/bundles"
 while IFS= read -r line; do
-  echo "KNOWN LIMIT: ${line} is shared by two full bundles; one bundle per host (docs/install.md)"
+  case $line in
+    "hostnet "*) echo "KNOWN LIMIT: ${line#hostnet } uses the host's network, so its ports belong to the host; one bundle per host runs it (docs/install.md)" ;;
+    *) echo "KNOWN LIMIT: ${line} is shared by two full bundles; one bundle per host (docs/install.md)" ;;
+  esac
 done < "$work/bundles"
+
+echo "== The check sees every fixed container name the vendored files set"
+grep -h 'container_name:' "$here/core/compose.yaml" "$here/console/compose.yaml" "$here/audio/compose.yaml" \
+  | sed 's/^[[:space:]]*container_name:[[:space:]]*//; s/[[:space:]]*$//' | sort -u > "$work/fixed-names"
+python3 - "$work/a.json" "$work/fixed-names" > "$work/unseen" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+seen = {s["container_name"] for s in j.get("services", {}).values() if "container_name" in s}
+for name in open(sys.argv[2]).read().split():
+    if name not in seen:
+        print(name)
+PY
+if [ -s "$work/unseen" ]; then
+  while IFS= read -r n; do bad "container name $n is fixed in a vendored file, but the check does not render it"; done < "$work/unseen"
+else
+  ok "every fixed container name in the vendored files is rendered and checked"
+fi
+
+echo "== Two full bundles name every host-network service (compose shows none of its ports)"
+python3 - "$work/a.json" > "$work/hostnet-expected" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+for n, s in j.get("services", {}).items():
+    if s.get("network_mode") == "host":
+        print(n)
+PY
+if [ ! -s "$work/hostnet-expected" ]; then
+  bad "no host-network service is rendered, so the host's ports cannot be checked (Audio's senders expected)"
+fi
+while IFS= read -r svc; do
+  if grep -qx "hostnet $svc" "$work/bundles"; then
+    ok "$svc uses the host's network, and the two-bundle case names it"
+  else
+    bad "$svc uses the host's network, and the two-bundle case does not name it"
+  fi
+done < "$work/hostnet-expected"
+
+echo "== A second full bundle with every documented override shares only fixed names"
+overrides='CONSOLE_PORT=8797
+ENDORA_CORE_PORT=8796
+ENDORA_AUDIO_PORT=8792
+ENDORA_CORE_DATA_VOLUME=b2-core-data
+ENDORA_CORE_HQ_DATA_VOLUME=b2-core-hq-data
+ENDORA_CORE_HQ_TOKEN_VOLUME=b2-core-hq-token
+ENDORA_CORE_HQ_RUNNER_TOKEN_VOLUME=b2-core-hq-runner-token
+ENDORA_AUDIO_DATA_VOLUME=b2-audio-data
+ENDORA_AUDIO_TOKEN_VOLUME=b2-audio-token
+ENDORA_AUDIO_PIPES_VOLUME=b2-audio-pipes
+ENDORA_AUDIO_SECRET_VOLUME=b2-audio-secret
+ENDORA_AUDIO_SENDERS_DATA_VOLUME=b2-audio-senders-data
+ENDORA_AUDIO_SPOTIFY_LOGIN_VOLUME=b2-audio-spotify-login
+SOUND_AIRPLAY2_NETWORK=b2-audio-airplay-lan'
+for var in $(printf '%s\n' "$overrides" | cut -d= -f1); do
+  grep -q "\${$var:-" "$here/core/compose.yaml" "$here/console/compose.yaml" "$here/audio/compose.yaml" \
+    || bad "override $var is not read by any vendored compose file"
+done
+# second_check DIR OMIT PROJECT: DIR is a copy of this folder whose .env sets every override except
+# OMIT (empty: all). Prints each name it shares with the first bundle that is not a fixed one.
+second_check() {
+  mkdir -p "$1"
+  cp -R "$here/." "$1"
+  cp "$here/bundle.env.example" "$1/.env"
+  printf '%s\n' "$overrides" | grep -v "^$2=" >> "$1/.env"
+  if ! render "$1" "$3" "$1.json"; then
+    echo "RENDER-FAILED: $(head -1 "$1.json.err")"
+    return 0
+  fi
+  names "$1.json" > "$1.names"
+  shared "$work/a.names" "$1.names" | grep -v -E '^(cons|hostnet) ' || true
+}
+residual=$(second_check "$work/b2" "" endora-b2)
+if [ -n "$residual" ]; then
+  while IFS= read -r line; do bad "a second full bundle with every override shares ${line} with the first"; done <<EOF
+$residual
+EOF
+else
+  ok "a second full bundle with every override shares only fixed container names and host networks"
+fi
+# Negative controls: one missed override must be caught, or the test proves nothing.
+for omit in ENDORA_CORE_HQ_TOKEN_VOLUME ENDORA_AUDIO_PORT; do
+  if [ -n "$(second_check "$work/neg-$omit" "$omit" endora-neg)" ]; then
+    ok "negative control: a second bundle without $omit is caught"
+  else
+    bad "negative control: a second bundle without $omit was not caught"
+  fi
+done
 
 echo "== The guide"
 docs="$here/../../docs/install.md"
