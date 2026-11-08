@@ -392,8 +392,11 @@ fn a_fast_writer_loses_nothing_when_taken_in_small_bites() {
     let pumping = std::thread::spawn(move || pump(Counting(0), &i, &st));
     let mut next: Option<u16> = None;
     let mut taken = 0usize;
-    let until = Instant::now() + Duration::from_millis(600);
-    while Instant::now() < until {
+    // Until more than two buffers' worth has gone through, not for a fixed time: 600 ms let only
+    // 65,268 samples through on a slow CI runner (8 Nov 2026), too few to tell, with nothing
+    // dropped. The deadline only stops a pump that has stalled.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while taken <= 2 * MOST && Instant::now() < deadline {
         // About a tick's worth at a time, as the player takes.
         for s in lock(&into).take(1_764) {
             let s = s as u16;
@@ -407,7 +410,7 @@ fn a_fast_writer_loses_nothing_when_taken_in_small_bites() {
     }
     stop.store(true, Ordering::Relaxed);
     pumping.join().unwrap();
-    assert!(taken > MOST, "too little went through to tell: {taken}");
+    assert!(taken > 2 * MOST, "too little went through to tell: {taken}");
 }
 
 #[test]
