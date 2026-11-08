@@ -113,6 +113,40 @@ the files (offline renders with `docker compose config`, 8 Nov 2026):
   for a sandbox needs `newuidmap` (root to install) and there is no passwordless sudo. The
   runtime test of two Cores is open until a sandbox daemon is available.
 
+## Amendment 3, 8 Nov 2026: what two full bundles still share, and the staged plan
+
+Checked offline (`docker compose config`, 8 Nov 2026: nothing started, no daemon contacted). A
+second full bundle with every documented override set (Core's and Audio's ten volume variables,
+the three host ports, `SOUND_AIRPLAY2_NETWORK`) still shares, with the first:
+
+- **Container names fixed in Console's and Audio's own files**: `endora-console`, `endora-audio`,
+  `endora-audio-spotify`, `endora-audio-senders`, `endora-audio-airplay`. Those files are pinned
+  verbatim by SHA-256 (`SOURCES.json`), so this repository cannot rename them without breaking the pin.
+- **Two host-network services**, `audio-senders` and `audio-spotify`. Compose shows no ports for
+  them. Their ports belong to the host (the AirPlay clock's UDP 319/320, the OwnTone APIs on
+  3701-3704), so naming cannot give two of them one host.
+
+Nothing else is shared: volumes and ports are isolated by their variables today. Two gaps in the
+check were closed first, test first (`check-isolation.sh` failed on both before the change): it did
+not render the AirPlay door, so `endora-audio-airplay` was never checked, and it listed no
+host-network service. A second bundle with one override left out (a volume, a port) is caught by a
+negative control, so the override test cannot pass by accident.
+
+**Staged plan** (nothing below is started; each stage is its own change):
+
+1. **Console and Audio names** (their repositories, not this one): read each container name from a
+   variable whose default is today's name (`CONSOLE_CONTAINER_NAME`, Audio's five), so standalone
+   installs keep their names. Release, then here: a new `SOURCES.json` entry and SHA-256, the
+   variables in `bundle.env.example`, `check-sources.sh --remote`, and a green `full-system.yml`.
+   The checker's known-names rule then needs the new names only where a name is still fixed.
+2. **Audio on the host's network, twice on one host** (owner's decision, its own ADR if taken).
+   Options: keep one full bundle per host (the current, documented limit); or move each install's
+   senders to an address of its own, as the AirPlay door already does. The second needs a runtime
+   proof on the XPS. Recommended: keep the limit until stage 1 is done and the XPS run is in.
+3. **Charter milestone c, the single clean-host install**: not changed by this amendment. It still
+   needs the XPS run from scratch with no overrides. Not verified here: whether a stock Ubuntu host's
+   own avahi daemon (UDP 5353) conflicts with the senders' avahi, which uses host networking.
+
 ## Alternatives considered
 
 - **Profiles in the root `docker-compose.yml`** (what existed): one file for every product,
