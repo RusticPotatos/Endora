@@ -1069,13 +1069,12 @@ mod tests {
             refused.is_err_and(|why| why.contains("house's network")),
             "refused before anything is sent"
         );
-        // A name that resolves only to the house's addresses is the house's: a laptop's
-        // router-given name ("localhost." stands in for it). Nothing listens on port 1, so the
-        // call fails to connect, but never for being off the house's network.
-        let by_name = send_local("http://localhost.:1/v1", "", b"{}");
+        // A name that resolves to nothing is not known to be at home, so it is refused. This
+        // holds whatever the machine's DNS says: the name is reserved (.invalid) and never answers.
+        let unresolved = send_local("http://no-such-relay-host.invalid:1/v1", "", b"{}");
         assert!(
-            by_name.is_err_and(|why| !why.contains("house's network")),
-            "a name at home is not refused as away"
+            unresolved.is_err_and(|why| why.contains("house's network")),
+            "an unresolved name is refused"
         );
     }
 
