@@ -30,7 +30,7 @@ services:
   audio-hub:
     <<: *fenced
     image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio:${ENDORA_AUDIO_VERSION:-1.0.1}
-    container_name: ${ENDORA_AUDIO_CONTAINER_NAME:-endora-audio}
+    container_name: endora-audio
     environment:
       # Your token (32+ characters), or empty: then the hub makes one on first start in its
       # token volume, and you read it once (README, "The token").
@@ -67,7 +67,7 @@ services:
   # its own login in its volume after that. Needs Spotify Premium.
   audio-spotify:
     image: giof71/librespot@sha256:0c7cd19a49547cd0e34ac7c6d9aadd4b2703c5cb13acd1dbfd4982c311d478fb
-    container_name: ${ENDORA_AUDIO_SPOTIFY_CONTAINER_NAME:-endora-audio-spotify}
+    container_name: endora-audio-spotify
     restart: unless-stopped
     pull_policy: missing
     network_mode: host
@@ -98,7 +98,7 @@ services:
   audio-senders:
     <<: *fenced
     image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-senders:${ENDORA_AUDIO_VERSION:-1.0.1}
-    container_name: ${ENDORA_AUDIO_SENDERS_CONTAINER_NAME:-endora-audio-senders}
+    container_name: endora-audio-senders
     network_mode: host
     environment:
       # 1: the door is the audio-airplay container's and none runs here. Anything else: the
@@ -131,7 +131,7 @@ services:
     <<: *fenced
     profiles: [airplay]
     image: ${ENDORA_AUDIO_REGISTRY:-ghcr.io/rusticpotatos}/endora-audio-airplay:${ENDORA_AUDIO_VERSION:-1.0.1}
-    container_name: ${ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME:-endora-audio-airplay}
+    container_name: endora-audio-airplay
     # The name it announces on the LAN (mDNS), and what avahi calls the host.
     hostname: ${SOUND_AIRPLAY2_HOSTNAME:-endora-mixer}
     environment:

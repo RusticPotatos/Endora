@@ -149,14 +149,13 @@ or beside Core alone. `deploy/compose/check-isolation.sh` checks that it shares 
 network, volume or host port with them. Do not point its volume names at the first install's
 volumes: the two would share one database and one secrets key.
 
-Two **full bundles** on one host are not supported: run one full bundle per host. Each container's
-name is a setting (`CONSOLE_CONTAINER_NAME`, `ENDORA_AUDIO_CONTAINER_NAME`,
-`ENDORA_AUDIO_SPOTIFY_CONTAINER_NAME`, `ENDORA_AUDIO_SENDERS_CONTAINER_NAME`,
-`ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME`, in `bundle.env.example`), and a default install keeps today's
-names. Setting them lets a second bundle's containers take their own names, but it does not make
-the second bundle run: Audio's senders and Spotify use the host's network, with ports (3701-3704,
-UDP 319/320) that one host has only once. Until the Console and Audio commits that add the settings
-are published and pinned, the bundle's pinned files fix the names.
+Two **full bundles** on one host are not supported: run one full bundle per host. Console's and
+Audio's own files, copied unchanged from their repositories, still name their containers
+(`endora-console`, `endora-audio`, `endora-audio-spotify`, `endora-audio-senders`,
+`endora-audio-airplay`) and Audio's AirPlay network. Audio's senders and Spotify also use the
+host's network, with ports (3701-3704, UDP 319/320) that one host has only once, so naming cannot
+make a second bundle run beside the first. Changing the names in Console's and Audio's repositories
+and pinning new versions would fix only the names.
 
 | Volume | Holds | Back it up |
 |---|---|---|

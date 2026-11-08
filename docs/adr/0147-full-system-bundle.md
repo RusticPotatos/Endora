@@ -135,10 +135,8 @@ negative control, so the override test cannot pass by accident.
 **Staged plan** (nothing below is started; each stage is its own change):
 
 1. **Console and Audio names** (their repositories, not this one): read each container name from a
-   variable whose default is today's name (`CONSOLE_CONTAINER_NAME`, and Audio's four:
-   `ENDORA_AUDIO_CONTAINER_NAME` and the spotify, senders and airplay ones; Audio has four
-   containers, five in all with Console), so standalone installs keep their names. Amendment 4
-   records the candidate. Release, then here: a new `SOURCES.json` entry and SHA-256, the
+   variable whose default is today's name (`CONSOLE_CONTAINER_NAME`, Audio's five), so standalone
+   installs keep their names. Release, then here: a new `SOURCES.json` entry and SHA-256, the
    variables in `bundle.env.example`, `check-sources.sh --remote`, and a green `full-system.yml`.
    The checker's known-names rule then needs the new names only where a name is still fixed.
 2. **Audio on the host's network, twice on one host** (owner's decision, its own ADR if taken).
@@ -148,33 +146,6 @@ negative control, so the override test cannot pass by accident.
 3. **Charter milestone c, the single clean-host install**: not changed by this amendment. It still
    needs the XPS run from scratch with no overrides. Not verified here: whether a stock Ubuntu host's
    own avahi daemon (UDP 5353) conflicts with the senders' avahi, which uses host networking.
-
-## Amendment 4, 8 Nov 2026: container names are settings (stage 1, a local candidate)
-
-Stage 1 of amendment 3, as a candidate. Not published: nothing below is on GitHub yet.
-
-- **Console** `c5c0b2d` (`feat/container-name-variable`, local to its repository) makes
-  `container_name` `${CONSOLE_CONTAINER_NAME:-endora-console}`. **Audio** `7def7c8`
-  (`feat/container-name-variables`, local) makes four names variables: `ENDORA_AUDIO_CONTAINER_NAME`,
-  `ENDORA_AUDIO_SPOTIFY_CONTAINER_NAME`, `ENDORA_AUDIO_SENDERS_CONTAINER_NAME` and
-  `ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME`, each defaulting to today's name. Neither commit is on its
-  repository's origin (`git ls-remote`, 8 Nov 2026).
-- **Images are unchanged.** Each change is one file's name lines. The bundle vendors the two files
-  (`SOURCES.json`, their SHA-256 pins), and `image_commit` keeps the published builds: Console's
-  `sha-fd9cf17`, Audio's v1.0.1. `CONSOLE_TAG` and `ENDORA_AUDIO_VERSION` do not move.
-- **Settings:** `bundle.env.example` documents the five names, commented out, so a default install
-  names its containers as before (checked: `check-isolation.sh`, "a default install keeps today's
-  container names").
-- **Checked offline** (`docker compose config`, nothing started, no daemon contacted, 8 Nov 2026):
-  a second full bundle with every override, now including the five names, shares no container,
-  volume or published host port with the first. The two audio host-network services stay shared,
-  so two full bundles remain unsupported. A second bundle that omits `CONSOLE_CONTAINER_NAME` is
-  caught by a negative control.
-- **Not verified:** `check-sources.sh --remote` and `full-system.yml` need both commits on their
-  repositories' origins; they fail until the owner pushes them. No runtime test: a second running
-  bundle is still open, as amendment 2 says.
-- **Correction:** stage 1 said "Audio's five". Audio has four containers (hub, spotify, senders,
-  airplay); the five are Console's one and Audio's four.
 
 ## Alternatives considered
 
