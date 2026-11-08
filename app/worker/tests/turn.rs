@@ -1745,6 +1745,9 @@ fn in_the_workbench(hq: &str, model: &str, dir: &std::path::Path) -> Vec<(&'stat
     env.push(("ENDORA_WORKBENCH", "1".to_owned()));
     env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
     env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    // The shell is a login shell that reads $HOME/.profile. It gets the workbench, which holds no
+    // profile, so the run never depends on the host owner's files (see scenarios.rs).
+    env.push(("HOME", dir.display().to_string()));
     env
 }
 
