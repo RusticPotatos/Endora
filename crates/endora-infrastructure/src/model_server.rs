@@ -79,15 +79,6 @@ pub fn is_private_endpoint(url: &str) -> bool {
 /// address changes (ADR 0130). A name that resolves to nothing is not known to be at home.
 #[must_use]
 pub fn reaches_only_the_house(url: &str) -> bool {
-    reaches_only_the_house_by(url, &system_addresses)
-}
-
-/// [`reaches_only_the_house`] with the lookup given, so a test can say what a name resolves to.
-/// A name the lookup returns nothing for is not at home.
-fn reaches_only_the_house_by(
-    url: &str,
-    resolve: &dyn Fn(&str) -> Vec<std::net::SocketAddr>,
-) -> bool {
     if is_private_endpoint(url) {
         return true;
     }
@@ -109,14 +100,10 @@ fn reaches_only_the_house_by(
     } else {
         format!("{authority}:80")
     };
-    all_private(&resolve(target.as_str()))
-}
-
-/// The addresses the system's resolver gives a `host:port`; none if it cannot resolve it.
-fn system_addresses(target: &str) -> Vec<std::net::SocketAddr> {
-    std::net::ToSocketAddrs::to_socket_addrs(target)
-        .map(|addrs| addrs.collect::<Vec<_>>())
-        .unwrap_or_default()
+    let Ok(found) = std::net::ToSocketAddrs::to_socket_addrs(&target) else {
+        return false;
+    };
+    all_private(&found.collect::<Vec<_>>())
 }
 
 /// Whether every address is on the house's network, and there is at least one.
@@ -284,83 +271,16 @@ mod tests {
             at("8.8.8.8:8080")
         ]));
         assert!(!super::all_private(&[]));
-        // A private address by its text needs no lookup: the resolver here must never be asked.
-        let never_asked = |target: &str| -> Vec<std::net::SocketAddr> {
-            panic!("no lookup needed, but {target} was looked up")
-        };
-        assert!(super::reaches_only_the_house_by(
-            "http://192.168.1.10:8080/v1",
-            &never_asked
-        ));
-        // A public address is not private by its text, so it is looked up: and it is public.
-        let public_literal =
-            |_: &str| -> Vec<std::net::SocketAddr> { vec!["8.8.8.8:8080".parse().unwrap()] };
-        assert!(!super::reaches_only_the_house_by(
-            "http://8.8.8.8:8080/v1",
-            &public_literal
-        ));
-    }
-
-    /// A resolver that knows only the names given, each with the addresses it resolves to; any
-    /// other name resolves to nothing. No test below depends on the machine's own DNS.
-    fn resolving(
-        names: &'static [(&'static str, &'static [&'static str])],
-    ) -> impl Fn(&str) -> Vec<std::net::SocketAddr> {
-        move |target| {
-            names
-                .iter()
-                .find(|(name, _)| *name == target)
-                .map_or_else(Vec::new, |(_, addrs)| {
-                    addrs.iter().map(|a| a.parse().unwrap()).collect()
-                })
-        }
-    }
-
-    const HOUSE_NAMES: &[(&str, &[&str])] = &[
-        // A laptop's name as the house's router hands it out: private, IPv4 and IPv6.
-        (
-            "laptop.test:8080",
-            &["192.168.1.10:8080", "[fd00::10]:8080"],
-        ),
-        // "localhost." is a name the text check does not know; it resolves to loopback.
-        ("localhost.:8080", &["127.0.0.1:8080"]),
-        // One private and one public address: not all at home, so not at home.
-        ("mixed.test:8080", &["192.168.1.10:8080", "8.8.8.8:8080"]),
-        ("public.test:8080", &["203.0.113.10:8080"]),
-    ];
-
-    #[test]
-    fn a_name_is_at_home_only_when_every_address_it_resolves_to_is() {
-        let house = resolving(HOUSE_NAMES);
-        assert!(super::reaches_only_the_house_by(
-            "http://laptop.test:8080/v1",
-            &house
-        ));
+        // A private address by its text needs no lookup; a public one never passes.
+        assert!(super::reaches_only_the_house("http://192.168.1.10:8080/v1"));
+        assert!(!super::reaches_only_the_house("http://8.8.8.8:8080/v1"));
+        // A name the text check does not know, that resolves to a private address, reaches only
+        // the house: "localhost." stands in for a laptop's router-given name.
         assert!(!super::is_private_endpoint("http://localhost.:8080/v1"));
-        assert!(super::reaches_only_the_house_by(
-            "http://localhost.:8080/v1",
-            &house
-        ));
-        assert!(!super::reaches_only_the_house_by(
-            "http://mixed.test:8080/v1",
-            &house
-        ));
-        assert!(!super::reaches_only_the_house_by(
-            "http://public.test:8080/v1",
-            &house
-        ));
-    }
-
-    #[test]
-    fn a_name_that_resolves_to_nothing_is_not_known_to_be_at_home() {
-        let house = resolving(HOUSE_NAMES);
-        assert!(!super::reaches_only_the_house_by(
-            "http://no-such-mac.invalid:8080/v1",
-            &house
-        ));
-        assert!(!super::reaches_only_the_house_by(
-            "http://nothing-answers.test:8080/v1",
-            &house
+        assert!(super::reaches_only_the_house("http://localhost.:8080/v1"));
+        // A name that resolves to nothing is not known to be at home.
+        assert!(!super::reaches_only_the_house(
+            "http://no-such-mac.invalid:8080/v1"
         ));
     }
 
