@@ -444,6 +444,10 @@ sys.stdout.buffer.write(b"".join(out))
         ("ENDORA_WORKBENCH", "1".to_owned()),
         ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
         ("PATH", std::env::var("PATH").unwrap_or_default()),
+        // The worker's shell is a login shell that reads $HOME/.profile. It gets this scenario's
+        // own directory, which holds no profile, so the run never depends on the host owner's
+        // files; a complaint on stderr would count as the command's output.
+        ("HOME", dir.display().to_string()),
     ];
     let out = Command::new(env!("CARGO_BIN_EXE_endora-worker"))
         .env_clear()
@@ -563,6 +567,10 @@ fn run_rounds(w: &mut Turn, rounds: Vec<String>) {
         ("ENDORA_WORKBENCH", "1".to_owned()),
         ("ENDORA_WORKBENCH_DIR", dir.display().to_string()),
         ("PATH", std::env::var("PATH").unwrap_or_default()),
+        // The worker's shell is a login shell that reads $HOME/.profile. It gets this scenario's
+        // own directory, which holds no profile, so the run never depends on the host owner's
+        // files; a complaint on stderr would count as the command's output.
+        ("HOME", dir.display().to_string()),
     ];
     let out = Command::new(env!("CARGO_BIN_EXE_endora-worker"))
         .env_clear()
