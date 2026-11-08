@@ -36,11 +36,29 @@ product's own compose file unchanged, pinned to a released version.
 ## First start: the full system
 
 ```sh
-git clone https://github.com/RusticPotatos/Endora && cd Endora/deploy/compose
+git clone https://github.com/RusticPotatos/Endora && cd Endora
+git checkout <tag-or-commit>      # optional: pin the version (below); omit it to take the default branch
+cd deploy/compose
 cp bundle.env.example .env        # ENDORA_CORE_VERSION is set to a published build; read every other line
 docker compose up -d --wait
 docker compose exec node endora-core setup        # make Core's owner (once), at a terminal
 ```
+
+**Pin the version you install.** The clone gives you the repository's default branch, which moves.
+The bundle is part of the repository, so the checkout is what you pin: after `git clone`, run
+`git checkout` with a release tag that contains `deploy/compose` (`git tag --list 'v*'`) or with a
+commit you have tested, then `cd deploy/compose`. That one step fixes the compose files, the
+`SOURCES.json` pins for Console and Audio, and the `ENDORA_CORE_VERSION` that `bundle.env.example`
+names, which is the Core build of the same checkout. Keep that checkout (or note its commit) so a
+reinstall or rollback starts from the same files. To move later, check out the newer tag or commit
+and read the diff of `bundle.env.example` before you copy it over `.env`.
+
+**The first `up` downloads images.** Core, Console and Audio come from GHCR (`ghcr.io/rusticpotatos/`).
+The Spotify receiver does not: `audio-spotify` is the third-party `giof71/librespot` image,
+pinned by digest, pulled from **Docker Hub** and about **843 MB**. It is the largest download of the
+bundle, and the start waits for it. A host that cannot reach Docker Hub cannot bring up the full
+bundle unless that image is loaded first (`docker load`). Compose pulls an image only when it is missing, so a later `up` does not
+download it again.
 
 To script the owner's setup instead (no terminal), give the password on stdin and turn off the
 terminal with `-T`:
@@ -133,7 +151,13 @@ at 64 MB. With the demo on (`ENDORA_HQ_DEMO=1`) HQ hands it nothing.
 | 8790/tcp | HQ | the bundle's own networks only; never published |
 | 8788/tcp | Core's team listener (model relays and HQ's gateway for workers) | the workers' fenced network; publish it only for a runner on another host |
 | 8791/tcp | Audio's page and API | the LAN |
-| 3701–3704/tcp, 319–320/udp, 5353/udp, AirPlay and Spotify Connect ports | Audio's senders and receiver | the host's network (needed for speaker discovery) |
+| 3701–3704/tcp, 3711–3714/tcp, 5100/tcp, 319–320/udp, 5353/udp, AirPlay and Spotify Connect ports | Audio's senders and receiver | the host's network (needed for speaker discovery) |
+
+Audio's senders and Spotify receiver run on the host's own network (`network_mode: host`), so
+their ports are the host's: the compose files do not publish them and Compose does not list them
+in `docker compose ps`. On a clean host, with the full bundle up, `ss -ltn` showed 3701–3704,
+3711–3714 and 5100 listening on every address, beside 8787 and 8791 from the table. Keep them free
+before the first start.
 
 ## Volumes and data
 
@@ -146,7 +170,9 @@ deliberate: an upgrade keeps the data. Without the fixed names, Compose would na
 and run `docker compose up -d` there, then make its owner as above. Its project name, volumes and
 port (`http://127.0.0.1:8796`) are its own, and its data starts empty. It can run beside the bundle
 or beside Core alone. `deploy/compose/check-isolation.sh` checks that it shares no container,
-network, volume or host port with them. Do not point its volume names at the first install's
+network, volume or host port with them (the check renders each install with `docker compose
+config`, starts and pulls nothing, and needs **Docker Compose v2.20 or later and `python3`** on the
+host; `sh deploy/compose/check-isolation.sh --self-test` needs only `sh` and `grep`). Do not point its volume names at the first install's
 volumes: the two would share one database and one secrets key.
 
 Two **full bundles** on one host are not supported: run one full bundle per host. Console's and
