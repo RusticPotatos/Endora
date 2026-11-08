@@ -151,17 +151,14 @@ negative control, so the override test cannot pass by accident.
 
 ## Amendment 4, 8 Nov 2026: container names are settings (stage 1, a local candidate)
 
-Stage 1 of amendment 3, as a candidate. The two source commits are published on scratch branches
-(8 Nov 2026); the bundle candidate itself is not pushed.
+Stage 1 of amendment 3, as a candidate. Not published: nothing below is on GitHub yet.
 
-- **Console** `c5c0b2d` (`feat/container-name-variable`, the local branch tip; on origin as
-  `scratch/bundle-pin-c5c0b2d`) makes
+- **Console** `c5c0b2d` (`feat/container-name-variable`, local to its repository) makes
   `container_name` `${CONSOLE_CONTAINER_NAME:-endora-console}`. **Audio** `7def7c8`
-  (`feat/container-name-variables`, the local branch tip; on origin as `scratch/bundle-pin-7def7c8`)
-  makes four names variables: `ENDORA_AUDIO_CONTAINER_NAME`,
+  (`feat/container-name-variables`, local) makes four names variables: `ENDORA_AUDIO_CONTAINER_NAME`,
   `ENDORA_AUDIO_SPOTIFY_CONTAINER_NAME`, `ENDORA_AUDIO_SENDERS_CONTAINER_NAME` and
-  `ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME`, each defaulting to today's name. Both SHAs are on their
-  repositories' origins (`git ls-remote`, 8 Nov 2026).
+  `ENDORA_AUDIO_AIRPLAY_CONTAINER_NAME`, each defaulting to today's name. Neither commit is on its
+  repository's origin (`git ls-remote`, 8 Nov 2026).
 - **Images are unchanged.** Each change is one file's name lines. The bundle vendors the two files
   (`SOURCES.json`, their SHA-256 pins), and `image_commit` keeps the published builds: Console's
   `sha-fd9cf17`, Audio's v1.0.1. `CONSOLE_TAG` and `ENDORA_AUDIO_VERSION` do not move.
@@ -173,8 +170,8 @@ Stage 1 of amendment 3, as a candidate. The two source commits are published on 
   volume or published host port with the first. The two audio host-network services stay shared,
   so two full bundles remain unsupported. A second bundle that omits `CONSOLE_CONTAINER_NAME` is
   caught by a negative control.
-- **Checked remotely:** `check-sources.sh --remote` passes against both scratch-branch SHAs (exit 0,
-  8 Nov 2026). `full-system.yml` against those SHAs is not run. No runtime test: a second running
+- **Not verified:** `check-sources.sh --remote` and `full-system.yml` need both commits on their
+  repositories' origins; they fail until the owner pushes them. No runtime test: a second running
   bundle is still open, as amendment 2 says.
 - **Correction:** stage 1 said "Audio's five". Audio has four containers (hub, spotify, senders,
   airplay); the five are Console's one and Audio's four.

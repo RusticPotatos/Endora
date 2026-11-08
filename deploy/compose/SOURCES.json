@@ -10,27 +10,27 @@
   "console": {
     "path": "console/compose.yaml",
     "repo": "RusticPotatos/endora-console",
-    "ref": "scratch/bundle-pin-c5c0b2d on RusticPotatos/endora-console (published 8 Nov 2026; the commit is the local feat/container-name-variable tip)",
+    "ref": "feat/container-name-variable (UNPUBLISHED: not on origin at the time of this change, 8 Nov 2026)",
     "commit": "c5c0b2d59b10c3e0201b6096937409be87fb0d00",
     "source": "compose.yaml",
     "sha256": "91f98198fd488353d74d2520d59840131c2c135f91158b127c1094b3bf6cb1cc",
     "image": "ghcr.io/rusticpotatos/endora-console",
     "version": "sha-fd9cf17a588e6226de114852e520a554ad51aa9f",
     "image_commit": "fd9cf17a588e6226de114852e520a554ad51aa9f",
-    "why": "The file is c5c0b2d, which differs from fd9cf17 (the published image's build) only in its container_name line (CONSOLE_CONTAINER_NAME, default endora-console). Console's code is unchanged, so the published sha- build of fd9cf17 is still the image. c5c0b2d is on origin as scratch/bundle-pin-c5c0b2d (8 Nov 2026), so check-sources.sh --remote verifies this pin against it.",
+    "why": "The file is c5c0b2d, which differs from fd9cf17 (the published image's build) only in its container_name line (CONSOLE_CONTAINER_NAME, default endora-console). Console's code is unchanged, so the published sha- build of fd9cf17 is still the image. Until c5c0b2d is pushed and built, check-sources.sh --remote cannot verify this pin.",
     "variable": "CONSOLE_TAG"
   },
   "audio": {
     "path": "audio/compose.yaml",
     "repo": "RusticPotatos/endora-audio",
-    "ref": "scratch/bundle-pin-7def7c8 on RusticPotatos/endora-audio (published 8 Nov 2026; the commit is the local feat/container-name-variables tip)",
+    "ref": "feat/container-name-variables (UNPUBLISHED: not on origin at the time of this change, 8 Nov 2026)",
     "commit": "7def7c87804d64bf6fba387d2719ab44fde55529",
     "source": "compose.yaml",
     "sha256": "cdd3b3f4b57af80b5eb97a4a68b68a4bb4f811ca894f95d4a07d3c50b9e51afb",
     "image": "ghcr.io/rusticpotatos/endora-audio, -senders, -airplay",
     "version": "1.0.1",
     "image_commit": "5a9773659bd325d95220435ae1d1fadb8d8ac858",
-    "why": "v1.0.1 is Audio's latest published release (7 Nov 2026); its hub image is multi-arch, its senders and airplay images amd64. The file is 7def7c8, which differs from v1.0.1's compose.yaml only in four container_name lines (ENDORA_AUDIO_{,SPOTIFY_,SENDERS_,AIRPLAY_}CONTAINER_NAME, defaults the v1.0.1 names). The v1.0.1 images are unchanged. 7def7c8 is on origin as scratch/bundle-pin-7def7c8 (8 Nov 2026), so check-sources.sh --remote verifies this pin against it.",
+    "why": "v1.0.1 is Audio's latest published release (7 Nov 2026); its hub image is multi-arch, its senders and airplay images amd64. The file is 7def7c8, which differs from v1.0.1's compose.yaml only in four container_name lines (ENDORA_AUDIO_{,SPOTIFY_,SENDERS_,AIRPLAY_}CONTAINER_NAME, defaults the v1.0.1 names). The v1.0.1 images are unchanged. Until 7def7c8 is pushed, check-sources.sh --remote cannot verify this pin.",
     "variable": "ENDORA_AUDIO_VERSION"
   }
 }
