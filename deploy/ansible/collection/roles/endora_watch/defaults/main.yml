@@ -41,7 +41,7 @@ endora_watch_pihole: true
 # The installer, pinned to a release and its checksum (it then fetches that release's
 # components). Raise both together.
 endora_watch_pihole_installer_version: v6.5
-endora_watch_pihole_installer_sha256: 0c67c8f8358fede4b4dd8d51b429114461c9bb90ad56ff00ef05637f664bf3ac
+endora_watch_pihole_installer_checksum: sha256:0c67c8f8358fede4b4dd8d51b429114461c9bb90ad56ff00ef05637f664bf3ac
 endora_watch_pihole_installer_url: >-
   https://raw.githubusercontent.com/pi-hole/pi-hole/{{ endora_watch_pihole_installer_version
   }}/automated%20install/basic-install.sh

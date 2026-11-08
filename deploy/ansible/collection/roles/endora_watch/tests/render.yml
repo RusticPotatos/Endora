@@ -25,6 +25,11 @@
         state: directory
         mode: "0700"
 
+    - name: The installer's pin names its algorithm, as get_url's checksum wants it
+      ansible.builtin.assert:
+        that:
+          - endora_watch_pihole_installer_checksum is match('^sha256:[0-9a-f]{64}$')
+
     - name: The watch's settings, checked by the watch itself
       ansible.builtin.template:
         src: ../templates/watch.json.j2

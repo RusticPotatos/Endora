@@ -48,7 +48,7 @@
   ansible.builtin.get_url:
     url: "{{ endora_watch_pihole_installer_url }}"
     dest: /etc/endora/pihole-install.sh
-    checksum: "sha256:{{ endora_watch_pihole_installer_sha256 }}"
+    checksum: "{{ endora_watch_pihole_installer_checksum }}"
     owner: root
     group: root
     mode: "0700"
