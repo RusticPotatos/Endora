@@ -1,5 +1,30 @@
 # Endora
 
+Endora is a family of self-hosted products for your house. Each runs on **your** hardware, and
+each can run on its own. This page lists them, says where to install each, and then describes
+the one this repository holds today: Endora Core.
+
+## The Endora products
+
+| Product | What it is | Where it lives | Install |
+|---|---|---|---|
+| **Endora Core** | The headless engine: the node (holds authority and secrets), HQ's team of agents, and the runner | This repository, [RusticPotatos/Endora](https://github.com/RusticPotatos/Endora) | [Core's Docker Compose file](deploy/compose/core/) and [docs/install.md](docs/install.md) |
+| **Endora Console** | The screens for Core: decisions, work, the team, health, the home lab, settings. It holds no authority of its own; you sign in to Core | [RusticPotatos/endora-console](https://github.com/RusticPotatos/endora-console) | Its README, "Run it". Needs a running Core |
+| **Endora Audio** | A self-hosted sound hub: radio, Spotify and AirPlay sources into AirPlay speakers and browsers, with a level per source and speaker | [RusticPotatos/endora-audio](https://github.com/RusticPotatos/endora-audio) ([releases](https://github.com/RusticPotatos/endora-audio/releases)) | Its README, "Deploy". Needs no Core |
+
+**Everything on one Linux host:** the [bundle in `deploy/compose/`](deploy/compose/) runs Core,
+Console and Audio together, each product's own compose file unchanged
+([ADR 0147](docs/adr/0147-full-system-bundle.md)). It needs only Docker Engine 28 or later and
+Docker Compose v2.20 or later, not `make` or a checkout-specific config. First start,
+prerequisites, ports, backups and upgrades are in [docs/install.md](docs/install.md).
+
+**The split.** Console and Audio already have repositories of their own. Core is still built
+and installed from this repository, which also holds the bundle and these docs. A separate
+Core repository is not published yet: until this page links one, Core comes from here, and
+nothing below should be read as saying otherwise.
+
+## Endora Core: this repository
+
 A local-first team of AI agents for your house: **Endora HQ**. A small team (a CEO, leads,
 developers, a reviewer and a tester) takes on work you give it, mostly your home lab's, and you
 watch it happen in an office on your phone and decide what it may do from your desk. It runs on
