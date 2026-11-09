@@ -32,7 +32,7 @@ mislabel the architecture, not simplify it.
 Every boundary. The application layer declares a trait (`MemoryStore`,
 `CapabilityRunner`, `UsageLog`, `AuditLog`, `Clock`, `IdSource`);
 infrastructure implements it; dependencies point inward. This is ROCA's
-load-bearing pattern ([ADR 0050](adr/0050-the-shape-of-the-system.md))
+load-bearing pattern ([ROCA](roca.md); [ADR 0050](adr/0050-the-shape-of-the-system.md))
 and the reason the model vendor, the storage engine and the clock are all
 swappable in tests.
 

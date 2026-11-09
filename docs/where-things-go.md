@@ -144,6 +144,7 @@ here and delete the routes only they used.
 | `.claude/` | How an assistant runs the baseline experiment the same way each round: the round playbook (the `hq-round` skill, retired on 8 Nov 2026; it lives in the git history), the agents `agents/round-judge.md` and `agents/duplication-reviewer.md`, the workflow `workflows/end-of-round.js`, and the guard hooks `hooks/` wired in `settings.json` (no edits to the lab's secrets, the nothing-personal check before a push). Nothing personal: the repository is public |
 | `docs/api/` | Core's published contracts: `console-v1.md` (what Endora Console may call, and how Core answers) and its route list `console-v1.json`, which Core's tests and Console's proxy both read (ADR 0145). A route Console needs is added here, additively, in the same change as the route |
 | `app/node/src/api/console.rs` | The routes the Console contract adds: session end, `/v1/decisions`, `/v1/events` and its stream; held by `console_tests.rs` |
+| `docs/roca.md` | The one definition of how code is organized (responsibility, inward dependencies, the growth rule from one file to a service). Other docs link to it rather than restate it |
 | `docs/adr/` | One decision each; a new architectural choice needs one |
 | `docs/proposals/` | Research and proposed changes, with sources and tradeoffs; accepted architectural decisions go in `docs/adr/` |
 | `docs/homelab.md` | How to set up and run each part in the house |

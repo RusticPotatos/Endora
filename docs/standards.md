@@ -47,7 +47,7 @@ dependency without a reason written down.
 
 ### Domain first (DDD)
 
-Organise by responsibility: bounded contexts, each with its own model and its own words
+Organise by responsibility ([ROCA](roca.md)): bounded contexts, each with its own model and its own words
 (the ubiquitous language: the names the owner uses are the names in the code). The domain
 stays pure: no HTTP, database, vendor, UI or OS in it. Contexts talk through application
 ports, and the dependency graph stays acyclic.

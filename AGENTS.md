@@ -27,11 +27,12 @@ the base principles every project shares. What follows is Endora's own.
 
 ## Architecture rules
 
-- Endora follows **Responsibility-Oriented Clean Architecture (ROCA)** — a
-  domain-first modular monolith organized **by responsibility**, not by layer
-  (ADR 0050). The workspace is `app/` (composition roots), `domains/` (one crate
-  per bounded context: `platform`, `capabilities`, `team`, `sound`, and `mail`, kept as a
-  library for a later HQ contract), `shared/` (`kernel`, `persistence`, `protocol`), and
+- Endora follows **Responsibility-Oriented Clean Architecture (ROCA)**: the one canonical
+  definition, with its growth rule, is [docs/roca.md](docs/roca.md) (ADR 0050, amended 9 Nov
+  2026). Organize **by responsibility**, not by layer. The workspace is `app/` (composition
+  roots), `domains/` (one crate per bounded context: `platform`, `capabilities`, `team`,
+  `sound`, and `mail`, kept as a library for a later HQ contract), `shared/` (`kernel`,
+  `persistence`, `protocol`), and
   `clients/` (the handheld terminal, ADR 0099, which talks to the node only over HTTP and
   has its own `AGENTS.md`).
 - **Each context owns its own `domain` / `application` / `infrastructure`**

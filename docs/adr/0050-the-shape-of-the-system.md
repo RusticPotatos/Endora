@@ -86,6 +86,26 @@ system to groom.
 - **The cost is discipline**: nothing prevents a context from reaching sideways except
   review and the dependency graph. It has held so far.
 
+## Amendment, 9 Nov 2026: the canonical definition and the current contexts
+
+The canonical text of ROCA, with its growth rule (one file, folder, layer folders, crate,
+service) and its prior art, is [docs/roca.md](../roca.md). The decision above is unchanged: it
+records what was decided, and this amendment records what the workspace is now.
+
+- **Contexts.** The contexts are `domains/platform`, `domains/capabilities`, `domains/team`,
+  `domains/sound` and `domains/mail`. Mail is kept as a library for a later HQ contract
+  ([ADR 0136](0136-endora-is-hq.md)). The understanding, conversation, scheduling and agenda
+  contexts left with the chat (ADR 0136; [ADR 0052](0052-what-it-knows-about-you.md) was superseded
+  by it), so the context list in the Decision is historical.
+- **Shared code.** `shared/` holds `kernel`, `persistence` and `protocol` (the handheld's wire
+  types). `clients/` holds the handheld terminal, which talks to the node only over HTTP.
+- **Crates.** Each context is a crate from the start, as [ADR 0026](archive/0026-package-by-bounded-context.md)
+  decided. Its recorded reason was the compile-time boundary between contexts. That is historical
+  design context: it is not a trigger in the growth rule in `roca.md`, and this amendment does not
+  require any existing crate to change.
+- **Services.** Core, Console and Audio are separate deployables, each with its own compose file
+  ([ADR 0145](0145-core-console-contract.md), [ADR 0147](0147-full-system-bundle.md)).
+
 ## Rejected
 
 - **Microservices**, at every juncture. One operator, one machine; the coordination cost
