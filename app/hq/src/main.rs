@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 mod api;
+mod backups;
 mod drain_cli;
 mod runner;
 mod team;
@@ -43,6 +44,12 @@ const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of 
 /// hour out until HQ next starts, which is still a day that begins at the owner's midnight
 /// rather than at eight in the evening. A zone nobody knows is an error, never quietly UTC.
 fn owners_offset(env: impl Fn(&str) -> Option<String>, now: i64) -> Result<i64, String> {
+    Ok(owners_zone(env)?.offset_minutes_at(now))
+}
+
+/// The owner's time zone itself, which follows clock changes, for what runs every night
+/// (`backups`) and so cannot keep one offset taken at start.
+fn owners_zone(env: impl Fn(&str) -> Option<String>) -> Result<time_zone::TimeZone, String> {
     let zone = env("ENDORA_TIME_ZONE").unwrap_or_default();
     let fixed = match env("ENDORA_UTC_OFFSET_MINUTES")
         .map(|v| v.trim().to_owned())
@@ -53,8 +60,7 @@ fn owners_offset(env: impl Fn(&str) -> Option<String>, now: i64) -> Result<i64, 
             format!("ENDORA_UTC_OFFSET_MINUTES must be whole minutes from UTC, not {minutes}")
         })?,
     };
-    let tz = time_zone::TimeZone::named_or_fixed(&zone, fixed)?;
-    Ok(tz.offset_minutes_at(now))
+    time_zone::TimeZone::named_or_fixed(&zone, fixed)
 }
 
 /// Now, in milliseconds since the epoch.
@@ -171,6 +177,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              for work: turns wait until they time out."
         );
     }
+
+    // HQ's own nightly copy of its store, in `backups/` beside it (milestone f).
+    backups::spawn(
+        std::path::PathBuf::from(&db),
+        owners_zone(|name| std::env::var(name).ok())?,
+    );
 
     let runner = Runner::Remote(RemoteRunner::default());
     let settings = Settings {

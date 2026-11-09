@@ -133,6 +133,7 @@ here and delete the routes only they used.
 | `app/` | Composition roots: one per program (node, hq, worker, runner, sound, …). Wiring only |
 | `domains/<context>/` | One crate per bounded context, each with its own domain / application / infrastructure ([domain-map.md](domain-map.md) says what each owns) |
 | `shared/` | Only what is genuinely cross-cutting (`kernel`, `persistence`) |
+| `shared/persistence/src/{nightly,restore}.rs`, `app/hq/src/backups.rs` | Nightly copies of a Core store and the proof that one restores (milestone f): the schedule, naming, pruning and copy (`nightly`) and the restore proof (`restore`) are written once here; the node (`app/node/src/api/snapshots.rs`, `endora.db`) and HQ (`backups.rs`, `hq.db`) each run their own loop around them, in `backups/` beside the database. A new Core-owned store gets its copy by calling these, never by a second implementation |
 | `crates/` | The orchestration layer and infrastructure adapters shared by several contexts |
 | `clients/` | Programs that talk to the node only over HTTP (the handheld terminal) |
 | `app/node/src/web/js/` | The console, one file per screen family; the menu is in `70-dispatch.js`, Settings' list in `20-common.js` (`UNDER_SETTINGS`), AI in `30-settings.js`; HQ's places in `47-hq.js` (`HQ_PLACES`), the agents map in `47h-hq-agents.js`, the studio in `47f-hq-studio.js`, the Holodeck card in `47d-hq-holodeck.js` and the Chess league in `47e-hq-chess.js`; the console's own scenarios in `app/node/src/web/features/`, run by `scripts/check-console.mjs` |
