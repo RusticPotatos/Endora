@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod nightly;
+pub mod restore;
 pub mod secrets;
 
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use zeroize::Zeroizing;
 
 pub use endora_kernel::RepositoryError;
+pub use restore::{RestoreFailure, prove_restore};
 use secrets::{DataKey, KeySource, Keyring, MemoryKey, SEALED, SecretColumn};
 
 /// Where the data keys live, each wrapped by the [`KeySource`] (ADR 0125).
