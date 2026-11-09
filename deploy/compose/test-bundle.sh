@@ -125,6 +125,15 @@ echo "== Sign-out"
 check "signing out through Console ends the session on Core" \
   sh -c "curl -fsS -o /dev/null -X POST -H '$origin' -H 'Authorization: Bearer $token' -H 'content-type: application/json' -d '{}' $console/v1/session/sign-out && test \"\$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer $token' http://127.0.0.1:8786/v1/session/current)\" = 401"
 
+echo "== Core's copy of its own database is proven by restore"
+# The copy and its proof are one exec: the proof reads whether a table has rows when it runs, so
+# it follows the copy at once (docs/recovery.md). The truncated copy must fail with exit 1, the
+# command's own refusal: a missing binary (127) must not read as a pass.
+check "verify-backup passes the good copy of Core's database" \
+  compose exec -T node sh -c 'rm -f /data/backups/bundle-test.db && endora-core backup /data/backups/bundle-test.db >/dev/null && endora-core verify-backup /data/backups/bundle-test.db'
+check "verify-backup refuses a truncated copy of Core's database" \
+  compose exec -T node sh -c 'f=/data/backups/bundle-test.db; head -c "$(( $(wc -c < "$f") / 2 ))" "$f" > "$f.cut" && { endora-core verify-backup "$f.cut" >/dev/null 2>&1; test $? -eq 1; }'
+
 echo "== Every scenario step was checked"
 # Each Then/And of the feature is a check above; one that did not pass (or never ran) fails.
 steps=$(sed -nE 's/^ *(Then|And) (.*)$/\2/p' features/full-system-bundle.feature | grep -v '^a stub model host' || true)

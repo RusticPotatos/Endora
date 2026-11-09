@@ -44,3 +44,8 @@ Feature: The full Endora system installs on one ordinary Linux host
     Then a signed read through Console reaches Core's model view
     And Core asked the stub model host
     And signing out through Console ends the session on Core
+
+  Scenario: Core's copy of its own database is proven by restore
+    When Core makes a copy of its database inside the bundle
+    Then verify-backup passes the good copy of Core's database
+    And verify-backup refuses a truncated copy of Core's database
