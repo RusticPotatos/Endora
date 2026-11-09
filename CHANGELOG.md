@@ -20,7 +20,9 @@ tagged release.
   copy it finds. `endora-node verify-backup <file>` runs the proof on a copy of either store
   without starting a server, and the compose bundle's test runs it on a good and a truncated
   copy. The release-time `before-*-hq` copies are no longer automatic with the compose bundle
-  (`docs/recovery.md`). One implementation in `shared/persistence`; HQ now depends on it.
+  (`docs/recovery.md`). One implementation in `shared/persistence`, loop included; HQ now depends on
+  it. The proof restores into a `.scratch` folder inside `backups/` (HQ's container has a
+  read-only root), and a copy is flushed to disk before it gets its `daily-` name.
 
 ### Removed
 

@@ -134,6 +134,18 @@ check "verify-backup passes the good copy of Core's database" \
 check "verify-backup refuses a truncated copy of Core's database" \
   compose exec -T node sh -c 'f=/data/backups/bundle-test.db; head -c "$(( $(wc -c < "$f") / 2 ))" "$f" > "$f.cut" && { endora-core verify-backup "$f.cut" >/dev/null 2>&1; test $? -eq 1; }'
 
+echo "== HQ's copy of its own database is proven under HQ's own constraints"
+# A one-off container of the hq service: its image, its read-only root with no writable /tmp, its
+# fenced capabilities and its /data volume, running the node's binary (the same image) on a copy of
+# hq.db made in /data/backups. This is the constraint the proof must live with in production: a
+# scratch file in /tmp would fail here. The guard makes the step fail loudly if /tmp ever becomes
+# writable, since it would then no longer test that. The truncated copy must exit exactly 1.
+hq_run() { compose run --rm --no-deps -T --entrypoint sh hq -c "$1"; }
+check "verify-backup passes the good copy of HQ's database" \
+  hq_run 'if touch /tmp/.ro-probe 2>/dev/null; then echo "hq /tmp is writable: this step no longer tests the read-only root" >&2; exit 9; fi; export ENDORA_DB=/data/hq.db; mkdir -p /data/backups && rm -f /data/backups/bundle-test-hq.db* && endora-node backup /data/backups/bundle-test-hq.db >/dev/null && endora-node verify-backup /data/backups/bundle-test-hq.db'
+check "verify-backup refuses a truncated copy of HQ's database" \
+  hq_run 'export ENDORA_DB=/data/hq.db; f=/data/backups/bundle-test-hq.db; head -c "$(( $(wc -c < "$f") / 2 ))" "$f" > "$f.cut" && { endora-node verify-backup "$f.cut" >/dev/null 2>&1; test $? -eq 1; }'
+
 echo "== Every scenario step was checked"
 # Each Then/And of the feature is a check above; one that did not pass (or never ran) fails.
 steps=$(sed -nE 's/^ *(Then|And) (.*)$/\2/p' features/full-system-bundle.feature | grep -v '^a stub model host' || true)

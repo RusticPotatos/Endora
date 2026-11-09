@@ -65,21 +65,30 @@ A copy that opens is not a copy that restores: `integrity_check` passes a valid 
 database, or one from before a table existed. Core keeps nightly copies of **both** stores it
 owns, the node's `endora.db` and HQ's `hq.db` (goals, tasks, the desk), and proves each one:
 
-- **The proof.** `endora_persistence::prove_restore` restores the copy to a private scratch file,
-  as a restore would, opens it read-only and passes it only if its `integrity_check` is ok, its
+- **The proof.** `endora_persistence::prove_restore` restores the copy to a private scratch file
+  in a `.scratch` folder **beside the copy, inside `backups/`** (never the system's temp folder:
+  HQ's container has a read-only root with only its data folder writable, so a scratch file in
+  `/tmp` failed every HQ proof, and a copy of `hq.db` should not pass through a folder every
+  process on the host can list; the folder is owner-only, emptied after each proof and removed
+  when empty), as a restore would, opens it read-only and passes it only if its `integrity_check` is ok, its
   tables and indexes (names and SQL) equal the live database's, and every live table that holds
   rows holds rows in the copy. The live database is opened read-only and never written.
 - **Named only when proven.** The nightly writes `daily-YYYY-MM-DD.db.unproven`, proves it, and
   only then renames it `daily-…db` and makes the weekly. So a daily by its own name has been
   proven, a restart finds an unproven copy and proves it instead of copying again, and the
   house's backup never meets one that failed. A copy that fails its proof is deleted.
+- **Durable before named.** The proven copy (and the weekly) is fsynced before the rename to
+  `daily-…db`, and `backups/` is fsynced after, so a power cut cannot leave a proven name on
+  bytes that never reached the disk.
 - **Retry, then say so once.** The ten-minute loop tries again on the next tick, at most three
-  attempts a night (counted per process run); the third failure is the one Activity line (the
+  attempts a night (counted per process run; a panic on the copying thread counts as the attempt it
+  was); the third failure is the one Activity line (the
   node) or log line (HQ) about it. Pruning runs only after a copy has proven, so the newest
   proven copy is never removed.
-- **One implementation.** The schedule, names, pruning, attempt cap and proof live once in
-  `shared/persistence` (`nightly`, `restore`); the node and HQ each run their own loop around
-  them and word the result.
+- **One implementation.** The schedule, names, pruning, attempt cap, proof and the ten-minute
+  loop itself (`Nightly::run`, behind the crate's `runtime` feature: tokio timers and a blocking
+  thread, no network) live once in `shared/persistence`; the node and HQ each call it with their
+  clock and word the result.
 - **HQ depends on `shared/persistence`.** HQ's own loop and its copy are the first reason the HQ
   program takes that crate directly. Accepted: `shared/` is for what is genuinely cross-cutting,
   and a restore-proven copy of every Core store is that. HQ still builds without the node's

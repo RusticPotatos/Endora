@@ -23,9 +23,11 @@ the steps assume a few things were put in place beforehand (below).
 1. **Both stores' nightly copies.** Nothing to do: the node (`endora.db`) and HQ (`hq.db`)
    each write `backups/daily-YYYY-MM-DD.db` beside their database at 01:30 every night and
    `weekly-YYYY-MM-DD.db` on Sundays, keeping seven of each. **Each copy is proven by restore**
-   before it is kept: it is restored to a scratch file and must open whole, have the live
+   before it is kept: it is restored to a scratch file (in a `.scratch` folder inside `backups/`,
+   because HQ's container has a read-only root; it is emptied after each proof) and must open whole, have the live
    database's schema and hold rows wherever the live database does. A copy that fails is
-   deleted and tried again on the next ten-minute tick, up to three times a night. The node
+   deleted and tried again on the next ten-minute tick, up to three times a night (the count
+   restarts if the service restarts). A copy is flushed to disk before it gets its `daily-` name. The node
    says in Activity, "proven by restore" when it is, and once if all three failed; HQ says so
    in its log (`docker logs`). If a copy failed, find out why that day.
    Release-time `before-*-hq` copies of HQ's store are **no longer automatic** with the compose
@@ -113,7 +115,7 @@ inside the container so it sees the right database, without starting a server:
 docker compose exec node endora-node verify-backup /data/backups/daily-YYYY-MM-DD.db
 ```
 
-It exits 0 when the copy restores and non-zero, with the reason, when it does not. The proof
+It restores the copy into a `.scratch` folder beside it, so the folder must be writable. It exits 0 when the copy restores and non-zero, with the reason, when it does not. The proof
 compares the copy with a live database: `ENDORA_DB` by default, or the file named as a second
 argument, which is how HQ's copy is checked (`endora-node verify-backup <hq copy> <hq.db>`,
 with both files visible to the command, for example in a one-off container with HQ's volume

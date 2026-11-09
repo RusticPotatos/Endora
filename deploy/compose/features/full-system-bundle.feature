@@ -49,3 +49,8 @@ Feature: The full Endora system installs on one ordinary Linux host
     When Core makes a copy of its database inside the bundle
     Then verify-backup passes the good copy of Core's database
     And verify-backup refuses a truncated copy of Core's database
+
+  Scenario: HQ's copy of its own database is proven under HQ's own constraints
+    When HQ's database is copied and checked in a one-off container with HQ's read-only root and data volume
+    Then verify-backup passes the good copy of HQ's database
+    And verify-backup refuses a truncated copy of HQ's database

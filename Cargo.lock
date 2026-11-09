@@ -971,6 +971,7 @@ dependencies = [
  "chacha20poly1305",
  "endora-kernel",
  "rusqlite",
+ "tokio",
  "zeroize",
 ]
 
