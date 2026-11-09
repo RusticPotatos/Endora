@@ -21,6 +21,17 @@ its own deployable, calling only the routes in `docs/api/console-v1.json`. Until
 cutover, HQ screen changes land **here**, in Endora, and Console copies them; the built-in screens
 are removed only after the cutover.
 
+These files are **not** edited to call only the contract's routes: the node still serves them as its
+built-in screens (the one-release fallback after the cutover), and they use the node's own routes
+(`/v1/hq/events`, `/v1/hq/desk/{id}`, `/v1/activity/stream`, `/v1/sound`, the Spotify token borrow),
+which exist, are tested and are not in the contract. Console's copy carries three edits instead
+(Console's `SOURCE.md` lists them; reapply them on every copy, they are not made here):
+`47-hq.js` reads `/v1/events` and answers a desk card with `POST /v1/decisions/{id}` (through
+Console's `48-console.js`); `10-core.js` drops the `/v1/activity/stream` `EventSource` (Console
+uses `/v1/events/stream`); `45-lab.js` drops the music player and its `/v1/sound` and Spotify
+calls (Console's `viewMusic`). When the built-in screens are retired, make the same three edits
+here and delete the routes only they used.
+
 | Destination | What belongs there | What does not |
 |---|---|---|
 | **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history, the chess league and the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
