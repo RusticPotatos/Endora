@@ -6,10 +6,13 @@
 //! keeps the newest seven of each. Files it did not name are never touched.
 //!
 //! The schedule, the names, the pruning and the copy are here once, for every store whose copy
-//! Core owns: the node's `endora.db` and HQ's `hq.db` each call [`copy_tonight`] from their own
-//! ten-minute loop and say in their own words what happened.
+//! Core owns: the node's `endora.db` and HQ's `hq.db` each run a [`Nightly`] from their own
+//! ten-minute loop and say in their own words what happened. A copy is **proven by restore**
+//! ([`crate::prove_restore`]) before it is named a daily; one that fails is deleted and tried
+//! again on the next tick, at most [`MAX_ATTEMPTS_PER_DAY`] times a day.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// When tonight's copy is due, in minutes after local midnight.
 const COPY_AT_MINUTE: i64 = 90;
@@ -88,41 +91,214 @@ pub fn to_remove(existing: &[String]) -> Vec<String> {
     gone
 }
 
-/// Writes tonight's copies of `database` into `folder` if they are due and not yet written,
-/// then prunes. Returns the size of the copy written, `None` when there was nothing to do.
+/// How many times a night the copy is tried before it gives up and says so.
+pub const MAX_ATTEMPTS_PER_DAY: u32 = 3;
+
+/// What one ten-minute tick of the nightly did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tick {
+    /// Nothing was due, tonight's copy is already proven, or tonight's attempts are used up.
+    Nothing,
+    /// Tonight's copy was written, proven by restore and kept; its size in bytes.
+    Proven {
+        /// The size of the daily written.
+        bytes: u64,
+    },
+    /// An attempt failed and its copy was removed. `giving_up` is true on the last attempt
+    /// allowed tonight: the one failure worth telling the person about.
+    Failed {
+        /// What went wrong, in words for the person.
+        reason: String,
+        /// Whether this was the last attempt allowed tonight.
+        giving_up: bool,
+    },
+}
+
+impl Tick {
+    /// What to tell the person about this tick, if anything, for the store named `subject`
+    /// ("Endora's data", "HQ's data"): a line the night a copy is proven, and one line, however
+    /// many tries it took, when the last try fails. The node says it in Activity, HQ in its log;
+    /// the words are the same so the two cannot drift.
+    #[must_use]
+    pub fn summary(&self, subject: &str) -> Option<String> {
+        match self {
+            Self::Nothing
+            | Self::Failed {
+                giving_up: false, ..
+            } => None,
+            Self::Failed {
+                reason,
+                giving_up: true,
+            } => Some(format!(
+                "Couldn't save tonight's copy of {subject} after {MAX_ATTEMPTS_PER_DAY} tries: \
+                 {reason}"
+            )),
+            Self::Proven { bytes } => {
+                #[allow(clippy::cast_precision_loss)]
+                let megabytes = *bytes as f64 / 1_000_000.0;
+                Some(format!(
+                    "Saved tonight's copy of {subject} ({megabytes:.1} MB), proven by restore: it \
+                     was restored to a scratch file and checked whole, with the same tables and \
+                     rows; the last 7 nights and 7 weeks are kept"
+                ))
+            }
+        }
+    }
+}
+
+/// The nightly's memory between ticks: which day it is trying, and how many attempts it has
+/// used. Nothing else is kept in memory; what the proof has and has not seen is on disk.
 ///
-/// # Errors
-/// A message if the copy could not be made or checked: worth telling the person, because a
-/// backup that silently stopped is the one that is missing on the day it is needed.
-pub fn copy_tonight(
+/// A handle: clones share the one memory, so a loop can hand a clone to `spawn_blocking` each
+/// tick.
+#[derive(Debug, Default, Clone)]
+pub struct Nightly {
+    tried: Arc<Mutex<Tried>>,
+}
+
+#[derive(Debug, Default)]
+struct Tried {
+    day: Option<i64>,
+    attempts: u32,
+}
+
+impl Nightly {
+    /// A nightly that has not yet ticked.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// One tick, with the real copy and the real proof. Blocking: call it from
+    /// `spawn_blocking`.
+    pub fn tick(&self, database: &Path, folder: &Path, now_ms: i64, offset: i64) -> Tick {
+        self.tick_with(
+            database,
+            folder,
+            now_ms,
+            offset,
+            &|from, to| crate::snapshot(from, to).map_err(|e| e.to_string()),
+            &|copy, live| crate::prove_restore(copy, live).map_err(|e| e.to_string()),
+        )
+    }
+
+    /// [`tick`](Self::tick) with the copy and the proof given, so a test can break either.
+    pub fn tick_with(
+        &self,
+        database: &Path,
+        folder: &Path,
+        now_ms: i64,
+        offset: i64,
+        copy: &dyn Fn(&Path, &Path) -> Result<(), String>,
+        prove: &dyn Fn(&Path, &Path) -> Result<(), String>,
+    ) -> Tick {
+        let Some(names) = tonights_copies(now_ms, offset) else {
+            return Tick::Nothing;
+        };
+        let day = local_day(now_ms, offset);
+        // Held for the whole tick: a second tick never starts while one is copying.
+        let mut tried = self.tried.lock().unwrap_or_else(PoisonError::into_inner);
+        if tried.day != Some(day) {
+            *tried = Tried {
+                day: Some(day),
+                attempts: 0,
+            };
+        }
+        // A daily by its own name has been proven: it is only ever named once it is.
+        if folder.join(&names[0]).exists() || tried.attempts >= MAX_ATTEMPTS_PER_DAY {
+            return Tick::Nothing;
+        }
+        tried.attempts += 1;
+        match attempt(database, folder, &names, copy, prove) {
+            Ok(bytes) => Tick::Proven { bytes },
+            Err(reason) => Tick::Failed {
+                reason,
+                giving_up: tried.attempts >= MAX_ATTEMPTS_PER_DAY,
+            },
+        }
+    }
+}
+
+/// The suffix of a daily that has been copied and not yet proven. The marker is the name: a
+/// restart finds the file and proves it instead of copying again, and nothing else ever sees a
+/// file by this name as a backup.
+const UNPROVEN: &str = ".unproven";
+
+/// One attempt at tonight's copy: copy (unless a restart left one to prove), prove, and only
+/// then name it, make the weekly and prune. A copy that does not prove is deleted.
+fn attempt(
     database: &Path,
     folder: &Path,
-    now_ms: i64,
-    offset_minutes: i64,
-) -> Result<Option<u64>, String> {
-    let Some(names) = tonights_copies(now_ms, offset_minutes) else {
-        return Ok(None);
-    };
-    let daily = folder.join(&names[0]);
-    if daily.exists() {
-        return Ok(None);
-    }
+    names: &[String],
+    copy: &dyn Fn(&Path, &Path) -> Result<(), String>,
+    prove: &dyn Fn(&Path, &Path) -> Result<(), String>,
+) -> Result<u64, String> {
     std::fs::create_dir_all(folder)
         .map_err(|e| format!("could not make {}: {e}", folder.display()))?;
-    crate::snapshot(database, &daily).map_err(|e| e.to_string())?;
-    // The weekly is the same consistent copy; the daily is closed and checked by now.
-    for weekly in names.iter().skip(1) {
-        std::fs::copy(&daily, folder.join(weekly)).map_err(|e| e.to_string())?;
+    let daily = folder.join(&names[0]);
+    let pending = folder.join(format!("{}{UNPROVEN}", names[0]));
+    remove_old_unproven(folder, &pending);
+    if !pending.exists() {
+        copy(database, &pending)?;
     }
+    let proved = prove(&pending, database)
+        .map_err(|why| format!("tonight's copy did not restore, so it was removed: {why}"));
+    let named = proved.and_then(|()| name_proven(folder, &pending, &daily, &names[1..]));
+    if let Err(error) = named {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
+    }
+    prune(folder);
+    Ok(std::fs::metadata(&daily).map_err(|e| e.to_string())?.len())
+}
+
+/// Makes the weekly (the same proven bytes) and then names the daily.
+fn name_proven(
+    folder: &Path,
+    pending: &Path,
+    daily: &Path,
+    weeklies: &[String],
+) -> Result<(), String> {
+    for weekly in weeklies {
+        let target = folder.join(weekly);
+        std::fs::copy(pending, &target).map_err(|e| {
+            let _ = std::fs::remove_file(&target);
+            e.to_string()
+        })?;
+    }
+    std::fs::rename(pending, daily).map_err(|e| e.to_string())
+}
+
+/// An unproven daily from an earlier night is nobody's to prove now.
+fn remove_old_unproven(folder: &Path, tonights: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ours = name
+            .strip_prefix("daily-")
+            .and_then(|rest| rest.strip_suffix(&format!(".db{UNPROVEN}")))
+            .is_some_and(is_date);
+        if ours && entry.path() != tonights {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Keeps the newest [`KEEP_EACH`] of each kind. Runs only after a copy has proven, so the
+/// newest proven copy is the newest there is and is never among those removed.
+fn prune(folder: &Path) {
     let existing: Vec<String> = std::fs::read_dir(folder)
-        .map_err(|e| e.to_string())?
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .collect();
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
     for old in to_remove(&existing) {
         let _ = std::fs::remove_file(folder.join(old));
     }
-    let bytes = std::fs::metadata(&daily).map_err(|e| e.to_string())?.len();
-    Ok(Some(bytes))
 }
 
 #[cfg(test)]

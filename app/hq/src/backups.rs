@@ -4,14 +4,16 @@
 //! copies that file at night, but a file copied while HQ writes to it can look whole and fail to
 //! open on the day it is needed. So HQ keeps what the node keeps for `endora.db`: at 01:30 by the
 //! owner's clock a consistent, integrity-checked copy in `backups/` beside the database
-//! (`daily-YYYY-MM-DD.db`, `weekly-YYYY-MM-DD.db` on Sundays, the newest seven of each).
+//! (`daily-YYYY-MM-DD.db`, `weekly-YYYY-MM-DD.db` on Sundays, the newest seven of each). Each
+//! copy is proven by restore before it is kept, and retried if it fails (`endora_persistence`'s
+//! `nightly` and `restore`).
 //!
 //! The schedule, the names, the pruning and the copy are `endora_persistence::nightly`'s, the
 //! same code the node runs; this file is only HQ's loop around it and its words in the log.
 
 use std::path::{Path, PathBuf};
 
-use endora_persistence::nightly::{copy_tonight, local_day};
+use endora_persistence::nightly::{Nightly, Tick};
 
 use crate::time_zone::TimeZone;
 
@@ -23,49 +25,38 @@ pub fn folder_of(database: &Path) -> PathBuf {
         .join("backups")
 }
 
-/// Tonight's copies of `database` if they are due and not yet written, pruned. The size of the
-/// daily written, or `None` when there was nothing to do.
-///
-/// # Errors
-/// A message if the copy could not be made or checked.
-pub fn tonight(database: &Path, now_ms: i64, offset_minutes: i64) -> Result<Option<u64>, String> {
-    copy_tonight(database, &folder_of(database), now_ms, offset_minutes)
+/// What HQ's log says about one tick of the nightly, if anything: a line a night when the copy is
+/// proven, and one line, however many tries it took, when it has given up.
+fn words(tick: &Tick) -> Option<String> {
+    tick.summary("HQ's data")
 }
 
-/// Makes tonight's copies once they are due, checking every ten minutes, and says in the log
-/// what happened: a line a night, and a failure once a day rather than every ten minutes.
+/// Makes tonight's copies once they are due, checking every ten minutes, proving each by restore
+/// and trying again on the next tick if one does not prove (at most three times a night), and
+/// says in the log what happened.
 pub fn spawn(database: PathBuf, zone: TimeZone) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut failed_on: Option<i64> = None;
+        let folder = folder_of(&database);
+        let nightly = Nightly::new();
         loop {
             ticker.tick().await;
             let now = crate::now_ms();
             let offset = zone.offset_minutes_at(now);
-            let db = database.clone();
-            let outcome = tokio::task::spawn_blocking(move || tonight(&db, now, offset)).await;
-            let error = match outcome {
-                Ok(Ok(None)) => continue,
-                Ok(Ok(Some(bytes))) => {
-                    failed_on = None;
-                    #[allow(clippy::cast_precision_loss)]
-                    let megabytes = bytes as f64 / 1_000_000.0;
-                    println!(
-                        "hq: saved tonight's copy of HQ's data ({megabytes:.1} MB) and checked \
-                         it opens; the last 7 nights and 7 weeks are kept"
-                    );
-                    continue;
-                }
-                Ok(Err(error)) => error,
-                Err(error) => error.to_string(),
-            };
-            let today = local_day(now, offset);
-            if failed_on == Some(today) {
-                continue;
+            let (db, dir, nightly) = (database.clone(), folder.clone(), nightly.clone());
+            let tick = tokio::task::spawn_blocking(move || nightly.tick(&db, &dir, now, offset))
+                .await
+                .unwrap_or_else(|error| Tick::Failed {
+                    reason: error.to_string(),
+                    giving_up: true,
+                });
+            if let Tick::Failed { reason, .. } = &tick {
+                eprintln!("hq: tonight's copy of HQ's data failed: {reason}");
             }
-            failed_on = Some(today);
-            eprintln!("hq: tonight's copy of HQ's data failed: {error}");
+            if let Some(line) = words(&tick) {
+                println!("hq: {line}");
+            }
         }
     });
 }
@@ -117,6 +108,11 @@ mod tests {
         store
     }
 
+    /// One tick of HQ's nightly on `db`, as its loop runs it.
+    fn tonight(nightly: &Nightly, db: &Path, now_ms: i64, offset: i64) -> Tick {
+        nightly.tick(db, &folder_of(db), now_ms, offset)
+    }
+
     fn listing(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .map(|d| {
@@ -144,15 +140,18 @@ mod tests {
         std::fs::write(dir.join("before-0.12.0-hq.db"), b"release").unwrap();
         std::fs::write(dir.join("by-hand.db"), b"mine").unwrap();
 
+        let nightly = Nightly::new();
         assert_eq!(
-            tonight(&db, SUNDAY_0500_UTC, -240).unwrap(),
-            None,
+            tonight(&nightly, &db, SUNDAY_0500_UTC, -240),
+            Tick::Nothing,
             "01:00 local: not due"
         );
         assert!(!dir.join("daily-2026-10-18.db").exists());
 
-        let wrote = tonight(&db, DUE, -240).unwrap().expect("due, so written");
-        assert!(wrote > 0);
+        let Tick::Proven { bytes } = tonight(&nightly, &db, DUE, -240) else {
+            panic!("due, so written and proven");
+        };
+        assert!(bytes > 0);
         assert!(dir.join("daily-2026-10-18.db").exists());
         assert!(dir.join("weekly-2026-10-18.db").exists(), "a Sunday");
         assert!(
@@ -163,8 +162,8 @@ mod tests {
         assert!(dir.join("before-0.12.0-hq.db").exists());
         assert!(dir.join("by-hand.db").exists());
         assert_eq!(
-            tonight(&db, DUE + HOUR, -240).unwrap(),
-            None,
+            tonight(&nightly, &db, DUE + HOUR, -240),
+            Tick::Nothing,
             "already written tonight"
         );
         assert_eq!(folder_of(&db), dir);
@@ -176,7 +175,11 @@ mod tests {
         let scratch = Scratch::new("h2");
         let db = scratch.0.join("hq.db");
         let _open = an_hq_store(&db);
-        tonight(&db, DUE, -240).unwrap().unwrap();
+        let nightly = Nightly::new();
+        assert!(matches!(
+            tonight(&nightly, &db, DUE, -240),
+            Tick::Proven { .. }
+        ));
         for name in ["daily-2026-10-18.db", "weekly-2026-10-18.db"] {
             let copy = scratch.0.join("backups").join(name);
             prove_restore(&copy, &db).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -202,7 +205,10 @@ mod tests {
             std::fs::read(&db).unwrap(),
             std::fs::metadata(&db).unwrap().modified().unwrap(),
         );
-        tonight(&db, DUE, -240).unwrap().unwrap();
+        assert!(matches!(
+            tonight(&Nightly::new(), &db, DUE, -240),
+            Tick::Proven { .. }
+        ));
         prove_restore(&scratch.0.join("backups/daily-2026-10-18.db"), &db).unwrap();
         assert_eq!(std::fs::read(&db).unwrap(), bytes, "bytes unchanged");
         assert_eq!(
@@ -213,5 +219,56 @@ mod tests {
         // No journal or other file appeared beside it; only `backups/` was added to.
         assert_eq!(listing(&scratch.0), ["backups", "hq.db"]);
         drop(open);
+    }
+
+    /// A copy that comes out cut in half, as a disk that filled up would leave it.
+    fn truncating_copy(from: &Path, to: &Path) -> Result<(), String> {
+        endora_persistence::snapshot(from, to).map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(to).map_err(|e| e.to_string())?;
+        std::fs::write(to, &bytes[..bytes.len() / 2]).map_err(|e| e.to_string())
+    }
+
+    fn real_copy(from: &Path, to: &Path) -> Result<(), String> {
+        endora_persistence::snapshot(from, to).map_err(|e| e.to_string())
+    }
+
+    fn real_proof(copy: &Path, live: &Path) -> Result<(), String> {
+        prove_restore(copy, live).map_err(|e| e.to_string())
+    }
+
+    /// HQ's copy is proven by restore, said so in the log, and a bad one is retried: the same
+    /// shared nightly the node runs, with HQ's real rows.
+    #[test]
+    fn hq_proves_its_copy_and_retries_a_bad_one_with_the_shared_cap() {
+        let scratch = Scratch::new("hq-proof");
+        let db = scratch.0.join("hq.db");
+        let _open = an_hq_store(&db);
+        let dir = folder_of(&db);
+        let nightly = Nightly::new();
+        let bad: Vec<Tick> = (0..4)
+            .map(|n| {
+                nightly.tick_with(
+                    &db,
+                    &dir,
+                    DUE + n * 10 * MINUTE,
+                    -240,
+                    &truncating_copy,
+                    &real_proof,
+                )
+            })
+            .collect();
+        let lines: Vec<String> = bad.iter().filter_map(words).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one failure line, not one a tick: {lines:?}"
+        );
+        assert!(lines[0].contains("3 tries"), "{}", lines[0]);
+        assert_eq!(listing(&dir), Vec::<String>::new(), "no bad copy is kept");
+
+        let tomorrow = nightly.tick_with(&db, &dir, DUE + 24 * HOUR, -240, &real_copy, &real_proof);
+        let line = words(&tomorrow).expect("a good night is a line");
+        assert!(line.contains("proven by restore"), "{line}");
+        assert!(line.contains("HQ"), "{line}");
     }
 }
