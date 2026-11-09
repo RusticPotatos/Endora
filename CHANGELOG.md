@@ -7,6 +7,21 @@ tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Every Core store has a nightly copy proven by restore** (milestone f;
+  [ADR 0098](docs/adr/0098-it-can-be-rebuilt.md), amended 2026-11-09). HQ's `hq.db` (goals,
+  tasks, desk) now gets what the node's `endora.db` always had: a 01:30 copy in its own
+  `backups/`, seven daily and seven weekly. Both stores' copies are now restored to a scratch
+  file and checked (whole, the live schema, rows wherever the live database has rows) before
+  they are named a daily; one that fails is deleted and retried on the next ten-minute tick,
+  three times a night at most, then said once (Activity for the node, HQ's log for HQ). The
+  node's Activity line now says "proven by restore". A restart between copy and proof proves the
+  copy it finds. `endora-node verify-backup <file>` runs the proof on a copy of either store
+  without starting a server, and the compose bundle's test runs it on a good and a truncated
+  copy. The release-time `before-*-hq` copies are no longer automatic with the compose bundle
+  (`docs/recovery.md`). One implementation in `shared/persistence`; HQ now depends on it.
+
 ### Removed
 
 - **OpenBao leaves Endora entirely** (collection 0.16.0;

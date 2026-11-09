@@ -58,3 +58,38 @@ configuration lands.
   bucket) is agreed and deferred until the owner picks a provider.
 - Each copy holds every credential Endora has, as the database does; they stay in the node's
   private data folder and inside the house's encrypted restic repository.
+
+## Amendment, 2026-11-09: copies are proven by restore, for both Core stores (milestone f)
+
+A copy that opens is not a copy that restores: `integrity_check` passes a valid but **empty**
+database, or one from before a table existed. Core keeps nightly copies of **both** stores it
+owns, the node's `endora.db` and HQ's `hq.db` (goals, tasks, the desk), and proves each one:
+
+- **The proof.** `endora_persistence::prove_restore` restores the copy to a private scratch file,
+  as a restore would, opens it read-only and passes it only if its `integrity_check` is ok, its
+  tables and indexes (names and SQL) equal the live database's, and every live table that holds
+  rows holds rows in the copy. The live database is opened read-only and never written.
+- **Named only when proven.** The nightly writes `daily-YYYY-MM-DD.db.unproven`, proves it, and
+  only then renames it `daily-…db` and makes the weekly. So a daily by its own name has been
+  proven, a restart finds an unproven copy and proves it instead of copying again, and the
+  house's backup never meets one that failed. A copy that fails its proof is deleted.
+- **Retry, then say so once.** The ten-minute loop tries again on the next tick, at most three
+  attempts a night (counted per process run); the third failure is the one Activity line (the
+  node) or log line (HQ) about it. Pruning runs only after a copy has proven, so the newest
+  proven copy is never removed.
+- **One implementation.** The schedule, names, pruning, attempt cap and proof live once in
+  `shared/persistence` (`nightly`, `restore`); the node and HQ each run their own loop around
+  them and word the result.
+- **HQ depends on `shared/persistence`.** HQ's own loop and its copy are the first reason the HQ
+  program takes that crate directly. Accepted: `shared/` is for what is genuinely cross-cutting,
+  and a restore-proven copy of every Core store is that. HQ still builds without the node's
+  contexts (ADR 0136); it does not take the team's persistence a second way.
+- **`endora-node verify-backup <copy> [<live-database>]`** runs the same proof on a file, against
+  `ENDORA_DB` or the live database named second (so it checks a node copy and an `hq.db` copy
+  alike, with no binary of HQ's own); the full-system bundle's test runs it on a good and a
+  truncated copy (a step it does not pass fails the run, ADR 0147). It never starts a server.
+- **Known limits.** "The live table has rows" is read at proof time: a table that was empty when
+  the copy was taken and has rows by the time of the proof reads as a failure, which the retry
+  covers; the proof follows the copy at once. The attempt cap resets when the process restarts.
+  `secrets.key` is not in any copy and is not proven. A daily left by a node that predates this
+  proof is treated as proven for its own night.

@@ -2,7 +2,8 @@
 //! of their time zone.
 //!
 //! The node has the same in `endora-infrastructure`'s `time_zone`; HQ keeps its own copy so it
-//! builds from the team alone (ADR 0136). A fix to one is a fix to both.
+//! does not build on the node's infrastructure crate (ADR 0136; HQ also uses `shared/persistence`
+//! for its nightly copy, ADR 0098). A fix to one is a fix to both.
 
 use chrono::{Offset, TimeZone as _};
 

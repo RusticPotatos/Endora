@@ -9,6 +9,7 @@ the steps assume a few things were put in place beforehand (below).
 | What | Where it lives | How it comes back |
 |---|---|---|
 | Endora's settings, keys and memory | `endora.db` in the node's data folder (a Docker volume by default) | Endora's own nightly copy, `backups/daily-*.db` beside it, restored from the house's backup |
+| HQ's goals, tasks and desk | `hq.db` in HQ's data folder (its own Docker volume) | HQ's own nightly copy, `backups/daily-*.db` beside it, restored from the house's backup |
 | Endora's secrets key, which the credentials in `endora.db` are sealed under ([ADR 0125](adr/0125-secrets-at-rest-in-the-node.md)) | `secrets.key` in the node's data folder | your password manager — **never** only the house's backup beside the database |
 | The rebuild kit: your ansible-nas checkout, with the vault encrypted | its checkout folder on the NAS | the house's backup, with the home folder |
 | The Ansible vault password | your password manager, and `vault_password.txt.enc` (encrypted under your recovery passphrase) in the backup | either one |
@@ -19,9 +20,17 @@ the steps assume a few things were put in place beforehand (below).
 
 ## Put in place beforehand
 
-1. **Endora's nightly copies.** Nothing to do: the node writes `backups/daily-YYYY-MM-DD.db`
-   at 01:30 every night and `weekly-YYYY-MM-DD.db` on Sundays, keeping seven of each, and says
-   so in Activity. If Activity says a copy failed, find out why that day.
+1. **Both stores' nightly copies.** Nothing to do: the node (`endora.db`) and HQ (`hq.db`)
+   each write `backups/daily-YYYY-MM-DD.db` beside their database at 01:30 every night and
+   `weekly-YYYY-MM-DD.db` on Sundays, keeping seven of each. **Each copy is proven by restore**
+   before it is kept: it is restored to a scratch file and must open whole, have the live
+   database's schema and hold rows wherever the live database does. A copy that fails is
+   deleted and tried again on the next ten-minute tick, up to three times a night. The node
+   says in Activity, "proven by restore" when it is, and once if all three failed; HQ says so
+   in its log (`docker logs`). If a copy failed, find out why that day.
+   Release-time `before-*-hq` copies of HQ's store are **no longer automatic** with the compose
+   bundle (the old release script that made them is gone): take one by hand before an upgrade
+   you doubt (`docker compose exec hq …`, or copy the volume's `hq.db` while HQ is stopped).
 2. **The house's backup covers the data folder**, after 01:30. If the node's data is in a
    Docker volume, the backup must include Docker's volumes folder; with `ENDORA_DATA_DIR`, that
    folder.
@@ -86,8 +95,9 @@ the steps assume a few things were put in place beforehand (below).
 
    Without the key the node does not start, and says the key file is missing.
 
-   Then deploy as usual (`make deploy`). A copy is a whole database, checked when written: the
-   node opens it as it would its own.
+   Then deploy as usual (`make deploy`). A copy is a whole database, proven by restore when it
+   was written: the node opens it as it would its own. HQ's store comes back the same way: stop
+   HQ, put the newest `backups/daily-*.db` from HQ's data folder in place as `hq.db`, start it.
 6. **Check.** The console opens and signs you in with your usual password and authenticator
    code. Settings → Connections shows your services set up, Skills shows them on, About you
    shows what Endora knew, and Activity shows the work up to the night of the copy.
@@ -95,10 +105,18 @@ the steps assume a few things were put in place beforehand (below).
 
 ## Proving it
 
-A backup nobody has restored is a hope. When declared configuration lands, a drill restores a
-copy and the declared configuration into a scratch node and checks it comes up whole; until
-then, open a copy now and then:
+A backup nobody has restored is a hope, so every nightly copy of both stores is restored to a
+scratch file and checked before it is kept (above). You can run the same proof on any copy,
+inside the container so it sees the right database, without starting a server:
 
 ```sh
-sqlite3 daily-YYYY-MM-DD.db 'PRAGMA integrity_check;'
+docker compose exec node endora-node verify-backup /data/backups/daily-YYYY-MM-DD.db
 ```
+
+It exits 0 when the copy restores and non-zero, with the reason, when it does not. The proof
+compares the copy with a live database: `ENDORA_DB` by default, or the file named as a second
+argument, which is how HQ's copy is checked (`endora-node verify-backup <hq copy> <hq.db>`,
+with both files visible to the command, for example in a one-off container with HQ's volume
+mounted read-only). The proof reads "live has rows" at the moment it runs, so run it soon
+after a copy is taken. It does not cover `secrets.key`, which is not in any copy; a drill that
+restores a copy into a scratch node runs when declared configuration lands.
