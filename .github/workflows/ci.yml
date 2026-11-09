@@ -109,13 +109,18 @@ jobs:
     defaults:
       run:
         working-directory: clients/terminal
+    env:
+      # Names the toolchain outright, so rustup does not read the repository's rust-toolchain.toml.
+      # That file also asks for rustfmt and clippy; this job installs a minimal toolchain, and
+      # the first cargo run inside the checkout then downloaded the two components mid-step.
+      # On the runner that sometimes failed with "detected conflict: bin/cargo-fmt" (runs
+      # 42563088520 and 42569130172), before any Endora code ran. Nothing here needs either.
+      RUSTUP_TOOLCHAIN: 1.87.0
     steps:
       - uses: actions/checkout@v7
 
       - name: Toolchain with the device target
-        run: |
-          rustup toolchain install 1.87.0 --profile minimal --target aarch64-unknown-linux-musl
-          rustup default 1.87.0
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target aarch64-unknown-linux-musl
 
       - name: Cross-compiler
         run: |
