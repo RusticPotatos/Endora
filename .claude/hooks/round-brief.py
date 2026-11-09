@@ -45,8 +45,7 @@ def brief():
     open_defects = re.findall(r"^- \[ \] \*\*(D\d+\.[^*]*)\*\*", text, re.M)
     if open_defects:
         lines.append("Open defects: " + "; ".join(re.sub(r"\s+", " ", d).strip() for d in open_defects))
-    lines.append("To run or resume a round, use the hq-round skill (/hq-round, or "
-                 "/loop /hq-round tick); the record above is the memory, keep it current.")
+    lines.append("The baseline-experiment rounds are archived; the record above is their history.")
     return "\n".join(lines)
 
 
