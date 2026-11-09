@@ -42,7 +42,7 @@ fn the_newest_seven_of_each_are_kept_and_nothing_else_is_touched() {
     existing.push("daily-2026-1x-01.db".to_owned());
     existing.push("daily-2026-10.db".to_owned());
     // The brain's copies are no longer the nightly's to prune: they go once, at start, with the
-    // brain (ADR 0136, `crate::retired`).
+    // brain (ADR 0136).
     existing.push("brain-daily-2026-10-01.bundle".to_owned());
     let mut gone = to_remove(&existing);
     gone.sort();
