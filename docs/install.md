@@ -121,6 +121,31 @@ These are your steps, once:
    boundary below. Workbench turns (Claude Code) need the workbench image, which is not
    published: build it with `docker build --target workbench -t endora-workbench:latest .`.
 
+8. **The deploy key** (optional): so the node can push the engineering team's approved branches
+   to your repository. Put one file, `key` (an ed25519 private key added to the repository on
+   GitHub as a deploy key with write access), in a folder on the host and set
+   `ENDORA_GIT_PUSH_KEY_DIR` in `.env` to that folder's absolute path. It is mounted read-only
+   at `/git-push-key`. The node runs with every capability dropped, so it reads the key as root
+   **without** the capability that lets root read other users' files: the file must be **owned by
+   uid 0** with **mode 0600** (`sudo chown 0:0 key && sudo chmod 0600 key`; a key owned by your own
+   user is not readable by the node, and it cannot push). Unset, an empty volume is
+   mounted, the node cannot push, and the desk offers each branch's bundle to download instead.
+9. **A runner on another host** (optional): the team listener (8788/tcp: model relays and HQ's
+   gateway for workers, plain HTTP, every route needs a turn's token) is not published, because
+   the runner on this host reaches it over the fenced team network. To publish it for a runner on
+   another machine, add a `compose.override.yaml` beside `compose.yaml` (Compose reads it
+   automatically); bind it to one address on a network you trust, never to the open internet:
+
+   ```yaml
+   services:
+     node:
+       ports:
+         - "192.168.1.10:8788:8788"   # this host's own LAN address (a placeholder here)
+   ```
+
+   Compose merges the list with the node's other port, so 8787 or 8786 stays as it was. Core
+   itself never needs it.
+
 ## The runner's trust boundary and limits
 
 **The runner mounts Docker's socket, which is root on this host; it is off unless you name its
@@ -149,7 +174,7 @@ at 64 MB. With the demo on (`ENDORA_HQ_DEMO=1`) HQ hands it nothing.
 | 8787/tcp | Console (bundle); Core's API and screens (Core alone) | the LAN |
 | 8786/tcp | Core's API (bundle) | this host's loopback only |
 | 8790/tcp | HQ | the bundle's own networks only; never published |
-| 8788/tcp | Core's team listener (model relays and HQ's gateway for workers) | the workers' fenced network; publish it only for a runner on another host |
+| 8788/tcp | Core's team listener (model relays and HQ's gateway for workers) | the workers' fenced network; publish it only for a runner on another host (step 9 above) |
 | 8791/tcp | Audio's page and API | the LAN |
 | 3701–3704/tcp, 3711–3714/tcp, 5100/tcp, 319–320/udp, 5353/udp, AirPlay and Spotify Connect ports | Audio's senders and receiver | the host's network (needed for speaker discovery) |
 

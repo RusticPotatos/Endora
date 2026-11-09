@@ -205,6 +205,81 @@ for f in a core; do
   esac
 done
 
+echo "== Core's fenced services: signals, start order and safe defaults"
+# core_facts MODEL: what the cutover of 9 Nov 2026 found. Node, HQ and the runner run their program as
+# PID 1 with no signal handler, so `docker stop` waited out the grace period and killed them (exit
+# 137): an init process (`init: true`) forwards SIGTERM. The node asked HQ for its state before HQ
+# was up (three "HQ is not answering" lines): it starts when HQ is healthy. The deploy key's mount
+# defaults to an empty volume, so nothing is bind-mounted unless the owner names a folder, and the
+# team listener (8788) is published only when the owner adds it (docs/install.md).
+core_facts() {
+  python3 - "$1" "${2:-}" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1])); want_key = sys.argv[2]
+svcs = j["services"]
+out = []
+for name in ("node", "hq", "runner"):
+    s = svcs[name]
+    out.append("init:%s:%s" % (name, s.get("init") is True))
+    out.append("fenced:%s:%s" % (name, s.get("cap_drop") == ["ALL"] and "no-new-privileges:true" in s.get("security_opt", [])))
+dep = svcs["node"].get("depends_on", {}).get("hq", {})
+out.append("node-after-hq:%s" % (dep.get("condition") == "service_healthy"))
+out.append("hq-read-only:%s" % (svcs["hq"].get("read_only") is True))
+published = [str(p.get("target")) for p in svcs["node"].get("ports", [])]
+out.append("team-unpublished:%s" % ("8788" not in published))
+env = svcs["node"]["environment"]
+out.append("key-file:%s" % (env.get("ENDORA_GIT_PUSH_KEY_FILE") == "/git-push-key/key"))
+mount = [v for v in svcs["node"].get("volumes", []) if v.get("target") == "/git-push-key"]
+if len(mount) != 1:
+    out.append("key-mount:False")
+else:
+    m = mount[0]
+    if want_key:
+        out.append("key-mount:%s" % (m.get("type") == "bind" and m.get("source") == want_key and m.get("read_only") is True))
+    else:
+        out.append("key-mount:%s" % (m.get("type") == "volume" and m.get("read_only") is True
+                                     and j["volumes"][m["source"]].get("name", "").endswith("endora-no-git-key")))
+print("\n".join(out))
+PY
+}
+for f in a core second; do
+  core_facts "$work/$f.json" > "$work/$f.facts" 2> "$work/$f.facts.err" || { bad "$f: could not read the model: $(tail -1 "$work/$f.facts.err")"; continue; }
+  for fact in init:node init:hq init:runner fenced:node fenced:hq fenced:runner node-after-hq hq-read-only team-unpublished key-file key-mount; do
+    case $fact in
+      init:*)         what="${fact#init:} runs under an init process (it forwards SIGTERM, so docker stop is clean)" ;;
+      fenced:*)       what="${fact#fenced:} keeps cap_drop ALL and no-new-privileges beside init" ;;
+      node-after-hq)  what="the node starts when HQ is healthy" ;;
+      hq-read-only)   what="HQ's root stays read-only beside init" ;;
+      team-unpublished) what="the team listener (8788) is not published by default" ;;
+      key-file)       what="the node is told where the deploy key would be" ;;
+      key-mount)      what="the deploy key's mount defaults to an empty read-only volume, no host path" ;;
+    esac
+    if grep -qx "$fact:True" "$work/$f.facts"; then ok "$f: $what"; else bad "$f: $what"; fi
+  done
+done
+# The deploy key's folder is a variable; an absolute path becomes a read-only bind of that folder.
+mkdir -p "$work/keyed"
+cp -R "$here/core/." "$work/keyed"
+cp "$here/core/core.env.example" "$work/keyed/.env"
+printf 'ENDORA_GIT_PUSH_KEY_DIR=/srv/example/git-push-key\n' >> "$work/keyed/.env"
+if render "$work/keyed" endora-core "$work/keyed.json" && core_facts "$work/keyed.json" /srv/example/git-push-key | grep -qx 'key-mount:True'; then
+  ok "ENDORA_GIT_PUSH_KEY_DIR names the folder holding the deploy key (mounted read-only)"
+else
+  bad "ENDORA_GIT_PUSH_KEY_DIR does not mount the named folder read-only at /git-push-key"
+fi
+# The runtime combination, read-only root plus every capability dropped plus an init, starts. Skipped
+# (said so) when alpine:3.21, the image the guide's own backup commands use, is not on the host.
+img=alpine:3.21
+if docker image inspect "$img" >/dev/null 2>&1; then
+  if docker run --rm --init --read-only --cap-drop ALL --security-opt no-new-privileges:true --pull never "$img" true >/dev/null 2>&1; then
+    ok "an init process runs under read_only, cap_drop ALL and no-new-privileges (Docker accepted it)"
+  else
+    bad "init conflicts with read_only, cap_drop ALL or no-new-privileges on this Docker"
+  fi
+else
+  echo "skip init runtime check: $img is not on this host (nothing is pulled)"
+fi
+
 echo "== Two full bundles on one host (not supported: the shared names are listed)"
 render "$work/bundle" endora-b "$work/b.json" || { bad "second bundle project does not render"; exit 1; }
 names "$work/b.json" > "$work/b.names"
@@ -343,6 +418,22 @@ if grep -q 'one full bundle per host' "$docs"; then
   ok "the guide says one full bundle per host"
 else
   bad "the guide does not say one full bundle per host"
+fi
+
+# The two optional settings the compose file does not publish for you are documented, with the one
+# fact that makes the deploy key work under cap_drop ALL: the node reads it as root without
+# CAP_DAC_OVERRIDE, so the file must belong to uid 0 and be mode 0600.
+# (The guide wraps lines and bolds words: read it as one line of plain text.)
+flat=$(tr -d '*' < "$docs" | tr '\n' ' ' | tr -s ' ')
+if grep -q 'ENDORA_GIT_PUSH_KEY_DIR' "$docs" && printf '%s' "$flat" | grep -Eq 'owned by uid 0 with mode 0600'; then
+  ok "the guide names ENDORA_GIT_PUSH_KEY_DIR and says the key is uid 0, mode 0600"
+else
+  bad "the guide does not name ENDORA_GIT_PUSH_KEY_DIR with 'owned by uid 0' and mode 0600 (cap_drop ALL)"
+fi
+if grep -q 'compose.override.yaml' "$docs" && grep -Eq '"[^"]*:8788:8788"' "$docs"; then
+  ok "the guide shows how to publish the team listener (8788) with an override file"
+else
+  bad "the guide does not show an override file publishing 8788 (compose.override.yaml, \"<address>:8788:8788\")"
 fi
 
 echo

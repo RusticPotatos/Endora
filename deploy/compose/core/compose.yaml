@@ -21,6 +21,10 @@ name: endora-core
 x-fenced: &fenced
   restart: unless-stopped
   pull_policy: missing
+  # Node, HQ and the runner run as PID 1 with no signal handler, so `docker stop` and a recreate
+  # would wait out the grace period and kill them (exit 137). An init process forwards SIGTERM
+  # and reaps children; it needs no capability and works with a read-only root.
+  init: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   labels:
@@ -58,6 +62,9 @@ services:
       # The team listener: model relays, contracts and HQ's gateway for the workers, on the
       # fenced team network only (not published; publish 8788 only for a runner on another host).
       ENDORA_TEAM_ADDR: 0.0.0.0:8788
+      # Where the deploy key would be (the volume below). With no key there, the node cannot
+      # push and the owner's desk offers each branch's bundle to download instead.
+      ENDORA_GIT_PUSH_KEY_FILE: /git-push-key/key
       # Endora Audio, optional: its URL and its token (32+ characters). Empty: no sound tools,
       # and Core works the same.
       ENDORA_SOUND_URL: ${ENDORA_SOUND_URL:-}
@@ -68,10 +75,22 @@ services:
       - endora-core-data:/data
       # The token HQ makes for itself, which the node signs with. Read-only here.
       - endora-core-hq-token:/hq-token:ro
+      # The deploy key the node pushes the engineering team's approved branches with (ADR 0115):
+      # a folder holding one file, `key` (an ed25519 private key, added to the repository on
+      # GitHub as a deploy key with write access). Set ENDORA_GIT_PUSH_KEY_DIR to its absolute
+      # path; unset, an empty volume is mounted and the node cannot push. The node runs with every
+      # capability dropped, so `key` must be owned by uid 0 with mode 0600 (docs/install.md).
+      # Read-only: the node never writes it.
+      - ${ENDORA_GIT_PUSH_KEY_DIR:-endora-no-git-key}:/git-push-key:ro
     networks:
       default: {}
       team:
         aliases: [node]
+    # Start once HQ answers: the node asks it for its state at start and logs "HQ is not
+    # answering" otherwise.
+    depends_on:
+      hq:
+        condition: service_healthy
     mem_limit: ${ENDORA_NODE_MEMORY:-768m}
     healthcheck:
       test: ["CMD", "python3", "-c", "import json,ssl,urllib.request as u,os;s='s' if os.environ.get('ENDORA_TLS')=='1' else '';c=ssl._create_unverified_context();assert json.load(u.urlopen(f'http{s}://127.0.0.1:8787/health',context=c,timeout=4))['status']=='ok'"]
@@ -179,3 +198,6 @@ volumes:
     name: ${ENDORA_CORE_HQ_TOKEN_VOLUME:-endora-core-hq-token}
   endora-core-hq-runner-token:
     name: ${ENDORA_CORE_HQ_RUNNER_TOKEN_VOLUME:-endora-core-hq-runner-token}
+  # Empty on purpose: what /git-push-key is when no deploy key is configured. Named by the
+  # project (not fixed), because it holds nothing.
+  endora-no-git-key: {}
