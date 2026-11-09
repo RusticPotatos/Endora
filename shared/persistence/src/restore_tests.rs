@@ -197,3 +197,35 @@ fn the_proof_changes_neither_file() {
         "nothing new beside them"
     );
 }
+
+/// The proof scratches beside the copy, never in the system's temporary folder: HQ's container
+/// has a read-only root and no tmpfs, and a copy of hq.db must not pass through a shared /tmp.
+/// The temp folder is made unwritable in a child run of this very test (setting it here would
+/// race the other tests), so this test is two halves.
+#[test]
+fn a_proof_does_not_use_the_system_temp_folder() {
+    if let Ok(dir) = std::env::var("ENDORA_PROOF_CHILD_DIR") {
+        let dir = PathBuf::from(dir);
+        prove_restore(&dir.join("daily-2026-10-18.db"), &dir.join("live.db")).unwrap();
+        assert!(
+            !dir.join(".scratch").exists(),
+            "the scratch folder is not left behind"
+        );
+        return;
+    }
+    let scratch = Scratch::new();
+    let (_live, _copy) = live_and_copy(&scratch);
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["a_proof_does_not_use_the_system_temp_folder", "--nocapture"])
+        .env("ENDORA_PROOF_CHILD_DIR", &scratch.0)
+        .env("TMPDIR", "/nonexistent-endora-temp-folder")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "the child proof failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the child did not run the test:\n{text}"
+    );
+}

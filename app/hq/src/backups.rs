@@ -11,19 +11,11 @@
 //! The schedule, the names, the pruning and the copy are `endora_persistence::nightly`'s, the
 //! same code the node runs; this file is only HQ's loop around it and its words in the log.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use endora_persistence::nightly::{Nightly, Tick};
+use endora_persistence::nightly::{Nightly, Tick, folder_of};
 
 use crate::time_zone::TimeZone;
-
-/// Where HQ's copies go: `backups/` beside the database.
-pub fn folder_of(database: &Path) -> PathBuf {
-    database
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("backups")
-}
 
 /// What HQ's log says about one tick of the nightly, if anything: a line a night when the copy is
 /// proven, and one line, however many tries it took, when it has given up.
@@ -31,34 +23,25 @@ fn words(tick: &Tick) -> Option<String> {
     tick.summary("HQ's data")
 }
 
-/// Makes tonight's copies once they are due, checking every ten minutes, proving each by restore
-/// and trying again on the next tick if one does not prove (at most three times a night), and
-/// says in the log what happened.
+/// Makes tonight's copies once they are due, proving each by restore and trying again if one
+/// does not prove (the loop is `Nightly::run`'s, shared with the node), and says in the log what
+/// happened.
 pub fn spawn(database: PathBuf, zone: TimeZone) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let folder = folder_of(&database);
-        let nightly = Nightly::new();
-        loop {
-            ticker.tick().await;
+    tokio::spawn(Nightly::new().run(
+        database,
+        move || {
             let now = crate::now_ms();
-            let offset = zone.offset_minutes_at(now);
-            let (db, dir, nightly) = (database.clone(), folder.clone(), nightly.clone());
-            let tick = tokio::task::spawn_blocking(move || nightly.tick(&db, &dir, now, offset))
-                .await
-                .unwrap_or_else(|error| Tick::Failed {
-                    reason: error.to_string(),
-                    giving_up: true,
-                });
-            if let Tick::Failed { reason, .. } = &tick {
+            (now, zone.offset_minutes_at(now))
+        },
+        |tick| {
+            if let Tick::Failed { reason, .. } = tick {
                 eprintln!("hq: tonight's copy of HQ's data failed: {reason}");
             }
-            if let Some(line) = words(&tick) {
+            if let Some(line) = words(tick) {
                 println!("hq: {line}");
             }
-        }
-    });
+        },
+    ));
 }
 
 #[cfg(test)]
@@ -66,6 +49,7 @@ mod tests {
     use super::*;
     use endora_persistence::prove_restore;
     use endora_team::infrastructure::SqliteTeamStore;
+    use std::path::Path;
 
     const MINUTE: i64 = 60 * 1000;
     const HOUR: i64 = 60 * MINUTE;

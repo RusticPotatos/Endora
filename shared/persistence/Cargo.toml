@@ -17,6 +17,15 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 chacha20poly1305 = "0.10"
 base64 = "0.22"
 zeroize = "1"
+# Only for the nightly's loop (`runtime`): timers and a blocking thread, never the network. The
+# apps that run the loop turn it on; everything else in the workspace stays free of it.
+tokio = { version = "1.53.0", default-features = false, features = ["rt", "time"], optional = true }
+
+[features]
+runtime = ["dep:tokio"]
+
+[dev-dependencies]
+tokio = { version = "1.53.0", default-features = false, features = ["rt", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true

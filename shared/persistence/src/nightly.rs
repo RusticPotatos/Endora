@@ -219,6 +219,124 @@ impl Nightly {
     }
 }
 
+/// Where a database's copies go: `backups/` beside it.
+#[must_use]
+pub fn folder_of(database: &Path) -> std::path::PathBuf {
+    database
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("backups")
+}
+
+#[cfg(test)]
+thread_local! {
+    static LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes what the durability steps logged on this thread, in order (tests only).
+#[cfg(test)]
+pub(crate) fn take_log() -> Vec<String> {
+    LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
+}
+
+/// Notes a durability step for the tests that check their order; nothing in a real run.
+#[allow(clippy::needless_pass_by_value)]
+fn note(step: String) {
+    #[cfg(test)]
+    LOG.with(|log| log.borrow_mut().push(step));
+    #[cfg(not(test))]
+    let _ = step;
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Flushes a finished file to the disk, so its name is never durable before its bytes.
+fn sync_file(path: &Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| format!("could not sync {}: {e}", path.display()))?;
+    note(format!("sync {}", name_of(path)));
+    Ok(())
+}
+
+/// Flushes a folder's entries (the renames and new names in it) to the disk.
+fn sync_folder(folder: &Path) -> Result<(), String> {
+    std::fs::File::open(folder)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("could not sync {}: {e}", folder.display()))?;
+    note("sync-dir".to_owned());
+    Ok(())
+}
+
+#[cfg(feature = "runtime")]
+type Step = Arc<dyn Fn(&Path, &Path) -> Result<(), String> + Send + Sync>;
+
+#[cfg(feature = "runtime")]
+impl Nightly {
+    /// One tick on a blocking thread, with the given copy and proof. A panic there is one
+    /// attempt used (it was counted before the work began), said like any other failure.
+    pub(crate) async fn blocking_tick(
+        &self,
+        database: std::path::PathBuf,
+        folder: std::path::PathBuf,
+        now_ms: i64,
+        offset: i64,
+        copy: Step,
+        prove: Step,
+    ) -> Tick {
+        let me = self.clone();
+        let ran = tokio::task::spawn_blocking(move || {
+            me.tick_with(&database, &folder, now_ms, offset, &*copy, &*prove)
+        })
+        .await;
+        ran.unwrap_or_else(|error| {
+            let tried = self.tried.lock().unwrap_or_else(PoisonError::into_inner);
+            Tick::Failed {
+                reason: format!("the copy stopped unexpectedly: {error}"),
+                giving_up: tried.attempts >= MAX_ATTEMPTS_PER_DAY,
+            }
+        })
+    }
+
+    /// The loop both stores run: every ten minutes, one tick with the real copy and proof on a
+    /// blocking thread, into `backups/` beside `database`. `when` gives now (ms) and the
+    /// person's UTC offset (minutes) at that moment; `tell` is called with every tick worth
+    /// saying anything about (anything but [`Tick::Nothing`]).
+    pub async fn run<W, T>(self, database: std::path::PathBuf, when: W, tell: T)
+    where
+        W: Fn() -> (i64, i64) + Send + 'static,
+        T: Fn(&Tick) + Send + 'static,
+    {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let folder = folder_of(&database);
+        let copy: Step = Arc::new(|from, to| crate::snapshot(from, to).map_err(|e| e.to_string()));
+        let prove: Step =
+            Arc::new(|copy, live| crate::prove_restore(copy, live).map_err(|e| e.to_string()));
+        loop {
+            ticker.tick().await;
+            let (now_ms, offset) = when();
+            let tick = self
+                .blocking_tick(
+                    database.clone(),
+                    folder.clone(),
+                    now_ms,
+                    offset,
+                    copy.clone(),
+                    prove.clone(),
+                )
+                .await;
+            if tick != Tick::Nothing {
+                tell(&tick);
+            }
+        }
+    }
+}
+
 /// The suffix of a daily that has been copied and not yet proven. The marker is the name: a
 /// restart finds the file and proves it instead of copying again, and nothing else ever sees a
 /// file by this name as a backup.
@@ -259,14 +377,21 @@ fn name_proven(
     daily: &Path,
     weeklies: &[String],
 ) -> Result<(), String> {
+    // Bytes first, names after: nothing is called proven until what was proven is on the disk.
+    sync_file(pending)?;
     for weekly in weeklies {
         let target = folder.join(weekly);
-        std::fs::copy(pending, &target).map_err(|e| {
+        let made = std::fs::copy(pending, &target)
+            .map_err(|e| e.to_string())
+            .and_then(|_| sync_file(&target));
+        if let Err(error) = made {
             let _ = std::fs::remove_file(&target);
-            e.to_string()
-        })?;
+            return Err(error);
+        }
     }
-    std::fs::rename(pending, daily).map_err(|e| e.to_string())
+    std::fs::rename(pending, daily).map_err(|e| e.to_string())?;
+    note(format!("rename {}", name_of(daily)));
+    sync_folder(folder)
 }
 
 /// An unproven daily from an earlier night is nobody's to prove now.

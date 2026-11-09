@@ -38,8 +38,17 @@ impl fmt::Display for RestoreFailure {
 
 impl std::error::Error for RestoreFailure {}
 
-/// Proves that `copy` restores `live`, using the system's temporary folder as the scratch place.
-/// See the module documentation for what passes.
+/// The folder beside a copy where its proof restores it. Never the system's temporary folder:
+/// HQ's container has a read-only root with only its data folder writable, and a copy of a
+/// store (sealed secrets, goals, the desk) should not pass through a folder every process on the
+/// host can list.
+pub const SCRATCH: &str = ".scratch";
+
+/// A scratch file older than this is a crash's leftover.
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Proves that `copy` restores `live`, restoring it to a private `.scratch` folder beside the
+/// copy (removed again when empty). See the module documentation for what passes.
 ///
 /// A row added to `live` after `copy` was taken to a table the copy has empty reads as a failure:
 /// prove a copy soon after taking it.
@@ -47,7 +56,46 @@ impl std::error::Error for RestoreFailure {}
 /// # Errors
 /// The first check the copy fails, as a [`RestoreFailure`].
 pub fn prove_restore(copy: &Path, live: &Path) -> Result<(), RestoreFailure> {
-    prove_restore_in(copy, live, &std::env::temp_dir())
+    let beside = copy
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let scratch = beside.join(SCRATCH);
+    private_folder(&scratch).map_err(|e| {
+        RestoreFailure::Integrity(format!("could not make {}: {e}", scratch.display()))
+    })?;
+    let proof = prove_restore_in(copy, live, &scratch);
+    // Only if empty: a proof running beside this one keeps its own file.
+    let _ = std::fs::remove_dir(&scratch);
+    proof
+}
+
+/// The scratch folder, owner-only, with a crash's old leftovers cleared out of it.
+fn private_folder(scratch: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(scratch)?;
+    for entry in std::fs::read_dir(scratch)?.filter_map(Result::ok) {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > STALE_AFTER);
+        let ours = entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("endora-restore-proof-");
+        if old && ours {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 /// [`prove_restore`] with the scratch file made in `scratch_dir`. The scratch file is

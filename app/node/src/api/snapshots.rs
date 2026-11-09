@@ -16,40 +16,29 @@ fn line(tick: &Tick) -> Option<String> {
     tick.summary("Endora's data")
 }
 
-/// Makes tonight's copies once they are due, checking every ten minutes, proving each by restore
-/// and trying again on the next tick if one does not prove (at most three times a night). Says in
-/// Activity what happened. The copies go in `backups/` beside the database, where the house's
-/// backup finds them.
+/// Makes tonight's copies once they are due, proving each by restore and trying again if one
+/// does not prove (the loop is `Nightly::run`'s, shared with HQ), and says in Activity what
+/// happened. The copies go in `backups/` beside the database, where the house's backup finds
+/// them.
 pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let folder = database
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("backups");
-        let nightly = Nightly::new();
-        loop {
-            ticker.tick().await;
-            let now = state.clock.now().unix_millis();
-            let offset = state.time_zone.offset_minutes_at(now);
-            let (db, dir, nightly) = (database.clone(), folder.clone(), nightly.clone());
-            let tick = tokio::task::spawn_blocking(move || nightly.tick(&db, &dir, now, offset))
-                .await
-                .unwrap_or_else(|error| Tick::Failed {
-                    reason: error.to_string(),
-                    giving_up: true,
-                });
-            if let Tick::Failed { reason, .. } = &tick {
+    let clock = state.clone();
+    tokio::spawn(Nightly::new().run(
+        database,
+        move || {
+            let now = clock.clock.now().unix_millis();
+            (now, clock.time_zone.offset_minutes_at(now))
+        },
+        move |tick| {
+            if let Tick::Failed { reason, .. } = tick {
                 eprintln!("snapshots: tonight's copy failed: {reason}");
             }
-            let Some(summary) = line(&tick) else {
-                continue;
+            let Some(summary) = line(tick) else {
+                return;
             };
             record_event(state.events.as_ref(), state.clock.as_ref(), &summary);
             let _ = state.changes.send(());
-        }
-    });
+        },
+    ));
 }
 
 #[cfg(test)]

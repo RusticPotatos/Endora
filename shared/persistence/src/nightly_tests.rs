@@ -471,19 +471,152 @@ fn the_live_database_and_everything_else_is_unchanged() {
     let manifest =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
     let dependencies = manifest.split("[lints]").next().unwrap();
-    for client in [
-        "reqwest",
-        "hyper",
-        "ureq",
-        "tokio",
-        "curl",
-        "isahc",
-        "attohttpc",
-    ] {
+    // The loop's runtime is timers and a blocking thread only: tokio without its network feature.
+    let tokio_line = dependencies
+        .lines()
+        .find(|l| l.starts_with("tokio"))
+        .unwrap_or("");
+    assert!(
+        !tokio_line.contains("\"net\"") && !tokio_line.contains("full"),
+        "{tokio_line}"
+    );
+    for client in ["reqwest", "hyper", "ureq", "curl", "isahc", "attohttpc"] {
         assert!(
             !dependencies.contains(client),
             "persistence depends on {client}"
         );
     }
     assert!(!dependencies.contains("endora-ai") && !dependencies.contains("endora-team"));
+}
+
+/// An older leftover in the proof's scratch folder (a crash left it) is cleared by the next
+/// proof, and the folder itself is not left behind.
+#[test]
+fn the_proofs_scratch_folder_is_inside_backups_cleared_and_not_left_behind() {
+    let (_scratch, db, dir) = a_house("scratch");
+    let stale = dir.join(".scratch").join("endora-restore-proof-1-1.db");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, b"a copy a crash left").unwrap();
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(long_ago)
+        .unwrap();
+    let tick = Nightly::new().tick(&db, &dir, DUE, -240);
+    assert!(matches!(tick, Tick::Proven { .. }), "{tick:?}");
+    assert!(!dir.join(".scratch").exists(), "{:?}", listing(&dir));
+    assert_eq!(
+        listing(&dir),
+        names(&["daily-2026-10-18.db", "weekly-2026-10-18.db"])
+    );
+}
+
+/// Pruning looks only at the files it names: the scratch folder is not one of them.
+#[test]
+fn pruning_ignores_the_scratch_folder() {
+    let mut existing: Vec<String> = (1..=9)
+        .map(|d| format!("daily-2026-10-{d:02}.db"))
+        .collect();
+    existing.push(".scratch".to_owned());
+    existing.push("daily-2026-10-09.db.unproven".to_owned());
+    let gone = to_remove(&existing);
+    assert_eq!(gone, names(&["daily-2026-10-01.db", "daily-2026-10-02.db"]));
+}
+
+/// The copy and the weekly are synced to disk before the daily gets its name, and the folder
+/// after, so a power cut cannot leave a proven name on bytes that never reached the disk.
+#[test]
+fn the_copy_and_the_weekly_are_synced_before_the_rename_and_the_folder_after() {
+    let (_scratch, db, dir) = a_house("sync");
+    let _ = take_log();
+    let tick = Nightly::new().tick_with(&db, &dir, DUE, -240, &real_copy, &real_proof);
+    assert!(matches!(tick, Tick::Proven { .. }), "{tick:?}");
+    assert_eq!(
+        take_log(),
+        [
+            "sync daily-2026-10-18.db.unproven",
+            "sync weekly-2026-10-18.db",
+            "rename daily-2026-10-18.db",
+            "sync-dir",
+        ]
+    );
+    // A failed night syncs and renames nothing.
+    let (_other, db, dir) = a_house("sync-failed");
+    let _ = take_log();
+    let tick = Nightly::new().tick_with(&db, &dir, DUE, -240, &truncating_copy, &real_proof);
+    assert!(failed(&tick), "{tick:?}");
+    assert_eq!(take_log(), Vec::<String>::new());
+}
+
+/// A panic on the blocking thread is one attempt, said like any failure, and the "gave up"
+/// report fires exactly once for the day.
+#[cfg(feature = "runtime")]
+#[tokio::test]
+async fn a_panic_in_the_copy_is_one_attempt_and_the_give_up_is_said_once() {
+    use std::sync::Arc;
+    let (_scratch, db, dir) = a_house("panic");
+    let nightly = Nightly::new();
+    let panicking: super::Step = Arc::new(|_, _| panic!("the copy fell over"));
+    let proof: super::Step = Arc::new(real_proof);
+    let mut ticks = Vec::new();
+    for n in 0..5 {
+        ticks.push(
+            nightly
+                .blocking_tick(
+                    db.clone(),
+                    dir.clone(),
+                    DUE + n * 10 * MINUTE,
+                    -240,
+                    panicking.clone(),
+                    proof.clone(),
+                )
+                .await,
+        );
+    }
+    let giving_up: Vec<bool> = ticks
+        .iter()
+        .filter_map(|t| match t {
+            Tick::Failed { giving_up, .. } => Some(*giving_up),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(giving_up, [false, false, true], "{ticks:?}");
+    assert_eq!(&ticks[3..], [Tick::Nothing, Tick::Nothing]);
+    let said: Vec<String> = ticks
+        .iter()
+        .filter_map(|t| t.summary("Endora's data"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("3 tries"), "{}", said[0]);
+}
+
+/// The loop itself: a due night is copied, proven and told once; a night with nothing due is
+/// not told at all.
+#[cfg(feature = "runtime")]
+#[tokio::test(start_paused = true)]
+async fn the_loop_tells_a_proven_night_once() {
+    use std::sync::{Arc, Mutex};
+    let (_scratch, db, dir) = a_house("loop");
+    let told: Arc<Mutex<Vec<Tick>>> = Arc::default();
+    let sink = told.clone();
+    let task = tokio::spawn(Nightly::new().run(
+        db.clone(),
+        || (DUE, -240),
+        move |tick| sink.lock().unwrap().push(tick.clone()),
+    ));
+    for _ in 0..500 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if !told.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    // A few more ticks: nothing more to tell.
+    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+    task.abort();
+    let told = told.lock().unwrap();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(matches!(told[0], Tick::Proven { .. }));
+    assert!(dir.join("daily-2026-10-18.db").exists());
 }

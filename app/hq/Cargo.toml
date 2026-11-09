@@ -19,7 +19,7 @@ chrono = { version = "0.4", default-features = false }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 # The nightly copy of hq.db and the proof that it restores: the one implementation the node's
 # copy of endora.db uses too (shared/persistence/src/nightly.rs, restore.rs).
-endora-persistence = { path = "../../shared/persistence" }
+endora-persistence = { path = "../../shared/persistence", features = ["runtime"] }
 endora-team = { path = "../../domains/team" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
