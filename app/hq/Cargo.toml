@@ -17,12 +17,17 @@ axum = "0.8.9"
 # The owner's time zone (src/time_zone.rs), as the node reads it.
 chrono = { version = "0.4", default-features = false }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+# The nightly copy of hq.db and the proof that it restores: the one implementation the node's
+# copy of endora.db uses too (shared/persistence/src/nightly.rs, restore.rs).
+endora-persistence = { path = "../../shared/persistence" }
 endora-team = { path = "../../domains/team" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 
 [dev-dependencies]
+# Writing rows into a store and reading a copy back in tests; the build the team crate already uses.
+rusqlite = { version = "0.40", features = ["bundled"] }
 http-body-util = "0.1.5"
 # The same tokio, with paused time for the ticker's tests (src/ticker.rs): no new crate.
 tokio = { version = "1.53.0", features = ["test-util"] }
