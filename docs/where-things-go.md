@@ -34,7 +34,7 @@ here and delete the routes only they used.
 
 | Destination | What belongs there | What does not |
 |---|---|---|
-| **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history, the chess league and the office. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
+| **HQ** (where every device opens, on the agents map) | The team at work: the agents map with your decisions beside it, giving work; then open work, projects and the team, health, history and the model chess league. Status and switches you flip often (kill switch) | Setting anything up once: addresses, keys, tokens. Link to its Settings place instead |
 | **Home lab** | The lab's containers, logs, jobs, now | Credentials (Connections, AI), models (AI) |
 | **Music, Speakers, Smart home, Media** | Using that thing, and its own status | How it is connected (Connections) |
 | **Activity** | The record of what Endora did | Anything you change |
@@ -108,13 +108,12 @@ here and delete the routes only they used.
   strip with a Watch link each, the latest twenty lines and "Show more" for a full-screen view a
   page at a time; what a line names opens where it already lives, with a way back. **Chess
   league**: the model league's games in play, bracket and standings, every finished game with
-  its PGN. **Office**: the studio (`47f-hq-studio.js`), drawn and animated only while the Office
-  shows, with the office's games beside it (the office chess board, ADR 0121). The studio's
-  furniture, desks lit only while a turn runs there, the owner's corner, the alcove and the lounge
-  are as before, and a tap opens Looking at. **Looking at** is the page a member, an item or a
-  studio tap opens, with its way back. Each place shows one line per thing at rest and the rest on
-  a tap; the console check holds each to a budget, so fold something before raising one. Fun and
-  decoration go in the Office, never on the map. A turn that waits for tomorrow shows in the top
+  its PGN. There is **no Office**: the owner removed the cartoon studio on 9 Nov 2026 and kept only
+  the model-comparison league, so an old Office link opens the Chess league. The studio's source
+  (`47f-hq-studio.js`, its art under `/hq-art/`) and the members' downtime chess (`hqGames`) stay in
+  the console, drawn by no place and not part of the league; the standalone Console's copy follows
+  separately. **Looking at** is the page a member or an item opens, with its way back. Each place shows one line per thing at rest and the rest on
+  a tap; the console check holds each to a budget, so fold something before raising one. A turn that waits for tomorrow shows in the top
   bar and in the outcomes, and is never a card. Explicit assistance requests and conversations add
   no place of their own (ADR 0139). Every owner action and its place is listed in
   [the inventory](proposals/hq-map-first-action-inventory-2026-11-07.md).

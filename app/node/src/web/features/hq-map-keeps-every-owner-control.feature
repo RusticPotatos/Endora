@@ -33,6 +33,20 @@ Feature: The map keeps every control the owner had
     Then no line moves on the map
     And the map says when John Doe's turn was last heard from
 
-  Scenario: The office's chess board keeps its home in the Office
-    When the owner opens "Office"
-    Then the Office shows the studio and the office's games
+  Scenario: The model league keeps its live games, bracket, history and PGN in the Chess league
+    Given the model league has a game in play and a game finished
+    When the owner opens "Chess league"
+    Then the Chess league shows the live game, the bracket, the finished game and its PGN
+
+  Scenario: The cartoon office is gone from HQ
+    When the owner visits every place
+    Then no place is called "Office"
+    And the studio is drawn nowhere in HQ
+    And the members' downtime chess is not in the model league
+
+  Scenario: The old office link leaves the owner's decisions at hand
+    When the owner follows an old link to the "office" tab
+    Then HQ shows "Chess league" with a way back to the map
+    And the bar still has the kill switch and Give work
+    When the owner opens "Agents map"
+    Then the question "Should the example task go on?" can be answered from the map

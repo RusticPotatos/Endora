@@ -1,12 +1,13 @@
 // ---- Endora HQ (ADR 0102, spec section 13) ---------------------------------------------------
-// The team at work in a small studio, drawn from HQ's snapshot and the events after it (the studio
-// itself is in 47f-hq-studio.js). The
+// The team at work, drawn from HQ's snapshot and the events after it. The cartoon studio (47f-hq-studio.js,
+// its art served from /hq-art/) is kept in the source but no place draws it: the owner removed the Office
+// on 9 Nov 2026 and kept only the model-comparison chess league. The
 // console talks to the node only; the node signs every request to HQ and records the owner's
 // actions in Endora's own audit log. Approvals and the kill switch are buttons here that call
-// the node's routes, never anything the office view decides.
+// the node's routes, never anything the console decides.
 //
-// Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0), served from /hq-art/ with its
-// credits and licence beside it.
+// Studio art (kept, not shown): Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0), served from
+// /hq-art/ with its credits and licence beside it.
 
 const HQ = {
   snap: null,          // the latest snapshot
@@ -643,19 +644,22 @@ function hqFonts() {
 // The screen opens on the agents map (the owner's decision M6, 7 Nov 2026: "Agents map should be
 // the primary view"): the team and what each holds, with your decisions beside it. Everything else
 // is a place of its own, reached from one quiet row and back to the map, never a tab strip: open
-// work, projects and the team, health, the history, the model league and the office's studio.
+// work, projects and the team, health, the history and the model league.
 // Every place is drawn and the others hidden, so a live update never loses what is typed in one
-// that is not showing. Looking at ("detail") is the page a member, an item or a studio tap opens.
+// that is not showing. Looking at ("detail") is the page a member or an item opens.
 const HQ_PLACES = [["map", "Agents map"], ["work", "Open work"], ["manage", "Projects & team"], ["health", "Health"],
-  ["activity", "Activity"], ["chess", "Chess league"], ["office", "Office"]];
+  ["activity", "Activity"], ["chess", "Chess league"]];
+// A place that no longer exists, and the place its links now open: the owner removed the Office
+// (9 Nov 2026) and kept the model-comparison league, so an old Office link lands on the league.
+const HQ_PLACE_MOVED = { office: "chess" };
 // Where each tab of the five-tab screen (362e467f) and the ones before it now lives, for links
 // kept from before: the old Work tab's desk is the map's decisions.
-const HQ_TAB_MOVED = { work: "map", now: "map", desk: "map", team: "manage", knowledge: "manage" };
+const HQ_TAB_MOVED = { work: "map", now: "map", desk: "map", team: "manage", knowledge: "manage", ...HQ_PLACE_MOVED };
 
 // Where HQ is. A fresh entry and a reload open the map; the tab the old screen remembered in
 // this browser is read once and removed, and storage that refuses changes nothing.
 function hqPlace() {
-  if (HQ.place) return HQ.place;
+  if (HQ.place) return HQ_PLACE_MOVED[HQ.place] || HQ.place;
   for (const key of ["endora.hq.tab.v4", "endora.hq.tab.v3"]) {
     try { localStorage.removeItem(key); } catch (_) { /* private window or blocked storage */ }
   }
@@ -981,14 +985,7 @@ function viewHQ() {
   if (!s) return `<div class="hq"><h1>Endora HQ</h1><p class="hq-empty">Loading…</p></div>`;
   if (HQ.feed) return hqFeedView();
   const place = hqPlace();
-  // The studio draws and moves only while the Office shows it.
-  setTimeout(() => {
-    hqFonts();
-    if (place !== "office") return;
-    hqStudioWatch(); hqLoop();
-    const cv = document.getElementById("hq-office");
-    if (cv && !cv.dataset.tapped) { cv.dataset.tapped = "1"; cv.addEventListener("click", hqTap); }
-  }, 0);
+  setTimeout(hqFonts, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const retrying = (s.runs || []).filter((r) => r.status === "retry_waiting").length;
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Retrying", retrying], ["Held", c.held || 0],
@@ -1034,13 +1031,6 @@ function viewHQ() {
       ${hqPanel("health", `<div class="hq-stats hq-wide-card">${stats}</div>${hqHealthCards(s)}`)}
       ${hqPanel("activity", hqActivity())}
       ${hqPanel("chess", hqChessTab(s))}
-      ${hqPanel("office", `
-        <div class="hq-stage hq-wide-card">
-          <div class="hq-canvas-wrap">${hqStudioCanvasTag()}</div>
-          <div class="hq-legend"><span style="--c:#ffd27a">A lit lamp: a turn running at that desk</span><span style="--c:#ffb347">Hourglass: a turn waiting to retry</span><span style="--c:#ef5a5f">Red sign: stuck, or a failed check</span><span style="--c:#45c486">Green tick: recovered</span></div>
-          <p class="hq-note">Studio art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. Tap a desk, the board, the shelves or the chess table to look closer.</p>
-        </div>
-        ${hqOffice(s)}`)}
     </div>
     <p class="hq-note">Decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
@@ -1082,20 +1072,11 @@ function hqRoster(s) {
   return `<ul class="hq-team hq-board">${(s.members || []).map(hqRosterLine).join("")}</ul>`;
 }
 
-// The Office card (ADR 0119, 0142): the office's games. The floor became the studio (the owner,
-// 4 Nov); the members work and, in their downtime, play chess at its table.
-function hqOffice(s) {
-  const o = s.office;
-  if (!o) return "";
-  return `<section class="hq-card hq-office-card"><h2>Office</h2>
-    <p class="hq-note">Downtime costs nothing: it is work on the house's own model. The chess table stands in the studio's lounge.</p>
-    ${hqGames(s)}
-  </section>`;
-}
-
-// ---- games in the office (ADR 0121) -----------------------------------------------------
-// Ping-pong and pool the engine plays for nothing, and chess the members play in their
-// downtime. Every name and every result is the team's own words, so all of it is escaped.
+// ---- chess pieces, the board and the members' downtime games (ADR 0121) ----------------------
+// The pieces and the board are shared with the model league (47e). The members' own downtime
+// chess (hqGames, hqChessPanel) keeps its code and data, but no place presents it since the Office
+// was removed (9 Nov 2026); it is not the league. Every name and every result is the team's own
+// words, so all of it is escaped.
 
 // Each with U+FE0E, the text form: ♟ is also an emoji, which a phone draws black on either side.
 const HQ_PIECES = { k: "♚\uFE0E", q: "♛\uFE0E", r: "♜\uFE0E", b: "♝\uFE0E", n: "♞\uFE0E", p: "♟\uFE0E" };
@@ -1137,8 +1118,8 @@ function hqChessPanel() {
   return games.map(hqChessGame).join("");
 }
 
-// The Games section of the Office card: the three leaderboards, the last five results, and the
-// games of chess being played, each a tap away from its board.
+// The members' downtime chess: its leaderboard, the last results, and the games being played,
+// each a tap away from its board. No place shows it now; kept for a later conversations list.
 function hqGames(s) {
   const g = s.games;
   if (!g) return "";
@@ -1943,7 +1924,7 @@ async function hqDispatch(verb, noun, id, arg) {
   // A place (M6), and a link kept from the old tabs, mapped to where that tab's things now live.
   // "decisions" goes to the map and brings your decisions into view.
   if (noun === "place" || noun === "tab") {
-    const to = noun === "tab" ? HQ_TAB_MOVED[id] || id : id;
+    const to = noun === "tab" ? HQ_TAB_MOVED[id] || id : HQ_PLACE_MOVED[id] || id;
     if (!HQ_PLACES.some(([p]) => p === to)) return true;
     HQ.back = null; hqGo(to); render();
     if (arg === "decisions") { const el = document.getElementById("hq-decisions"); if (el && el.scrollIntoView) { el.scrollIntoView({ block: "start" }); if (el.focus) el.focus(); } }

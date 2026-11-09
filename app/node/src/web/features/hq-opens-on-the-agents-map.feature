@@ -2,7 +2,7 @@ Feature: HQ opens on the agents map
   The owner decided (M6, 7 Nov 2026) that the agents map is HQ's primary view: who is working on
   what, what is blocked, and what waits on the owner. Every way into HQ lands there: a fresh
   visit, a reload, the old agents screen, links and choices kept from the old tabs. The owner's
-  decisions stand beside the map, and the studio is a secondary place of its own.
+  decisions stand beside the map, and the model league's Chess league is a secondary place of its own.
 
   Background:
     Given HQ has John Doe working on "example task" in "example project"
@@ -31,7 +31,10 @@ Feature: HQ opens on the agents map
     When the owner follows an old link to the "team" tab
     Then HQ shows "Projects & team" with a way back to the map
     When the owner follows an old link to the "office" tab
-    Then HQ shows "Office" with a way back to the map
+    Then HQ shows "Chess league" with a way back to the map
+    When the owner opens "Agents map"
+    And the owner follows an old link to the "office" place
+    Then HQ shows "Chess league" with a way back to the map
 
   Scenario: A secondary place is a page with a way back
     When the owner opens "Health"

@@ -52,7 +52,7 @@ happens without you.
 
 - **HQ** (ADR [0102](docs/adr/0102-endora-hq.md)): goals, tasks, a team that claims and does
   them, reviews them and tests them against criteria written first; outcomes and a desk that
-  interrupts only for decisions; the office, with games; and the Holodeck, where the team acts
+  interrupts only for decisions; the model chess league; and the Holodeck, where the team acts
   in simulated worlds to compare configurations.
 - **The home lab**: the containers, logs, jobs and media of your lab, read through fixed
   routes, and the team's work on it through contracts and pull requests you merge.

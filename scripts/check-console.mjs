@@ -855,7 +855,7 @@ if (failures.length) {
     if (!spent.includes("$2.33 base<")) fail("hq: a day with no top-up says it has one");
   }
   if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
-  if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
+  if (office.includes('id="hq-office"') || office.includes("hq-canvas-wrap")) fail("hq: the cartoon studio is still drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
     "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now",
     "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:decide:16:seen", "hq:decide:16:dismiss", "hq:stop",
@@ -1127,21 +1127,18 @@ if (failures.length) {
   if (!office.includes('id="hq-answer-27"') || !office.includes(">Wait for tomorrow</button>")) fail("hq: the out-for-the-day card has no amount box or no wait");
   if (office.includes("<b>$0.50</b>")) fail("hq: an out-for-the-day card became markup");
   if (!office.includes("Haiku · on furlough</small>")) fail("hq: the roster does not say who is on furlough");
-  // The Office card (ADR 0119, 0142): the office's games; the floor became the studio (the owner,
-  // 4 Nov), so there is nothing to veto, undo or reset, and its chess table is in the lounge.
-  for (const said of ["<h2>Office", "The chess table stands in the studio's lounge"]) {
-    if (!office.includes(said)) fail(`hq: the Office card does not say ${said}`);
+  // The Office is gone (the owner, 9 Nov): no card, no place, no studio, and so nothing to veto,
+  // undo or reset. The team's own record of what it did to the office stays in the log and Replay.
+  for (const said of ["<h2>Office", "The chess table stands in the studio's lounge", 'id="hq-panel-office"', "hq:place:office:go"]) {
+    if (office.includes(said)) fail(`hq: the Office is still drawn (${said})`);
   }
+  if (runInContext("typeof hqOffice", context) !== "undefined") fail("hq: the Office card's code is still defined");
   if (/hq:office:(veto|undo|reset)/.test(office)) fail("hq: the Office card still offers a landlord's veto, undo or reset");
   if (office.includes("hq:office:downtime") || office.includes("Paid members&#39; downtime")) fail("hq: the Office card offers an allowance for downtime, which costs nothing");
   for (const raw of ["<img src=w", "<u>fern</u>", "<b>too wet</b>", "<i>Dee</i> proposes", "<b>Dee</b>"]) {
     if (office.includes(raw)) fail(`hq: the Office card let a member's words become markup (${raw})`);
   }
   {
-    const none = runInContext(`(() => { const o = HQ.snap.office, keep = [o.proposals, o.can_undo];
-      o.proposals = []; o.can_undo = false;
-      const html = hqOffice(HQ.snap); [o.proposals, o.can_undo] = keep; return html; })()`, context);
-    if (!none.includes("<h2>Office")) fail("hq: the Office card is gone with nothing open");
     // And the activity log and Replay say what the team did to the office, escaped like the rest.
     runInContext(`hqTell({ id: 70, at: 0, kind: "office.proposed", data: { proposal: 3, by: "Dee", text: "Dee proposes: add a fish tank in the commons \\u2014 '<b>life</b>'" } }, false);
       hqTell({ id: 71, at: 0, kind: "office.changed", data: { proposal: 3, via: "votes", text: "The office changed: add a fish tank in the commons (Dee's idea; carried 2 to 0)" } }, false);`, context);
@@ -1560,8 +1557,8 @@ if (failures.length) {
       if (!still || a.join("|") !== images.join("|")) fail("hq: the studio moves for someone who asked for calm");
       images.length = 0; runInContext("HQ.t = 0.1; hqDraw();", context); const m1 = images.slice(); images.length = 0; runInContext("HQ.t = 0.3; hqDraw(); HQ.t = 0;", context);
       if (m1.join("|") === images.join("|")) fail("hq: nobody types at a lit desk");
-      const floor = (runInContext("viewHQ()", context).match(/<canvas id="hq-office"[^>]*>/) || [""])[0];
-      if (!floor.includes("studio") || /CEO|ping-pong|meeting room/i.test(floor)) fail(`hq: the canvas does not describe the studio: ${floor}`);
+      // The studio's drawing code is kept, but no place draws it: HQ carries no studio canvas.
+      if (/<canvas id="hq-office"/.test(runInContext("viewHQ()", context))) fail("hq: HQ draws the studio canvas");
       const gone = runInContext(`["hqLayout", "hqPlacePeople", "hqWalk", "hqBubble", "hqSay", "hqDrawShelf", "hqTablePanel", "hqCards", "hqAreaOf", "hqPaintRoom"].filter((f) => { try { return typeof eval(f) !== "undefined"; } catch (_) { return false; } })`, context);
       if (gone.length) fail(`hq: the office's machinery is still here: ${gone}`);
     } finally {
@@ -1607,9 +1604,13 @@ if (failures.length) {
             rows: ["rnbqkbnr", "pppp.ppp", "........", "....p...", "....P...", "........", "PPPP.PPP", "RNBQKBNR"], fen: "x", check: false, to_move: "Ada", result: "" }] },
         recent: [1, 2, 3, 4, 5].map((n) => ({ id: n, game: "pool", text: "Result " + n + " <u>x</u>", at: 100 - n })) };
         HQ.selected = null;`, context);
-      const card = runInContext("hqOffice(HQ.snap)", context);
+      // The members' downtime chess keeps its code and data, but has no presentation in HQ now:
+      // it is not the model league, and the Office that showed it is gone.
+      const card = runInContext("hqGames(HQ.snap)", context);
       if (card.includes("ping-pong") || card.includes("<summary>Pool") || card.includes("Result 1")) fail("hq: the Games section still keeps ping-pong or pool");
-      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) if (!card.includes(want)) fail(`hq: the Office card's Games section lacks ${want}`);
+      for (const want of ["<h3>Games</h3>", "Chess", 'data-act="hq:pick:chess:0"', "Ada against &lt;b&gt;Bo&lt;/b&gt;"]) if (!card.includes(want)) fail(`hq: the downtime chess section lacks ${want}`);
+      const whole = runInContext("viewHQ()", context);
+      if (whole.includes('data-act="hq:pick:chess:0"') || whole.includes("Ada against") || whole.includes("<h3>Games</h3>")) fail("hq: the members' downtime chess is still presented in HQ");
       runInContext(`HQ.selected = { type: "chess", id: 0 };`, context);
       const panel = runInContext("hqSelected()", context);
       if ((panel.match(/<span/g) || []).length !== 64) fail(`hq: the chess panel's board is not 64 squares: ${(panel.match(/<span/g) || []).length}`);
@@ -1617,7 +1618,7 @@ if (failures.length) {
     } finally {
       runInContext(`HQ.snap = JSON.parse(${JSON.stringify(saved)}); HQ.selected = null;`, context);
     }
-    console.log("hq: the chess table in the lounge opens its board, and the Games section reads the snapshot");
+    console.log("hq: the downtime chess keeps its board and section code but HQ presents none of it");
   }
   // Problems and recoveries, in one language beside a worker's head (the owner, 3 Nov): a red "!"
   // while the record says its work is blocked, a red cross while its latest check failed, and a
@@ -1684,7 +1685,7 @@ if (failures.length) {
           groups: [{ project: "example project", items: [{ task: 7, title: "example task", status: "blocked", asks_owner: true }] }] }], unheld: [] };`, context);
     const shown = () => runInContext("viewHQ()", context);
     const home = shown();
-    const PLACES = ["map", "work", "manage", "health", "activity", "chess", "office"];
+    const PLACES = ["map", "work", "manage", "health", "activity", "chess"];
     for (const id of PLACES) if (!home.includes(`class="hq-place" id="hq-panel-${id}"`)) fail(`hq: no ${id} place`);
     const placeOrder = [...home.matchAll(/class="hq-place" id="hq-panel-(\w+)"/g)].map((m) => m[1]).join();
     if (placeOrder !== PLACES.join()) fail(`hq: the places are ${placeOrder}, not ${PLACES}`);
@@ -1703,14 +1704,13 @@ if (failures.length) {
       if (!map.includes(said)) fail(`hq: the map does not show ${said}`);
     }
     if (map.indexOf('class="ag-hero') > map.indexOf('id="hq-decisions"')) fail("hq: the decisions come before the map's first line");
-    if (home.split('id="hq-panel-office"')[0].includes('<canvas id="hq-office"')) fail("hq: the studio is drawn outside the Office");
-    if (!placeOf(home, "office").includes('<canvas id="hq-office"')) fail("hq: the Office has no studio");
-    if (!placeOf(home, "office").includes("<h2>Office")) fail("hq: the office's games are not with the studio");
+    if (home.includes('<canvas id="hq-office"') || home.includes("hq-panel-office") || home.includes("<h2>Office")) fail("hq: the Office or its studio is still drawn");
     if (!placeOf(home, "health").includes('class="hq-stats')) fail("hq: HQ's counters are not on Health");
     // One quiet row to the secondary places, a button each; the bar keeps Give work and the kill switch.
     const more = (home.match(/<nav class="hq-places" aria-label="More of HQ">([\s\S]*?)<\/nav>/) || [])[1] || "";
     const goes = [...more.matchAll(/data-act="hq:place:(\w+):go"/g)].map((m) => m[1]).join();
-    if (goes !== "work,manage,health,activity,chess,office") fail(`hq: the row to the other places is ${goes}`);
+    if (goes !== "work,manage,health,activity,chess") fail(`hq: the row to the other places is ${goes}`);
+    if (/Office/.test(more)) fail("hq: the row to the other places still names the Office");
     for (const act of ['data-act="hq:work"', 'data-act="hq:stop"']) if (!home.split('class="hq-place"')[0].includes(act)) fail(`hq: the bar lacks ${act}`);
     // What waits on the owner jumps to the decisions on the map.
     const deskCount = runInContext("HQ.snap.desk.length", context);
@@ -1727,17 +1727,27 @@ if (failures.length) {
     await runInContext('dispatch("hq:place:bogus:go")', context);
     if (runInContext("HQ.place", context) !== "map") fail("hq: a place that does not exist was chosen");
     // Old links land where each now lives.
-    for (const [old, now] of [["work", "map"], ["now", "map"], ["desk", "map"], ["team", "manage"], ["knowledge", "manage"], ["office", "office"],
+    for (const [old, now] of [["work", "map"], ["now", "map"], ["desk", "map"], ["team", "manage"], ["knowledge", "manage"], ["office", "chess"],
       ["manage", "manage"], ["health", "health"], ["activity", "activity"], ["chess", "chess"]]) {
       runInContext("HQ.place = 'map';", context);
       await runInContext(`dispatch("hq:tab:${old}:go")`, context);
       if (runInContext("HQ.place", context) !== now) fail(`hq: the old ${old} link does not land on ${now}`);
     }
+    // The retired Office: its place link, a place still held in memory, and a tab kept in the
+    // browser all end safely on the league (or the map), and the league stays reachable.
+    runInContext("HQ.place = 'map';", context);
+    await runInContext('dispatch("hq:place:office:go")', context);
+    if (runInContext("HQ.place", context) !== "chess" || showing(shown()) !== "chess") fail("hq: the old Office place link does not open the Chess league");
+    runInContext("HQ.place = 'office';", context);
+    if (runInContext("hqPlace()", context) !== "chess" || showing(shown()) !== "chess") fail("hq: a place still held as the Office does not resolve to the Chess league");
+    runInContext("HQ.place = 'map';", context);
+    await runInContext('dispatch("hq:place:chess:go")', context);
+    if (showing(shown()) !== "chess" || !shown().includes('data-act="hq:place:map:go">◀ Agents map</button>')) fail("hq: the Chess league is not reachable with a way back");
     // A fresh entry or a reload opens the map; a place kept by the old tabs is read once and removed.
     const kept = {}, removed = [];
     const realStore = context.localStorage;
     context.localStorage = { getItem: (k) => (k in kept ? kept[k] : null), setItem: (k, v) => { kept[k] = v; }, removeItem: (k) => { removed.push(k); delete kept[k]; } };
-    for (const [key, value] of [["endora.hq.tab.v4", "manage"], ["endora.hq.tab.v4", "chess"], ["endora.hq.tab.v3", "team"], ["endora.hq.tab.v4", "nonsense"]]) {
+    for (const [key, value] of [["endora.hq.tab.v4", "manage"], ["endora.hq.tab.v4", "chess"], ["endora.hq.tab.v4", "office"], ["endora.hq.tab.v3", "team"], ["endora.hq.tab.v4", "nonsense"]]) {
       kept[key] = value; runInContext("HQ.place = null;", context);
       if (showing(shown()) !== "map") fail(`hq: a kept ${key}=${value} does not open the map`);
       if (key in kept) fail(`hq: the old ${key} is kept after the map opened`);
@@ -1790,7 +1800,7 @@ if (failures.length) {
     // The map's own count of its members and items is the record's, not a budget; its decisions
     // are the old Work tab's desk and digest (27 buttons, 42 rows), and the rest lost Work's share.
     const MOST_IN_A_PLACE = { map: { buttons: 28, rows: 45 }, work: { buttons: 4, rows: 6 }, manage: { buttons: 27, rows: 32 }, health: { buttons: 14, rows: 22 },
-      activity: { buttons: 11, rows: 23 }, chess: { buttons: 12, rows: 30 }, office: { buttons: 2, rows: 6 } };
+      activity: { buttons: 11, rows: 23 }, chess: { buttons: 12, rows: 30 } };
     for (const [id, most] of Object.entries(MOST_IN_A_PLACE)) {
       const d = density(placeOf(home, id));
       for (const k of ["buttons", "rows"]) if (d[k] > most[k]) fail(`hq: ${id} shows ${d[k]} ${k} at rest (budget ${most[k]}): fold what is rare`);
@@ -1802,8 +1812,7 @@ if (failures.length) {
         "Sized from the Claude credit: $70.23 left, 18 days to the 18th.", "hq:more:hire:toggle", "hq:more:newproject:toggle", "hq:more:newroutine:toggle", "hq:more:knows:toggle"],
       health: ["How the team is doing", "<h2>What failed</h2>", 'data-act="go:lab"'],
       activity: ["<h2>Activity</h2>", 'data-act="hq:feed:open:go"'],
-      chess: ["<h2>Chess</h2>", "No model league yet"],
-      office: ['<canvas id="hq-office"', "<h2>Office"] };
+      chess: ["<h2>Chess</h2>", "No model league yet"] };
     for (const [id, said] of Object.entries(where)) {
       for (const text of said) if (!placeOf(home, id).includes(text)) fail(`hq: "${text}" is not in ${id}`);
     }
@@ -3884,6 +3893,16 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     [/^the owner opens the console$/, () => { runInContext("HQ.place = null; NAV = { v: 'hq' };", context); draw(); }],
     [/^the owner follows the old agents map link$/, async () => { await runInContext('dispatch("agents:open:map")', context); draw(); }],
     [/^the owner follows an old link to the "(\w+)" tab$/, async (tab) => { await runInContext(`dispatch("hq:tab:${tab}:go")`, context); draw(); }],
+    [/^the owner follows an old link to the "(\w+)" place$/, async (id) => { await runInContext(`dispatch("hq:place:${id}:go")`, context); draw(); }],
+    [/^the model league has a game in play and a game finished$/, () => runInContext(`HQ.snap.holodeck = { scenarios: [], league: {
+        table: [{ brain: "local", label: "Local", rating: 1216, points: 1, won: 1, drawn: 0, lost: 0, history: [1200, 1216] },
+          { brain: "mac", label: "Mac", rating: 1200, points: 0, won: 0, drawn: 0, lost: 1, history: [1200, 1184] }],
+        games: [{ task: 812, white: "local", black: "mac", end: "white_won", half_moves: 4, live: false },
+          { task: 820, white: "mac", black: "local", end: null, half_moves: 1, live: true, to_move: "black", last: "e4", fen: "x",
+            rows: ["rnbqkbnr", "pppppppp", "........", "........", "....P...", "........", "PPPP.PPP", "RNBQKBNR"] }],
+        pairs_left: 0, round: { number: 1, since: "1 Nov" } } };
+      HQ.chessGames = { page: 1, busy: false, seen: 1, data: { page: 1, pages: 1, total: 1, games: [
+        { task: 812, round: 1, white: "local", white_label: "Local", black: "mac", black_label: "Mac", result: "white_won", half_moves: 4, day: "1 Nov" }] } };`, context)],
     [/^the owner opens "([^"]+)"$/, async (name) => { await runInContext(`dispatch("hq:place:${label(name)}:go")`, context); draw(); }],
     [/^the owner presses Escape$/, () => { runInContext("hqPlaceKey({ key: 'Escape', preventDefault() {} });", context); draw(); }],
     [/^the owner visits every place$/, () => {}],
@@ -3918,9 +3937,34 @@ console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say
     [/^exactly one line moves on the map$/, () => { if ((placeOf(html, "map").match(/ag-live ag-moving/g) || []).length !== 1) fail("scenario: not exactly one line moves"); }],
     [/^no line moves on the map$/, () => { if (placeOf(html, "map").includes("ag-moving")) fail("scenario: a line moves with no turn heard from"); }],
     [/^the map says when John Doe's turn was last heard from$/, () => { if (!placeOf(html, "map").includes("no signal since")) fail("scenario: the silent turn does not say since when"); }],
-    [/^the Office shows the studio and the office's games$/, () => {
-      const office = placeOf(html, "office");
-      if (place(html) !== "office" || !office.includes('<canvas id="hq-office"') || !office.includes("<h2>Office</h2>") || !office.includes('data-act="hq:pick:chess:0">Look at the board</button>')) fail("scenario: the Office lacks the studio or the office's chess board");
+    [/^the Chess league shows the live game, the bracket, the finished game and its PGN$/, () => {
+      const chess = placeOf(html, "chess");
+      if (place(html) !== "chess") fail(`scenario: HQ shows ${place(html)}, not the Chess league`);
+      for (const want of ["<h2>Live", 'class="hq-chess"', 'data-act="hq:holo:watch:820"', 'class="hq-cross"', "<h2>All games", 'data-act="hq:holo:watch:812"', 'data-act="hq:holo:save:812"']) {
+        if (!chess.includes(want)) fail(`scenario: the Chess league lacks ${want}`);
+      }
+    }],
+    [/^no place is called "([^"]+)"$/, (name) => {
+      for (const [id, said] of runInContext("HQ_PLACES", context)) {
+        if (said === name || id === name.toLowerCase()) fail(`scenario: HQ still has a place called ${name}`);
+        runInContext(`HQ.place = ${JSON.stringify(id)};`, context); draw();
+        if (html.includes(`id="hq-panel-${name.toLowerCase()}"`) || html.includes(`data-act="hq:place:${name.toLowerCase()}:go"`) || html.includes(`<h2>${name}</h2>`)) fail(`scenario: ${id} still draws or links the ${name}`);
+      }
+    }],
+    [/^the studio is drawn nowhere in HQ$/, () => {
+      for (const [id] of runInContext("HQ_PLACES", context)) {
+        runInContext(`HQ.place = ${JSON.stringify(id)};`, context); draw();
+        if (html.includes('id="hq-office"') || html.includes("hq-canvas-wrap") || html.includes("Studio art:")) fail(`scenario: the studio is drawn in ${id}`);
+      }
+    }],
+    [/^the members' downtime chess is not in the model league$/, () => {
+      runInContext("HQ.place = 'chess';", context); draw();
+      const chess = placeOf(html, "chess");
+      if (chess.includes("John Doe") || html.includes('data-act="hq:pick:chess:0"') || html.includes("Look at the board")) fail("scenario: the members' downtime chess shows in HQ");
+    }],
+    [/^the bar still has the kill switch and Give work$/, () => {
+      const bar = html.split('class="hq-place"')[0];
+      if (!bar.includes('data-act="hq:stop"') || !bar.includes('data-act="hq:work"')) fail("scenario: the bar lacks the kill switch or Give work");
     }],
   ];
   const realStore = context.localStorage;
