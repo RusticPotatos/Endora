@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use endora_persistence::nightly::{Nightly, Tick, folder_of};
+use endora_persistence::nightly::{Nightly, Tick};
 
 use crate::time_zone::TimeZone;
 
@@ -47,6 +47,7 @@ pub fn spawn(database: PathBuf, zone: TimeZone) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use endora_persistence::nightly::folder_of;
     use endora_persistence::prove_restore;
     use endora_team::infrastructure::SqliteTeamStore;
     use std::path::Path;

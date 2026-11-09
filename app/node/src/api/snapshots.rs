@@ -8,7 +8,6 @@
 
 use super::*;
 use endora_persistence::nightly::{Nightly, Tick};
-use std::path::Path;
 
 /// What Activity says about one tick of the nightly, if anything: a line a night when the
 /// copy is proven, and, once a night however many tries it took, when it has given up.
@@ -44,7 +43,7 @@ pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     const MINUTE: i64 = 60 * 1000;
     // 2026-10-18 is a Sunday. 05:30 UTC on it is 01:30 four hours west of UTC: the copy is due.
