@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod nightly;
 pub mod secrets;
 
 use std::collections::HashMap;
