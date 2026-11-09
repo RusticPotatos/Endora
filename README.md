@@ -139,7 +139,7 @@ ARGS="health"`).
 
 A working personal project, developed against a home server. It runs HQ, the home lab's
 pages, the house's tools behind their stances, and the egress guard described above. Interfaces still
-change and there's no tagged release yet — build one complete slice at a time.
+change. Tagged releases exist (latest: [v0.12.0](https://github.com/RusticPotatos/Endora/releases/tag/v0.12.0)); see the [releases page](https://github.com/RusticPotatos/Endora/releases) for what each contains. Build one complete slice at a time.
 
 ## Contributing & license
 
