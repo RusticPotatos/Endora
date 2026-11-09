@@ -287,6 +287,45 @@ holds equal to its pin. Moving the bundle to a newer product release is that lin
 release's compose file in place of the old one, and its `SOURCES.json` entry, checked together
 by `check-sources.sh` and the bundle's CI run.
 
+## Remove Endora
+
+This removes Endora from the host and leaves nothing of it in Docker.
+
+**Warning: `-v` deletes the data for good.** The `endora-*` volumes (the table under "Volumes and
+data") hold Core's database, `secrets.key`, HQ's work and Audio's settings. Once they are gone,
+nothing can bring them back. If you may want the data later, take the backups first (see "Backup
+and restore") and keep them somewhere other than this host.
+
+Run this in each install's folder, the bundle's `deploy/compose` and each second install's own
+folder, one after the other:
+
+```sh
+cd Endora/deploy/compose                  # then the same in each second install's folder
+docker compose down -v --remove-orphans
+```
+
+That removes the install's containers, its networks and its named volumes, including the
+fixed-name `endora-*` ones. Compose reads the volume names from the `.env` in that folder, so
+keep the `.env` until this has run. Check that nothing is left:
+
+```sh
+docker ps -a --filter name=endora
+docker network ls --filter name=endora
+docker volume ls --filter name=endora
+```
+
+All three should list nothing. Then remove the files you made:
+
+```sh
+rm -f ./*.tgz ./endora-backup.db ./secrets.key   # the backup copies in the folder you ran the backup from
+cd ../../.. && rm -rf Endora                      # the clone; for a second install, its own folder
+```
+
+If you stored backup copies of `endora-backup.db` or `secrets.key` or the `.tgz` files
+somewhere else, remove those too. The images stay on the host until you remove them. To remove
+the ones no container uses, run `docker image prune -a`. That also removes unused images that are
+not Endora's, so read what it asks before you agree.
+
 ## How it is tested
 
 `.github/workflows/full-system.yml` runs on a plain ubuntu runner for every change to Core's
