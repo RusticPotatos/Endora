@@ -38,7 +38,7 @@ jobs:
             type=semver,pattern={{version}}
       # Built and checked before anything is pushed: an image carrying local files is never published.
       - name: Build for the check
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -48,7 +48,7 @@ jobs:
           cache-to: type=gha,scope=core-image-release,mode=max
       - name: Nothing local in the image
         run: sh scripts/check-image-privacy.sh image endora-node:candidate
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
